@@ -1,0 +1,67 @@
+{% extends "base.html" %}
+{% block title %}داشبورد{% endblock %}
+{% block topbar_title %}📊 داشبورد{% endblock %}
+
+{% block content %}
+<div class="stat-grid">
+  <div class="stat-card" style="--glow:rgba(124,111,255,.08)">
+    <span class="stat-icon">👥</span>
+    <div class="stat-val" style="--stat-color:#7c6fff">{{ stats.total_users }}</div>
+    <div class="stat-lbl">کل کاربران</div>
+  </div>
+  <div class="stat-card" style="--glow:rgba(0,229,160,.06)">
+    <span class="stat-icon">🔑</span>
+    <div class="stat-val" style="--stat-color:#00e5a0">{{ stats.active_configs }}</div>
+    <div class="stat-lbl">کانفیگ فعال</div>
+  </div>
+  <div class="stat-card" style="--glow:rgba(61,217,255,.06)">
+    <span class="stat-icon">✅</span>
+    <div class="stat-val" style="--stat-color:#3dd9ff">{{ stats.total_orders }}</div>
+    <div class="stat-lbl">سفارش تأییدشده</div>
+  </div>
+  <div class="stat-card" style="--glow:rgba(255,179,71,.06)">
+    <span class="stat-icon">⏳</span>
+    <div class="stat-val" style="--stat-color:#ffb347">{{ stats.pending_orders }}</div>
+    <div class="stat-lbl">در انتظار بررسی</div>
+  </div>
+  <div class="stat-card" style="--glow:rgba(0,229,160,.06)">
+    <span class="stat-icon">💰</span>
+    <div class="stat-val" style="--stat-color:#00e5a0;font-size:1.2rem">{{ "{:,}".format(stats.total_revenue) }}</div>
+    <div class="stat-lbl">کل درآمد (تومن)</div>
+  </div>
+  <div class="stat-card">
+    <span class="stat-icon">🖥️</span>
+    <div class="stat-val">{{ stats.active_servers }}<span style="font-size:.9rem;color:var(--txt3)">/{{ stats.total_servers }}</span></div>
+    <div class="stat-lbl">سرورهای فعال</div>
+  </div>
+</div>
+
+{% if pending %}
+<div class="sec-hd" style="margin-bottom:14px">
+  <span class="sec-title">⏳ سفارش‌های در انتظار تأیید</span>
+  <a href="/{{ S }}/orders" class="btn btn-outline btn-sm">مشاهده همه</a>
+</div>
+<div class="table-wrap" style="margin-bottom:24px">
+  <table>
+    <thead><tr><th>#</th><th>کاربر</th><th>پکیج</th><th>مبلغ</th><th>وضعیت</th><th>تاریخ</th></tr></thead>
+    <tbody>
+    {% for o in pending %}
+    <tr>
+      <td>#{{ o.id }}</td>
+      <td>{{ o.full_name or '—' }}<br><small style="color:var(--txt3)">@{{ o.username or '—' }}</small></td>
+      <td>{{ o.pkg_name }}</td>
+      <td>{{ "{:,}".format(o.price) }} T</td>
+      <td><span class="badge b-yellow">📤 فیش ارسال شده</span></td>
+      <td style="color:var(--txt2);font-size:.78rem">{{ o.created_at[:16] }}</td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+<div style="text-align:center;padding:40px 20px;color:var(--txt3)">
+  <div style="font-size:2.5rem">✅</div>
+  <p style="margin-top:12px;font-size:.88rem">هیچ سفارش در انتظاری وجود ندارد</p>
+</div>
+{% endif %}
+{% endblock %}

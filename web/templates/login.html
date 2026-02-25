@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ورود | Atlas Account</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Vazirmatn:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{
+  font-family:'Vazirmatn',sans-serif;
+  background:#0a0a14;color:#dde2ff;
+  min-height:100vh;display:flex;align-items:center;justify-content:center;
+  overflow:hidden;position:relative;
+}
+/* animated bg */
+.bg-orb{
+  position:absolute;border-radius:50%;filter:blur(80px);pointer-events:none;
+}
+.orb1{width:500px;height:500px;background:radial-gradient(circle,rgba(124,111,255,.15),transparent 70%);top:-150px;right:-150px;animation:float1 8s ease-in-out infinite}
+.orb2{width:400px;height:400px;background:radial-gradient(circle,rgba(255,107,157,.1),transparent 70%);bottom:-120px;left:-120px;animation:float2 10s ease-in-out infinite}
+.orb3{width:250px;height:250px;background:radial-gradient(circle,rgba(0,229,160,.07),transparent 70%);top:40%;left:40%;animation:float3 7s ease-in-out infinite}
+@keyframes float1{0%,100%{transform:translate(0,0)}50%{transform:translate(-20px,20px)}}
+@keyframes float2{0%,100%{transform:translate(0,0)}50%{transform:translate(20px,-20px)}}
+@keyframes float3{0%,100%{transform:translate(0,0)}50%{transform:translate(-15px,15px)}}
+
+.login-box{
+  background:rgba(24,24,40,.95);
+  border:1px solid rgba(124,111,255,.2);
+  border-radius:20px;padding:40px 36px;
+  width:340px;position:relative;z-index:1;
+  box-shadow:0 24px 64px rgba(0,0,0,.5);
+  backdrop-filter:blur(10px);
+  animation:slideUp .4s ease;
+}
+@keyframes slideUp{from{transform:translateY(30px);opacity:0}to{transform:translateY(0);opacity:1}}
+
+.logo{text-align:center;margin-bottom:32px}
+.logo-icon{
+  width:64px;height:64px;
+  background:linear-gradient(135deg,#7c6fff,#ff6b9d);
+  border-radius:18px;display:inline-flex;align-items:center;justify-content:center;
+  font-size:1.8rem;box-shadow:0 8px 24px rgba(124,111,255,.3);
+}
+.logo h1{
+  margin-top:14px;font-size:1.3rem;font-weight:800;
+  background:linear-gradient(135deg,#7c6fff,#ff6b9d);
+  -webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;
+}
+.logo p{color:#6668a0;font-size:.78rem;margin-top:3px}
+
+.error-msg{
+  background:rgba(255,76,106,.08);border:1px solid rgba(255,76,106,.2);
+  color:#ff6b6b;border-radius:9px;padding:10px 13px;
+  margin-bottom:16px;font-size:.82rem;display:flex;align-items:center;gap:8px;
+}
+
+.form-group{margin-bottom:16px}
+.form-group label{
+  display:block;margin-bottom:5px;
+  font-size:.78rem;font-weight:600;color:#9a9dc4;
+}
+.form-control{
+  width:100%;background:rgba(19,19,42,.8);
+  border:1px solid rgba(48,48,90,.8);border-radius:9px;
+  padding:10px 14px;color:#dde2ff;font-size:.88rem;
+  font-family:inherit;transition:all .18s;
+}
+.form-control:focus{
+  outline:none;border-color:#7c6fff;
+  box-shadow:0 0 0 3px rgba(124,111,255,.15);background:rgba(30,30,53,.8);
+}
+.form-control::placeholder{color:#6668a0}
+
+.btn-login{
+  width:100%;padding:12px;border-radius:9px;
+  background:linear-gradient(135deg,#7c6fff,#6357e8);
+  color:#fff;border:none;font-size:.92rem;font-weight:700;
+  font-family:inherit;cursor:pointer;margin-top:4px;
+  transition:all .18s;letter-spacing:.01em;
+  box-shadow:0 4px 16px rgba(124,111,255,.3);
+}
+.btn-login:hover{transform:translateY(-1px);box-shadow:0 6px 20px rgba(124,111,255,.4)}
+.btn-login:active{transform:translateY(0)}
+.btn-login.loading{opacity:.7;cursor:not-allowed}
+</style>
+</head>
+<body>
+<div class="bg-orb orb1"></div>
+<div class="bg-orb orb2"></div>
+<div class="bg-orb orb3"></div>
+
+<div class="login-box">
+  <div class="logo">
+    <div class="logo-icon">🌐</div>
+    <h1>Atlas Account</h1>
+    <p>پنل مدیریت</p>
+  </div>
+
+  {% if error %}
+  <div class="error-msg">❌ {{ error }}</div>
+  {% endif %}
+
+  <form method="POST" id="loginForm">
+    <div class="form-group">
+      <label>نام کاربری</label>
+      <input type="text" name="username" class="form-control" placeholder="نام کاربری ادمین" required autofocus>
+    </div>
+    <div class="form-group">
+      <label>رمز عبور</label>
+      <input type="password" name="password" class="form-control" placeholder="رمز عبور" required>
+    </div>
+    <button type="submit" class="btn-login" id="loginBtn">ورود به پنل ←</button>
+  </form>
+</div>
+
+<script>
+document.getElementById('loginForm').addEventListener('submit',()=>{
+  const b=document.getElementById('loginBtn');
+  b.textContent='در حال ورود...'; b.classList.add('loading');
+});
+</script>
+</body>
+</html>

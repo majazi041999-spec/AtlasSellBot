@@ -1,0 +1,87 @@
+from aiogram import Router, F
+from aiogram.types import Message, CallbackQuery
+from aiogram.filters import CommandStart, Command
+from aiogram.fsm.context import FSMContext
+
+from core.config import ADMIN_IDS, WEB_SECRET_PATH, WEB_PORT
+from core.database import get_or_create_user, get_user_by_referral_code, update_user, get_setting
+
+router = Router()
+
+
+def _is_admin(uid: int) -> bool:
+    return uid in ADMIN_IDS
+
+
+async def _menus(msg: Message):
+    from bot.keyboards import admin_menu, user_menu
+    user = await get_or_create_user(msg.from_user.id, msg.from_user.username, msg.from_user.full_name)
+    is_adm = _is_admin(msg.from_user.id) or user.get("is_admin", 0)
+    return user, is_adm
+
+
+@router.message(CommandStart())
+async def cmd_start(msg: Message, state: FSMContext):
+    await state.clear()
+    from bot.keyboards import admin_menu, user_menu
+
+    args = msg.text.split()
+    ref_code = args[1] if len(args) > 1 else None
+
+    user = await get_or_create_user(msg.from_user.id, msg.from_user.username, msg.from_user.full_name)
+    is_adm = _is_admin(msg.from_user.id) or user.get("is_admin", 0)
+
+    # رجیستر referral (اگر قبلاً کسی دعوتش نکرده)
+    if ref_code and not user.get("referred_by") and ref_code != user.get("referral_code"):
+        referrer = await get_user_by_referral_code(ref_code)
+        if referrer and referrer["id"] != user["id"]:
+            await update_user(user["id"], referred_by=referrer["id"])
+            try:
+                from aiogram import Bot
+                await msg.bot.send_message(
+                    referrer["telegram_id"],
+                    f"🎉 *یک دوست جدید با لینک دعوت شما ثبت‌نام کرد!*\n\n"
+                    f"👤 {msg.from_user.full_name or 'کاربر جدید'}\n\n"
+                    f"هنگامی که اولین خریدش را انجام دهد، شما {5} GB هدیه دریافت می‌کنید 🎁",
+                    parse_mode="Markdown"
+                )
+            except Exception:
+                pass
+
+    maintenance = await get_setting("maintenance_mode", "0")
+    if maintenance == "1" and not is_adm:
+        await msg.answer("🔧 ربات در حال تعمیر و به‌روزرسانی است.\nلطفاً کمی صبر کنید.")
+        return
+
+    welcome = await get_setting("welcome_message")
+    text = f"{'🔐 *پنل مدیریت*' if is_adm else '🌐 *Atlas Account*'}\n\n{welcome}"
+
+    kb = admin_menu() if is_adm else user_menu()
+    await msg.answer(text, reply_markup=kb, parse_mode="Markdown")
+
+
+@router.callback_query(F.data == "cancel")
+async def cancel_cb(cb: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await cb.message.edit_text("❌ عملیات لغو شد.")
+    await cb.answer()
+
+
+@router.callback_query(F.data == "back_to_menu")
+async def back_menu_cb(cb: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await cb.answer()
+    await cb.message.delete()
+
+
+@router.message(F.text == "🌐 پنل مدیریت")
+async def panel_url(msg: Message):
+    user = await get_or_create_user(msg.from_user.id)
+    if not (_is_admin(msg.from_user.id) or user.get("is_admin")):
+        return
+    await msg.answer(
+        f"🌐 *پنل مدیریت وب:*\n\n"
+        f"`http://YOUR_SERVER_IP:{WEB_PORT}/{WEB_SECRET_PATH}/`\n\n"
+        f"آدرس IP سرورت را جایگزین `YOUR_SERVER_IP` کن.",
+        parse_mode="Markdown"
+    )

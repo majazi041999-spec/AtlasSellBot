@@ -1,0 +1,396 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{% block title %}Atlas{% endblock %} | Atlas Account</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Vazirmatn:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#0a0a14;--bg2:#0f0f1e;--bg3:#13132a;--card:#181828;--card2:#1e1e35;
+  --border:#252540;--border2:#30305a;
+  --p:#7c6fff;--p2:#6357e8;--p3:rgba(124,111,255,.12);
+  --acc:#ff6b9d;--acc2:#e5578a;
+  --g:#00e5a0;--g2:#00c98d;
+  --r:#ff4c6a;--r2:#e03050;
+  --y:#ffb347;--y2:#e89d30;
+  --c:#3dd9ff;--c2:#27c0e8;
+  --txt:#dde2ff;--txt2:#9a9dc4;--txt3:#6668a0;
+  --shadow:0 8px 32px rgba(0,0,0,.45);
+  --shadow2:0 2px 8px rgba(0,0,0,.3);
+  --radius:12px;--radius2:8px;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{
+  font-family:'Vazirmatn',sans-serif;
+  background:var(--bg);color:var(--txt);
+  min-height:100vh;display:flex;
+  font-size:14px;line-height:1.6;
+}
+a{color:inherit;text-decoration:none}
+
+/* ── SIDEBAR ─────────────────────────────────────── */
+.sidebar{
+  width:220px;background:var(--bg2);
+  border-left:1px solid var(--border);
+  display:flex;flex-direction:column;
+  position:fixed;top:0;bottom:0;right:0;
+  z-index:200;overflow-y:auto;
+  transition:transform .3s;
+}
+.sb-logo{
+  padding:22px 18px 16px;
+  border-bottom:1px solid var(--border);
+  text-align:center;
+}
+.sb-logo-icon{font-size:2.2rem;line-height:1}
+.sb-logo h2{
+  margin-top:8px;font-size:1.05rem;font-weight:800;
+  background:linear-gradient(135deg,var(--p),var(--acc));
+  -webkit-background-clip:text;-webkit-text-fill-color:transparent;
+  background-clip:text;
+}
+.sb-logo span{font-size:.72rem;color:var(--txt3);display:block;margin-top:2px}
+
+.nav{padding:10px 0;flex:1}
+.nav-item{
+  display:flex;align-items:center;gap:10px;
+  padding:10px 18px;color:var(--txt2);
+  font-size:.85rem;font-weight:500;
+  transition:all .18s;position:relative;
+  border-right:3px solid transparent;
+  cursor:pointer;
+}
+.nav-item:hover{background:rgba(124,111,255,.07);color:var(--txt)}
+.nav-item.active{
+  background:rgba(124,111,255,.13);color:var(--p);
+  border-right-color:var(--p);
+}
+.nav-item .ni{font-size:1.05rem;width:22px;text-align:center;flex-shrink:0}
+.nav-badge{
+  margin-right:auto;background:var(--acc);color:#fff;
+  border-radius:20px;padding:1px 7px;font-size:.68rem;font-weight:700;
+}
+
+.sb-footer{
+  padding:14px 18px;border-top:1px solid var(--border);
+  font-size:.78rem;
+}
+.sb-footer a{color:var(--r);display:flex;align-items:center;gap:6px}
+.sb-footer a:hover{color:var(--r2)}
+
+/* ── MAIN ─────────────────────────────────────────── */
+.main{margin-right:220px;flex:1;display:flex;flex-direction:column;min-height:100vh}
+.topbar{
+  background:var(--bg2);border-bottom:1px solid var(--border);
+  padding:14px 24px;display:flex;justify-content:space-between;align-items:center;
+  position:sticky;top:0;z-index:100;
+}
+.topbar h1{font-size:1rem;font-weight:700;display:flex;align-items:center;gap:8px}
+.topbar-right{display:flex;align-items:center;gap:12px;font-size:.78rem;color:var(--txt2)}
+.content{padding:24px;flex:1;max-width:1200px;width:100%}
+
+/* ── CARDS ──────────────────────────────────────── */
+.card{
+  background:var(--card);border:1px solid var(--border);
+  border-radius:var(--radius);padding:20px;
+  transition:border-color .2s;
+}
+.card:hover{border-color:var(--border2)}
+.card-title{font-size:.75rem;color:var(--txt3);font-weight:600;text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px}
+
+/* ── STAT GRID ──────────────────────────────────── */
+.stat-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:14px;margin-bottom:24px}
+.stat-card{
+  background:var(--card);border:1px solid var(--border);
+  border-radius:var(--radius);padding:18px 16px;
+  transition:transform .2s,border-color .2s;
+  position:relative;overflow:hidden;
+}
+.stat-card::before{
+  content:'';position:absolute;inset:0;
+  background:linear-gradient(135deg,var(--glow,rgba(124,111,255,.05)),transparent);
+  pointer-events:none;
+}
+.stat-card:hover{transform:translateY(-2px);border-color:var(--border2)}
+.stat-icon{font-size:1.6rem;margin-bottom:8px;display:block}
+.stat-val{font-size:1.7rem;font-weight:800;color:var(--stat-color,var(--p));line-height:1.1}
+.stat-lbl{font-size:.72rem;color:var(--txt3);margin-top:4px;font-weight:500}
+
+/* ── TABLE ──────────────────────────────────────── */
+.table-wrap{overflow-x:auto;border-radius:var(--radius);border:1px solid var(--border)}
+table{width:100%;border-collapse:collapse}
+th{
+  background:var(--bg3);color:var(--txt2);
+  padding:10px 14px;text-align:right;
+  font-size:.75rem;font-weight:700;letter-spacing:.03em;
+  border-bottom:1px solid var(--border);
+}
+td{padding:10px 14px;border-bottom:1px solid var(--border);font-size:.82rem}
+tr:last-child td{border-bottom:none}
+tbody tr{transition:background .12s}
+tbody tr:hover td{background:rgba(255,255,255,.025)}
+
+/* ── BADGES ─────────────────────────────────────── */
+.badge{
+  display:inline-flex;align-items:center;gap:4px;
+  padding:3px 9px;border-radius:20px;
+  font-size:.72rem;font-weight:700;
+}
+.b-green{background:rgba(0,229,160,.12);color:var(--g)}
+.b-red{background:rgba(255,76,106,.12);color:var(--r)}
+.b-yellow{background:rgba(255,179,71,.12);color:var(--y)}
+.b-blue{background:rgba(61,217,255,.12);color:var(--c)}
+.b-gray{background:rgba(150,155,200,.1);color:var(--txt2)}
+.b-purple{background:var(--p3);color:var(--p)}
+
+/* ── BUTTONS ─────────────────────────────────────── */
+.btn{
+  display:inline-flex;align-items:center;gap:6px;
+  padding:8px 16px;border-radius:var(--radius2);
+  border:none;font-size:.82rem;font-weight:600;
+  cursor:pointer;transition:all .18s;font-family:inherit;
+  white-space:nowrap;
+}
+.btn:active{transform:scale(.97)}
+.btn-primary{background:var(--p);color:#fff}
+.btn-primary:hover{background:var(--p2);box-shadow:0 4px 16px rgba(124,111,255,.3)}
+.btn-success{background:var(--g);color:#000}
+.btn-success:hover{background:var(--g2)}
+.btn-danger{background:var(--r);color:#fff}
+.btn-danger:hover{background:var(--r2)}
+.btn-warn{background:var(--y);color:#000}
+.btn-outline{background:transparent;border:1px solid var(--border2);color:var(--txt2)}
+.btn-outline:hover{border-color:var(--p);color:var(--p)}
+.btn-ghost{background:transparent;color:var(--txt2)}
+.btn-ghost:hover{color:var(--txt);background:rgba(255,255,255,.05)}
+.btn-sm{padding:5px 11px;font-size:.75rem}
+.btn-xs{padding:3px 8px;font-size:.7rem}
+.btn-icon{padding:7px;border-radius:var(--radius2)}
+
+/* ── FORMS ──────────────────────────────────────── */
+.form-group{margin-bottom:14px}
+.form-group label{
+  display:block;margin-bottom:5px;
+  font-size:.78rem;font-weight:600;color:var(--txt2);
+}
+.form-control{
+  width:100%;background:var(--bg3);
+  border:1px solid var(--border);border-radius:var(--radius2);
+  padding:9px 13px;color:var(--txt);
+  font-size:.84rem;font-family:inherit;
+  transition:border-color .18s,box-shadow .18s;
+}
+.form-control:focus{
+  outline:none;border-color:var(--p);
+  box-shadow:0 0 0 3px rgba(124,111,255,.15);
+}
+.form-control option{background:var(--bg3)}
+.form-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px}
+
+/* ── MODAL ──────────────────────────────────────── */
+.overlay{
+  display:none;position:fixed;inset:0;
+  background:rgba(0,0,0,.65);z-index:500;
+  justify-content:center;align-items:center;
+  padding:16px;
+  backdrop-filter:blur(2px);
+}
+.overlay.show{display:flex}
+.modal{
+  background:var(--card);border:1px solid var(--border2);
+  border-radius:16px;padding:24px;
+  width:100%;max-width:480px;max-height:90vh;
+  overflow-y:auto;
+  box-shadow:var(--shadow);
+  animation:slideUp .25s ease;
+}
+@keyframes slideUp{from{transform:translateY(20px);opacity:0}to{transform:translateY(0);opacity:1}}
+.modal-hd{
+  display:flex;justify-content:space-between;align-items:center;
+  margin-bottom:20px;
+}
+.modal-hd h3{font-size:1rem;font-weight:700}
+.modal-close{background:none;border:none;color:var(--txt2);cursor:pointer;font-size:1.2rem;padding:4px;border-radius:6px}
+.modal-close:hover{background:rgba(255,255,255,.06);color:var(--txt)}
+
+/* ── ALERTS ─────────────────────────────────────── */
+.alert{padding:11px 15px;border-radius:var(--radius2);margin-bottom:16px;font-size:.82rem;display:flex;align-items:center;gap:8px}
+.alert-success{background:rgba(0,229,160,.08);border:1px solid rgba(0,229,160,.25);color:var(--g)}
+.alert-danger{background:rgba(255,76,106,.08);border:1px solid rgba(255,76,106,.25);color:var(--r)}
+.alert-info{background:rgba(61,217,255,.07);border:1px solid rgba(61,217,255,.2);color:var(--c)}
+
+/* ── SECTION HEADER ─────────────────────────────── */
+.sec-hd{display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;flex-wrap:gap}
+.sec-title{font-size:.95rem;font-weight:700}
+
+/* ── SEARCH ─────────────────────────────────────── */
+.search-box{
+  position:relative;max-width:260px;
+}
+.search-box input{padding-right:34px}
+.search-box::before{
+  content:'🔍';position:absolute;right:10px;top:50%;
+  transform:translateY(-50%);font-size:.82rem;pointer-events:none;
+  color:var(--txt3);
+}
+
+/* ── PROGRESS BAR ───────────────────────────────── */
+.prog-wrap{background:var(--bg3);border-radius:20px;height:6px;overflow:hidden}
+.prog-bar{height:100%;border-radius:20px;transition:width .6s ease}
+.prog-low{background:var(--g)}
+.prog-mid{background:var(--y)}
+.prog-high{background:var(--r)}
+
+/* ── TOGGLE SWITCH ──────────────────────────────── */
+.toggle{display:flex;align-items:center;gap:8px;cursor:pointer}
+.toggle input{display:none}
+.toggle-track{
+  width:36px;height:20px;background:var(--border2);
+  border-radius:20px;position:relative;transition:background .2s;
+}
+.toggle-track::after{
+  content:'';position:absolute;top:3px;right:3px;
+  width:14px;height:14px;border-radius:50%;background:#fff;
+  transition:transform .2s;
+}
+.toggle input:checked + .toggle-track{background:var(--p)}
+.toggle input:checked + .toggle-track::after{transform:translateX(-16px)}
+
+/* ── LOADING SPINNER ────────────────────────────── */
+.spin{
+  width:16px;height:16px;border-radius:50%;
+  border:2px solid rgba(255,255,255,.2);
+  border-top-color:#fff;
+  animation:spin .6s linear infinite;display:inline-block;
+}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+/* ── TOAST ──────────────────────────────────────── */
+#toast-container{position:fixed;bottom:20px;left:20px;z-index:9999;display:flex;flex-direction:column;gap:8px}
+.toast{
+  background:var(--card2);border:1px solid var(--border2);
+  border-radius:var(--radius2);padding:11px 16px;
+  font-size:.82rem;display:flex;align-items:center;gap:8px;
+  box-shadow:var(--shadow);min-width:220px;
+  animation:toastIn .25s ease;
+}
+@keyframes toastIn{from{transform:translateX(-20px);opacity:0}to{transform:translateX(0);opacity:1}}
+.toast-success{border-right:3px solid var(--g)}
+.toast-error{border-right:3px solid var(--r)}
+.toast-info{border-right:3px solid var(--p)}
+
+/* ── SCROLLBAR ──────────────────────────────────── */
+::-webkit-scrollbar{width:5px;height:5px}
+::-webkit-scrollbar-track{background:var(--bg)}
+::-webkit-scrollbar-thumb{background:var(--border2);border-radius:10px}
+::-webkit-scrollbar-thumb:hover{background:var(--p)}
+
+/* ── RESPONSIVE ─────────────────────────────────── */
+@media(max-width:768px){
+  .sidebar{transform:translateX(100%)}
+  .sidebar.open{transform:translateX(0)}
+  .main{margin-right:0}
+  .content{padding:16px}
+  .stat-grid{grid-template-columns:repeat(2,1fr)}
+}
+</style>
+</head>
+<body>
+
+<aside class="sidebar" id="sidebar">
+  <div class="sb-logo">
+    <div class="sb-logo-icon">🌐</div>
+    <h2>Atlas Account</h2>
+    <span>پنل مدیریت</span>
+  </div>
+  <nav class="nav">
+    <a class="nav-item {% if active=='dashboard' %}active{% endif %}" href="/{{ S }}/dashboard">
+      <span class="ni">📊</span> داشبورد
+    </a>
+    <a class="nav-item {% if active=='servers' %}active{% endif %}" href="/{{ S }}/servers">
+      <span class="ni">🖥️</span> سرورها
+    </a>
+    <a class="nav-item {% if active=='configs' %}active{% endif %}" href="/{{ S }}/configs">
+      <span class="ni">🔑</span> کانفیگ‌ها
+    </a>
+    <a class="nav-item {% if active=='packages' %}active{% endif %}" href="/{{ S }}/packages">
+      <span class="ni">📦</span> پکیج‌ها
+    </a>
+    <a class="nav-item {% if active=='orders' %}active{% endif %}" href="/{{ S }}/orders">
+      <span class="ni">💰</span> سفارش‌ها
+      {% if pending_badge is defined and pending_badge > 0 %}
+      <span class="nav-badge">{{ pending_badge }}</span>
+      {% endif %}
+    </a>
+    <a class="nav-item {% if active=='users' %}active{% endif %}" href="/{{ S }}/users">
+      <span class="ni">👥</span> کاربران
+    </a>
+    <a class="nav-item {% if active=='settings' %}active{% endif %}" href="/{{ S }}/settings">
+      <span class="ni">⚙️</span> تنظیمات
+    </a>
+  </nav>
+  <div class="sb-footer">
+    <a href="/{{ S }}/logout">🚪 خروج از پنل</a>
+  </div>
+</aside>
+
+<main class="main">
+  <div class="topbar">
+    <h1>{% block topbar_title %}📊 داشبورد{% endblock %}</h1>
+    <div class="topbar-right">
+      <span>Atlas Account Admin</span>
+    </div>
+  </div>
+  <div class="content">
+    {% block content %}{% endblock %}
+  </div>
+</main>
+
+<div id="toast-container"></div>
+
+<script>
+const S = "{{ S }}";
+
+// ── Toast ──────────────────────────────────────────
+function toast(msg, type='info'){
+  const el = document.createElement('div');
+  const icons = {success:'✅', error:'❌', info:'ℹ️', warn:'⚠️'};
+  el.className = `toast toast-${type}`;
+  el.innerHTML = `<span>${icons[type]||'ℹ️'}</span><span>${msg}</span>`;
+  document.getElementById('toast-container').appendChild(el);
+  setTimeout(()=>{ el.style.opacity='0'; el.style.transform='translateX(-20px)'; el.style.transition='all .3s'; setTimeout(()=>el.remove(),300); }, 3000);
+}
+
+// ── Modal helpers ─────────────────────────────────
+function openModal(id){ document.getElementById(id).classList.add('show') }
+function closeModal(id){ document.getElementById(id).classList.remove('show') }
+document.addEventListener('click', e=>{ if(e.target.classList.contains('overlay')) e.target.classList.remove('show') });
+
+// ── API helper ────────────────────────────────────
+async function api(url, method='POST', data=null){
+  const opts = {method, headers:{'Content-Type':'application/json'}};
+  if(data) opts.body = JSON.stringify(data);
+  try{
+    const r = await fetch(url, opts);
+    return await r.json();
+  } catch(e){ return {success:false, error:e.message} }
+}
+
+// ── Search filter ─────────────────────────────────
+function filterTable(inputId, tableId){
+  const q = document.getElementById(inputId).value.toLowerCase();
+  document.querySelectorAll(`#${tableId} tbody tr`).forEach(row=>{
+    row.style.display = row.textContent.toLowerCase().includes(q) ? '' : 'none';
+  });
+}
+
+// ── Confirm helper ────────────────────────────────
+function confirmAction(msg, cb){ if(confirm(msg)) cb(); }
+</script>
+
+{% block scripts %}{% endblock %}
+</body>
+</html>

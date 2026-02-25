@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% block title %}سفارش‌ها{% endblock %}
+{% block topbar_title %}💰 مدیریت سفارش‌ها{% endblock %}
+
+{% block content %}
+{% if pending_count > 0 %}
+<div class="alert alert-info" style="margin-bottom:16px">
+  ⏳ <strong>{{ pending_count }} سفارش</strong> در انتظار تأیید شما هستند — تأیید/رد از طریق ربات تلگرام انجام می‌شود.
+</div>
+{% endif %}
+
+<div class="sec-hd">
+  <span class="sec-title">آخرین سفارش‌ها ({{ orders|length }})</span>
+  <div class="search-box">
+    <input type="text" id="orderSearch" class="form-control" placeholder="جستجو..." oninput="filterTable('orderSearch','orderTable')">
+  </div>
+</div>
+
+<div class="table-wrap">
+<table id="orderTable">
+  <thead>
+    <tr><th>#</th><th>کاربر</th><th>پکیج</th><th>مبلغ</th><th>وضعیت</th><th>تاریخ</th></tr>
+  </thead>
+  <tbody>
+  {% for o in orders %}
+  {% set STATUS = {
+    'pending_payment': ('⏳','b-gray','انتظار پرداخت'),
+    'pending_receipt': ('⏳','b-gray','انتظار فیش'),
+    'receipt_submitted': ('📤','b-yellow','فیش ارسال شده'),
+    'approved': ('✅','b-green','تأیید شده'),
+    'rejected': ('❌','b-red','رد شده'),
+    'cancelled': ('🚫','b-gray','لغو شده'),
+  } %}
+  {% set si = STATUS.get(o.status, ('?','b-gray',o.status)) %}
+  <tr>
+    <td>#{{ o.id }}</td>
+    <td>{{ o.full_name or '—' }}<br><small style="color:var(--txt3)">@{{ o.username or '—' }}</small></td>
+    <td>{{ o.pkg_name }}</td>
+    <td>{{ "{:,}".format(o.price) }} T</td>
+    <td><span class="badge {{ si[1] }}">{{ si[0] }} {{ si[2] }}</span></td>
+    <td style="color:var(--txt2);font-size:.75rem">{{ o.created_at[:16] }}</td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endblock %}

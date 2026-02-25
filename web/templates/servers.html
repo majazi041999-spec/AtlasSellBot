@@ -1,0 +1,197 @@
+{% extends "base.html" %}
+{% block title %}سرورها{% endblock %}
+{% block topbar_title %}🖥️ مدیریت سرورها{% endblock %}
+
+{% block content %}
+<div class="sec-hd">
+  <span class="sec-title">سرورهای ثبت‌شده ({{ servers|length }})</span>
+  <button class="btn btn-primary" onclick="openModal('addModal')">➕ افزودن سرور</button>
+</div>
+
+{% if not servers %}
+<div style="text-align:center;padding:60px 20px;color:var(--txt3)">
+  <div style="font-size:3rem">🖥️</div>
+  <p style="margin-top:12px">هنوز سروری اضافه نشده. اولین سرور را اضافه کنید.</p>
+</div>
+{% else %}
+<div style="display:grid;gap:14px">
+{% for srv in servers %}
+<div class="card" id="srv-card-{{ srv.id }}" style="transition:all .2s">
+  <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex-wrap:wrap">
+    <div style="display:flex;align-items:center;gap:14px;flex:1;min-width:0">
+      <div style="font-size:1.8rem;flex-shrink:0">🖥️</div>
+      <div style="min-width:0">
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+          <strong style="font-size:.95rem">{{ srv.name }}</strong>
+          {% if srv.is_active %}
+          <span class="badge b-green">🟢 فعال</span>
+          {% else %}
+          <span class="badge b-red">🔴 غیرفعال</span>
+          {% endif %}
+        </div>
+        <div style="margin-top:6px;font-size:.78rem;color:var(--txt2);direction:ltr;text-align:right">{{ srv.url }}{% if srv.sub_path %}/{{ srv.sub_path }}{% endif %}</div>
+        <div style="margin-top:4px;font-size:.75rem;color:var(--txt3)">
+          Inbound: <code style="background:var(--bg3);padding:1px 6px;border-radius:4px">{{ srv.inbound_id }}</code>
+          {% if srv.note %} · {{ srv.note }}{% endif %}
+        </div>
+      </div>
+    </div>
+    <div style="display:flex;gap:6px;flex-shrink:0;flex-wrap:wrap">
+      <button class="btn btn-outline btn-sm" onclick="testServer({{ srv.id }}, this)">🔗 تست</button>
+      <button class="btn btn-outline btn-sm" onclick="openEditModal({{ srv.id }}, '{{ srv.name }}', '{{ srv.url }}', '{{ srv.username }}', '{{ srv.sub_path }}', {{ srv.inbound_id }}, '{{ srv.note }}')"
+      >✏️ ویرایش</button>
+      <button class="btn btn-outline btn-sm" id="toggle-{{ srv.id }}"
+        onclick="toggleServer({{ srv.id }}, {{ srv.is_active }}, this)"
+      >{{ '🔴 غیرفعال' if srv.is_active else '🟢 فعال' }}</button>
+      <button class="btn btn-danger btn-sm" onclick="deleteServer({{ srv.id }}, '{{ srv.name }}')">🗑️</button>
+    </div>
+  </div>
+</div>
+{% endfor %}
+</div>
+{% endif %}
+
+<!-- ── ADD MODAL ────────────────────────────────── -->
+<div class="overlay" id="addModal">
+<div class="modal">
+  <div class="modal-hd">
+    <h3>➕ افزودن سرور جدید</h3>
+    <button class="modal-close" onclick="closeModal('addModal')">✕</button>
+  </div>
+  <form action="/{{ S }}/servers/add" method="POST" id="addForm">
+    <div class="form-group">
+      <label>نام سرور</label>
+      <input type="text" name="name" class="form-control" placeholder="مثال: سرور آلمان ۱" required>
+    </div>
+    <div class="form-group">
+      <label>آدرس پنل (بدون subpath)</label>
+      <input type="text" name="url" class="form-control" placeholder="https://example.com:2053" required dir="ltr">
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label>نام کاربری</label>
+        <input type="text" name="username" class="form-control" required dir="ltr">
+      </div>
+      <div class="form-group">
+        <label>رمز عبور</label>
+        <input type="password" name="password" class="form-control" required dir="ltr">
+      </div>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label>SubPath (اگر ندارید خالی بگذارید)</label>
+        <input type="text" name="sub_path" class="form-control" placeholder="maqIa0kKGOqQ2Uts56" dir="ltr">
+      </div>
+      <div class="form-group">
+        <label>Inbound ID</label>
+        <input type="number" name="inbound_id" class="form-control" value="1" min="1" required>
+      </div>
+    </div>
+    <div class="form-group">
+      <label>یادداشت (اختیاری)</label>
+      <input type="text" name="note" class="form-control" placeholder="مثال: ظرفیت ۵۰۰ کاربر">
+    </div>
+    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:4px">
+      <button type="button" class="btn btn-outline" onclick="closeModal('addModal')">انصراف</button>
+      <button type="submit" class="btn btn-primary" id="addBtn">💾 ذخیره سرور</button>
+    </div>
+  </form>
+</div>
+</div>
+
+<!-- ── EDIT MODAL ───────────────────────────────── -->
+<div class="overlay" id="editModal">
+<div class="modal">
+  <div class="modal-hd">
+    <h3>✏️ ویرایش سرور</h3>
+    <button class="modal-close" onclick="closeModal('editModal')">✕</button>
+  </div>
+  <form id="editForm" method="POST">
+    <div class="form-group">
+      <label>نام سرور</label>
+      <input type="text" name="name" id="edit_name" class="form-control" required>
+    </div>
+    <div class="form-group">
+      <label>آدرس پنل</label>
+      <input type="text" name="url" id="edit_url" class="form-control" required dir="ltr">
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label>نام کاربری</label>
+        <input type="text" name="username" id="edit_user" class="form-control" required dir="ltr">
+      </div>
+      <div class="form-group">
+        <label>رمز عبور</label>
+        <input type="password" name="password" id="edit_pass" class="form-control" placeholder="جدید وارد کنید یا خالی بگذارید" dir="ltr">
+      </div>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label>SubPath</label>
+        <input type="text" name="sub_path" id="edit_sub" class="form-control" dir="ltr">
+      </div>
+      <div class="form-group">
+        <label>Inbound ID</label>
+        <input type="number" name="inbound_id" id="edit_iid" class="form-control" min="1">
+      </div>
+    </div>
+    <div class="form-group">
+      <label>یادداشت</label>
+      <input type="text" name="note" id="edit_note" class="form-control">
+    </div>
+    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:4px">
+      <button type="button" class="btn btn-outline" onclick="closeModal('editModal')">انصراف</button>
+      <button type="submit" class="btn btn-primary">💾 ذخیره تغییرات</button>
+    </div>
+  </form>
+</div>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+async function testServer(id, btn){
+  const orig = btn.innerHTML;
+  btn.innerHTML = '<span class="spin"></span>';
+  btn.disabled = true;
+  const r = await api(`/${S}/servers/${id}/test`);
+  btn.disabled = false;
+  if(r.success){
+    btn.innerHTML = '✅ متصل';
+    btn.classList.remove('btn-outline'); btn.classList.add('btn-success');
+    toast('اتصال موفق بود!','success');
+  } else {
+    btn.innerHTML = '❌ خطا';
+    btn.classList.add('btn-danger');
+    toast('اتصال ناموفق! اطلاعات را بررسی کنید.','error');
+  }
+  setTimeout(()=>{ btn.innerHTML=orig; btn.className='btn btn-outline btn-sm'; },4000);
+}
+
+async function toggleServer(id, isActive, btn){
+  const r = await api(`/${S}/servers/${id}/toggle`);
+  if(r.success) location.reload();
+  else toast('خطا در تغییر وضعیت','error');
+}
+
+async function deleteServer(id, name){
+  if(!confirm(`آیا سرور "${name}" حذف شود؟ این عمل قابل بازگشت نیست.`)) return;
+  const r = await api(`/${S}/servers/${id}/delete`);
+  if(r.success){ toast('سرور حذف شد','success'); setTimeout(()=>location.reload(),800); }
+  else toast('خطا در حذف!','error');
+}
+
+function openEditModal(id, name, url, user, sub, iid, note){
+  document.getElementById('edit_name').value = name;
+  document.getElementById('edit_url').value = url;
+  document.getElementById('edit_user').value = user;
+  document.getElementById('edit_pass').value = '';
+  document.getElementById('edit_sub').value = sub;
+  document.getElementById('edit_iid').value = iid;
+  document.getElementById('edit_note').value = note;
+  document.getElementById('editForm').action = `/${S}/servers/${id}/edit`;
+  openModal('editModal');
+}
+</script>
+{% endblock %}

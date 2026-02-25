@@ -1,0 +1,96 @@
+{% extends "base.html" %}
+{% block title %}پکیج‌ها{% endblock %}
+{% block topbar_title %}📦 مدیریت پکیج‌ها{% endblock %}
+
+{% block content %}
+<div class="sec-hd">
+  <span class="sec-title">پکیج‌های فروش ({{ packages|length }})</span>
+  <button class="btn btn-primary" onclick="openModal('addPkgModal')">➕ پکیج جدید</button>
+</div>
+
+<div class="table-wrap">
+<table>
+  <thead>
+    <tr><th>#</th><th>نام</th><th>حجم</th><th>مدت</th><th>قیمت (تومن)</th><th>توضیحات</th><th>وضعیت</th><th>عملیات</th></tr>
+  </thead>
+  <tbody>
+  {% for p in packages %}
+  <tr id="pkg-row-{{ p.id }}">
+    <td>{{ p.id }}</td>
+    <td><strong>{{ p.name }}</strong></td>
+    <td>{{ p.traffic_gb }} GB</td>
+    <td>{{ p.duration_days }} روز</td>
+    <td>{{ "{:,}".format(p.price) }}</td>
+    <td style="color:var(--txt2)">{{ p.description or '—' }}</td>
+    <td>
+      {% if p.is_active %}
+      <span class="badge b-green">🟢 فعال</span>
+      {% else %}
+      <span class="badge b-red">🔴 غیرفعال</span>
+      {% endif %}
+    </td>
+    <td style="white-space:nowrap">
+      <button class="btn btn-outline btn-xs" onclick="togglePkg({{ p.id }}, this)">
+        {{ '🔴 غیرفعال' if p.is_active else '🟢 فعال' }}
+      </button>
+      <button class="btn btn-danger btn-xs" onclick="deletePkg({{ p.id }}, '{{ p.name }}')">🗑️</button>
+    </td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+
+<div class="overlay" id="addPkgModal">
+<div class="modal">
+  <div class="modal-hd">
+    <h3>➕ پکیج جدید</h3>
+    <button class="modal-close" onclick="closeModal('addPkgModal')">✕</button>
+  </div>
+  <form action="/{{ S }}/packages/add" method="POST">
+    <div class="form-group">
+      <label>نام پکیج</label>
+      <input type="text" name="name" class="form-control" placeholder="مثال: پکیج نقره‌ای" required>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label>حجم (GB)</label>
+        <input type="number" name="traffic_gb" class="form-control" step="0.5" min="0.5" placeholder="20" required>
+      </div>
+      <div class="form-group">
+        <label>مدت (روز)</label>
+        <input type="number" name="duration_days" class="form-control" min="1" placeholder="30" required>
+      </div>
+    </div>
+    <div class="form-group">
+      <label>قیمت (تومن)</label>
+      <input type="number" name="price" class="form-control" min="0" placeholder="100000" required>
+    </div>
+    <div class="form-group">
+      <label>توضیحات (اختیاری)</label>
+      <input type="text" name="description" class="form-control" placeholder="مثال: مناسب کاربری عادی">
+    </div>
+    <div style="display:flex;gap:8px;justify-content:flex-end">
+      <button type="button" class="btn btn-outline" onclick="closeModal('addPkgModal')">انصراف</button>
+      <button type="submit" class="btn btn-primary">💾 ذخیره</button>
+    </div>
+  </form>
+</div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+async function togglePkg(id, btn){
+  const r = await api(`/${S}/packages/${id}/toggle`);
+  if(r.success) location.reload();
+  else toast('خطا!','error');
+}
+async function deletePkg(id, name){
+  if(!confirm(`پکیج "${name}" حذف شود؟`)) return;
+  const r = await api(`/${S}/packages/${id}/delete`);
+  if(r.success){ toast('پکیج حذف شد','success'); setTimeout(()=>location.reload(),800); }
+  else toast('خطا در حذف!','error');
+}
+</script>
+{% endblock %}

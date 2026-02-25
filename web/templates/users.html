@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block title %}کاربران{% endblock %}
+{% block topbar_title %}👥 مدیریت کاربران{% endblock %}
+
+{% block content %}
+<div class="sec-hd">
+  <span class="sec-title">کل کاربران: {{ total }}</span>
+  <div class="search-box">
+    <input type="text" id="usrSearch" class="form-control" placeholder="جستجو..." oninput="filterTable('usrSearch','usrTable')">
+  </div>
+</div>
+<div class="table-wrap">
+<table id="usrTable">
+  <thead>
+    <tr><th>#</th><th>نام</th><th>یوزرنیم</th><th>Telegram ID</th><th>کد دعوت</th><th>وضعیت</th><th>تاریخ</th><th>عملیات</th></tr>
+  </thead>
+  <tbody>
+  {% for u in users %}
+  <tr id="usr-row-{{ u.id }}">
+    <td>{{ u.id }}</td>
+    <td>{{ u.full_name or '—' }}</td>
+    <td style="color:var(--txt2)">@{{ u.username or '—' }}</td>
+    <td><code style="font-size:.75rem">{{ u.telegram_id }}</code></td>
+    <td><code style="font-size:.72rem;color:var(--p)">{{ u.referral_code or '—' }}</code></td>
+    <td>
+      {% if u.is_blocked %}
+      <span class="badge b-red">🔴 بلاک</span>
+      {% else %}
+      <span class="badge b-green">🟢 فعال</span>
+      {% endif %}
+    </td>
+    <td style="color:var(--txt3);font-size:.75rem">{{ u.created_at[:10] }}</td>
+    <td>
+      <button class="btn btn-outline btn-xs" onclick="toggleBlock({{ u.id }}, this)">
+        {{ '🔓 آنبلاک' if u.is_blocked else '🔒 بلاک' }}
+      </button>
+    </td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+async function toggleBlock(id, btn){
+  const r = await api(`/${S}/users/${id}/toggle_block`);
+  if(r.success) location.reload();
+  else toast('خطا!','error');
+}
+</script>
+{% endblock %}
