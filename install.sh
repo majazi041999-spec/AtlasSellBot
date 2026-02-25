@@ -126,6 +126,25 @@ REFERRAL_BONUS_GB=5
 EOF
 fi
 
+# .env.example fallback
+if [ ! -f ".env.example" ]; then
+  warn "فایل .env.example پیدا نشد؛ فایل نمونه پیش‌فرض ساخته می‌شود."
+  cat > .env.example <<'EOF'
+BOT_TOKEN=
+ADMIN_IDS=0
+WEB_SECRET_PATH=AtlasPanel2024
+WEB_ADMIN_USERNAME=atlas_admin
+WEB_ADMIN_PASSWORD=ChangeMe123!
+JWT_SECRET=please_change_this_secret_key_in_production
+WEB_PORT=8000
+CARD_NUMBER=
+CARD_HOLDER=
+CARD_BANK=
+CHANNEL_USERNAME=
+REFERRAL_BONUS_GB=5
+EOF
+fi
+
 # .env setup
 if [ ! -f ".env" ]; then
   cp .env.example .env
