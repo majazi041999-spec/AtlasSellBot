@@ -17,6 +17,41 @@ if [ "$(id -u)" -ne 0 ]; then
   warn "پیشنهاد: اسکریپت نصب را با root اجرا کنید تا وابستگی‌های سیستمی بدون خطا نصب شوند."
 fi
 
+install_venv_support(){
+  if ! command -v apt-get &>/dev/null; then
+    return 1
+  fi
+
+  PY_MM=$(python3 - <<'EOF'
+import sys
+print(f"{sys.version_info.major}.{sys.version_info.minor}")
+EOF
+)
+
+  info "نصب پیش‌نیاز venv برای Python ${PY_MM}..."
+  apt-get update -q
+  apt-get install -y python3-venv "python${PY_MM}-venv" -q || apt-get install -y python3-venv -q
+}
+
+create_venv(){
+  info "ساخت محیط مجازی Python (.venv)..."
+  if python3 -m venv .venv 2>/tmp/atlas_venv_err.log; then
+    return 0
+  fi
+
+  if grep -qiE "ensurepip is not available|No module named ensurepip" /tmp/atlas_venv_err.log; then
+    warn "ماژول ensurepip در سیستم موجود نیست؛ تلاش برای نصب python3-venv..."
+    install_venv_support || true
+    python3 -m venv .venv
+    return 0
+  fi
+
+  cat /tmp/atlas_venv_err.log
+  err "ایجاد venv ناموفق بود."
+  exit 1
+}
+
+
 # Python + pip check
 if ! command -v python3 &>/dev/null; then
   info "نصب Python3..."
@@ -36,8 +71,7 @@ ok "Python $(python3 --version | cut -d' ' -f2)"
 
 # venv setup
 if [ ! -d ".venv" ]; then
-  info "ساخت محیط مجازی Python (.venv)..."
-  python3 -m venv .venv
+  create_venv
 fi
 
 PYTHON_BIN="$(pwd)/.venv/bin/python"
@@ -112,6 +146,12 @@ ok "نصب کامل شد!"
 echo ""
 echo -e "${GREEN}══════════════════════════════════════${NC}"
 echo -e "  🌐 پنل وب: ${YELLOW}http://$SERVER_IP:$WEB_PORT/$WEB_SECRET/${NC}"
-echo -e "  🤖 راه‌اندازی: ${YELLOW}./.venv/bin/python main.py${NC}"
-echo -e "  🔧 سرویس: ${YELLOW}bash setup_service.sh${NC}"
+echo -e "  🤖 راه‌اندازی دستی: ${YELLOW}./.venv/bin/python main.py${NC}"
+echo -e "  🔧 نصب/به‌روزرسانی سرویس: ${YELLOW}bash setup_service.sh${NC}"
+echo -e "  ▶️ استارت سرویس: ${YELLOW}systemctl start atlas-bot${NC}"
+echo -e "  ⏹️ استاپ سرویس: ${YELLOW}systemctl stop atlas-bot${NC}"
+echo -e "  🔁 ری‌استارت: ${YELLOW}systemctl restart atlas-bot${NC}"
+echo -e "  📊 وضعیت: ${YELLOW}systemctl status atlas-bot${NC}"
+echo -e "  📜 لاگ زنده: ${YELLOW}journalctl -u atlas-bot -f${NC}"
+echo -e "  🧹 حذف کامل: ${YELLOW}bash uninstall.sh${NC}"
 echo -e "${GREEN}══════════════════════════════════════${NC}\n"
