@@ -1,6 +1,7 @@
 import httpx
 import json
 import math
+import secrets
 import time
 import logging
 from datetime import datetime, timedelta
@@ -81,10 +82,10 @@ class XUIClient:
 
         if protocol == "trojan":
             client = {"password": client_uuid, "email": email, "totalGB": traffic_bytes,
-                      "expiryTime": expire_ms, "enable": True, "tgId": "", "subId": "", "limitIp": 0}
+                      "expiryTime": expire_ms, "enable": True, "tgId": "", "subId": secrets.token_hex(8), "limitIp": 0}
         else:
             client = {"id": client_uuid, "email": email, "totalGB": traffic_bytes,
-                      "expiryTime": expire_ms, "enable": True, "tgId": "", "subId": "",
+                      "expiryTime": expire_ms, "enable": True, "tgId": "", "subId": secrets.token_hex(8),
                       "limitIp": 0, "flow": ""}
 
         payload = {"id": inbound_id, "settings": json.dumps({"clients": [client]})}
@@ -99,10 +100,10 @@ class XUIClient:
 
         if protocol == "trojan":
             client = {"password": client_uuid, "email": email, "totalGB": traffic_bytes,
-                      "expiryTime": expire_ms, "enable": enable, "tgId": "", "subId": "", "limitIp": 0}
+                      "expiryTime": expire_ms, "enable": enable, "tgId": "", "subId": secrets.token_hex(8), "limitIp": 0}
         else:
             client = {"id": client_uuid, "email": email, "totalGB": traffic_bytes,
-                      "expiryTime": expire_ms, "enable": enable, "tgId": "", "subId": "",
+                      "expiryTime": expire_ms, "enable": enable, "tgId": "", "subId": secrets.token_hex(8),
                       "limitIp": 0, "flow": ""}
 
         payload = {"id": inbound_id, "settings": json.dumps({"clients": [client]})}
@@ -189,6 +190,31 @@ class XUIClient:
         except Exception as e:
             logger.error(f"get_client_link error: {e}")
         return None
+
+
+
+    async def get_subscription_link(self, inbound_id: int, email: str) -> Optional[str]:
+        try:
+            inbound = await self.get_inbound(inbound_id)
+            if not inbound:
+                return None
+            settings = json.loads(inbound.get("settings", "{}"))
+            clients = settings.get("clients", [])
+            client = next((c for c in clients if c.get("email") == email), None)
+            if not client:
+                return None
+            sub_id = client.get("subId", "")
+            if not sub_id:
+                return None
+            parsed = urlparse(self.base_url)
+            host = parsed.hostname or "example.com"
+            port = parsed.port
+            scheme = parsed.scheme or "https"
+            base = f"{scheme}://{host}" + (f":{port}" if port else "")
+            return f"{base}/sub/{sub_id}"
+        except Exception as e:
+            logger.error(f"get_subscription_link error: {e}")
+            return None
 
     async def close(self):
         await self._http.aclose()

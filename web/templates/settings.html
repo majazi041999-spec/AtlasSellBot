@@ -9,27 +9,127 @@
 
 <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px">
 <div class="card" style="grid-column:1/-1">
-  <div class="card-title">تنظیمات ربات</div>
+  <div class="sec-hd"><div class="sec-title">🎛️ شخصی‌سازی کامل ربات و پنل</div></div>
   <form action="/{{ S }}/settings" method="POST">
-    <div class="form-group">
-      <label>پیام خوش‌آمدگویی ربات</label>
-      <textarea name="welcome_message" class="form-control" rows="3">{{ settings.welcome_message }}</textarea>
-    </div>
-    <div class="form-row">
-      <div class="form-group">
-        <label>یوزرنیم پشتیبانی (بدون @)</label>
-        <input type="text" name="support_username" class="form-control" value="{{ settings.support_username }}" placeholder="support_admin" dir="ltr">
+    <div class="card" style="margin-bottom:16px;background:var(--bg3)">
+      <div class="card-title">هویت برند در پنل</div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>نام برند</label>
+          <input type="text" name="ui_brand_name" class="form-control" value="{{ settings.ui_brand_name }}">
+        </div>
+        <div class="form-group">
+          <label>زیرتیتر پنل</label>
+          <input type="text" name="ui_panel_subtitle" class="form-control" value="{{ settings.ui_panel_subtitle }}">
+        </div>
+        <div class="form-group">
+          <label>ایموجی لوگو</label>
+          <input type="text" name="ui_logo_emoji" class="form-control" value="{{ settings.ui_logo_emoji }}">
+        </div>
       </div>
       <div class="form-group">
-        <label>حالت تعمیر</label>
-        <select name="maintenance_mode" class="form-control">
-          <option value="0" {% if settings.maintenance_mode == '0' %}selected{% endif %}>🟢 غیرفعال (ربات در دسترس)</option>
-          <option value="1" {% if settings.maintenance_mode == '1' %}selected{% endif %}>🔧 فعال (ربات در تعمیر)</option>
-        </select>
+        <label>متن نوار بالا</label>
+        <input type="text" name="ui_topbar_note" class="form-control" value="{{ settings.ui_topbar_note }}">
       </div>
     </div>
+
+    <div class="card" style="margin-bottom:16px;background:var(--bg3)">
+      <div class="card-title">متن‌های اصلی ربات (قابل ویرایش)</div>
+      <div class="form-group">
+        <label>پیام خوش‌آمدگویی</label>
+        <textarea name="welcome_message" class="form-control" rows="3">{{ settings.welcome_message }}</textarea>
+      </div>
+      <div class="form-group">
+        <label>پیام حالت تعمیر</label>
+        <textarea name="maintenance_message" class="form-control" rows="2">{{ settings.maintenance_message }}</textarea>
+      </div>
+      <div class="form-group">
+        <label>پیام کاربر مسدود</label>
+        <textarea name="blocked_message" class="form-control" rows="2">{{ settings.blocked_message }}</textarea>
+      </div>
+      <div class="form-group">
+        <label>پیام «سرویس فعال ندارید»</label>
+        <textarea name="no_active_service" class="form-control" rows="2">{{ settings.no_active_service }}</textarea>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>هدر پشتیبانی (می‌توانید از {brand} استفاده کنید)</label>
+          <input type="text" name="support_header" class="form-control" value="{{ settings.support_header }}">
+        </div>
+        <div class="form-group">
+          <label>متن بدنه پشتیبانی</label>
+          <input type="text" name="support_body" class="form-control" value="{{ settings.support_body }}">
+        </div>
+      </div>
+      <div class="form-group">
+        <label>مقدمه دعوت دوستان (از {bonus_gb} پشتیبانی می‌کند)</label>
+        <textarea name="referral_intro" class="form-control" rows="3">{{ settings.referral_intro }}</textarea>
+      </div>
+      <div class="form-group">
+        <label>متن راهنمای آدرس پنل (از {port} و {secret} پشتیبانی می‌کند)</label>
+        <textarea name="panel_url_help" class="form-control" rows="3">{{ settings.panel_url_help }}</textarea>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>یوزرنیم پشتیبانی (بدون @)</label>
+          <input type="text" name="support_username" class="form-control" value="{{ settings.support_username }}" placeholder="support_admin" dir="ltr">
+        </div>
+        <div class="form-group">
+          <label>حالت تعمیر</label>
+          <select name="maintenance_mode" class="form-control">
+            <option value="0" {% if settings.maintenance_mode == '0' %}selected{% endif %}>🟢 غیرفعال (ربات در دسترس)</option>
+            <option value="1" {% if settings.maintenance_mode == '1' %}selected{% endif %}>🔧 فعال (ربات در تعمیر)</option>
+          </select>
+        </div>
+      </div>
+    </div>
+
+
+    <div class="card" style="margin-bottom:16px;background:var(--bg3)">
+      <div class="card-title">نام کانفیگ + عضویت اجباری</div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Prefix نام کانفیگ</label>
+          <input type="text" name="cfg_name_prefix" class="form-control" value="{{ settings.cfg_name_prefix }}">
+        </div>
+        <div class="form-group">
+          <label>Postfix نام کانفیگ</label>
+          <input type="text" name="cfg_name_postfix" class="form-control" value="{{ settings.cfg_name_postfix }}">
+        </div>
+        <div class="form-group">
+          <label>طول بخش رندوم</label>
+          <input type="number" name="cfg_name_rand_len" class="form-control" min="2" max="16" value="{{ settings.cfg_name_rand_len }}">
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>عضویت اجباری کانال</label>
+          <select name="force_channel" class="form-control">
+            <option value="0" {% if settings.force_channel == '0' %}selected{% endif %}>غیرفعال</option>
+            <option value="1" {% if settings.force_channel == '1' %}selected{% endif %}>فعال</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>یوزرنیم کانال (بدون @)</label>
+          <input type="text" name="channel_username" class="form-control" value="{{ settings.channel_username }}">
+        </div>
+      </div>
+    </div>
+
+    <div class="card" style="margin-bottom:16px;background:var(--bg3)">
+      <div class="card-title">طراحی ظاهری (CSS / JS سفارشی)</div>
+      <div class="form-group">
+        <label>Custom CSS (در کل پنل اعمال می‌شود)</label>
+        <textarea name="ui_custom_css" class="form-control" rows="6" dir="ltr">{{ settings.ui_custom_css }}</textarea>
+      </div>
+      <div class="form-group">
+        <label>Custom JS (در کل پنل اجرا می‌شود)</label>
+        <textarea name="ui_custom_js" class="form-control" rows="6" dir="ltr">{{ settings.ui_custom_js }}</textarea>
+      </div>
+    </div>
+
     <div style="text-align:left">
-      <button type="submit" class="btn btn-primary">💾 ذخیره تنظیمات</button>
+      <button type="submit" class="btn btn-primary">💾 ذخیره همه تنظیمات</button>
     </div>
   </form>
 </div>

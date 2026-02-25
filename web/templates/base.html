@@ -290,6 +290,7 @@ tbody tr:hover td{background:rgba(255,255,255,.025)}
 
 /* ── RESPONSIVE ─────────────────────────────────── */
 @media(max-width:768px){
+  #menu-toggle{display:inline-flex !important}
   .sidebar{transform:translateX(100%)}
   .sidebar.open{transform:translateX(0)}
   .main{margin-right:0}
@@ -297,14 +298,15 @@ tbody tr:hover td{background:rgba(255,255,255,.025)}
   .stat-grid{grid-template-columns:repeat(2,1fr)}
 }
 </style>
+{% if ui is defined and ui.custom_css %}<style id="custom-ui-css">{{ ui.custom_css|safe }}</style>{% endif %}
 </head>
 <body>
 
 <aside class="sidebar" id="sidebar">
   <div class="sb-logo">
-    <div class="sb-logo-icon">🌐</div>
-    <h2>Atlas Account</h2>
-    <span>پنل مدیریت</span>
+    <div class="sb-logo-icon">{{ ui.logo_emoji if ui is defined else "🌐" }}</div>
+    <h2>{{ ui.brand_name if ui is defined else "Atlas Account" }}</h2>
+    <span>{{ ui.panel_subtitle if ui is defined else "پنل مدیریت" }}</span>
   </div>
   <nav class="nav">
     <a class="nav-item {% if active=='dashboard' %}active{% endif %}" href="/{{ S }}/dashboard">
@@ -339,9 +341,9 @@ tbody tr:hover td{background:rgba(255,255,255,.025)}
 
 <main class="main">
   <div class="topbar">
-    <h1>{% block topbar_title %}📊 داشبورد{% endblock %}</h1>
+    <h1><button class="btn btn-ghost btn-sm" id="menu-toggle" style="display:none">☰</button>{% block topbar_title %}📊 داشبورد{% endblock %}</h1>
     <div class="topbar-right">
-      <span>Atlas Account Admin</span>
+      <span>{{ ui.topbar_note if ui is defined else "Atlas Account Admin" }}</span>
     </div>
   </div>
   <div class="content">
@@ -389,8 +391,15 @@ function filterTable(inputId, tableId){
 
 // ── Confirm helper ────────────────────────────────
 function confirmAction(msg, cb){ if(confirm(msg)) cb(); }
+
+const menuToggle = document.getElementById('menu-toggle');
+if(menuToggle){
+  menuToggle.addEventListener('click', ()=> document.getElementById('sidebar').classList.toggle('open'));
+}
+
 </script>
 
+{% if ui is defined and ui.custom_js %}<script id="custom-ui-js">{{ ui.custom_js|safe }}</script>{% endif %}
 {% block scripts %}{% endblock %}
 </body>
 </html>
