@@ -9,6 +9,14 @@ if [[ "$(id -u)" -ne 0 ]]; then
   exit 1
 fi
 
+# اگر با sudo اجرا شده، بهتره سرویس با همان یوزر اصلی بالا بیاید
+RUN_AS_USER="${SUDO_USER:-root}"
+if [[ "$RUN_AS_USER" == "root" ]]; then
+  USER_LINE=""
+else
+  USER_LINE="User=${RUN_AS_USER}"
+fi
+
 PYTHON_BIN="/usr/bin/python3"
 if [[ -x "${DIR}/.venv/bin/python" ]]; then
   PYTHON_BIN="${DIR}/.venv/bin/python"
@@ -23,14 +31,11 @@ Wants=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=${DIR}
+${USER_LINE}
 ExecStart=${PYTHON_BIN} ${DIR}/main.py
 Restart=always
 RestartSec=3
 Environment=PYTHONUNBUFFERED=1
-
-# اگر خواستی خروجی لاگ‌ها بیشتر بشه:
-# StandardOutput=journal
-# StandardError=journal
 
 [Install]
 WantedBy=multi-user.target
