@@ -33,6 +33,8 @@ systemctl enable ${NAME}
 systemctl restart ${NAME}
 echo "✅ سرویس ${NAME} راه‌اندازی شد!"
 echo ""
+echo "systemctl start ${NAME}     # استارت"
+echo "systemctl stop ${NAME}      # استاپ"
 echo "systemctl status ${NAME}    # وضعیت"
 echo "systemctl restart ${NAME}   # ریستارت"
 echo "journalctl -u ${NAME} -f    # لاگ زنده"
