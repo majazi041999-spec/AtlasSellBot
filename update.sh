@@ -1,18 +1,21 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# مسیر پروژه (همون جایی که این اسکریپت قرار داره)
+# Update repo from GitHub and restart systemd service
+# Usage:
+#   sudo ./update.sh            # fast-forward pull
+#   sudo ./update.sh hard       # reset --hard to origin/main (drops local changes)
+
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BRANCH="${BRANCH:-main}"
 SERVICE="${SERVICE:-atlas-bot}"
-
-cd "$REPO_DIR"
+MODE="${1:-pull}"   # pull | hard
 
 need_cmd() { command -v "$1" >/dev/null 2>&1 || { echo "❌ '$1' نصب نیست"; exit 1; }; }
 need_cmd git
 need_cmd systemctl
 
-# مطمئن شو داخل git repo هستیم
+cd "$REPO_DIR"
 git rev-parse --is-inside-work-tree >/dev/null 2>&1 || { echo "❌ اینجا git repo نیست"; exit 1; }
 
 echo "ℹ️ Fetch از origin/$BRANCH ..."
@@ -22,18 +25,10 @@ LOCAL="$(git rev-parse HEAD)"
 REMOTE="$(git rev-parse "origin/$BRANCH")"
 
 if [[ "$LOCAL" == "$REMOTE" ]]; then
-  echo "✅ کد آپدیت است (HEAD = $LOCAL)"
-  echo "ℹ️ فقط ریستارت سرویس برای اعمال دوباره..."
+  echo "✅ کد آپدیت است"
   systemctl restart "$SERVICE"
   exit 0
 fi
-
-echo "ℹ️ آپدیت موجود است:"
-echo "   LOCAL : $LOCAL"
-echo "   REMOTE: $REMOTE"
-
-# اگر تغییرات محلی داری، حالت hard امن‌تره. پیش‌فرض: pull (ff-only)
-MODE="${1:-pull}"   # pull | hard
 
 echo "ℹ️ Stop سرویس $SERVICE ..."
 systemctl stop "$SERVICE" || true
@@ -44,7 +39,7 @@ case "$MODE" in
     git pull --ff-only origin "$BRANCH"
     ;;
   hard)
-    echo "⚠️ git reset --hard origin/$BRANCH (همه تغییرات محلی پاک میشه) ..."
+    echo "⚠️ git reset --hard origin/$BRANCH ..."
     git reset --hard "origin/$BRANCH"
     ;;
   *)
@@ -53,26 +48,16 @@ case "$MODE" in
     ;;
 esac
 
-# آپدیت وابستگی‌های پایتون داخل venv
+# update python deps
 if [[ -x "$REPO_DIR/.venv/bin/pip" ]]; then
-  echo "ℹ️ نصب/آپدیت requirements داخل .venv ..."
   "$REPO_DIR/.venv/bin/pip" install -r "$REPO_DIR/requirements.txt" --upgrade
-else
-  echo "⚠️ .venv پیدا نشد؛ ساخت venv و نصب requirements ..."
-  need_cmd python3
-  python3 -m venv "$REPO_DIR/.venv"
-  "$REPO_DIR/.venv/bin/pip" install --upgrade pip setuptools wheel
-  "$REPO_DIR/.venv/bin/pip" install -r "$REPO_DIR/requirements.txt"
 fi
 
-# اگر setup_service.sh وجود داره، بهتره همونو اجرا کنیم تا اگر venv/مسیر عوض شد سرویس درست ست بشه
+# reload service unit (if changed) and restart
 if [[ -f "$REPO_DIR/setup_service.sh" ]]; then
-  echo "ℹ️ اجرای setup_service.sh (بازنویسی unit + restart) ..."
   bash "$REPO_DIR/setup_service.sh"
 else
-  echo "ℹ️ Start سرویس $SERVICE ..."
   systemctl start "$SERVICE"
 fi
 
 echo "✅ done"
-systemctl --no-pager --full status "$SERVICE" || true
