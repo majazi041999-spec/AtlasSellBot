@@ -5,6 +5,7 @@ from aiogram.fsm.context import FSMContext
 
 from core.config import ADMIN_IDS, WEB_SECRET_PATH, WEB_PORT
 from core.database import get_or_create_user, get_user_by_referral_code, update_user, get_setting
+from core.texts import get_text
 
 router = Router()
 
@@ -50,10 +51,10 @@ async def cmd_start(msg: Message, state: FSMContext):
 
     maintenance = await get_setting("maintenance_mode", "0")
     if maintenance == "1" and not is_adm:
-        await msg.answer("🔧 ربات در حال تعمیر و به‌روزرسانی است.\nلطفاً کمی صبر کنید.")
+        await msg.answer(await get_text("maintenance_message"))
         return
 
-    welcome = await get_setting("welcome_message")
+    welcome = await get_text("welcome_message")
     text = f"{'🔐 *پنل مدیریت*' if is_adm else '🌐 *Atlas Account*'}\n\n{welcome}"
 
     kb = admin_menu() if is_adm else user_menu()
@@ -79,9 +80,5 @@ async def panel_url(msg: Message):
     user = await get_or_create_user(msg.from_user.id)
     if not (_is_admin(msg.from_user.id) or user.get("is_admin")):
         return
-    await msg.answer(
-        f"🌐 *پنل مدیریت وب:*\n\n"
-        f"`http://YOUR_SERVER_IP:{WEB_PORT}/{WEB_SECRET_PATH}/`\n\n"
-        f"آدرس IP سرورت را جایگزین `YOUR_SERVER_IP` کن.",
-        parse_mode="Markdown"
-    )
+    panel_help = await get_text("panel_url_help", port=WEB_PORT, secret=WEB_SECRET_PATH)
+    await msg.answer(panel_help, parse_mode="Markdown")

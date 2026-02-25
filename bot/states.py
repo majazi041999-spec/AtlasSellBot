@@ -40,3 +40,9 @@ class Broadcast(StatesGroup):
 
 class MigrateServer(StatesGroup):
     pick_server = State()
+
+
+class WholesaleBuy(StatesGroup):
+    count = State()
+    traffic = State()
+    duration = State()
