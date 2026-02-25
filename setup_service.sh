@@ -31,10 +31,10 @@ EOF
 systemctl daemon-reload
 systemctl enable ${NAME}
 systemctl restart ${NAME}
-echo "✅ سرویس ${NAME} راه‌اندازی شد!"
+echo "✅ Service ${NAME} is up and running!"
 echo ""
-echo "systemctl start ${NAME}     # استارت"
-echo "systemctl stop ${NAME}      # استاپ"
-echo "systemctl status ${NAME}    # وضعیت"
-echo "systemctl restart ${NAME}   # ریستارت"
-echo "journalctl -u ${NAME} -f    # لاگ زنده"
+echo "systemctl start ${NAME}     # start"
+echo "systemctl stop ${NAME}      # stop"
+echo "systemctl status ${NAME}    # status"
+echo "systemctl restart ${NAME}   # restart"
+echo "journalctl -u ${NAME} -f    # live logs"
