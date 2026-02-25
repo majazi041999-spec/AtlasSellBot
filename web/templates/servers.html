@@ -32,13 +32,14 @@
         <div style="margin-top:6px;font-size:.78rem;color:var(--txt2);direction:ltr;text-align:right">{{ srv.url }}{% if srv.sub_path %}/{{ srv.sub_path }}{% endif %}</div>
         <div style="margin-top:4px;font-size:.75rem;color:var(--txt3)">
           Inbound: <code style="background:var(--bg3);padding:1px 6px;border-radius:4px">{{ srv.inbound_id }}</code>
+          | ظرفیت: <code style="background:var(--bg3);padding:1px 6px;border-radius:4px">{{ srv.max_active_configs or "∞" }}</code>
           {% if srv.note %} · {{ srv.note }}{% endif %}
         </div>
       </div>
     </div>
     <div style="display:flex;gap:6px;flex-shrink:0;flex-wrap:wrap">
       <button class="btn btn-outline btn-sm" onclick="testServer({{ srv.id }}, this)">🔗 تست</button>
-      <button class="btn btn-outline btn-sm" onclick="openEditModal({{ srv.id }}, '{{ srv.name }}', '{{ srv.url }}', '{{ srv.username }}', '{{ srv.sub_path }}', {{ srv.inbound_id }}, '{{ srv.note }}')"
+      <button class="btn btn-outline btn-sm" onclick="openEditModal({{ srv.id }}, '{{ srv.name }}', '{{ srv.url }}', '{{ srv.username }}', '{{ srv.sub_path }}', {{ srv.inbound_id }}, '{{ srv.note }}', {{ srv.max_active_configs or 0 }})"
       >✏️ ویرایش</button>
       <button class="btn btn-outline btn-sm" id="toggle-{{ srv.id }}"
         onclick="toggleServer({{ srv.id }}, {{ srv.is_active }}, this)"
@@ -190,6 +191,7 @@ function openEditModal(id, name, url, user, sub, iid, note){
   document.getElementById('edit_sub').value = sub;
   document.getElementById('edit_iid').value = iid;
   document.getElementById('edit_note').value = note;
+  document.getElementById('edit_max_active_configs').value = maxcap || 0;
   document.getElementById('editForm').action = `/${S}/servers/${id}/edit`;
   openModal('editModal');
 }
