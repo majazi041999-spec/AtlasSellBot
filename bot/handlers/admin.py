@@ -13,9 +13,10 @@ from core.database import (
     get_pending_orders, get_order, update_order,
     get_all_users, count_users, get_server, get_servers,
     save_config, get_user_by_telegram, get_setting, set_setting,
-    get_user_by_id
+    get_user_by_id, server_has_capacity, count_active_configs_by_server, update_user
 )
 from core.xui_api import XUIClient, fmt_bytes, days_left
+from core.qr import build_qr_image
 from bot.keyboards import (
     admin_menu, order_review_kb, order_server_select_kb,
     admin_configs_kb, adm_config_detail_kb, confirm_kb, packages_kb, servers_kb
@@ -119,7 +120,7 @@ async def approve_order_start(cb: CallbackQuery):
     if not is_admin(cb.from_user.id):
         return
     oid = int(cb.data.split(":")[1])
-    servers = await get_servers()
+    servers = [sv for sv in await get_servers() if await server_has_capacity(sv["id"])]
     if not servers:
         await cb.answer("❌ هیچ سروری فعال نیست!", show_alert=True)
         return
@@ -141,81 +142,102 @@ async def assign_server(cb: CallbackQuery):
     await _do_approve(cb, int(oid), int(sid))
 
 
+async def _build_config_name(order, idx: int = 0) -> str:
+    prefix = await get_setting("cfg_name_prefix", "u")
+    postfix = await get_setting("cfg_name_postfix", "")
+    rand_len = int(await get_setting("cfg_name_rand_len", "6") or 6)
+    random_part = uuid.uuid4().hex[:max(2, min(16, rand_len))]
+    idx_part = f"_{idx:02d}" if idx > 0 else ""
+    return f"{prefix}{order['telegram_id']}{idx_part}_{random_part}{postfix}".replace(" ", "_")
+
+
 async def _do_approve(cb: CallbackQuery, oid: int, sid: int):
     order = await get_order(oid)
     if not order:
         return
-    await cb.answer("⏳ در حال ساخت کانفیگ...")
+    if not await server_has_capacity(sid):
+        await cb.message.answer("⛔ ظرفیت این سرور تکمیل شده است. سرور دیگری انتخاب کنید.")
+        return
 
+    await cb.answer("⏳ در حال ساخت کانفیگ...")
     server = await get_server(sid)
     client = XUIClient(server["url"], server["username"], server["password"], server["sub_path"])
 
-    email = f"u{order['telegram_id']}t{int(time.time())}"
-    cuuid = str(uuid.uuid4())
-    ok = await client.add_client(server["inbound_id"], cuuid, email,
-                                  order["traffic_gb"], order["duration_days"])
-    if not ok:
-        await client.close()
-        await cb.message.answer("❌ خطا در ساخت کانفیگ روی سرور! اتصال سرور را بررسی کنید.")
-        return
-
-    expire_ms = int((datetime.now() + timedelta(days=order["duration_days"])).timestamp() * 1000)
-    link = await client.get_client_link(server["inbound_id"], email)
-    await client.close()
+    bulk_count = int(order.get("bulk_count") or 1)
+    each_gb = float(order.get("bulk_each_gb") or order["traffic_gb"])
+    duration = int(order["duration_days"])
 
     user = await get_user_by_telegram(order["telegram_id"])
     if not user:
         await cb.message.answer("❌ کاربر در دیتابیس یافت نشد!")
+        await client.close()
         return
 
-    await save_config(user["id"], sid, cuuid, email, server["inbound_id"],
-                      order["traffic_gb"], order["duration_days"], expire_ms)
-    await update_order(oid, status="approved", server_id=sid, config_uuid=cuuid,
-                       config_email=email, inbound_id=server["inbound_id"],
+    created = []
+    remaining_cap = (server.get("max_active_configs") or 0)
+    if remaining_cap:
+        used = await count_active_configs_by_server(sid)
+        remaining_cap = max(0, remaining_cap - used)
+        bulk_count = min(bulk_count, remaining_cap)
+
+    for i in range(1, max(1, bulk_count) + 1):
+        email = await _build_config_name(order, i if bulk_count > 1 else 0)
+        cuuid = str(uuid.uuid4())
+        ok = await client.add_client(server["inbound_id"], cuuid, email, each_gb, duration)
+        if not ok:
+            continue
+        expire_ms = int((datetime.now() + timedelta(days=duration)).timestamp() * 1000)
+        link = await client.get_client_link(server["inbound_id"], email)
+        sub = await client.get_subscription_link(server["inbound_id"], email)
+        await save_config(user["id"], sid, cuuid, email, server["inbound_id"], each_gb, duration, expire_ms)
+        created.append({"email": email, "link": link, "sub": sub})
+
+    await client.close()
+    if not created:
+        await cb.message.answer("❌ خطا در ساخت کانفیگ روی سرور! اتصال/ظرفیت سرور را بررسی کنید.")
+        return
+
+    await update_order(oid, status="approved", server_id=sid,
+                       config_email=created[0]["email"], inbound_id=server["inbound_id"],
                        approved_at=datetime.now().isoformat())
 
-    # ── Referral bonus ──────────────────────────────────────
+    # referral: only first successful paid order
     from core.database import has_previous_purchase
     from core.config import REFERRAL_BONUS_GB
     if not await has_previous_purchase(user["id"]) and order.get("referred_by"):
-        # این اولین خریده → پاداش به دعوت‌کننده
-        from core.database import get_user_by_id
         referrer = await get_user_by_id(order["referred_by"])
         if referrer:
             new_bonus = referrer.get("referral_bonus_gb", 0) + REFERRAL_BONUS_GB
-            from core.database import update_user
             await update_user(referrer["id"], referral_bonus_gb=new_bonus)
-            try:
-                await cb.bot.send_message(
-                    referrer["telegram_id"],
-                    f"🎁 *پاداش دعوت دریافت کردید!*\n\n"
-                    f"دوست شما اولین خریدش را انجام داد.\n"
-                    f"✨ {REFERRAL_BONUS_GB} GB به موجودی هدیه شما افزوده شد!\n\n"
-                    f"💡 برای استفاده از این هدیه با پشتیبانی در تماس باشید.",
-                    parse_mode="Markdown"
-                )
-            except Exception:
-                pass
-    # ────────────────────────────────────────────────────────
 
-    msg_text = (
+    head = (
         f"🎉 *سرویس شما فعال شد!*\n"
         f"━━━━━━━━━━━━━━\n"
-        f"📦 پکیج: {order['pkg_name']}\n"
-        f"📊 حجم: {order['traffic_gb']} GB\n"
-        f"📅 مدت: {order['duration_days']} روز\n"
+        f"📦 سفارش: {order['pkg_name']}\n"
         f"🖥️ سرور: {server['name']}\n"
-        f"📧 شناسه: `{email}`"
+        f"📦 تعداد کانفیگ: `{len(created)}`\n"
+        f"📊 حجم هر کانفیگ: `{each_gb} GB`\n"
+        f"📅 مدت: `{duration}` روز\n"
     )
-    if link:
-        msg_text += f"\n\n🔗 *لینک اتصال:*\n`{link}`\n\n_لینک را کپی کن و در اپ وارد کن_ 📱"
-
     try:
-        await cb.bot.send_message(order["telegram_id"], msg_text, parse_mode="Markdown")
+        await cb.bot.send_message(order["telegram_id"], head, parse_mode="Markdown")
+        for item in created[:20]:
+            txt = f"📧 `{item['email']}`\n"
+            if item['link']:
+                txt += f"🔗 `{item['link']}`\n"
+            if item['sub']:
+                txt += f"📡 سابسکریپشن:\n`{item['sub']}`\n"
+            await cb.bot.send_message(order["telegram_id"], txt, parse_mode="Markdown")
+            if item['link']:
+                try:
+                    qr = build_qr_image(item['link'])
+                    await cb.bot.send_photo(order["telegram_id"], qr, caption=f"QR: {item['email']}")
+                except Exception:
+                    pass
     except Exception:
         pass
 
-    await cb.message.answer(f"✅ کانفیگ ساخته و برای کاربر ارسال شد!\n📧 `{email}`", parse_mode="Markdown")
+    await cb.message.answer(f"✅ {len(created)} کانفیگ ساخته و برای کاربر ارسال شد.", parse_mode="Markdown")
 
 
 @router.callback_query(F.data.startswith("reject:"))

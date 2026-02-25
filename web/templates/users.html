@@ -12,7 +12,7 @@
 <div class="table-wrap">
 <table id="usrTable">
   <thead>
-    <tr><th>#</th><th>نام</th><th>یوزرنیم</th><th>Telegram ID</th><th>کد دعوت</th><th>وضعیت</th><th>تاریخ</th><th>عملیات</th></tr>
+    <tr><th>#</th><th>نام</th><th>یوزرنیم</th><th>Telegram ID</th><th>کد دعوت</th><th>تخفیف</th><th>قیمت هر GB</th><th>وضعیت</th><th>تاریخ</th><th>عملیات</th></tr>
   </thead>
   <tbody>
   {% for u in users %}
@@ -22,6 +22,20 @@
     <td style="color:var(--txt2)">@{{ u.username or '—' }}</td>
     <td><code style="font-size:.75rem">{{ u.telegram_id }}</code></td>
     <td><code style="font-size:.72rem;color:var(--p)">{{ u.referral_code or '—' }}</code></td>
+    
+    <td>
+      <form action="/{{ S }}/users/{{ u.id }}/pricing" method="POST" style="display:flex;gap:6px;align-items:center">
+        <input type="number" name="discount_percent" class="form-control" value="{{ u.discount_percent or 0 }}" min="0" max="100" step="0.5" style="width:82px">
+        <button class="btn btn-xs btn-outline" type="submit">💾</button>
+      </form>
+    </td>
+    <td>
+      <form action="/{{ S }}/users/{{ u.id }}/pricing" method="POST" style="display:flex;gap:6px;align-items:center">
+        <input type="hidden" name="discount_percent" value="{{ u.discount_percent or 0 }}">
+        <input type="number" name="price_per_gb" class="form-control" value="{{ u.price_per_gb or 0 }}" min="0" style="width:110px">
+        <button class="btn btn-xs btn-outline" type="submit">💾</button>
+      </form>
+    </td>
     <td>
       {% if u.is_blocked %}
       <span class="badge b-red">🔴 بلاک</span>

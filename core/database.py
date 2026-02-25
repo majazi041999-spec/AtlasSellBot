@@ -99,8 +99,36 @@ async def init_db():
             s = stmt.strip()
             if s:
                 await db.execute(s)
+        await _ensure_columns(db)
         await db.commit()
 
+
+
+
+async def _ensure_columns(db):
+    migrations = {
+        "servers": [
+            ("max_active_configs", "INTEGER DEFAULT 0"),
+        ],
+        "users": [
+            ("discount_percent", "REAL DEFAULT 0"),
+            ("price_per_gb", "INTEGER DEFAULT 0"),
+        ],
+        "orders": [
+            ("custom_name", "TEXT DEFAULT ''"),
+            ("custom_traffic_gb", "REAL DEFAULT 0"),
+            ("custom_duration_days", "INTEGER DEFAULT 0"),
+            ("custom_price", "INTEGER DEFAULT 0"),
+            ("bulk_count", "INTEGER DEFAULT 1"),
+            ("bulk_each_gb", "REAL DEFAULT 0"),
+        ],
+    }
+    for table, cols in migrations.items():
+        async with db.execute(f"PRAGMA table_info({table})") as c:
+            existing = {r[1] for r in await c.fetchall()}
+        for col, ddl in cols:
+            if col not in existing:
+                await db.execute(f"ALTER TABLE {table} ADD COLUMN {col} {ddl}")
 
 def _gen_referral_code() -> str:
     chars = string.ascii_uppercase + string.digits
@@ -144,6 +172,31 @@ async def delete_server(sid: int):
         await db.commit()
 
 
+
+
+async def count_active_configs_by_server(server_id: int) -> int:
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT COUNT(*) FROM configs WHERE server_id=? AND is_active=1", (server_id,)) as c:
+            return (await c.fetchone())[0]
+
+
+async def server_has_capacity(server_id: int) -> bool:
+    srv = await get_server(server_id)
+    if not srv:
+        return False
+    cap = int(srv.get("max_active_configs") or 0)
+    if cap <= 0:
+        return True
+    return (await count_active_configs_by_server(server_id)) < cap
+
+
+async def get_available_servers() -> List[Dict]:
+    servers = await get_servers(active_only=True)
+    out = []
+    for s in servers:
+        if await server_has_capacity(s["id"]):
+            out.append(s)
+    return out
 # ══════════════════ USERS ══════════════════
 
 async def get_or_create_user(telegram_id: int, username=None, full_name=None) -> Dict:
@@ -262,6 +315,35 @@ async def delete_package(pid: int):
 
 # ══════════════════ ORDERS ══════════════════
 
+
+
+async def get_user_pricing(user_id: int) -> Dict:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute("SELECT discount_percent, price_per_gb FROM users WHERE id=?", (user_id,)) as c:
+            r = await c.fetchone()
+            if not r:
+                return {"discount_percent": 0, "price_per_gb": 0}
+            return {"discount_percent": float(r["discount_percent"] or 0), "price_per_gb": int(r["price_per_gb"] or 0)}
+
+
+async def create_custom_order(user_id: int, name: str, total_traffic_gb: float, duration_days: int,
+                              price: int, bulk_count: int = 1, bulk_each_gb: float = 0) -> int:
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT id FROM packages ORDER BY id LIMIT 1") as c0:
+            row = await c0.fetchone()
+        package_id = row[0] if row else None
+        if package_id is None:
+            c1 = await db.execute("INSERT INTO packages(name,traffic_gb,duration_days,price,description,is_active) VALUES(?,?,?,?,?,0)",
+                                  ("پکیج سیستمی", 1, 30, 0, "system"))
+            package_id = c1.lastrowid
+        c = await db.execute(
+            """INSERT INTO orders(user_id,package_id,status,custom_name,custom_traffic_gb,custom_duration_days,custom_price,bulk_count,bulk_each_gb)
+               VALUES(?,?,'pending_payment',?,?,?,?,?,?)""",
+            (user_id, package_id, name, total_traffic_gb, duration_days, price, bulk_count, bulk_each_gb)
+        )
+        await db.commit()
+        return c.lastrowid
 async def create_order(user_id: int, package_id: int) -> int:
     async with aiosqlite.connect(DB_PATH) as db:
         c = await db.execute(
@@ -277,7 +359,10 @@ async def get_order(oid: int) -> Optional[Dict]:
         async with db.execute("""
             SELECT o.*,
                    u.telegram_id,u.username,u.full_name,u.referred_by,
-                   p.name as pkg_name,p.traffic_gb,p.duration_days,p.price
+                   COALESCE(NULLIF(o.custom_name,''), p.name) as pkg_name,
+                   COALESCE(NULLIF(o.custom_traffic_gb,0), p.traffic_gb) as traffic_gb,
+                   COALESCE(NULLIF(o.custom_duration_days,0), p.duration_days) as duration_days,
+                   COALESCE(NULLIF(o.custom_price,0), p.price) as price
             FROM orders o
             JOIN users u ON o.user_id=u.id
             JOIN packages p ON o.package_id=p.id
@@ -297,7 +382,10 @@ async def get_pending_orders() -> List[Dict]:
         db.row_factory = aiosqlite.Row
         async with db.execute("""
             SELECT o.*,u.telegram_id,u.username,u.full_name,
-                   p.name as pkg_name,p.traffic_gb,p.duration_days,p.price
+                   COALESCE(NULLIF(o.custom_name,''), p.name) as pkg_name,
+                   COALESCE(NULLIF(o.custom_traffic_gb,0), p.traffic_gb) as traffic_gb,
+                   COALESCE(NULLIF(o.custom_duration_days,0), p.duration_days) as duration_days,
+                   COALESCE(NULLIF(o.custom_price,0), p.price) as price
             FROM orders o
             JOIN users u ON o.user_id=u.id
             JOIN packages p ON o.package_id=p.id
@@ -311,7 +399,8 @@ async def get_all_orders(limit=100) -> List[Dict]:
         db.row_factory = aiosqlite.Row
         async with db.execute("""
             SELECT o.*,u.telegram_id,u.username,u.full_name,
-                   p.name as pkg_name,p.price
+                   COALESCE(NULLIF(o.custom_name,''), p.name) as pkg_name,
+                   COALESCE(NULLIF(o.custom_price,0), p.price) as price
             FROM orders o
             JOIN users u ON o.user_id=u.id
             JOIN packages p ON o.package_id=p.id
@@ -323,7 +412,10 @@ async def get_user_orders(user_id: int) -> List[Dict]:
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         async with db.execute("""
-            SELECT o.*,p.name as pkg_name,p.traffic_gb,p.duration_days,p.price
+            SELECT o.*,COALESCE(NULLIF(o.custom_name,''), p.name) as pkg_name,
+                   COALESCE(NULLIF(o.custom_traffic_gb,0), p.traffic_gb) as traffic_gb,
+                   COALESCE(NULLIF(o.custom_duration_days,0), p.duration_days) as duration_days,
+                   COALESCE(NULLIF(o.custom_price,0), p.price) as price
             FROM orders o
             JOIN packages p ON o.package_id=p.id
             WHERE o.user_id=? ORDER BY o.created_at DESC LIMIT 10

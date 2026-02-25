@@ -25,6 +25,7 @@ from core.database import (
     get_all_configs, get_config, update_config,
     get_stats, get_setting, set_setting
 )
+from core.panel_content import UI_DEFAULTS, BOT_TEXT_DEFAULTS, SETTINGS_DEFAULTS, CUSTOM_STYLE_DEFAULT, CUSTOM_SCRIPT_DEFAULT
 from core.xui_api import XUIClient
 
 logger = logging.getLogger(__name__)
@@ -65,11 +66,26 @@ def _ctx(request: Request, **kw) -> dict:
     return {"request": request, "S": S, "now_ts": int(time.time()), **kw}
 
 
+async def _load_ui_settings() -> dict:
+    ui = {}
+    for key, default in UI_DEFAULTS.items():
+        ui[key.split(".", 1)[1]] = await get_setting(key, default)
+    ui["custom_css"] = await get_setting("ui.custom_css", CUSTOM_STYLE_DEFAULT)
+    ui["custom_js"] = await get_setting("ui.custom_js", CUSTOM_SCRIPT_DEFAULT)
+    return ui
+
+
+async def _ctx_ui(request: Request, **kw) -> dict:
+    ctx = _ctx(request, **kw)
+    ctx["ui"] = await _load_ui_settings()
+    return ctx
+
+
 # ═══════════════════════════════ AUTH ROUTES ════════════════════════
 
 @app.get(f"/{S}/login", response_class=HTMLResponse)
 async def login_page(request: Request):
-    return _templates.TemplateResponse("login.html", _ctx(request))
+    return _templates.TemplateResponse("login.html", await _ctx_ui(request))
 
 
 @app.post(f"/{S}/login")
@@ -82,7 +98,7 @@ async def login_post(request: Request,
                      max_age=JWT_EXPIRE_HOURS * 3600, samesite="lax")
         return r
     return _templates.TemplateResponse("login.html",
-                                       _ctx(request, error="نام کاربری یا رمز عبور اشتباه است"))
+                                       await _ctx_ui(request, error="نام کاربری یا رمز عبور اشتباه است"))
 
 
 @app.get(f"/{S}/logout")
@@ -102,7 +118,7 @@ async def dashboard(request: Request):
     stats = await get_stats()
     pending = await get_pending_orders()
     return _templates.TemplateResponse("dashboard.html",
-                                       _ctx(request, stats=stats, pending=pending[:6], active="dashboard"))
+                                       await _ctx_ui(request, stats=stats, pending=pending[:6], active="dashboard"))
 
 
 # ═══════════════════════════════ SERVERS ════════════════════════════
@@ -113,7 +129,7 @@ async def servers_page(request: Request):
         return _redir_login()
     servers = await get_servers(active_only=False)
     return _templates.TemplateResponse("servers.html",
-                                       _ctx(request, servers=servers, active="servers"))
+                                       await _ctx_ui(request, servers=servers, active="servers"))
 
 
 @app.post(f"/{S}/servers/add")
@@ -121,10 +137,11 @@ async def server_add(request: Request,
                      name: str = Form(...), url: str = Form(...),
                      username: str = Form(...), password: str = Form(...),
                      sub_path: str = Form(""), inbound_id: int = Form(1),
-                     note: str = Form("")):
+                     note: str = Form(""), max_active_configs: int = Form(0)):
     if not _auth(request):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
-    await add_server(name, url.rstrip("/"), username, password, sub_path.strip("/"), inbound_id, note)
+    sid = await add_server(name, url.rstrip("/"), username, password, sub_path.strip("/"), inbound_id, note)
+    await update_server(sid, max_active_configs=max_active_configs)
     return RedirectResponse(f"/{S}/servers", status_code=302)
 
 
@@ -144,12 +161,12 @@ async def server_edit(request: Request, sid: int,
                       name: str = Form(...), url: str = Form(...),
                       username: str = Form(...), password: str = Form(...),
                       sub_path: str = Form(""), inbound_id: int = Form(1),
-                      note: str = Form("")):
+                      note: str = Form(""), max_active_configs: int = Form(0)):
     if not _auth(request):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     await update_server(sid, name=name, url=url.rstrip("/"), username=username,
                         password=password, sub_path=sub_path.strip("/"),
-                        inbound_id=inbound_id, note=note)
+                        inbound_id=inbound_id, note=note, max_active_configs=max_active_configs)
     return RedirectResponse(f"/{S}/servers", status_code=302)
 
 
@@ -182,7 +199,7 @@ async def packages_page(request: Request):
         return _redir_login()
     pkgs = await get_packages(active_only=False)
     return _templates.TemplateResponse("packages.html",
-                                       _ctx(request, packages=pkgs, active="packages"))
+                                       await _ctx_ui(request, packages=pkgs, active="packages"))
 
 
 @app.post(f"/{S}/packages/add")
@@ -222,7 +239,7 @@ async def orders_page(request: Request):
     orders = await get_all_orders(100)
     pending = await get_pending_orders()
     return _templates.TemplateResponse("orders.html",
-                                       _ctx(request, orders=orders, pending_count=len(pending), active="orders"))
+                                       await _ctx_ui(request, orders=orders, pending_count=len(pending), active="orders"))
 
 
 # ═══════════════════════════════ CONFIGS ════════════════════════════
@@ -233,7 +250,7 @@ async def configs_page(request: Request):
         return _redir_login()
     configs = await get_all_configs()
     return _templates.TemplateResponse("configs.html",
-                                       _ctx(request, configs=configs, active="configs"))
+                                       await _ctx_ui(request, configs=configs, active="configs"))
 
 
 @app.post(f"/{S}/configs/{{cid}}/toggle")
@@ -263,7 +280,7 @@ async def users_page(request: Request):
     users = await get_all_users(0, 200)
     total = await count_users()
     return _templates.TemplateResponse("users.html",
-                                       _ctx(request, users=users, total=total, active="users"))
+                                       await _ctx_ui(request, users=users, total=total, active="users"))
 
 
 @app.post(f"/{S}/users/{{uid}}/toggle_block")
@@ -280,14 +297,46 @@ async def user_toggle_block(request: Request, uid: int):
 
 # ═══════════════════════════════ SETTINGS ═══════════════════════════
 
+
+
+@app.post(f"/{S}/users/{{uid}}/pricing")
+async def user_set_pricing(request: Request, uid: int,
+                           discount_percent: float = Form(0),
+                           price_per_gb: int = Form(0)):
+    if not _auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    discount_percent = max(0, min(100, float(discount_percent)))
+    price_per_gb = max(0, int(price_per_gb))
+    from core.database import update_user
+    await update_user(uid, discount_percent=discount_percent, price_per_gb=price_per_gb)
+    return RedirectResponse(f"/{S}/users", status_code=302)
+
 @app.get(f"/{S}/settings", response_class=HTMLResponse)
 async def settings_page(request: Request):
     if not _auth(request):
         return _redir_login()
     settings = {
-        "welcome_message": await get_setting("welcome_message"),
+        "welcome_message": await get_setting("text.welcome_message", BOT_TEXT_DEFAULTS["text.welcome_message"]),
         "support_username": await get_setting("support_username"),
         "maintenance_mode": await get_setting("maintenance_mode", "0"),
+        "maintenance_message": await get_setting("text.maintenance_message", BOT_TEXT_DEFAULTS["text.maintenance_message"]),
+        "blocked_message": await get_setting("text.blocked_message", BOT_TEXT_DEFAULTS["text.blocked_message"]),
+        "no_active_service": await get_setting("text.no_active_service", BOT_TEXT_DEFAULTS["text.no_active_service"]),
+        "support_header": await get_setting("text.support_header", BOT_TEXT_DEFAULTS["text.support_header"]),
+        "support_body": await get_setting("text.support_body", BOT_TEXT_DEFAULTS["text.support_body"]),
+        "referral_intro": await get_setting("text.referral_intro", BOT_TEXT_DEFAULTS["text.referral_intro"]),
+        "panel_url_help": await get_setting("text.panel_url_help", BOT_TEXT_DEFAULTS["text.panel_url_help"]),
+        "ui_brand_name": await get_setting("ui.brand_name", UI_DEFAULTS["ui.brand_name"]),
+        "ui_panel_subtitle": await get_setting("ui.panel_subtitle", UI_DEFAULTS["ui.panel_subtitle"]),
+        "ui_topbar_note": await get_setting("ui.topbar_note", UI_DEFAULTS["ui.topbar_note"]),
+        "ui_logo_emoji": await get_setting("ui.logo_emoji", UI_DEFAULTS["ui.logo_emoji"]),
+        "ui_custom_css": await get_setting("ui.custom_css", CUSTOM_STYLE_DEFAULT),
+        "ui_custom_js": await get_setting("ui.custom_js", CUSTOM_SCRIPT_DEFAULT),
+        "cfg_name_prefix": await get_setting("cfg_name_prefix", SETTINGS_DEFAULTS["cfg_name_prefix"]),
+        "cfg_name_postfix": await get_setting("cfg_name_postfix", SETTINGS_DEFAULTS["cfg_name_postfix"]),
+        "cfg_name_rand_len": await get_setting("cfg_name_rand_len", SETTINGS_DEFAULTS["cfg_name_rand_len"]),
+        "force_channel": await get_setting("force_channel", SETTINGS_DEFAULTS["force_channel"]),
+        "channel_username": await get_setting("channel_username", SETTINGS_DEFAULTS["channel_username"]),
     }
     from core.config import CARD_NUMBER, CARD_HOLDER, CARD_BANK, REFERRAL_BONUS_GB
     settings["card_number"] = CARD_NUMBER
@@ -296,19 +345,55 @@ async def settings_page(request: Request):
     settings["referral_bonus_gb"] = REFERRAL_BONUS_GB
     saved = request.query_params.get("saved")
     return _templates.TemplateResponse("settings.html",
-                                       _ctx(request, settings=settings, saved=saved, active="settings"))
+                                       await _ctx_ui(request, settings=settings, saved=saved, active="settings"))
 
 
 @app.post(f"/{S}/settings")
 async def settings_save(request: Request,
                          welcome_message: str = Form(""),
                          support_username: str = Form(""),
-                         maintenance_mode: str = Form("0")):
+                         maintenance_mode: str = Form("0"),
+                         maintenance_message: str = Form(""),
+                         blocked_message: str = Form(""),
+                         no_active_service: str = Form(""),
+                         support_header: str = Form(""),
+                         support_body: str = Form(""),
+                         referral_intro: str = Form(""),
+                         panel_url_help: str = Form(""),
+                         ui_brand_name: str = Form(""),
+                         ui_panel_subtitle: str = Form(""),
+                         ui_topbar_note: str = Form(""),
+                         ui_logo_emoji: str = Form(""),
+                         ui_custom_css: str = Form(""),
+                         ui_custom_js: str = Form(""),
+                         cfg_name_prefix: str = Form("u"),
+                         cfg_name_postfix: str = Form(""),
+                         cfg_name_rand_len: str = Form("6"),
+                         force_channel: str = Form("0"),
+                         channel_username: str = Form("")):
     if not _auth(request):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
-    await set_setting("welcome_message", welcome_message)
+    await set_setting("text.welcome_message", welcome_message)
     await set_setting("support_username", support_username)
     await set_setting("maintenance_mode", maintenance_mode)
+    await set_setting("text.maintenance_message", maintenance_message)
+    await set_setting("text.blocked_message", blocked_message)
+    await set_setting("text.no_active_service", no_active_service)
+    await set_setting("text.support_header", support_header)
+    await set_setting("text.support_body", support_body)
+    await set_setting("text.referral_intro", referral_intro)
+    await set_setting("text.panel_url_help", panel_url_help)
+    await set_setting("ui.brand_name", ui_brand_name)
+    await set_setting("ui.panel_subtitle", ui_panel_subtitle)
+    await set_setting("ui.topbar_note", ui_topbar_note)
+    await set_setting("ui.logo_emoji", ui_logo_emoji)
+    await set_setting("ui.custom_css", ui_custom_css)
+    await set_setting("ui.custom_js", ui_custom_js)
+    await set_setting("cfg_name_prefix", cfg_name_prefix)
+    await set_setting("cfg_name_postfix", cfg_name_postfix)
+    await set_setting("cfg_name_rand_len", cfg_name_rand_len)
+    await set_setting("force_channel", force_channel)
+    await set_setting("channel_username", channel_username.lstrip("@"))
     return RedirectResponse(f"/{S}/settings?saved=1", status_code=302)
 
 

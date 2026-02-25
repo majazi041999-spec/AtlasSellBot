@@ -20,6 +20,7 @@ def user_menu() -> ReplyKeyboardMarkup:
     b.row(KeyboardButton(text="📡 وضعیت سرویس"), KeyboardButton(text="🛒 خرید سرویس"))
     b.row(KeyboardButton(text="🔄 انتقال سرور"), KeyboardButton(text="📋 سفارش‌های من"))
     b.row(KeyboardButton(text="🎁 دعوت دوستان"), KeyboardButton(text="📞 پشتیبانی"))
+    b.row(KeyboardButton(text="🏷️ خرید عمده"))
     return b.as_markup(resize_keyboard=True)
 
 
@@ -48,6 +49,8 @@ def config_detail_kb(cid: int) -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
     b.button(text="🔗 دریافت لینک اتصال", callback_data=f"cfg_link:{cid}")
     b.button(text="🔄 انتقال به سرور دیگر", callback_data=f"mig_start:{cid}")
+    b.button(text="🔄 بروزرسانی سرویس", callback_data=f"cfg_refresh:{cid}")
+    b.button(text="📡 لینک سابسکریپشن", callback_data=f"cfg_sub:{cid}")
     b.button(text="🔙 بازگشت", callback_data="back_configs")
     b.adjust(1)
     return b.as_markup()
