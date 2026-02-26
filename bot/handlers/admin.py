@@ -124,10 +124,33 @@ async def approve_order_start(cb: CallbackQuery):
     if not servers:
         await cb.answer("❌ هیچ سروری فعال نیست!", show_alert=True)
         return
+
+    # اگر سرور پیش‌فرض تنظیم شده باشد، اولویت با همان است.
+    default_sid_raw = await get_setting("default_server_id", "0")
+    try:
+        default_sid = int(default_sid_raw or 0)
+    except (TypeError, ValueError):
+        default_sid = 0
+
+    if default_sid:
+        preferred = next((sv for sv in servers if sv["id"] == default_sid), None)
+        if preferred:
+            await _do_approve(cb, oid, preferred["id"])
+            return
+
     if len(servers) == 1:
         await _do_approve(cb, oid, servers[0]["id"])
-    else:
+        return
+
+    try:
         await cb.message.edit_text(
+            "🖥️ *انتخاب سرور برای کانفیگ:*",
+            reply_markup=order_server_select_kb(servers, oid),
+            parse_mode="Markdown"
+        )
+    except Exception:
+        # روی پیام فیش (photo) edit_text ممکن است fail شود؛ منو را به‌صورت پیام جدید بفرست.
+        await cb.message.answer(
             "🖥️ *انتخاب سرور برای کانفیگ:*",
             reply_markup=order_server_select_kb(servers, oid),
             parse_mode="Markdown"

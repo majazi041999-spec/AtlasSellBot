@@ -1,7 +1,8 @@
 from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery
-from aiogram.filters import CommandStart, Command
+from aiogram.filters import CommandStart
 from aiogram.fsm.context import FSMContext
+from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from core.config import ADMIN_IDS, WEB_SECRET_PATH, WEB_PORT
 from core.database import get_or_create_user, get_user_by_referral_code, update_user, get_setting
@@ -19,6 +20,13 @@ async def _menus(msg: Message):
     user = await get_or_create_user(msg.from_user.id, msg.from_user.username, msg.from_user.full_name)
     is_adm = _is_admin(msg.from_user.id) or user.get("is_admin", 0)
     return user, is_adm
+
+
+def _channel_join_kb(channel_username: str):
+    ch = channel_username.strip().lstrip("@")
+    b = InlineKeyboardBuilder()
+    b.button(text="📢 عضویت در کانال", url=f"https://t.me/{ch}")
+    return b.as_markup()
 
 
 @router.message(CommandStart())
@@ -59,6 +67,34 @@ async def cmd_start(msg: Message, state: FSMContext):
 
     kb = admin_menu() if is_adm else user_menu()
     await msg.answer(text, reply_markup=kb, parse_mode="Markdown")
+
+
+@router.message(F.text.regexp(r"^/"))
+async def block_non_member_commands(msg: Message):
+    """Prevent using any slash command (except /start*) when force_channel is enabled."""
+    if not msg.text:
+        return
+
+    cmd = msg.text.strip().split()[0].split("@", 1)[0].lower()
+    if cmd.startswith("/start"):
+        return
+    force = await get_setting("force_channel", "0")
+    channel_username = await get_setting("channel_username", "")
+    if force != "1" or not channel_username:
+        return
+
+    ch = channel_username if channel_username.startswith("@") else f"@{channel_username}"
+    try:
+        member = await msg.bot.get_chat_member(ch, msg.from_user.id)
+        if member.status in ("member", "administrator", "creator"):
+            return
+    except Exception:
+        pass
+
+    await msg.answer(
+        f"❌ برای استفاده از ربات باید حتما عضو کانال باشید.\n\nکانال: {ch}",
+        reply_markup=_channel_join_kb(channel_username),
+    )
 
 
 @router.callback_query(F.data == "cancel")

@@ -93,7 +93,7 @@ async def _get_card_info():
 
 
 # ─── STATUS ──────────────────────────────────────────────────────
-@router.message(F.text == " وضعیت سرویس")
+@router.message(F.text == "📡 وضعیت سرویس")
 async def user_status(msg: Message):
     if not await _ensure_channel_membership(msg):
         return
@@ -256,7 +256,7 @@ async def cfg_sub(cb: CallbackQuery):
 
 
 # ─── BUY ─────────────────────────────────────────────────────────
-@router.message(F.text == " خرید سرویس")
+@router.message(F.text == "🛒 خرید سرویس")
 async def buy_service(msg: Message):
     if not await _ensure_channel_membership(msg):
         return
@@ -375,7 +375,7 @@ async def cancel_order(cb: CallbackQuery, state: FSMContext):
 
 
 # ─── WHOLESALE ────────────────────────────────────────────────────
-@router.message(F.text == "️ خرید عمده")
+@router.message(F.text == "🏷️ خرید عمده")
 async def wholesale_start(msg: Message, state: FSMContext):
     if not await _ensure_channel_membership(msg):
         return
@@ -461,7 +461,7 @@ async def wholesale_duration(msg: Message, state: FSMContext):
 
 
 # ─── MY ORDERS ───────────────────────────────────────────────────
-@router.message(F.text == " سفارش‌های من")
+@router.message(F.text == "📋 سفارش‌های من")
 async def my_orders(msg: Message):
     if not await _ensure_channel_membership(msg):
         return
@@ -490,7 +490,7 @@ async def my_orders(msg: Message):
 
 
 # ─── MIGRATE ─────────────────────────────────────────────────────
-@router.message(F.text == " انتقال سرور")
+@router.message(F.text == "🔄 انتقال سرور")
 async def migrate_menu(msg: Message):
     if not await _ensure_channel_membership(msg):
         return
@@ -634,7 +634,7 @@ async def mig_confirm(cb: CallbackQuery):
 
 
 # ─── REFERRAL ────────────────────────────────────────────────────
-@router.message(F.text == " دعوت دوستان")
+@router.message(F.text == "🎁 دعوت دوستان")
 async def referral_menu(msg: Message):
     if not await _ensure_channel_membership(msg):
         return
@@ -660,7 +660,7 @@ async def referral_menu(msg: Message):
 
 
 # ─── SUPPORT ─────────────────────────────────────────────────────
-@router.message(F.text == " پشتیبانی")
+@router.message(F.text == "📞 پشتیبانی")
 async def support(msg: Message):
     if not await _ensure_channel_membership(msg):
         return
