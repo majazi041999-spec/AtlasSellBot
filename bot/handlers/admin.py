@@ -1,6 +1,7 @@
 import asyncio
 import uuid
 import time
+import json
 from datetime import datetime, timedelta, date
 from aiogram import Router, F, Bot
 from aiogram.types import Message, CallbackQuery
@@ -13,15 +14,17 @@ from core.database import (
     get_pending_orders, get_order, update_order,
     get_all_users, count_users, get_server, get_servers,
     save_config, get_user_by_telegram, get_setting, set_setting,
-    get_user_by_id, server_has_capacity, count_active_configs_by_server, update_user
+    get_user_by_id, server_has_capacity, count_active_configs_by_server, update_user,
+    get_legacy_claim, update_legacy_claim, get_config_by_email, get_config_by_uuid
 )
 from core.xui_api import XUIClient, fmt_bytes, days_left
 from core.qr import build_qr_image
 from bot.keyboards import (
     admin_menu, order_review_kb, order_server_select_kb,
-    admin_configs_kb, adm_config_detail_kb, confirm_kb, packages_kb, servers_kb
+    admin_configs_kb, adm_config_detail_kb, confirm_kb, packages_kb, servers_kb,
+    broadcast_target_kb, legacy_claim_admin_kb
 )
-from bot.states import AddPackage, CreateConfig, BulkConfig, EditConfig, Broadcast
+from bot.states import AddPackage, CreateConfig, BulkConfig, EditConfig, Broadcast, PrivateMessage
 
 router = Router()
 
@@ -124,10 +127,33 @@ async def approve_order_start(cb: CallbackQuery):
     if not servers:
         await cb.answer("❌ هیچ سروری فعال نیست!", show_alert=True)
         return
+
+    # اگر سرور پیش‌فرض تنظیم شده باشد، اولویت با همان است.
+    default_sid_raw = await get_setting("default_server_id", "0")
+    try:
+        default_sid = int(default_sid_raw or 0)
+    except (TypeError, ValueError):
+        default_sid = 0
+
+    if default_sid:
+        preferred = next((sv for sv in servers if sv["id"] == default_sid), None)
+        if preferred:
+            await _do_approve(cb, oid, preferred["id"])
+            return
+
     if len(servers) == 1:
         await _do_approve(cb, oid, servers[0]["id"])
-    else:
+        return
+
+    try:
         await cb.message.edit_text(
+            "🖥️ *انتخاب سرور برای کانفیگ:*",
+            reply_markup=order_server_select_kb(servers, oid),
+            parse_mode="Markdown"
+        )
+    except Exception:
+        # روی پیام فیش (photo) edit_text ممکن است fail شود؛ منو را به‌صورت پیام جدید بفرست.
+        await cb.message.answer(
             "🖥️ *انتخاب سرور برای کانفیگ:*",
             reply_markup=order_server_select_kb(servers, oid),
             parse_mode="Markdown"
@@ -180,8 +206,22 @@ async def _do_approve(cb: CallbackQuery, oid: int, sid: int):
         remaining_cap = max(0, remaining_cap - used)
         bulk_count = min(bulk_count, remaining_cap)
 
+    custom_prefix = ""
+    custom_start = 1
+    try:
+        if order.get("notes"):
+            n = json.loads(order["notes"])
+            custom_prefix = str(n.get("bulk_name_prefix", "")).strip()
+            custom_start = int(n.get("bulk_start_number", 1) or 1)
+    except Exception:
+        pass
+
     for i in range(1, max(1, bulk_count) + 1):
-        email = await _build_config_name(order, i if bulk_count > 1 else 0)
+        if bulk_count > 1 and custom_prefix:
+            seq = custom_start + i - 1
+            email = f"{custom_prefix}-{seq} -{int(each_gb)}GB"
+        else:
+            email = await _build_config_name(order, i if bulk_count > 1 else 0)
         cuuid = str(uuid.uuid4())
         ok = await client.add_client(server["inbound_id"], cuuid, email, each_gb, duration)
         if not ok:
@@ -230,8 +270,9 @@ async def _do_approve(cb: CallbackQuery, oid: int, sid: int):
             await cb.bot.send_message(order["telegram_id"], txt, parse_mode="Markdown")
             if item['link']:
                 try:
-                    qr = build_qr_image(item['link'])
-                    await cb.bot.send_photo(order["telegram_id"], qr, caption=f"QR: {item['email']}")
+                    ch = await get_setting("channel_username", "AtlasChannel")
+                    qr = build_qr_image(item['link'], footer_text=ch)
+                    await cb.bot.send_photo(order["telegram_id"], qr, caption=f"🎨 QR: {item['email']}")
                 except Exception:
                     pass
     except Exception:
@@ -818,23 +859,194 @@ async def toggle_block(cb: CallbackQuery):
     await user_detail(cb)
 
 
+@router.callback_query(F.data.startswith("wh_appr:"))
+async def wholesale_approve(cb: CallbackQuery):
+    if not is_admin(cb.from_user.id):
+        return
+    uid = int(cb.data.split(":")[1])
+    u = await get_user_by_id(uid)
+    if not u:
+        await cb.answer("یافت نشد", show_alert=True)
+        return
+    await update_user(uid, is_wholesale=1, wholesale_request_pending=0)
+    try:
+        from bot.keyboards import user_menu
+        await cb.bot.send_message(
+            u["telegram_id"],
+            "✅ درخواست همکاری عمده شما تایید شد.\nاز این لحظه منوی خرید عمده برای شما فعال است.",
+            reply_markup=user_menu(include_wholesale=True),
+        )
+    except Exception:
+        pass
+    await cb.message.edit_text("✅ کاربر برای خرید عمده تایید شد.")
+
+
+@router.callback_query(F.data.startswith("wh_rej:"))
+async def wholesale_reject(cb: CallbackQuery):
+    if not is_admin(cb.from_user.id):
+        return
+    uid = int(cb.data.split(":")[1])
+    u = await get_user_by_id(uid)
+    if not u:
+        await cb.answer("یافت نشد", show_alert=True)
+        return
+    await update_user(uid, wholesale_request_pending=0)
+    try:
+        await cb.bot.send_message(u["telegram_id"], "❌ درخواست همکاری عمده شما فعلاً تایید نشد. برای بررسی دوباره با پشتیبانی در ارتباط باشید.")
+    except Exception:
+        pass
+    await cb.message.edit_text("❌ درخواست همکاری عمده رد شد.")
+
+
+async def _find_remote_legacy_client(email: str, client_uuid: str) -> dict | None:
+    """Search all active servers/inbounds and return matching client meta for legacy claim import."""
+    servers = await get_servers(active_only=True)
+    for srv in servers:
+        xui = XUIClient(srv["url"], srv["username"], srv["password"], srv.get("sub_path") or "")
+        try:
+            inbounds = await xui.get_inbounds()
+            for inbound in inbounds:
+                try:
+                    settings = json.loads(inbound.get("settings") or "{}")
+                except Exception:
+                    continue
+
+                clients = settings.get("clients") or []
+                for c in clients:
+                    c_email = (c.get("email") or "").strip()
+                    c_uuid = (c.get("id") or c.get("password") or "").strip()
+                    if email and c_email != email:
+                        continue
+                    if client_uuid and c_uuid != client_uuid and (not email):
+                        continue
+
+                    total_bytes = int(c.get("totalGB") or 0)
+                    traffic_gb = round(total_bytes / (1024 ** 3), 2) if total_bytes > 0 else 0
+                    expire_ts = int((c.get("expiryTime") or 0) / 1000) if (c.get("expiryTime") or 0) > 0 else 0
+                    if expire_ts > 0:
+                        duration_days = max(1, int((expire_ts - int(time.time())) / 86400))
+                    else:
+                        duration_days = 0
+
+                    return {
+                        "server_id": srv["id"],
+                        "inbound_id": int(inbound.get("id") or srv.get("inbound_id") or 1),
+                        "uuid": c_uuid,
+                        "email": c_email or email,
+                        "traffic_gb": traffic_gb,
+                        "duration_days": duration_days,
+                        "expire_ts": expire_ts,
+                        "is_active": 1 if c.get("enable", True) else 0,
+                    }
+        finally:
+            await xui.close()
+
+    return None
+
+
+@router.callback_query(F.data.startswith("lg_appr:"))
+async def legacy_claim_approve(cb: CallbackQuery):
+    if not is_admin(cb.from_user.id):
+        return
+    cid = int(cb.data.split(":")[1])
+    claim = await get_legacy_claim(cid)
+    if not claim or claim.get("status") != "pending":
+        await cb.answer("این درخواست قبلاً بررسی شده.", show_alert=True)
+        return
+
+    email = (claim.get("email") or "").strip()
+    if not email:
+        await update_legacy_claim(cid, status="rejected", reviewer_id=cb.from_user.id, reviewed_at=datetime.now().isoformat(), admin_note="missing_email")
+        await cb.message.edit_text("❌ ایمیل کانفیگ در لینک پیدا نشد؛ درخواست رد شد.")
+        return
+
+    cfg = await get_config_by_email(email) if email else None
+    if not cfg and (claim.get("uuid") or "").strip():
+        cfg = await get_config_by_uuid(claim["uuid"].strip())
+
+    # اگر داخل DB نبود، مستقیم از همه سرورها/اینباندها جستجو و ایمپورت می‌کنیم.
+    if not cfg:
+        remote = await _find_remote_legacy_client(email, (claim.get("uuid") or "").strip())
+        if remote and remote.get("email") and remote.get("uuid"):
+            try:
+                cfg_id = await save_config(
+                    claim["user_id"],
+                    remote["server_id"],
+                    remote["uuid"],
+                    remote["email"],
+                    remote["inbound_id"],
+                    remote["traffic_gb"],
+                    remote["duration_days"],
+                    remote["expire_ts"],
+                )
+                cfg = await get_config(cfg_id)
+            except Exception:
+                cfg = await get_config_by_email(remote["email"])
+
+    if cfg:
+        await update_config(cfg["id"], user_id=claim["user_id"], is_active=1)
+        await update_legacy_claim(cid, status="approved", reviewer_id=cb.from_user.id, reviewed_at=datetime.now().isoformat())
+        try:
+            await cb.bot.send_message(claim["telegram_id"], f"✅ کانفیگ `{cfg.get('email') or email}` به حساب شما متصل شد.", parse_mode="Markdown")
+        except Exception:
+            pass
+        await cb.message.edit_text(f"✅ کانفیگ {cfg.get('email') or email} به کاربر تخصیص یافت.")
+        return
+
+    await update_legacy_claim(cid, status="rejected", reviewer_id=cb.from_user.id, reviewed_at=datetime.now().isoformat(), admin_note="email_not_found")
+    await cb.message.edit_text("❌ کانفیگ با این ایمیل/UUID پیدا نشد. بررسی شد روی دیتابیس و همه سرورها.")
+
+
+@router.callback_query(F.data.startswith("lg_rej:"))
+async def legacy_claim_reject(cb: CallbackQuery):
+    if not is_admin(cb.from_user.id):
+        return
+    cid = int(cb.data.split(":")[1])
+    claim = await get_legacy_claim(cid)
+    if not claim or claim.get("status") != "pending":
+        await cb.answer("این درخواست قبلاً بررسی شده.", show_alert=True)
+        return
+    await update_legacy_claim(cid, status="rejected", reviewer_id=cb.from_user.id, reviewed_at=datetime.now().isoformat())
+    try:
+        await cb.bot.send_message(claim["telegram_id"], "❌ درخواست سینک کانفیگ شما رد شد. در صورت نیاز با پشتیبانی هماهنگ کنید.")
+    except Exception:
+        pass
+    await cb.message.edit_text("❌ درخواست رد شد.")
+
+
 # ─── BROADCAST ───────────────────────────────────────────────────
 
 @router.message(F.text == "📣 پیام همگانی")
 async def broadcast_start(msg: Message, state: FSMContext):
     if not is_admin(msg.from_user.id):
         return
+    await state.set_state(Broadcast.target)
+    await msg.answer("📣 مخاطب پیام را انتخاب کنید:", reply_markup=broadcast_target_kb())
+
+
+@router.callback_query(F.data.startswith("bc_target:"), Broadcast.target)
+async def broadcast_pick_target(cb: CallbackQuery, state: FSMContext):
+    target = cb.data.split(":", 1)[1]
+    await state.update_data(target=target)
     await state.set_state(Broadcast.text)
-    await msg.answer("📣 متن پیام را بنویسید:\n_برای لغو /cancel بزن_", parse_mode="Markdown")
+    await cb.message.edit_text("✍️ متن پیام را بنویسید:\nبرای لغو /cancel بزنید.")
 
 
 @router.message(Broadcast.text)
 async def broadcast_preview(msg: Message, state: FSMContext):
     await state.update_data(text=msg.text)
     await state.set_state(Broadcast.confirm)
-    total = await count_users()
+    data = await state.get_data()
+    all_users = await get_all_users(0, 100000)
+    target = data.get("target", "all")
+    if target == "wholesale":
+        total = sum(1 for u in all_users if u.get("is_wholesale", 0) and not u.get("is_blocked", 0))
+        target_text = "کاربران عمده"
+    else:
+        total = sum(1 for u in all_users if not u.get("is_blocked", 0))
+        target_text = "همه کاربران"
     await msg.answer(
-        f"👀 *پیش‌نمایش:*\n\n{msg.text}\n\n📤 برای *{total}* کاربر ارسال می‌شود.",
+        f"👀 *پیش‌نمایش:*\n\n{msg.text}\n\n🎯 مخاطب: *{target_text}*\n📤 برای *{total}* کاربر ارسال می‌شود.",
         reply_markup=confirm_kb("broadcast_do", "broadcast_cancel"),
         parse_mode="Markdown"
     )
@@ -845,10 +1057,13 @@ async def broadcast_do(cb: CallbackQuery, state: FSMContext, bot: Bot):
     data = await state.get_data()
     await state.clear()
     users = await get_all_users(0, 100000)
+    target = data.get("target", "all")
     sent = failed = 0
     await cb.message.edit_text("⏳ در حال ارسال...")
     for u in users:
         if u["is_blocked"]:
+            continue
+        if target == "wholesale" and not u.get("is_wholesale", 0):
             continue
         try:
             await bot.send_message(u["telegram_id"], data["text"])
@@ -863,3 +1078,35 @@ async def broadcast_do(cb: CallbackQuery, state: FSMContext, bot: Bot):
 async def broadcast_cancel(cb: CallbackQuery, state: FSMContext):
     await state.clear()
     await cb.message.edit_text("❌ ارسال لغو شد.")
+
+
+@router.message(F.text == "✉️ پیام خصوصی")
+async def private_msg_start(msg: Message, state: FSMContext):
+    if not is_admin(msg.from_user.id):
+        return
+    await state.set_state(PrivateMessage.user_id)
+    await msg.answer("🆔 آیدی عددی کاربر را ارسال کنید:")
+
+
+@router.message(PrivateMessage.user_id)
+async def private_msg_user(msg: Message, state: FSMContext):
+    try:
+        uid = int((msg.text or '').strip())
+    except ValueError:
+        await msg.answer("❌ آیدی معتبر نیست.")
+        return
+    await state.update_data(uid=uid)
+    await state.set_state(PrivateMessage.text)
+    await msg.answer("✍️ متن پیام خصوصی را ارسال کنید:")
+
+
+@router.message(PrivateMessage.text)
+async def private_msg_send(msg: Message, state: FSMContext):
+    data = await state.get_data()
+    await state.clear()
+    uid = data.get('uid')
+    try:
+        await msg.bot.send_message(uid, msg.text or '')
+        await msg.answer("✅ پیام خصوصی ارسال شد.")
+    except Exception:
+        await msg.answer("❌ ارسال ناموفق بود. آیدی یا وضعیت چت کاربر را بررسی کنید.")

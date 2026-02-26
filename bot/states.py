@@ -34,6 +34,7 @@ class BuyService(StatesGroup):
 
 
 class Broadcast(StatesGroup):
+    target = State()
     text = State()
     confirm = State()
 
@@ -46,3 +47,14 @@ class WholesaleBuy(StatesGroup):
     count = State()
     traffic = State()
     duration = State()
+    naming_prefix = State()
+    naming_start = State()
+
+
+class LegacySync(StatesGroup):
+    waiting_link = State()
+
+
+class PrivateMessage(StatesGroup):
+    user_id = State()
+    text = State()
