@@ -18,8 +18,8 @@
   {% for u in users %}
   <tr id="usr-row-{{ u.id }}">
     <td>{{ u.id }}</td>
-    <td>{{ u.full_name or '—' }}</td>
-    <td style="color:var(--txt2)">@{{ u.username or '—' }}</td>
+    <td><strong>{{ u.full_name or '—' }}</strong><br><span style='color:var(--txt3);font-size:.74rem'>@{{ u.username or '—' }}</span><br><code style='font-size:.72rem'>{{ u.telegram_id }}</code></td>
+    <td style="color:var(--txt2)">{{ ('@' + u.username) if u.username else '—' }}</td>
     <td><code style="font-size:.75rem">{{ u.telegram_id }}</code></td>
     <td><code style="font-size:.72rem;color:var(--p)">{{ u.referral_code or '—' }}</code></td>
     

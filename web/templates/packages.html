@@ -30,6 +30,7 @@
       {% endif %}
     </td>
     <td style="white-space:nowrap">
+      <button class="btn btn-outline btn-xs" onclick="openEditPkg({{ p.id }}, '{{ p.name|replace("'","&#39;") }}', '{{ p.traffic_gb }}', '{{ p.duration_days }}', '{{ p.price }}', '{{ (p.description or '')|replace("'","&#39;") }}')">✏️ ویرایش</button>
       <button class="btn btn-outline btn-xs" onclick="togglePkg({{ p.id }}, this)">
         {{ '🔴 غیرفعال' if p.is_active else '🟢 فعال' }}
       </button>
@@ -77,6 +78,28 @@
   </form>
 </div>
 </div>
+
+<div class="overlay" id="editPkgModal">
+<div class="modal">
+  <div class="modal-hd">
+    <h3>✏️ ویرایش پکیج</h3>
+    <button class="modal-close" onclick="closeModal('editPkgModal')">✕</button>
+  </div>
+  <form id="editPkgForm" method="POST">
+    <div class="form-group"><label>نام پکیج</label><input type="text" name="name" id="e_name" class="form-control" required></div>
+    <div class="form-row">
+      <div class="form-group"><label>حجم (GB)</label><input type="number" name="traffic_gb" id="e_gb" class="form-control" step="0.5" min="0.5" required></div>
+      <div class="form-group"><label>مدت (روز)</label><input type="number" name="duration_days" id="e_days" class="form-control" min="1" required></div>
+    </div>
+    <div class="form-group"><label>قیمت (تومن)</label><input type="number" name="price" id="e_price" class="form-control" min="0" required></div>
+    <div class="form-group"><label>توضیحات</label><input type="text" name="description" id="e_desc" class="form-control"></div>
+    <div style="display:flex;gap:8px;justify-content:flex-end">
+      <button type="button" class="btn btn-outline" onclick="closeModal('editPkgModal')">انصراف</button>
+      <button type="submit" class="btn btn-primary">💾 ذخیره تغییرات</button>
+    </div>
+  </form>
+</div>
+</div>
 {% endblock %}
 
 {% block scripts %}
@@ -91,6 +114,16 @@ async function deletePkg(id, name){
   const r = await api(`/${S}/packages/${id}/delete`);
   if(r.success){ toast('پکیج حذف شد','success'); setTimeout(()=>location.reload(),800); }
   else toast('خطا در حذف!','error');
+}
+
+function openEditPkg(id, name, gb, days, price, desc){
+  document.getElementById('e_name').value = name;
+  document.getElementById('e_gb').value = gb;
+  document.getElementById('e_days').value = days;
+  document.getElementById('e_price').value = price;
+  document.getElementById('e_desc').value = desc;
+  document.getElementById('editPkgForm').action = `/${S}/packages/${id}/edit`;
+  openModal('editPkgModal');
 }
 </script>
 {% endblock %}

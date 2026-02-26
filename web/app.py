@@ -49,6 +49,7 @@ from core.database import (
     update_order,  # noqa: F401
     update_package,
     update_server,
+    reset_legacy_claims,
 )
 from core.panel_content import (
     BOT_TEXT_DEFAULTS,
@@ -276,6 +277,29 @@ async def pkg_add(
     return RedirectResponse(f"/{S}/packages", status_code=302)
 
 
+@app.post(f"/{S}/packages/{{pid}}/edit")
+async def pkg_edit(
+    request: Request,
+    pid: int,
+    name: str = Form(...),
+    traffic_gb: float = Form(...),
+    duration_days: int = Form(...),
+    price: int = Form(...),
+    description: str = Form(""),
+):
+    if not _auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    await update_package(
+        pid,
+        name=name,
+        traffic_gb=traffic_gb,
+        duration_days=duration_days,
+        price=price,
+        description=description,
+    )
+    return RedirectResponse(f"/{S}/packages", status_code=302)
+
+
 @app.post(f"/{S}/packages/{{pid}}/toggle")
 async def pkg_toggle(request: Request, pid: int):
     if not _auth(request):
@@ -415,6 +439,8 @@ async def settings_page(request: Request):
         "cfg_name_rand_len": await get_setting("cfg_name_rand_len", SETTINGS_DEFAULTS["cfg_name_rand_len"]),
         "force_channel": await get_setting("force_channel", SETTINGS_DEFAULTS["force_channel"]),
         "channel_username": await get_setting("channel_username", SETTINGS_DEFAULTS["channel_username"]),
+        "default_server_id": await get_setting("default_server_id", "0"),
+        "legacy_sync_enabled": await get_setting("legacy_sync_enabled", SETTINGS_DEFAULTS["legacy_sync_enabled"]),
     }
 
     # ✅ کارت بانکی از دیتابیس Settings خوانده می‌شود (با fallback از .env)
@@ -424,10 +450,11 @@ async def settings_page(request: Request):
 
     settings["referral_bonus_gb"] = REFERRAL_BONUS_GB
 
+    servers = await get_servers(active_only=False)
     saved = request.query_params.get("saved")
     return _templates.TemplateResponse(
         "settings.html",
-        await _ctx_ui(request, settings=settings, saved=saved, active="settings"),
+        await _ctx_ui(request, settings=settings, servers=servers, saved=saved, active="settings"),
     )
 
 
@@ -455,6 +482,8 @@ async def settings_save(
     cfg_name_rand_len: str = Form("6"),
     force_channel: str = Form("0"),
     channel_username: str = Form(""),
+    default_server_id: str = Form("0"),
+    legacy_sync_enabled: str = Form("1"),
     # ✅ کارت بانکی از پنل ذخیره می‌شود
     card_number: str = Form(""),
     card_holder: str = Form(""),
@@ -488,11 +517,23 @@ async def settings_save(
     await set_setting("force_channel", force_channel)
     await set_setting("channel_username", channel_username.lstrip("@"))
 
+    valid_server_ids = {str(sv["id"]) for sv in await get_servers(active_only=False)}
+    await set_setting("default_server_id", default_server_id if default_server_id in valid_server_ids else "0")
+    await set_setting("legacy_sync_enabled", "1" if legacy_sync_enabled == "1" else "0")
+
     # ✅ ذخیره کارت
     await set_setting("card_number", card_number.strip())
     await set_setting("card_holder", card_holder.strip())
     await set_setting("card_bank", card_bank.strip())
 
+    return RedirectResponse(f"/{S}/settings?saved=1", status_code=302)
+
+
+@app.post(f"/{S}/settings/legacy_sync/reset")
+async def settings_reset_legacy_sync(request: Request):
+    if not _auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    await reset_legacy_claims()
     return RedirectResponse(f"/{S}/settings?saved=1", status_code=302)
 
 
