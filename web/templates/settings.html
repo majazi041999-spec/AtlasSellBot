@@ -115,6 +115,15 @@ async function resetLegacyClaims(){
     <button class="btn btn-primary" type="submit">💾 ذخیره همه تنظیمات</button>
   </div>
 </form>
+
+<script>
+async function resetLegacyClaims(){
+  if(!confirm('همه درخواست‌های سینک قبلی پاک شود؟')) return;
+  const r = await api(`/${S}/settings/legacy_sync/reset`);
+  if(r.success){ toast('ریست شد','success'); setTimeout(()=>location.reload(),700); }
+  else toast('خطا در ریست','error');
+}
+</script>
 {% endblock %}
 
 {% block scripts %}
