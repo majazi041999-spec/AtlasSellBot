@@ -71,7 +71,7 @@ async def cmd_start(msg: Message, state: FSMContext):
 
 
 
-@router.message(Command("cancel"))
+@router.message(F.text.regexp(r"^/cancel(?:@\w+)?(?:\s|$)"))
 async def cancel_cmd(msg: Message, state: FSMContext):
     await state.clear()
     user = await get_or_create_user(msg.from_user.id, msg.from_user.username, msg.from_user.full_name)
