@@ -4,7 +4,7 @@
 
 {% block content %}
 <div class="sec-hd">
-  <span class="sec-title">کل کانفیگ‌ها: {{ configs|length }}</span>
+  <span class="sec-title">کل کانفیگ‌های تجمیع‌شده: {{ total }}</span>
   <div class="search-box">
     <input type="text" id="cfgSearch" class="form-control" placeholder="جستجو..." oninput="filterTable('cfgSearch','cfgTable')">
   </div>
@@ -13,7 +13,7 @@
 <div class="table-wrap">
 <table id="cfgTable">
   <thead>
-    <tr><th>شناسه</th><th>کاربر</th><th>سرور</th><th>حجم</th><th>روز باقی</th><th>وضعیت</th><th>تاریخ</th><th>عملیات</th></tr>
+    <tr><th>شناسه</th><th>کاربر</th><th>سرور فعلی</th><th>تاریخچه انتقال</th><th>حجم</th><th>روز باقی</th><th>وضعیت</th><th>تاریخ</th><th>عملیات</th></tr>
   </thead>
   <tbody>
   {% for c in configs %}
@@ -23,6 +23,7 @@
     <td><code style="font-size:.75rem;color:var(--txt2)">{{ c.email }}</code></td>
     <td style="font-size:.82rem">{{ c.full_name or '—' }}</td>
     <td style="font-size:.8rem">{{ c.server_name }}</td>
+    <td style="font-size:.78rem;color:var(--txt2)">{{ c.history_count }} مسیر | {{ c.history_servers|join("، ") }}</td>
     <td>{{ c.traffic_gb }} GB</td>
     <td>
       {% if dl < 0 %}
@@ -53,6 +54,15 @@
   </tbody>
 </table>
 </div>
+
+<div class="card pagination-wrap" style="margin-top:12px;display:flex;justify-content:space-between;align-items:center">
+  <span style="color:var(--txt3)">صفحه {{ page }} از {{ total_pages }}</span>
+  <div style="display:flex;gap:8px">
+    {% if page > 1 %}<a class="btn btn-outline btn-sm" href="/{{ S }}/configs?page={{ page-1 }}">◀️ قبلی</a>{% endif %}
+    {% if page < total_pages %}<a class="btn btn-outline btn-sm" href="/{{ S }}/configs?page={{ page+1 }}">بعدی ▶️</a>{% endif %}
+  </div>
+</div>
+
 {% endblock %}
 
 {% block scripts %}

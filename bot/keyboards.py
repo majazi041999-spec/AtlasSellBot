@@ -11,17 +11,42 @@ def admin_menu() -> ReplyKeyboardMarkup:
     b.row(KeyboardButton(text="📊 آمار کلی"), KeyboardButton(text="💰 سفارش‌های در انتظار"))
     b.row(KeyboardButton(text="🔑 مدیریت کانفیگ"), KeyboardButton(text="📦 پکیج‌ها"))
     b.row(KeyboardButton(text="👥 کاربران"), KeyboardButton(text="📣 پیام همگانی"))
-    b.row(KeyboardButton(text="🌐 پنل مدیریت"))
+    b.row(KeyboardButton(text="✉️ پیام خصوصی"), KeyboardButton(text="🌐 پنل مدیریت"))
     return b.as_markup(resize_keyboard=True)
 
 
-def user_menu() -> ReplyKeyboardMarkup:
+def user_menu(include_wholesale: bool = True) -> ReplyKeyboardMarkup:
     b = ReplyKeyboardBuilder()
     b.row(KeyboardButton(text="📡 وضعیت سرویس"), KeyboardButton(text="🛒 خرید سرویس"))
     b.row(KeyboardButton(text="🔄 انتقال سرور"), KeyboardButton(text="📋 سفارش‌های من"))
     b.row(KeyboardButton(text="🎁 دعوت دوستان"), KeyboardButton(text="📞 پشتیبانی"))
-    b.row(KeyboardButton(text="🏷️ خرید عمده"))
+    if include_wholesale:
+        b.row(KeyboardButton(text="🏷️ خرید عمده"))
+    b.row(KeyboardButton(text="🔗 سینک کانفیگ قبلی"))
     return b.as_markup(resize_keyboard=True)
+
+
+def broadcast_target_kb() -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    b.button(text="👥 همه کاربران", callback_data="bc_target:all")
+    b.button(text="🏷️ فقط کاربران عمده", callback_data="bc_target:wholesale")
+    b.adjust(1)
+    return b.as_markup()
+
+
+def wholesale_request_kb() -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    b.button(text="📝 ارسال درخواست همکاری عمده", callback_data="wh_req")
+    b.adjust(1)
+    return b.as_markup()
+
+
+def wholesale_request_admin_kb(user_id: int) -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    b.button(text="✅ تایید همکاری عمده", callback_data=f"wh_appr:{user_id}")
+    b.button(text="❌ رد درخواست", callback_data=f"wh_rej:{user_id}")
+    b.adjust(1)
+    return b.as_markup()
 
 
 def packages_kb(pkgs: List[Dict]) -> InlineKeyboardMarkup:
@@ -123,4 +148,12 @@ def adm_config_detail_kb(cid: int, active: bool) -> InlineKeyboardMarkup:
     b.button(text="🗑️ حذف", callback_data=f"del_cfg:{cid}")
     b.button(text="🔙 بازگشت", callback_data="adm_cfg_list")
     b.adjust(2, 2, 1)
+    return b.as_markup()
+
+
+def legacy_claim_admin_kb(claim_id: int) -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    b.button(text="✅ تایید اتصال", callback_data=f"lg_appr:{claim_id}")
+    b.button(text="❌ رد درخواست", callback_data=f"lg_rej:{claim_id}")
+    b.adjust(1)
     return b.as_markup()
