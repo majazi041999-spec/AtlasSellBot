@@ -226,7 +226,8 @@ async def get_or_create_user(telegram_id: int, username=None, full_name=None) ->
             await db.execute("UPDATE users SET username=?,full_name=? WHERE telegram_id=?",
                              (username, full_name, telegram_id))
             await db.commit()
-            return dict(row)
+            async with db.execute("SELECT * FROM users WHERE telegram_id=?", (telegram_id,)) as c2:
+                return dict(await c2.fetchone())
         code = _gen_referral_code()
         await db.execute(
             "INSERT INTO users(telegram_id,username,full_name,referral_code) VALUES(?,?,?,?)",
@@ -600,3 +601,18 @@ async def get_config_by_email(email: str) -> Optional[Dict]:
         async with db.execute("SELECT * FROM configs WHERE email=? LIMIT 1", (email,)) as c:
             r = await c.fetchone()
             return dict(r) if r else None
+
+
+async def get_config_by_uuid(uuid_val: str) -> Optional[Dict]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute("SELECT * FROM configs WHERE uuid=? LIMIT 1", (uuid_val,)) as c:
+            r = await c.fetchone()
+            return dict(r) if r else None
+
+
+async def reset_legacy_claims() -> int:
+    async with aiosqlite.connect(DB_PATH) as db:
+        c = await db.execute("DELETE FROM legacy_claims")
+        await db.commit()
+        return c.rowcount or 0

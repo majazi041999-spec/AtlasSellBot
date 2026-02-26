@@ -15,7 +15,7 @@ from core.database import (
     get_all_users, count_users, get_server, get_servers,
     save_config, get_user_by_telegram, get_setting, set_setting,
     get_user_by_id, server_has_capacity, count_active_configs_by_server, update_user,
-    get_legacy_claim, update_legacy_claim, get_config_by_email
+    get_legacy_claim, update_legacy_claim, get_config_by_email, get_config_by_uuid
 )
 from core.xui_api import XUIClient, fmt_bytes, days_left
 from core.qr import build_qr_image
@@ -914,7 +914,9 @@ async def legacy_claim_approve(cb: CallbackQuery):
         await cb.message.edit_text("❌ ایمیل کانفیگ در لینک پیدا نشد؛ درخواست رد شد.")
         return
 
-    cfg = await get_config_by_email(email)
+    cfg = await get_config_by_email(email) if email else None
+    if not cfg and (claim.get("uuid") or "").strip():
+        cfg = await get_config_by_uuid(claim["uuid"].strip())
     if cfg:
         await update_config(cfg["id"], user_id=claim["user_id"], is_active=1)
         await update_legacy_claim(cid, status="approved", reviewer_id=cb.from_user.id, reviewed_at=datetime.now().isoformat())

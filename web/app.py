@@ -49,6 +49,7 @@ from core.database import (
     update_order,  # noqa: F401
     update_package,
     update_server,
+    reset_legacy_claims,
 )
 from core.panel_content import (
     BOT_TEXT_DEFAULTS,
@@ -273,6 +274,29 @@ async def pkg_add(
     if not _auth(request):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     await add_package(name, traffic_gb, duration_days, price, description)
+    return RedirectResponse(f"/{S}/packages", status_code=302)
+
+
+@app.post(f"/{S}/packages/{{pid}}/edit")
+async def pkg_edit(
+    request: Request,
+    pid: int,
+    name: str = Form(...),
+    traffic_gb: float = Form(...),
+    duration_days: int = Form(...),
+    price: int = Form(...),
+    description: str = Form(""),
+):
+    if not _auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    await update_package(
+        pid,
+        name=name,
+        traffic_gb=traffic_gb,
+        duration_days=duration_days,
+        price=price,
+        description=description,
+    )
     return RedirectResponse(f"/{S}/packages", status_code=302)
 
 
@@ -502,6 +526,14 @@ async def settings_save(
     await set_setting("card_holder", card_holder.strip())
     await set_setting("card_bank", card_bank.strip())
 
+    return RedirectResponse(f"/{S}/settings?saved=1", status_code=302)
+
+
+@app.post(f"/{S}/settings/legacy_sync/reset")
+async def settings_reset_legacy_sync(request: Request):
+    if not _auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    await reset_legacy_claims()
     return RedirectResponse(f"/{S}/settings?saved=1", status_code=302)
 
 

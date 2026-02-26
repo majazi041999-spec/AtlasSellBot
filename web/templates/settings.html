@@ -94,6 +94,13 @@
     🎁 به ازای هر دعوت موفق، مقدار <b>{{ settings.referral_bonus_gb }} GB</b> هدیه داده می‌شود. برای تغییر این مقدار باید <code>REFERRAL_BONUS_GB</code> را در فایل <code>.env</code> تغییر دهید.
   </div>
 
+  <div class="settings-note" style="margin-top:12px">
+    ♻️ اگر می‌خواهید تست سینک کانفیگ را دوباره انجام دهید، می‌توانید همه درخواست‌های قبلی سینک را ریست کنید.
+    <form method="post" action="/{{ S }}/settings/legacy_sync/reset" onsubmit="return confirm('همه درخواست‌های سینک قبلی پاک شود؟')" style="margin-top:8px">
+      <button class="btn btn-danger btn-sm" type="submit">🧹 ریست درخواست‌های سینک</button>
+    </form>
+  </div>
+
   <div class="settings-actions">
     <button class="btn btn-primary" type="submit">💾 ذخیره همه تنظیمات</button>
   </div>
