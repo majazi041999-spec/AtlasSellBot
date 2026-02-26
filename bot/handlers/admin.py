@@ -898,6 +898,52 @@ async def wholesale_reject(cb: CallbackQuery):
     await cb.message.edit_text("❌ درخواست همکاری عمده رد شد.")
 
 
+async def _find_remote_legacy_client(email: str, client_uuid: str) -> dict | None:
+    """Search all active servers/inbounds and return matching client meta for legacy claim import."""
+    servers = await get_servers(active_only=True)
+    for srv in servers:
+        xui = XUIClient(srv["url"], srv["username"], srv["password"], srv.get("sub_path") or "")
+        try:
+            inbounds = await xui.get_inbounds()
+            for inbound in inbounds:
+                try:
+                    settings = json.loads(inbound.get("settings") or "{}")
+                except Exception:
+                    continue
+
+                clients = settings.get("clients") or []
+                for c in clients:
+                    c_email = (c.get("email") or "").strip()
+                    c_uuid = (c.get("id") or c.get("password") or "").strip()
+                    if email and c_email != email:
+                        continue
+                    if client_uuid and c_uuid != client_uuid and (not email):
+                        continue
+
+                    total_bytes = int(c.get("totalGB") or 0)
+                    traffic_gb = round(total_bytes / (1024 ** 3), 2) if total_bytes > 0 else 0
+                    expire_ts = int((c.get("expiryTime") or 0) / 1000) if (c.get("expiryTime") or 0) > 0 else 0
+                    if expire_ts > 0:
+                        duration_days = max(1, int((expire_ts - int(time.time())) / 86400))
+                    else:
+                        duration_days = 0
+
+                    return {
+                        "server_id": srv["id"],
+                        "inbound_id": int(inbound.get("id") or srv.get("inbound_id") or 1),
+                        "uuid": c_uuid,
+                        "email": c_email or email,
+                        "traffic_gb": traffic_gb,
+                        "duration_days": duration_days,
+                        "expire_ts": expire_ts,
+                        "is_active": 1 if c.get("enable", True) else 0,
+                    }
+        finally:
+            await xui.close()
+
+    return None
+
+
 @router.callback_query(F.data.startswith("lg_appr:"))
 async def legacy_claim_approve(cb: CallbackQuery):
     if not is_admin(cb.from_user.id):
@@ -917,18 +963,38 @@ async def legacy_claim_approve(cb: CallbackQuery):
     cfg = await get_config_by_email(email) if email else None
     if not cfg and (claim.get("uuid") or "").strip():
         cfg = await get_config_by_uuid(claim["uuid"].strip())
+
+    # اگر داخل DB نبود، مستقیم از همه سرورها/اینباندها جستجو و ایمپورت می‌کنیم.
+    if not cfg:
+        remote = await _find_remote_legacy_client(email, (claim.get("uuid") or "").strip())
+        if remote and remote.get("email") and remote.get("uuid"):
+            try:
+                cfg_id = await save_config(
+                    claim["user_id"],
+                    remote["server_id"],
+                    remote["uuid"],
+                    remote["email"],
+                    remote["inbound_id"],
+                    remote["traffic_gb"],
+                    remote["duration_days"],
+                    remote["expire_ts"],
+                )
+                cfg = await get_config(cfg_id)
+            except Exception:
+                cfg = await get_config_by_email(remote["email"])
+
     if cfg:
         await update_config(cfg["id"], user_id=claim["user_id"], is_active=1)
         await update_legacy_claim(cid, status="approved", reviewer_id=cb.from_user.id, reviewed_at=datetime.now().isoformat())
         try:
-            await cb.bot.send_message(claim["telegram_id"], f"✅ کانفیگ `{email}` به حساب شما متصل شد.", parse_mode="Markdown")
+            await cb.bot.send_message(claim["telegram_id"], f"✅ کانفیگ `{cfg.get('email') or email}` به حساب شما متصل شد.", parse_mode="Markdown")
         except Exception:
             pass
-        await cb.message.edit_text(f"✅ کانفیگ {email} به کاربر تخصیص یافت.")
+        await cb.message.edit_text(f"✅ کانفیگ {cfg.get('email') or email} به کاربر تخصیص یافت.")
         return
 
     await update_legacy_claim(cid, status="rejected", reviewer_id=cb.from_user.id, reviewed_at=datetime.now().isoformat(), admin_note="email_not_found")
-    await cb.message.edit_text("❌ کانفیگ با این email داخل دیتابیس پیدا نشد. اول باید از پنل/ربات ادمین ایمپورت شود.")
+    await cb.message.edit_text("❌ کانفیگ با این ایمیل/UUID پیدا نشد. بررسی شد روی دیتابیس و همه سرورها.")
 
 
 @router.callback_query(F.data.startswith("lg_rej:"))
