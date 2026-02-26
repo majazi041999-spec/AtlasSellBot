@@ -12,6 +12,7 @@ def admin_menu() -> ReplyKeyboardMarkup:
     b.row(KeyboardButton(text="🔑 مدیریت کانفیگ"), KeyboardButton(text="📦 پکیج‌ها"))
     b.row(KeyboardButton(text="👥 کاربران"), KeyboardButton(text="📣 پیام همگانی"))
     b.row(KeyboardButton(text="✉️ پیام خصوصی"), KeyboardButton(text="🌐 پنل مدیریت"))
+    b.row(KeyboardButton(text="🔄 شروع مجدد"))
     return b.as_markup(resize_keyboard=True)
 
 
@@ -19,6 +20,7 @@ def user_menu(include_wholesale: bool = True) -> ReplyKeyboardMarkup:
     b = ReplyKeyboardBuilder()
     b.row(KeyboardButton(text="📡 وضعیت سرویس"), KeyboardButton(text="🛒 خرید سرویس"))
     b.row(KeyboardButton(text="🔄 انتقال سرور"), KeyboardButton(text="📋 سفارش‌های من"))
+    b.row(KeyboardButton(text="🔄 شروع مجدد"))
     b.row(KeyboardButton(text="🎁 دعوت دوستان"), KeyboardButton(text="📞 پشتیبانی"))
     if include_wholesale:
         b.row(KeyboardButton(text="🏷️ خرید عمده"))

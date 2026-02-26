@@ -122,6 +122,17 @@ async def back_menu_cb(cb: CallbackQuery, state: FSMContext):
     await cb.message.delete()
 
 
+
+
+@router.message(F.text == "🔄 شروع مجدد")
+async def restart_menu(msg: Message, state: FSMContext):
+    await state.clear()
+    from bot.keyboards import admin_menu, user_menu
+    user = await get_or_create_user(msg.from_user.id, msg.from_user.username, msg.from_user.full_name)
+    is_adm = _is_admin(msg.from_user.id) or user.get("is_admin", 0)
+    kb = admin_menu() if is_adm else user_menu(include_wholesale=bool(user.get("is_wholesale", 0)))
+    await msg.answer("✅ ربات برای شما بروزرسانی شد و منو دوباره بارگذاری شد.", reply_markup=kb)
+
 @router.message(F.text == "🌐 پنل مدیریت")
 async def panel_url(msg: Message):
     user = await get_or_create_user(msg.from_user.id)

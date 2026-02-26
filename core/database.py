@@ -223,8 +223,10 @@ async def get_or_create_user(telegram_id: int, username=None, full_name=None) ->
         async with db.execute("SELECT * FROM users WHERE telegram_id=?", (telegram_id,)) as c:
             row = await c.fetchone()
         if row:
-            await db.execute("UPDATE users SET username=?,full_name=? WHERE telegram_id=?",
-                             (username, full_name, telegram_id))
+            await db.execute(
+                "UPDATE users SET username=COALESCE(?, username), full_name=COALESCE(?, full_name) WHERE telegram_id=?",
+                (username, full_name, telegram_id)
+            )
             await db.commit()
             async with db.execute("SELECT * FROM users WHERE telegram_id=?", (telegram_id,)) as c2:
                 return dict(await c2.fetchone())
