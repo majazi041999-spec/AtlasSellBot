@@ -64,6 +64,14 @@
       <div class="form-group"><label>عضویت اجباری کانال</label><select class="form-control" name="force_channel"><option value="0" {% if settings.force_channel != "1" %}selected{% endif %}>غیرفعال</option><option value="1" {% if settings.force_channel == "1" %}selected{% endif %}>فعال</option></select></div>
       <div class="form-group"><label>یوزرنیم کانال (بدون @)</label><input class="form-control" type="text" name="channel_username" value="{{ settings.channel_username }}" /></div>
       <div class="form-group"><label>حالت تعمیر</label><select class="form-control" name="maintenance_mode"><option value="0" {% if settings.maintenance_mode != "1" %}selected{% endif %}>غیرفعال (ربات در دسترس)</option><option value="1" {% if settings.maintenance_mode == "1" %}selected{% endif %}>فعال (ربات در تعمیر)</option></select></div>
+      <div class="form-group"><label>سرور پیش‌فرض برای ساخت کانفیگ سفارش</label>
+        <select class="form-control" name="default_server_id">
+          <option value="0" {% if settings.default_server_id|string == "0" %}selected{% endif %}>انتخاب خودکار (بدون پیش‌فرض)</option>
+          {% for srv in servers %}
+          <option value="{{ srv.id }}" {% if settings.default_server_id|string == srv.id|string %}selected{% endif %}>{{ srv.name }}{% if not srv.is_active %} (غیرفعال){% endif %}</option>
+          {% endfor %}
+        </select>
+      </div>
     </section>
 
     <section class="settings-card">
