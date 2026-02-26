@@ -10,7 +10,7 @@
 {% endif %}
 
 <div class="sec-hd">
-  <span class="sec-title">آخرین سفارش‌ها ({{ orders|length }})</span>
+  <span class="sec-title">کل سفارش‌ها: {{ total }}</span>
   <div class="search-box">
     <input type="text" id="orderSearch" class="form-control" placeholder="جستجو..." oninput="filterTable('orderSearch','orderTable')">
   </div>
@@ -34,7 +34,7 @@
   {% set si = STATUS.get(o.status, ('?','b-gray',o.status)) %}
   <tr>
     <td>#{{ o.id }}</td>
-    <td>{{ o.full_name or '—' }}<br><small style="color:var(--txt3)">@{{ o.username or '—' }}</small></td>
+    <td>{{ o.full_name or '—' }}<br><small style="color:var(--txt3)">{{ ('@' + o.username) if o.username else '—' }}</small></td>
     <td>{{ o.pkg_name }}</td>
     <td>{{ "{:,}".format(o.price) }} T</td>
     <td><span class="badge {{ si[1] }}">{{ si[0] }} {{ si[2] }}</span></td>
@@ -43,5 +43,13 @@
   {% endfor %}
   </tbody>
 </table>
+</div>
+
+<div class="card pagination-wrap" style="margin-top:12px;display:flex;justify-content:space-between;align-items:center">
+  <span style="color:var(--txt3)">صفحه {{ page }} از {{ total_pages }}</span>
+  <div style="display:flex;gap:8px">
+    {% if page > 1 %}<a class="btn btn-outline btn-sm" href="/{{ S }}/orders?page={{ page-1 }}">◀️ قبلی</a>{% endif %}
+    {% if page < total_pages %}<a class="btn btn-outline btn-sm" href="/{{ S }}/orders?page={{ page+1 }}">بعدی ▶️</a>{% endif %}
+  </div>
 </div>
 {% endblock %}

@@ -24,7 +24,7 @@ from bot.keyboards import (
     admin_configs_kb, adm_config_detail_kb, confirm_kb, packages_kb, servers_kb,
     broadcast_target_kb, legacy_claim_admin_kb
 )
-from bot.states import AddPackage, CreateConfig, BulkConfig, EditConfig, Broadcast
+from bot.states import AddPackage, CreateConfig, BulkConfig, EditConfig, Broadcast, PrivateMessage
 
 router = Router()
 
@@ -1012,3 +1012,35 @@ async def broadcast_do(cb: CallbackQuery, state: FSMContext, bot: Bot):
 async def broadcast_cancel(cb: CallbackQuery, state: FSMContext):
     await state.clear()
     await cb.message.edit_text("❌ ارسال لغو شد.")
+
+
+@router.message(F.text == "✉️ پیام خصوصی")
+async def private_msg_start(msg: Message, state: FSMContext):
+    if not is_admin(msg.from_user.id):
+        return
+    await state.set_state(PrivateMessage.user_id)
+    await msg.answer("🆔 آیدی عددی کاربر را ارسال کنید:")
+
+
+@router.message(PrivateMessage.user_id)
+async def private_msg_user(msg: Message, state: FSMContext):
+    try:
+        uid = int((msg.text or '').strip())
+    except ValueError:
+        await msg.answer("❌ آیدی معتبر نیست.")
+        return
+    await state.update_data(uid=uid)
+    await state.set_state(PrivateMessage.text)
+    await msg.answer("✍️ متن پیام خصوصی را ارسال کنید:")
+
+
+@router.message(PrivateMessage.text)
+async def private_msg_send(msg: Message, state: FSMContext):
+    data = await state.get_data()
+    await state.clear()
+    uid = data.get('uid')
+    try:
+        await msg.bot.send_message(uid, msg.text or '')
+        await msg.answer("✅ پیام خصوصی ارسال شد.")
+    except Exception:
+        await msg.answer("❌ ارسال ناموفق بود. آیدی یا وضعیت چت کاربر را بررسی کنید.")

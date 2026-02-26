@@ -255,10 +255,17 @@ async def server_test(request: Request, sid: int):
 async def packages_page(request: Request):
     if not _auth(request):
         return _redir_login()
-    pkgs = await get_packages(active_only=False)
+    page = max(1, int(request.query_params.get("page", "1") or 1))
+    per_page = 20
+    pkgs_all = await get_packages(active_only=False)
+    total = len(pkgs_all)
+    total_pages = max(1, (total + per_page - 1) // per_page)
+    page = min(page, total_pages)
+    start = (page - 1) * per_page
+    pkgs = pkgs_all[start:start + per_page]
     return _templates.TemplateResponse(
         "packages.html",
-        await _ctx_ui(request, packages=pkgs, active="packages"),
+        await _ctx_ui(request, packages=pkgs, total=total, page=page, total_pages=total_pages, active="packages"),
     )
 
 
@@ -322,11 +329,18 @@ async def pkg_delete(request: Request, pid: int):
 async def orders_page(request: Request):
     if not _auth(request):
         return _redir_login()
-    orders = await get_all_orders(100)
+    page = max(1, int(request.query_params.get("page", "1") or 1))
+    per_page = 30
+    orders_all = await get_all_orders(1000)
+    total = len(orders_all)
+    total_pages = max(1, (total + per_page - 1) // per_page)
+    page = min(page, total_pages)
+    start = (page - 1) * per_page
+    orders = orders_all[start:start + per_page]
     pending = await get_pending_orders()
     return _templates.TemplateResponse(
         "orders.html",
-        await _ctx_ui(request, orders=orders, pending_count=len(pending), active="orders"),
+        await _ctx_ui(request, orders=orders, total=total, page=page, total_pages=total_pages, pending_count=len(pending), active="orders"),
     )
 
 
@@ -335,10 +349,27 @@ async def orders_page(request: Request):
 async def configs_page(request: Request):
     if not _auth(request):
         return _redir_login()
-    configs = await get_all_configs()
+    page = max(1, int(request.query_params.get("page", "1") or 1))
+    per_page = 30
+    raw = await get_all_configs()
+    grouped = {}
+    for c in raw:
+        base = (c.get("email") or "").split("_m")[0]
+        g = grouped.setdefault(base, {**c, "history_count": 0, "history_servers": []})
+        g["history_count"] += 1
+        if c.get("server_name") and c["server_name"] not in g["history_servers"]:
+            g["history_servers"].append(c["server_name"])
+        if c.get("is_active") and not g.get("is_active"):
+            g.update(c)
+    configs_all = list(grouped.values())
+    total = len(configs_all)
+    total_pages = max(1, (total + per_page - 1) // per_page)
+    page = min(page, total_pages)
+    start = (page - 1) * per_page
+    configs = configs_all[start:start + per_page]
     return _templates.TemplateResponse(
         "configs.html",
-        await _ctx_ui(request, configs=configs, active="configs"),
+        await _ctx_ui(request, configs=configs, total=total, page=page, total_pages=total_pages, active="configs"),
     )
 
 
@@ -371,11 +402,15 @@ async def config_toggle(request: Request, cid: int):
 async def users_page(request: Request):
     if not _auth(request):
         return _redir_login()
-    users = await get_all_users(0, 200)
+    page = max(1, int(request.query_params.get("page", "1") or 1))
+    per_page = 50
     total = await count_users()
+    total_pages = max(1, (total + per_page - 1) // per_page)
+    page = min(page, total_pages)
+    users = await get_all_users((page - 1) * per_page, per_page)
     return _templates.TemplateResponse(
         "users.html",
-        await _ctx_ui(request, users=users, total=total, active="users"),
+        await _ctx_ui(request, users=users, total=total, page=page, total_pages=total_pages, active="users"),
     )
 
 

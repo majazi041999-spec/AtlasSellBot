@@ -11,7 +11,7 @@ def admin_menu() -> ReplyKeyboardMarkup:
     b.row(KeyboardButton(text="📊 آمار کلی"), KeyboardButton(text="💰 سفارش‌های در انتظار"))
     b.row(KeyboardButton(text="🔑 مدیریت کانفیگ"), KeyboardButton(text="📦 پکیج‌ها"))
     b.row(KeyboardButton(text="👥 کاربران"), KeyboardButton(text="📣 پیام همگانی"))
-    b.row(KeyboardButton(text="🌐 پنل مدیریت"))
+    b.row(KeyboardButton(text="✉️ پیام خصوصی"), KeyboardButton(text="🌐 پنل مدیریت"))
     return b.as_markup(resize_keyboard=True)
 
 

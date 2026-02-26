@@ -53,3 +53,8 @@ class WholesaleBuy(StatesGroup):
 
 class LegacySync(StatesGroup):
     waiting_link = State()
+
+
+class PrivateMessage(StatesGroup):
+    user_id = State()
+    text = State()
