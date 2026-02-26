@@ -27,6 +27,7 @@ SETTINGS_DEFAULTS: Dict[str, str] = {
     "cfg_name_rand_len": "6",
     "force_channel": "0",
     "channel_username": "",
+    "legacy_sync_enabled": "1",
 }
 
 

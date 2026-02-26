@@ -39,8 +39,7 @@
     </div>
     <div style="display:flex;gap:6px;flex-shrink:0;flex-wrap:wrap">
       <button class="btn btn-outline btn-sm" onclick="testServer({{ srv.id }}, this)">🔗 تست</button>
-      <button class="btn btn-outline btn-sm" onclick="openEditModal({{ srv.id }}, '{{ srv.name }}', '{{ srv.url }}', '{{ srv.username }}', '{{ srv.sub_path }}', {{ srv.inbound_id }}, '{{ srv.note }}', {{ srv.max_active_configs or 0 }})"
-      >✏️ ویرایش</button>
+      <button class="btn btn-outline btn-sm" onclick="openEditModal({{ srv.id }}, '{{ srv.name|replace("'","&#39;") }}', '{{ srv.url }}', '{{ srv.username }}', '{{ srv.sub_path }}', {{ srv.inbound_id }}, '{{ srv.note|replace("'","&#39;") }}', {{ srv.max_active_configs or 0 }})">✏️ ویرایش</button>
       <button class="btn btn-outline btn-sm" id="toggle-{{ srv.id }}"
         onclick="toggleServer({{ srv.id }}, {{ srv.is_active }}, this)"
       >{{ '🔴 غیرفعال' if srv.is_active else '🟢 فعال' }}</button>
@@ -140,6 +139,10 @@
       <label>یادداشت</label>
       <input type="text" name="note" id="edit_note" class="form-control">
     </div>
+    <div class="form-group">
+      <label>ظرفیت فعال (0 = نامحدود)</label>
+      <input type="number" name="max_active_configs" id="edit_max_active_configs" class="form-control" min="0">
+    </div>
     <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:4px">
       <button type="button" class="btn btn-outline" onclick="closeModal('editModal')">انصراف</button>
       <button type="submit" class="btn btn-primary">💾 ذخیره تغییرات</button>
@@ -183,7 +186,7 @@ async function deleteServer(id, name){
   else toast('خطا در حذف!','error');
 }
 
-function openEditModal(id, name, url, user, sub, iid, note){
+function openEditModal(id, name, url, user, sub, iid, note, maxcap){
   document.getElementById('edit_name').value = name;
   document.getElementById('edit_url').value = url;
   document.getElementById('edit_user').value = user;
