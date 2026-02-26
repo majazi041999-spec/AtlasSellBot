@@ -44,11 +44,13 @@ from core.database import (
     get_servers,
     get_setting,
     get_stats,
+    init_db,
     set_setting,
     update_config,
     update_order,  # noqa: F401
     update_package,
     update_server,
+    reset_legacy_claims,
 )
 from core.panel_content import (
     BOT_TEXT_DEFAULTS,
@@ -67,6 +69,13 @@ _dir = os.path.dirname(os.path.abspath(__file__))
 _templates = Jinja2Templates(directory=os.path.join(_dir, "templates"))
 
 S = WEB_SECRET_PATH  # short alias
+
+
+@app.on_event("startup")
+async def _startup_init_db():
+    # تضمین ایجاد جداول حتی اگر وب مستقل اجرا شود
+    await init_db()
+
 
 
 # ═══════════════════════════════ AUTH ═══════════════════════════════
@@ -254,10 +263,17 @@ async def server_test(request: Request, sid: int):
 async def packages_page(request: Request):
     if not _auth(request):
         return _redir_login()
-    pkgs = await get_packages(active_only=False)
+    page = max(1, int(request.query_params.get("page", "1") or 1))
+    per_page = 20
+    pkgs_all = await get_packages(active_only=False)
+    total = len(pkgs_all)
+    total_pages = max(1, (total + per_page - 1) // per_page)
+    page = min(page, total_pages)
+    start = (page - 1) * per_page
+    pkgs = pkgs_all[start:start + per_page]
     return _templates.TemplateResponse(
         "packages.html",
-        await _ctx_ui(request, packages=pkgs, active="packages"),
+        await _ctx_ui(request, packages=pkgs, total=total, page=page, total_pages=total_pages, active="packages"),
     )
 
 
@@ -273,6 +289,29 @@ async def pkg_add(
     if not _auth(request):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     await add_package(name, traffic_gb, duration_days, price, description)
+    return RedirectResponse(f"/{S}/packages", status_code=302)
+
+
+@app.post(f"/{S}/packages/{{pid}}/edit")
+async def pkg_edit(
+    request: Request,
+    pid: int,
+    name: str = Form(...),
+    traffic_gb: float = Form(...),
+    duration_days: int = Form(...),
+    price: int = Form(...),
+    description: str = Form(""),
+):
+    if not _auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    await update_package(
+        pid,
+        name=name,
+        traffic_gb=traffic_gb,
+        duration_days=duration_days,
+        price=price,
+        description=description,
+    )
     return RedirectResponse(f"/{S}/packages", status_code=302)
 
 
@@ -298,11 +337,18 @@ async def pkg_delete(request: Request, pid: int):
 async def orders_page(request: Request):
     if not _auth(request):
         return _redir_login()
-    orders = await get_all_orders(100)
+    page = max(1, int(request.query_params.get("page", "1") or 1))
+    per_page = 30
+    orders_all = await get_all_orders(1000)
+    total = len(orders_all)
+    total_pages = max(1, (total + per_page - 1) // per_page)
+    page = min(page, total_pages)
+    start = (page - 1) * per_page
+    orders = orders_all[start:start + per_page]
     pending = await get_pending_orders()
     return _templates.TemplateResponse(
         "orders.html",
-        await _ctx_ui(request, orders=orders, pending_count=len(pending), active="orders"),
+        await _ctx_ui(request, orders=orders, total=total, page=page, total_pages=total_pages, pending_count=len(pending), active="orders"),
     )
 
 
@@ -311,10 +357,27 @@ async def orders_page(request: Request):
 async def configs_page(request: Request):
     if not _auth(request):
         return _redir_login()
-    configs = await get_all_configs()
+    page = max(1, int(request.query_params.get("page", "1") or 1))
+    per_page = 30
+    raw = await get_all_configs()
+    grouped = {}
+    for c in raw:
+        base = (c.get("email") or "").split("_m")[0]
+        g = grouped.setdefault(base, {**c, "history_count": 0, "history_servers": []})
+        g["history_count"] += 1
+        if c.get("server_name") and c["server_name"] not in g["history_servers"]:
+            g["history_servers"].append(c["server_name"])
+        if c.get("is_active") and not g.get("is_active"):
+            g.update(c)
+    configs_all = list(grouped.values())
+    total = len(configs_all)
+    total_pages = max(1, (total + per_page - 1) // per_page)
+    page = min(page, total_pages)
+    start = (page - 1) * per_page
+    configs = configs_all[start:start + per_page]
     return _templates.TemplateResponse(
         "configs.html",
-        await _ctx_ui(request, configs=configs, active="configs"),
+        await _ctx_ui(request, configs=configs, total=total, page=page, total_pages=total_pages, active="configs"),
     )
 
 
@@ -347,11 +410,15 @@ async def config_toggle(request: Request, cid: int):
 async def users_page(request: Request):
     if not _auth(request):
         return _redir_login()
-    users = await get_all_users(0, 200)
+    page = max(1, int(request.query_params.get("page", "1") or 1))
+    per_page = 50
     total = await count_users()
+    total_pages = max(1, (total + per_page - 1) // per_page)
+    page = min(page, total_pages)
+    users = await get_all_users((page - 1) * per_page, per_page)
     return _templates.TemplateResponse(
         "users.html",
-        await _ctx_ui(request, users=users, total=total, active="users"),
+        await _ctx_ui(request, users=users, total=total, page=page, total_pages=total_pages, active="users"),
     )
 
 
@@ -415,6 +482,8 @@ async def settings_page(request: Request):
         "cfg_name_rand_len": await get_setting("cfg_name_rand_len", SETTINGS_DEFAULTS["cfg_name_rand_len"]),
         "force_channel": await get_setting("force_channel", SETTINGS_DEFAULTS["force_channel"]),
         "channel_username": await get_setting("channel_username", SETTINGS_DEFAULTS["channel_username"]),
+        "default_server_id": await get_setting("default_server_id", "0"),
+        "legacy_sync_enabled": await get_setting("legacy_sync_enabled", SETTINGS_DEFAULTS["legacy_sync_enabled"]),
     }
 
     # ✅ کارت بانکی از دیتابیس Settings خوانده می‌شود (با fallback از .env)
@@ -424,10 +493,11 @@ async def settings_page(request: Request):
 
     settings["referral_bonus_gb"] = REFERRAL_BONUS_GB
 
+    servers = await get_servers(active_only=False)
     saved = request.query_params.get("saved")
     return _templates.TemplateResponse(
         "settings.html",
-        await _ctx_ui(request, settings=settings, saved=saved, active="settings"),
+        await _ctx_ui(request, settings=settings, servers=servers, saved=saved, active="settings"),
     )
 
 
@@ -455,6 +525,8 @@ async def settings_save(
     cfg_name_rand_len: str = Form("6"),
     force_channel: str = Form("0"),
     channel_username: str = Form(""),
+    default_server_id: str = Form("0"),
+    legacy_sync_enabled: str = Form("1"),
     # ✅ کارت بانکی از پنل ذخیره می‌شود
     card_number: str = Form(""),
     card_holder: str = Form(""),
@@ -488,12 +560,24 @@ async def settings_save(
     await set_setting("force_channel", force_channel)
     await set_setting("channel_username", channel_username.lstrip("@"))
 
+    valid_server_ids = {str(sv["id"]) for sv in await get_servers(active_only=False)}
+    await set_setting("default_server_id", default_server_id if default_server_id in valid_server_ids else "0")
+    await set_setting("legacy_sync_enabled", "1" if legacy_sync_enabled == "1" else "0")
+
     # ✅ ذخیره کارت
     await set_setting("card_number", card_number.strip())
     await set_setting("card_holder", card_holder.strip())
     await set_setting("card_bank", card_bank.strip())
 
     return RedirectResponse(f"/{S}/settings?saved=1", status_code=302)
+
+
+@app.post(f"/{S}/settings/legacy_sync/reset")
+async def settings_reset_legacy_sync(request: Request):
+    if not _auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    deleted = await reset_legacy_claims()
+    return JSONResponse({"success": True, "deleted": deleted})
 
 
 # ═══════════════════════════════ ROOT ═══════════════════════════════
