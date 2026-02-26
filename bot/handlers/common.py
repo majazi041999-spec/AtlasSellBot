@@ -65,7 +65,7 @@ async def cmd_start(msg: Message, state: FSMContext):
     welcome = await get_text("welcome_message")
     text = f"{'🔐 *پنل مدیریت*' if is_adm else '🌐 *Atlas Account*'}\n\n{welcome}"
 
-    kb = admin_menu() if is_adm else user_menu()
+    kb = admin_menu() if is_adm else user_menu(include_wholesale=bool(user.get("is_wholesale", 0)))
     await msg.answer(text, reply_markup=kb, parse_mode="Markdown")
 
 
