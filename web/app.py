@@ -44,6 +44,7 @@ from core.database import (
     get_servers,
     get_setting,
     get_stats,
+    init_db,
     set_setting,
     update_config,
     update_order,  # noqa: F401
@@ -68,6 +69,13 @@ _dir = os.path.dirname(os.path.abspath(__file__))
 _templates = Jinja2Templates(directory=os.path.join(_dir, "templates"))
 
 S = WEB_SECRET_PATH  # short alias
+
+
+@app.on_event("startup")
+async def _startup_init_db():
+    # تضمین ایجاد جداول حتی اگر وب مستقل اجرا شود
+    await init_db()
+
 
 
 # ═══════════════════════════════ AUTH ═══════════════════════════════
