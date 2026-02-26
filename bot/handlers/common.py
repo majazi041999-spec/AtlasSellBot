@@ -1,6 +1,6 @@
 from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery
-from aiogram.filters import CommandStart, Command
+from aiogram.filters import CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
@@ -69,9 +69,15 @@ async def cmd_start(msg: Message, state: FSMContext):
     await msg.answer(text, reply_markup=kb, parse_mode="Markdown")
 
 
-@router.message(Command())
+@router.message(F.text.regexp(r"^/"))
 async def block_non_member_commands(msg: Message):
-    """Prevent using any /command (except /start handler) when forced channel join is enabled."""
+    """Prevent using any slash command (except /start*) when force_channel is enabled."""
+    if not msg.text:
+        return
+
+    cmd = msg.text.strip().split()[0].split("@", 1)[0].lower()
+    if cmd.startswith("/start"):
+        return
     force = await get_setting("force_channel", "0")
     channel_username = await get_setting("channel_username", "")
     if force != "1" or not channel_username:
