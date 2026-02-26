@@ -1,6 +1,8 @@
 import uuid as _uuid
 import time
+import json
 import aiosqlite
+from urllib.parse import urlparse, parse_qs, unquote
 from datetime import datetime, timedelta, date
 
 from aiogram import Router, F, Bot
@@ -23,6 +25,7 @@ from core.database import (
     get_servers,
     get_server,
     get_migration_count_today,
+    get_user_migration_count_today,
     get_setting,
     get_referral_stats,
     update_user,
@@ -30,6 +33,8 @@ from core.database import (
     get_user_pricing,
     create_custom_order,
     get_available_servers,
+    get_legacy_claim_by_key,
+    create_legacy_claim,
 )
 from core.xui_api import XUIClient, fmt_bytes, days_left
 from core.texts import get_text
@@ -42,8 +47,11 @@ from bot.keyboards import (
     config_detail_kb,
     configs_kb,
     servers_kb,
+    wholesale_request_kb,
+    wholesale_request_admin_kb,
+    legacy_claim_admin_kb,
 )
-from bot.states import BuyService, WholesaleBuy
+from bot.states import BuyService, WholesaleBuy, LegacySync
 
 router = Router()
 
@@ -93,7 +101,7 @@ async def _get_card_info():
 
 
 # ─── STATUS ──────────────────────────────────────────────────────
-@router.message(F.text == " وضعیت سرویس")
+@router.message(F.text == "📡 وضعیت سرویس")
 async def user_status(msg: Message):
     if not await _ensure_channel_membership(msg):
         return
@@ -216,8 +224,9 @@ async def send_config_link(cb: CallbackQuery):
         )
         await cb.message.answer(body, parse_mode="Markdown")
         try:
-            qr = build_qr_image(link)
-            await cb.message.answer_photo(qr, caption=" QR Code کانفیگ شما")
+            ch = await get_setting("channel_username", "AtlasChannel")
+            qr = build_qr_image(link, footer_text=ch)
+            await cb.message.answer_photo(qr, caption="🎨 QR Code کانفیگ شما")
         except Exception:
             pass
         await cb.answer()
@@ -256,7 +265,7 @@ async def cfg_sub(cb: CallbackQuery):
 
 
 # ─── BUY ─────────────────────────────────────────────────────────
-@router.message(F.text == " خرید سرویس")
+@router.message(F.text == "🛒 خرید سرویس")
 async def buy_service(msg: Message):
     if not await _ensure_channel_membership(msg):
         return
@@ -375,16 +384,58 @@ async def cancel_order(cb: CallbackQuery, state: FSMContext):
 
 
 # ─── WHOLESALE ────────────────────────────────────────────────────
-@router.message(F.text == "️ خرید عمده")
+@router.message(F.text == "🏷️ خرید عمده")
 async def wholesale_start(msg: Message, state: FSMContext):
     if not await _ensure_channel_membership(msg):
         return
     if await _blocked(msg.from_user.id):
         await msg.answer(await get_text("blocked_message"))
         return
+    user = await get_or_create_user(msg.from_user.id)
+    if not user.get("is_wholesale", 0):
+        if user.get("wholesale_request_pending", 0):
+            await msg.answer("⏳ درخواست همکاری عمده شما قبلاً ثبت شده و منتظر بررسی ادمین است.")
+        else:
+            await msg.answer(
+                "🏷️ *خرید عمده فقط برای همکاران تاییدشده فعال است.*\n\n"
+                "اگر فروشنده/همکار هستید، درخواست همکاری ارسال کنید تا ادمین بررسی کند.",
+                reply_markup=wholesale_request_kb(),
+                parse_mode="Markdown",
+            )
+        return
+
     await state.set_state(WholesaleBuy.count)
     await msg.answer("️ خرید عمده\n\nتعداد کانفیگ موردنیاز را وارد کنید (مثال: 20)")
 
+
+
+
+@router.callback_query(F.data == "wh_req")
+async def wholesale_request_submit(cb: CallbackQuery):
+    user = await get_or_create_user(cb.from_user.id, cb.from_user.username, cb.from_user.full_name)
+    if user.get("is_wholesale", 0):
+        await cb.answer("شما قبلاً تایید شده‌اید ✅", show_alert=True)
+        return
+    if user.get("wholesale_request_pending", 0):
+        await cb.answer("درخواست شما قبلاً ثبت شده و در حال بررسی است.", show_alert=True)
+        return
+
+    await update_user(user["id"], wholesale_request_pending=1)
+    for aid in ADMIN_IDS:
+        try:
+            await cb.bot.send_message(
+                aid,
+                f"🧾 *درخواست همکاری عمده جدید*\n\n"
+                f"👤 {cb.from_user.full_name or '—'} (@{cb.from_user.username or '—'})\n"
+                f"🆔 `{cb.from_user.id}`",
+                reply_markup=wholesale_request_admin_kb(user["id"]),
+                parse_mode="Markdown",
+            )
+        except Exception:
+            pass
+
+    await cb.message.answer("✅ درخواست شما ثبت شد. پس از تایید ادمین، منوی خرید عمده برای شما فعال می‌شود.")
+    await cb.answer()
 
 @router.message(WholesaleBuy.count)
 async def wholesale_count(msg: Message, state: FSMContext):
@@ -418,6 +469,31 @@ async def wholesale_duration(msg: Message, state: FSMContext):
         await msg.answer("❌ عدد معتبر وارد کنید")
         return
 
+    await state.update_data(duration=days)
+    await state.set_state(WholesaleBuy.naming_prefix)
+    await msg.answer(
+        "📝 الگوی اسم کانفیگ‌ها را وارد کنید (مثال: `Mobile110 📱`)\n"
+        "اگر نمی‌خواهید شخصی‌سازی شود، `-` بفرستید.",
+        parse_mode="Markdown",
+    )
+
+
+@router.message(WholesaleBuy.naming_prefix)
+async def wholesale_naming_prefix(msg: Message, state: FSMContext):
+    prefix = msg.text.strip()
+    await state.update_data(naming_prefix="" if prefix == "-" else prefix)
+    await state.set_state(WholesaleBuy.naming_start)
+    await msg.answer("🔢 شماره شروع را وارد کنید (مثال: 151)")
+
+
+@router.message(WholesaleBuy.naming_start)
+async def wholesale_naming_start(msg: Message, state: FSMContext):
+    try:
+        start_no = int(msg.text.strip())
+    except ValueError:
+        await msg.answer("❌ شماره معتبر وارد کنید")
+        return
+
     data = await state.get_data()
     await state.clear()
 
@@ -434,23 +510,31 @@ async def wholesale_duration(msg: Message, state: FSMContext):
         await msg.answer("⛔ فعلاً سرور خالی برای فعالسازی سفارش عمده وجود ندارد.")
         return
 
+    notes = ""
+    if data.get("naming_prefix"):
+        notes = json.dumps({"bulk_name_prefix": data["naming_prefix"], "bulk_start_number": start_no}, ensure_ascii=False)
+
     oid = await create_custom_order(
         user["id"],
         name=f"عمده {data['count']}x{data['traffic']}GB",
         total_traffic_gb=total_gb,
-        duration_days=days,
+        duration_days=int(data["duration"]),
         price=final_price,
         bulk_count=data["count"],
         bulk_each_gb=data["traffic"],
+        notes=notes,
     )
 
     card_bank, card_number, card_holder = await _get_card_info()
+    naming_line = ""
+    if data.get("naming_prefix"):
+        naming_line = f"\n🏷️ الگوی نام: `{data['naming_prefix']}-{start_no} -{int(data['traffic'])}GB`"
 
     text = (
         f" *سفارش عمده #{oid}*\n"
         f"تعداد: `{data['count']}` کانفیگ\n"
         f"حجم هر کانفیگ: `{data['traffic']} GB`\n"
-        f"مدت: `{days}` روز\n"
+        f"مدت: `{int(data['duration'])}` روز{naming_line}\n"
         f"قیمت هر GB: `{pricing['price_per_gb'] or 10000:,}` تومان\n"
         f"تخفیف شما: `{discount}%`\n"
         f" مبلغ نهایی: *{final_price:,} تومان*\n\n"
@@ -460,8 +544,86 @@ async def wholesale_duration(msg: Message, state: FSMContext):
     await msg.answer(text, reply_markup=payment_kb(oid), parse_mode="Markdown")
 
 
+def _extract_config_identity(link: str):
+    try:
+        p = urlparse(link.strip())
+        if p.scheme not in ("vless", "vmess", "trojan", "ss"):
+            return None, None, None
+        email = unquote((p.fragment or "").strip())
+        raw_uuid = p.username or ""
+        q = parse_qs(p.query or "")
+        if not email and "remark" in q and q["remark"]:
+            email = q["remark"][0]
+        key = f"{p.scheme}|{raw_uuid}|{email}".strip().lower()
+        return key, email, raw_uuid
+    except Exception:
+        return None, None, None
+
+
+@router.message(F.text == "🔗 سینک کانفیگ قبلی")
+async def legacy_sync_start(msg: Message, state: FSMContext):
+    if not await _ensure_channel_membership(msg):
+        return
+    if await _blocked(msg.from_user.id):
+        await msg.answer(await get_text("blocked_message"))
+        return
+
+    enabled = await get_setting("legacy_sync_enabled", "1")
+    if enabled != "1":
+        await msg.answer("⛔ این بخش فعلاً غیرفعال شده است.")
+        return
+
+    await state.set_state(LegacySync.waiting_link)
+    await msg.answer(
+        "🔗 لینک کانفیگ قبلی خود را ارسال کنید تا برای اتصال به حساب شما بررسی شود.\n\n"
+        "پس از تایید ادمین، سرویس به اکانت شما متصل می‌شود.\n"
+        "برای لغو: /cancel"
+    )
+
+
+@router.message(LegacySync.waiting_link)
+async def legacy_sync_submit(msg: Message, state: FSMContext):
+    link = (msg.text or "").strip()
+    key, email, raw_uuid = _extract_config_identity(link)
+    if not key:
+        await msg.answer("❌ لینک معتبر نیست. لطفاً لینک کامل کانفیگ را ارسال کنید.")
+        return
+
+    dup = await get_legacy_claim_by_key(key)
+    if dup:
+        status = dup.get("status", "pending")
+        if status == "approved":
+            await msg.answer("⚠️ این کانفیگ قبلاً تایید و ثبت شده است و درخواست تکراری پذیرفته نمی‌شود.")
+        elif status == "pending":
+            await msg.answer("⏳ برای این کانفیگ قبلاً درخواست ثبت شده و در حال بررسی است.")
+        else:
+            await msg.answer("⚠️ این کانفیگ قبلاً بررسی شده است. برای بررسی مجدد با پشتیبانی در تماس باشید.")
+        return
+
+    user = await get_or_create_user(msg.from_user.id, msg.from_user.username, msg.from_user.full_name)
+    claim_id = await create_legacy_claim(user["id"], msg.from_user.id, link, key, email=email, uuid=raw_uuid)
+
+    for aid in ADMIN_IDS:
+        try:
+            await msg.bot.send_message(
+                aid,
+                f"🧷 *درخواست سینک کانفیگ قدیمی*\n\n"
+                f"👤 {msg.from_user.full_name or '—'} (@{msg.from_user.username or '—'})\n"
+                f"🆔 `{msg.from_user.id}`\n"
+                f"📧 email: `{email or '—'}`\n"
+                f"🧾 claim: #{claim_id}",
+                parse_mode="Markdown",
+                reply_markup=legacy_claim_admin_kb(claim_id),
+            )
+        except Exception:
+            pass
+
+    await state.clear()
+    await msg.answer("✅ درخواست شما ثبت شد. پس از تایید ادمین، سرویس به حساب شما متصل می‌شود.")
+
+
 # ─── MY ORDERS ───────────────────────────────────────────────────
-@router.message(F.text == " سفارش‌های من")
+@router.message(F.text == "📋 سفارش‌های من")
 async def my_orders(msg: Message):
     if not await _ensure_channel_membership(msg):
         return
@@ -490,7 +652,7 @@ async def my_orders(msg: Message):
 
 
 # ─── MIGRATE ─────────────────────────────────────────────────────
-@router.message(F.text == " انتقال سرور")
+@router.message(F.text == "🔄 انتقال سرور")
 async def migrate_menu(msg: Message):
     if not await _ensure_channel_membership(msg):
         return
@@ -527,7 +689,7 @@ async def mig_start(cb: CallbackQuery):
         await cb.answer("❌ این سرویس متعلق به شما نیست!", show_alert=True)
         return
 
-    today_cnt = await get_migration_count_today(cid)
+    today_cnt = await get_user_migration_count_today(user["id"])
     if today_cnt >= MAX_DAILY_MIGRATIONS:
         await cb.answer(
             f"⛔ امروز {MAX_DAILY_MIGRATIONS} بار انتقال انجام دادید!\nفردا دوباره امتحان کنید.",
@@ -565,7 +727,7 @@ async def mig_confirm(cb: CallbackQuery):
         await cb.answer("❌ دسترسی مجاز نیست!", show_alert=True)
         return
 
-    today_cnt = await get_migration_count_today(src_cid)
+    today_cnt = await get_user_migration_count_today(user["id"])
     if today_cnt >= MAX_DAILY_MIGRATIONS:
         await cb.answer("⛔ محدودیت روزانه پر شده!", show_alert=True)
         return
@@ -634,7 +796,7 @@ async def mig_confirm(cb: CallbackQuery):
 
 
 # ─── REFERRAL ────────────────────────────────────────────────────
-@router.message(F.text == " دعوت دوستان")
+@router.message(F.text == "🎁 دعوت دوستان")
 async def referral_menu(msg: Message):
     if not await _ensure_channel_membership(msg):
         return
@@ -660,7 +822,7 @@ async def referral_menu(msg: Message):
 
 
 # ─── SUPPORT ─────────────────────────────────────────────────────
-@router.message(F.text == " پشتیبانی")
+@router.message(F.text == "📞 پشتیبانی")
 async def support(msg: Message):
     if not await _ensure_channel_membership(msg):
         return
