@@ -86,6 +86,22 @@ CREATE TABLE IF NOT EXISTS settings (
     value TEXT NOT NULL DEFAULT ''
 );
 
+CREATE TABLE IF NOT EXISTS legacy_claims (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    telegram_id INTEGER NOT NULL,
+    config_link TEXT NOT NULL,
+    config_key TEXT NOT NULL UNIQUE,
+    email TEXT DEFAULT '',
+    uuid TEXT DEFAULT '',
+    status TEXT DEFAULT 'pending',
+    admin_note TEXT DEFAULT '',
+    created_at TEXT DEFAULT (datetime('now','localtime')),
+    reviewed_at TEXT,
+    reviewer_id INTEGER DEFAULT 0,
+    FOREIGN KEY(user_id) REFERENCES users(id)
+);
+
 INSERT OR IGNORE INTO settings VALUES
     ('welcome_message','به Atlas Account خوش آمدید! 🌐\nبهترین سرویس VPN با سرعت بالا.'),
     ('support_username',''),
@@ -113,6 +129,8 @@ async def _ensure_columns(db):
         "users": [
             ("discount_percent", "REAL DEFAULT 0"),
             ("price_per_gb", "INTEGER DEFAULT 0"),
+            ("is_wholesale", "INTEGER DEFAULT 0"),
+            ("wholesale_request_pending", "INTEGER DEFAULT 0"),
         ],
         "orders": [
             ("custom_name", "TEXT DEFAULT ''"),
@@ -328,7 +346,7 @@ async def get_user_pricing(user_id: int) -> Dict:
 
 
 async def create_custom_order(user_id: int, name: str, total_traffic_gb: float, duration_days: int,
-                              price: int, bulk_count: int = 1, bulk_each_gb: float = 0) -> int:
+                              price: int, bulk_count: int = 1, bulk_each_gb: float = 0, notes: str = "") -> int:
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute("SELECT id FROM packages ORDER BY id LIMIT 1") as c0:
             row = await c0.fetchone()
@@ -338,9 +356,9 @@ async def create_custom_order(user_id: int, name: str, total_traffic_gb: float, 
                                   ("پکیج سیستمی", 1, 30, 0, "system"))
             package_id = c1.lastrowid
         c = await db.execute(
-            """INSERT INTO orders(user_id,package_id,status,custom_name,custom_traffic_gb,custom_duration_days,custom_price,bulk_count,bulk_each_gb)
-               VALUES(?,?,'pending_payment',?,?,?,?,?,?)""",
-            (user_id, package_id, name, total_traffic_gb, duration_days, price, bulk_count, bulk_each_gb)
+            """INSERT INTO orders(user_id,package_id,status,custom_name,custom_traffic_gb,custom_duration_days,custom_price,bulk_count,bulk_each_gb,notes)
+               VALUES(?,?,'pending_payment',?,?,?,?,?,?,?)""",
+            (user_id, package_id, name, total_traffic_gb, duration_days, price, bulk_count, bulk_each_gb, notes)
         )
         await db.commit()
         return c.lastrowid
@@ -525,3 +543,60 @@ async def get_stats() -> Dict:
             'total_servers': await q("SELECT COUNT(*) FROM servers"),
             'today_orders': await q("SELECT COUNT(*) FROM orders WHERE status='approved' AND date(approved_at)=date('now','localtime')"),
         }
+
+
+# ══════════════════ LEGACY CONFIG CLAIMS ══════════════════
+
+async def create_legacy_claim(user_id: int, telegram_id: int, config_link: str, config_key: str, email: str = '', uuid: str = '') -> int:
+    async with aiosqlite.connect(DB_PATH) as db:
+        c = await db.execute(
+            """INSERT INTO legacy_claims(user_id,telegram_id,config_link,config_key,email,uuid,status)
+               VALUES(?,?,?,?,?,?,'pending')""",
+            (user_id, telegram_id, config_link, config_key, email, uuid)
+        )
+        await db.commit()
+        return c.lastrowid
+
+
+async def get_legacy_claim_by_key(config_key: str) -> Optional[Dict]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute("SELECT * FROM legacy_claims WHERE config_key=?", (config_key,)) as c:
+            r = await c.fetchone()
+            return dict(r) if r else None
+
+
+async def get_pending_legacy_claims() -> List[Dict]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            """SELECT lc.*, u.full_name, u.username
+               FROM legacy_claims lc
+               JOIN users u ON lc.user_id=u.id
+               WHERE lc.status='pending'
+               ORDER BY lc.created_at DESC"""
+        ) as c:
+            return [dict(r) for r in await c.fetchall()]
+
+
+async def get_legacy_claim(cid: int) -> Optional[Dict]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute("SELECT * FROM legacy_claims WHERE id=?", (cid,)) as c:
+            r = await c.fetchone()
+            return dict(r) if r else None
+
+
+async def update_legacy_claim(cid: int, **kw):
+    fields = ','.join(f"{k}=?" for k in kw)
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(f"UPDATE legacy_claims SET {fields} WHERE id=?", (*kw.values(), cid))
+        await db.commit()
+
+
+async def get_config_by_email(email: str) -> Optional[Dict]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute("SELECT * FROM configs WHERE email=? LIMIT 1", (email,)) as c:
+            r = await c.fetchone()
+            return dict(r) if r else None
