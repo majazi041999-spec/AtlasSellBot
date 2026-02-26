@@ -6,7 +6,7 @@ import time
 import logging
 from datetime import datetime, timedelta
 from typing import Optional, Dict, List
-from urllib.parse import urlparse
+from urllib.parse import urlparse, quote
 import base64
 
 logger = logging.getLogger(__name__)
@@ -135,7 +135,8 @@ class XUIClient:
 
             if protocol == "vless":
                 cid = client.get("id", "")
-                params = [f"type={network}", f"security={security}"]
+                # برای سازگاری با کلاینت‌ها، encryption را صراحتاً ارسال می‌کنیم.
+                params = [f"type={network}", "encryption=none", f"security={security}"]
                 if security == "reality":
                     rs = stream.get("realitySettings", {})
                     names = rs.get("serverNames", [""])
@@ -152,7 +153,26 @@ class XUIClient:
                     if sni: params.append(f"sni={sni}")
                 if network == "ws":
                     ws = stream.get("wsSettings", {})
-                    params.append(f"path={ws.get('path','/')}")
+                    params.append(f"path={quote(ws.get('path', '/'), safe='')}")
+                    ws_host = ws.get("host", "")
+                    if ws_host:
+                        params.append(f"host={ws_host}")
+                elif network == "tcp":
+                    # در TCP اگر header از نوع http باشد، path/host را به لینک اضافه می‌کنیم.
+                    tcp = stream.get("tcpSettings", {})
+                    header = tcp.get("header", {}) if isinstance(tcp, dict) else {}
+                    h_type = header.get("type", "none")
+                    params.append(f"headerType={h_type}")
+                    if h_type == "http":
+                        req = header.get("request", {}) if isinstance(header, dict) else {}
+                        path = req.get("path", "/")
+                        if isinstance(path, list):
+                            path = path[0] if path else "/"
+                        host_list = req.get("headers", {}).get("Host", [])
+                        host_header = host_list[0] if isinstance(host_list, list) and host_list else ""
+                        params.append(f"path={quote(path or '/', safe='')}")
+                        if host_header:
+                            params.append(f"host={host_header}")
                 elif network == "grpc":
                     grpc = stream.get("grpcSettings", {})
                     params.append(f"serviceName={grpc.get('serviceName','')}")
