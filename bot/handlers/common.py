@@ -69,6 +69,17 @@ async def cmd_start(msg: Message, state: FSMContext):
     await msg.answer(text, reply_markup=kb, parse_mode="Markdown")
 
 
+
+
+@router.message(Command("cancel"))
+async def cancel_cmd(msg: Message, state: FSMContext):
+    await state.clear()
+    user = await get_or_create_user(msg.from_user.id, msg.from_user.username, msg.from_user.full_name)
+    is_adm = _is_admin(msg.from_user.id) or user.get("is_admin", 0)
+    from bot.keyboards import admin_menu, user_menu
+    kb = admin_menu() if is_adm else user_menu(include_wholesale=bool(user.get("is_wholesale", 0)))
+    await msg.answer("❌ عملیات لغو شد.", reply_markup=kb)
+
 @router.message(F.text.regexp(r"^/"))
 async def block_non_member_commands(msg: Message):
     """Prevent using any slash command (except /start*) when force_channel is enabled."""

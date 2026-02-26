@@ -1,6 +1,28 @@
 {% extends "base.html" %}
 {% block title %}تنظیمات{% endblock %}
+
+{% block scripts %}
+<script>
+async function resetLegacyClaims(){
+  if(!confirm('همه درخواست‌های سینک قبلی پاک شود؟')) return;
+  const r = await api(`/${S}/settings/legacy_sync/reset`);
+  if(r.success){ toast('ریست شد','success'); setTimeout(()=>location.reload(),700); }
+  else toast('خطا در ریست','error');
+}
+</script>
+{% endblock %}
 {% block topbar_title %}⚙️ تنظیمات{% endblock %}
+
+{% block scripts %}
+<script>
+async function resetLegacyClaims(){
+  if(!confirm('همه درخواست‌های سینک قبلی پاک شود؟')) return;
+  const r = await api(`/${S}/settings/legacy_sync/reset`);
+  if(r.success){ toast('ریست شد','success'); setTimeout(()=>location.reload(),700); }
+  else toast('خطا در ریست','error');
+}
+</script>
+{% endblock %}
 
 {% block content %}
 <style>
@@ -96,13 +118,22 @@
 
   <div class="settings-note" style="margin-top:12px">
     ♻️ اگر می‌خواهید تست سینک کانفیگ را دوباره انجام دهید، می‌توانید همه درخواست‌های قبلی سینک را ریست کنید.
-    <form method="post" action="/{{ S }}/settings/legacy_sync/reset" onsubmit="return confirm('همه درخواست‌های سینک قبلی پاک شود؟')" style="margin-top:8px">
-      <button class="btn btn-danger btn-sm" type="submit">🧹 ریست درخواست‌های سینک</button>
-    </form>
+    <button class="btn btn-danger btn-sm" type="button" onclick="resetLegacyClaims()">🧹 ریست درخواست‌های سینک</button>
   </div>
 
   <div class="settings-actions">
     <button class="btn btn-primary" type="submit">💾 ذخیره همه تنظیمات</button>
   </div>
 </form>
+{% endblock %}
+
+{% block scripts %}
+<script>
+async function resetLegacyClaims(){
+  if(!confirm('همه درخواست‌های سینک قبلی پاک شود؟')) return;
+  const r = await api(`/${S}/settings/legacy_sync/reset`);
+  if(r.success){ toast('ریست شد','success'); setTimeout(()=>location.reload(),700); }
+  else toast('خطا در ریست','error');
+}
+</script>
 {% endblock %}

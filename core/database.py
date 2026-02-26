@@ -513,6 +513,17 @@ async def get_migration_count_today(config_id: int) -> int:
             return 0
 
 
+async def get_user_migration_count_today(user_id: int) -> int:
+    today = date.today().isoformat()
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT COALESCE(SUM(migration_count),0) FROM configs WHERE user_id=? AND last_migration_date=?",
+            (user_id, today),
+        ) as c:
+            r = await c.fetchone()
+            return int(r[0] or 0)
+
+
 # ══════════════════ SETTINGS ══════════════════
 
 async def get_setting(key: str, default='') -> str:

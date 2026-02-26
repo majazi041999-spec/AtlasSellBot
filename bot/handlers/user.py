@@ -25,6 +25,7 @@ from core.database import (
     get_servers,
     get_server,
     get_migration_count_today,
+    get_user_migration_count_today,
     get_setting,
     get_referral_stats,
     update_user,
@@ -688,7 +689,7 @@ async def mig_start(cb: CallbackQuery):
         await cb.answer("❌ این سرویس متعلق به شما نیست!", show_alert=True)
         return
 
-    today_cnt = await get_migration_count_today(cid)
+    today_cnt = await get_user_migration_count_today(user["id"])
     if today_cnt >= MAX_DAILY_MIGRATIONS:
         await cb.answer(
             f"⛔ امروز {MAX_DAILY_MIGRATIONS} بار انتقال انجام دادید!\nفردا دوباره امتحان کنید.",
@@ -726,7 +727,7 @@ async def mig_confirm(cb: CallbackQuery):
         await cb.answer("❌ دسترسی مجاز نیست!", show_alert=True)
         return
 
-    today_cnt = await get_migration_count_today(src_cid)
+    today_cnt = await get_user_migration_count_today(user["id"])
     if today_cnt >= MAX_DAILY_MIGRATIONS:
         await cb.answer("⛔ محدودیت روزانه پر شده!", show_alert=True)
         return

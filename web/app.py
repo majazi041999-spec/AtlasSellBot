@@ -568,8 +568,8 @@ async def settings_save(
 async def settings_reset_legacy_sync(request: Request):
     if not _auth(request):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
-    await reset_legacy_claims()
-    return RedirectResponse(f"/{S}/settings?saved=1", status_code=302)
+    deleted = await reset_legacy_claims()
+    return JSONResponse({"success": True, "deleted": deleted})
 
 
 # ═══════════════════════════════ ROOT ═══════════════════════════════
