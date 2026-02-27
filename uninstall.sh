@@ -1,6 +1,6 @@
 #!/bin/bash
 # Complete uninstall script for Atlas Account Bot
-set -e
+set -euo pipefail
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; NC='\033[0m'
 info(){ echo -e "${BLUE}ℹ${NC} $1"; }
@@ -11,6 +11,8 @@ err(){ echo -e "${RED}✗${NC} $1"; }
 DIR=$(pwd)
 SERVICE_NAME="atlas-bot"
 SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
+ATLAS_CMD="/usr/local/bin/atlas"
+BOOTSTRAP_DIR="/opt/AtlasSellBot"
 
 PURGE_SELF=0
 FORCE=0
@@ -26,7 +28,7 @@ echo -e "${RED}      Atlas Account Bot — Full Uninstall${NC}"
 echo -e "${RED}══════════════════════════════════════${NC}\n"
 
 if [ "$FORCE" -ne 1 ]; then
-  warn "This will remove the service, database, logs, and environment files."
+  warn "This will remove service, local runtime data, and global atlas command."
   read -p "Do you want to continue? (yes/no): " ANS
   if [ "$ANS" != "yes" ]; then
     info "Canceled."
@@ -49,6 +51,13 @@ if command -v systemctl &>/dev/null; then
     systemctl daemon-reload || true
     ok "Service file removed"
   fi
+fi
+
+# remove global atlas command if present
+if [ -f "$ATLAS_CMD" ]; then
+  info "Removing global atlas command ($ATLAS_CMD)..."
+  rm -f "$ATLAS_CMD"
+  ok "Global atlas command removed"
 fi
 
 # remove local runtime files
