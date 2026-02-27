@@ -13,12 +13,12 @@ BRANCH="${BRANCH:-main}"
 SERVICE="${SERVICE:-atlas-bot}"
 MODE="${1:-pull}"   # pull | hard | pull-no-stash
 
-need_cmd() { command -v "$1" >/dev/null 2>&1 || { echo "❌ '$1' نصب نیست"; exit 1; }; }
+need_cmd() { command -v "$1" >/dev/null 2>&1 || { echo "❌ '$1' is not installed"; exit 1; }; }
 need_cmd git
 need_cmd systemctl
 
 cd "$REPO_DIR"
-git rev-parse --is-inside-work-tree >/dev/null 2>&1 || { echo "❌ اینجا git repo نیست"; exit 1; }
+git rev-parse --is-inside-work-tree >/dev/null 2>&1 || { echo "❌ Current directory is not a git repository"; exit 1; }
 
 SERVICE_STOPPED=0
 STASHED=0
@@ -29,35 +29,35 @@ PATCH_FILE="$REPO_DIR/update-local-changes-$STAMP.patch"
 cleanup_on_error() {
   local exit_code=$?
   if [[ "$exit_code" -ne 0 ]]; then
-    echo "❌ آپدیت ناموفق بود (code=$exit_code)."
+    echo "❌ Update failed (code=$exit_code)."
 
     if [[ "$STASHED" -eq 1 ]]; then
-      echo "ℹ️ تلاش برای بازگردانی تغییرات stash شده ..."
+      echo "ℹ️ Trying to restore stashed changes..."
       if git stash pop --index -q "$STASH_REF"; then
-        echo "✅ تغییرات لوکال بازگردانی شدند."
+        echo "✅ Local changes restored."
       else
-        echo "⚠️ بازگردانی خودکار stash کامل نشد."
-        echo "   برای بررسی دستی: git stash list"
+        echo "⚠️ Automatic stash restore had conflicts."
+        echo "   Please check manually: git stash list"
       fi
       STASHED=0
     fi
 
     if [[ "$SERVICE_STOPPED" -eq 1 ]]; then
-      echo "ℹ️ Start سرویس $SERVICE برای جلوگیری از downtime ..."
+      echo "ℹ️ Starting service $SERVICE to avoid downtime..."
       systemctl start "$SERVICE" || true
     fi
   fi
 }
 trap cleanup_on_error EXIT
 
-echo "ℹ️ Fetch از origin/$BRANCH ..."
+echo "ℹ️ Fetching origin/$BRANCH ..."
 git fetch origin "$BRANCH" --prune
 
 LOCAL="$(git rev-parse HEAD)"
 REMOTE="$(git rev-parse "origin/$BRANCH")"
 
 if [[ "$LOCAL" == "$REMOTE" ]]; then
-  echo "✅ کد آپدیت است"
+  echo "✅ Already up to date"
   systemctl restart "$SERVICE"
   trap - EXIT
   exit 0
@@ -66,14 +66,14 @@ fi
 if [[ "$MODE" == "pull" || "$MODE" == "pull-no-stash" ]]; then
   if [[ -n "$(git status --porcelain)" ]]; then
     if [[ "$MODE" == "pull-no-stash" ]]; then
-      echo "❌ ورک‌تری تمیز نیست و pull-no-stash انتخاب شده."
-      echo "   یا commit/stash کنید یا از حالت پیش‌فرض pull استفاده کنید."
+      echo "❌ Working tree is dirty and pull-no-stash mode was selected."
+      echo "   Please commit/stash changes or use default pull mode."
       exit 3
     fi
 
-    echo "⚠️ تغییرات لوکال شناسایی شد؛ قبل از آپدیت stash می‌شوند."
+    echo "⚠️ Local changes detected; stashing before update."
     git diff > "$PATCH_FILE" || true
-    echo "ℹ️ بکاپ diff: $PATCH_FILE"
+    echo "ℹ️ Diff backup: $PATCH_FILE"
 
     git stash push -u -m "atlas-auto-stash-$STAMP" >/dev/null
     STASH_REF="stash@{0}"
@@ -81,17 +81,17 @@ if [[ "$MODE" == "pull" || "$MODE" == "pull-no-stash" ]]; then
   fi
 fi
 
-echo "ℹ️ Stop سرویس $SERVICE ..."
+echo "ℹ️ Stopping service $SERVICE ..."
 systemctl stop "$SERVICE" || true
 SERVICE_STOPPED=1
 
 case "$MODE" in
   pull|pull-no-stash)
-    echo "ℹ️ git pull --ff-only ..."
+    echo "ℹ️ Running git pull --ff-only ..."
     git pull --ff-only origin "$BRANCH"
     ;;
   hard)
-    echo "⚠️ git reset --hard origin/$BRANCH ..."
+    echo "⚠️ Running git reset --hard origin/$BRANCH ..."
     git reset --hard "origin/$BRANCH"
     ;;
   *)
@@ -114,15 +114,15 @@ fi
 SERVICE_STOPPED=0
 
 if [[ "$STASHED" -eq 1 ]]; then
-  echo "ℹ️ بازگردانی تغییرات لوکال بعد از آپدیت ..."
+  echo "ℹ️ Restoring local changes after update..."
   if git stash pop --index -q "$STASH_REF"; then
-    echo "✅ تغییرات لوکال با موفقیت برگشتند."
+    echo "✅ Local changes restored successfully."
   else
-    echo "⚠️ بازگردانی stash با conflict همراه شد."
-    echo "   stash نگه داشته شد؛ با 'git stash list' بررسی کنید."
+    echo "⚠️ Stash restore has conflicts."
+    echo "   Stash entry is kept; check with: git stash list"
   fi
   STASHED=0
 fi
 
-echo "✅ done"
+echo "✅ Done"
 trap - EXIT

@@ -140,7 +140,7 @@ WEB_ADMIN_PASSWORD=ChangeMe123!
 JWT_SECRET=please_change_this_secret_key_in_production
 WEB_PORT=8000
 
-# کارت بانکی (از پنل قابل تغییر است؛ اینها فقط مقدار پیش‌فرض هستند)
+# Bank card defaults (can be changed from web panel)
 CARD_NUMBER=
 CARD_HOLDER=
 CARD_BANK=
@@ -160,36 +160,73 @@ configure_env_values(){
   local python_bin="$1"
   ensure_env_template
 
-  local bot_token admin_ids web_pass jwt_secret current
+  local current force_prompt
+  force_prompt="${FORCE_PROMPT:-1}"
 
-  current="$(grep -m1 '^BOT_TOKEN=' .env | cut -d= -f2- || true)"
-  if [[ -z "$current" ]]; then
-    read -r -p " Telegram bot token: " bot_token
-    upsert_env "BOT_TOKEN" "$bot_token"
-  fi
+  local prompt_value
+  prompt_value(){
+    local key="$1" label="$2" secret="${3:-0}" required="${4:-1}" val
+    current="$(grep -m1 "^${key}=" .env | cut -d= -f2- || true)"
 
-  current="$(grep -m1 '^ADMIN_IDS=' .env | cut -d= -f2- || true)"
-  if [[ -z "$current" || "$current" == "0" ]]; then
-    read -r -p " Admin numeric ID (from @userinfobot): " admin_ids
-    upsert_env "ADMIN_IDS" "$admin_ids"
-  fi
+    if [[ "$force_prompt" != "1" ]]; then
+      if [[ "$key" == "BOT_TOKEN" && -n "$current" ]] ||          [[ "$key" == "ADMIN_IDS" && -n "$current" && "$current" != "0" ]] ||          [[ "$key" == "WEB_ADMIN_PASSWORD" && -n "$current" && "$current" != "ChangeMe123!" ]] ||          [[ "$key" == "JWT_SECRET" && -n "$current" && "$current" != "please_change_this_secret_key_in_production" ]]; then
+        return 0
+      fi
+    fi
 
-  current="$(grep -m1 '^WEB_ADMIN_PASSWORD=' .env | cut -d= -f2- || true)"
-  if [[ -z "$current" || "$current" == "ChangeMe123!" ]]; then
-    read -r -s -p " Web panel password: " web_pass
-    echo ""
-    upsert_env "WEB_ADMIN_PASSWORD" "$web_pass"
-  fi
+    if [[ "$key" == "JWT_SECRET" ]]; then
+      if [[ -z "$current" || "$current" == "please_change_this_secret_key_in_production" || "$force_prompt" == "1" ]]; then
+        local generated
+        generated="$(${python_bin} -c "import secrets; print(secrets.token_urlsafe(48))")"
+        upsert_env "JWT_SECRET" "$generated"
+        ok "JWT secret generated"
+      fi
+      return 0
+    fi
 
-  current="$(grep -m1 '^JWT_SECRET=' .env | cut -d= -f2- || true)"
-  if [[ -z "$current" || "$current" == "please_change_this_secret_key_in_production" ]]; then
-    jwt_secret="$(${python_bin} -c "import secrets; print(secrets.token_urlsafe(48))")"
-    upsert_env "JWT_SECRET" "$jwt_secret"
-    ok "JWT secret generated"
-  fi
+    if [[ ! -t 0 ]]; then
+      if [[ -z "$current" && "$required" == "1" ]]; then
+        err "${key} is required but no interactive TTY is available."
+        exit 1
+      fi
+      return 0
+    fi
+
+    if [[ "$secret" == "1" ]]; then
+      if [[ -n "$current" ]]; then
+        read -r -s -p " ${label} [leave empty to keep current]: " val
+      else
+        read -r -s -p " ${label}: " val
+      fi
+      echo ""
+    else
+      if [[ -n "$current" ]]; then
+        read -r -p " ${label} [${current}]: " val
+      else
+        read -r -p " ${label}: " val
+      fi
+    fi
+
+    if [[ -z "$val" ]]; then
+      if [[ -n "$current" ]]; then
+        val="$current"
+      elif [[ "$required" == "1" ]]; then
+        err "${key} cannot be empty"
+        exit 1
+      fi
+    fi
+
+    upsert_env "$key" "$val"
+  }
+
+  prompt_value "BOT_TOKEN" "Telegram bot token" 0 1
+  prompt_value "ADMIN_IDS" "Admin numeric ID (from @userinfobot)" 0 1
+  prompt_value "WEB_ADMIN_PASSWORD" "Web panel password" 1 1
+  prompt_value "JWT_SECRET" "JWT secret" 0 1
 
   ok ".env configuration checked"
 }
+
 
 install_atlas_command(){
   local target="/usr/local/bin/atlas"

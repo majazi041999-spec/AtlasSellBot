@@ -21,7 +21,7 @@ run_root_cmd(){
   fi
 }
 
-pause(){ read -r -p "\nبرای ادامه Enter بزنید..." _; }
+pause(){ read -r -p "\nPress Enter to continue..." _; }
 
 run_action(){
   local action="${1:-}"
@@ -94,23 +94,23 @@ USAGE
 show_menu(){
   clear || true
   echo -e "${BLUE}════════════════════════════════════════════════${NC}"
-  echo -e "${BLUE}          Atlas Account Bot Manager${NC}"
+  echo -e "${BLUE}             Atlas Bot Manager${NC}"
   echo -e "${BLUE}════════════════════════════════════════════════${NC}"
   echo -e "Service: ${YELLOW}${SERVICE}${NC}"
   echo -e "Path:    ${YELLOW}${DIR}${NC}"
   echo ""
-  echo " 1) وضعیت سرویس"
-  echo " 2) شروع سرویس"
-  echo " 3) توقف سرویس"
-  echo " 4) ری‌استارت سرویس"
-  echo " 5) لاگ زنده سرویس"
-  echo " 6) آپدیت امن (pull)"
-  echo " 7) آپدیت اجباری (hard)"
-  echo " 8) نصب/بازسازی سرویس systemd"
-  echo " 9) اجرای نصب مجدد (install.sh)"
-  echo "10) تنظیم .env (توکن/ادمین/پسورد)"
-  echo "11) حذف (uninstall.sh)"
-  echo " 0) خروج"
+  echo " 1) Service status"
+  echo " 2) Start service"
+  echo " 3) Stop service"
+  echo " 4) Restart service"
+  echo " 5) Live logs"
+  echo " 6) Safe update (pull)"
+  echo " 7) Force update (hard)"
+  echo " 8) Reinstall systemd service"
+  echo " 9) Run installer (install.sh)"
+  echo "10) Configure .env (token/admin/password)"
+  echo "11) Uninstall"
+  echo " 0) Exit"
   echo ""
 }
 
@@ -121,7 +121,7 @@ fi
 
 while true; do
   show_menu
-  read -r -p "انتخاب شما: " choice
+  read -r -p "Select an option: " choice
   case "$choice" in
     1) run_action status; pause ;;
     2) run_action start; pause ;;
@@ -135,6 +135,6 @@ while true; do
     10) run_action configure; pause ;;
     11) run_action uninstall; pause ;;
     0) ok "Bye"; exit 0 ;;
-    *) warn "گزینه نامعتبر"; pause ;;
+    *) warn "Invalid option"; pause ;;
   esac
 done

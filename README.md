@@ -1,48 +1,37 @@
 # AtlasSellBot
 
-ربات فروش + پنل وب مدیریت سرویس VPN (Atlas Account) با امکان نصب/آپدیت سریع و منیجر ترمینالی شبیه `x-ui`.
+AtlasSellBot is a Telegram sales bot + web admin panel for VPN/service provisioning, with a terminal manager similar to `x-ui`.
+
+## Highlights
+
+- Telegram bot for ordering and account actions.
+- FastAPI web admin panel for servers, packages, orders, configs, users, settings.
+- Multi-inbound support per server (`inbound_ids`) with package-level inbound override (`packages.inbound_id`).
+- Interactive terminal manager command: `atlas`.
+- One-line bootstrap install/update commands.
+- Safe updater with auto-stash support.
 
 ---
 
-## ویژگی‌ها
-
-- ربات تلگرام برای ثبت سفارش، پرداخت، مشاهده سرویس و انتقال.
-- پنل وب مدیریت (FastAPI + Template) برای:
-  - سرورها
-  - پکیج‌ها
-  - سفارش‌ها
-  - کاربران
-  - تنظیمات
-- پشتیبانی از چند Inbound در هر سرور:
-  - `inbound_id` پیش‌فرض
-  - `inbound_ids` لیست اینباندهای قابل استفاده
-- انتخاب Inbound در سطح پکیج (`packages.inbound_id`).
-- ابزار مدیریت ترمینالی `atlas` (مشابه تجربه `x-ui`).
-- اسکریپت‌های نصب/آپدیت/حذف.
-
----
-
-## نصب سریع (مشابه 3x-ui)
-
-### 1) نصب با یک خط
+## Quick install (one line)
 
 ```bash
 bash <(curl -Ls https://raw.githubusercontent.com/majazi041999-spec/AtlasSellBot/main/bootstrap.sh)
 ```
 
-این دستور:
-1. ریپو را در مسیر پیش‌فرض `/opt/AtlasSellBot` کلون می‌کند.
-2. `install.sh` را اجرا می‌کند.
-3. سرویس `atlas-bot` را بالا می‌آورد.
-4. دستور `atlas` را روی سیستم نصب می‌کند.
+This will:
+1. Clone/update repo in `/opt/AtlasSellBot`.
+2. Run installer.
+3. Configure/start `atlas-bot` service.
+4. Install `/usr/local/bin/atlas` manager command.
 
-### 2) آپدیت با یک خط
+## Quick update
 
 ```bash
 bash <(curl -Ls https://raw.githubusercontent.com/majazi041999-spec/AtlasSellBot/main/bootstrap.sh) update
 ```
 
-### 3) فقط تنظیم مجدد `.env`
+## Configure required bot credentials only
 
 ```bash
 bash <(curl -Ls https://raw.githubusercontent.com/majazi041999-spec/AtlasSellBot/main/bootstrap.sh) configure
@@ -50,39 +39,28 @@ bash <(curl -Ls https://raw.githubusercontent.com/majazi041999-spec/AtlasSellBot
 
 ---
 
-## تجربه شبیه x-ui در ترمینال
+## `atlas` manager (x-ui style)
 
-بعد از نصب، فقط کافی است بزنید:
+After install:
 
 ```bash
 atlas
 ```
 
-یک منوی تعاملی باز می‌شود و تا وقتی گزینه خروج را نزنید، داخل برنامه می‌ماند.
+This opens a persistent interactive menu and stays open until you choose **Exit**.
 
-گزینه‌های اصلی:
-- مشاهده وضعیت سرویس
-- start/stop/restart
-- مشاهده لاگ زنده
-- آپدیت امن (`pull`)
-- آپدیت اجباری (`hard`)
-- بازسازی سرویس systemd
-- اجرای نصب مجدد
-- تنظیم `.env` (توکن/ادمین/پسورد)
-- حذف
-
-حالت دستوری هم پشتیبانی می‌شود:
+Also supports command mode:
 
 ```bash
 atlas status
-atlas restart
 atlas update
+atlas restart
 atlas configure
 ```
 
 ---
 
-## نصب دستی (بدون bootstrap)
+## Manual install
 
 ```bash
 git clone https://github.com/majazi041999-spec/AtlasSellBot.git
@@ -90,9 +68,7 @@ cd AtlasSellBot
 bash install.sh
 ```
 
-> اگر `.env` وجود داشته باشد ولی مقادیر مهم خالی/پیش‌فرض باشند، نصب‌گر دوباره از شما می‌پرسد.
-
-فقط تنظیم `.env`:
+Configure only (no full reinstall):
 
 ```bash
 bash install.sh --configure-only
@@ -100,40 +76,9 @@ bash install.sh --configure-only
 
 ---
 
-## مدیریت سرویس
+## Required `.env` values
 
-```bash
-systemctl status atlas-bot
-systemctl restart atlas-bot
-journalctl -u atlas-bot -f
-```
-
----
-
-## ساختار اسکریپت‌ها
-
-- `bootstrap.sh`:
-  - ورودی one-liner از `curl`
-  - install / update / configure / restart / status / uninstall
-- `install.sh`:
-  - نصب وابستگی‌ها
-  - ساخت venv
-  - نصب پکیج‌ها
-  - تنظیم `.env`
-  - نصب سرویس systemd
-  - نصب دستور `atlas`
-- `atlas_menu.sh`:
-  - منوی تعاملی مدیریت (سبک x-ui)
-- `update.sh`:
-  - آپدیت امن با مدیریت تغییرات لوکال (auto-stash)
-- `uninstall.sh`:
-  - حذف سرویس و فایل‌های runtime
-
----
-
-## تنظیمات مهم `.env`
-
-حداقل این موارد باید درست باشند:
+At minimum:
 
 ```env
 BOT_TOKEN=...
@@ -144,49 +89,40 @@ WEB_PORT=8000
 JWT_SECRET=...
 ```
 
----
-
-## پنل وب
-
-آدرس پنل:
-
-```text
-http://SERVER_IP:WEB_PORT/WEB_SECRET_PATH/
-```
-
-مثال پیش‌فرض:
-
-```text
-http://1.2.3.4:8000/AtlasPanel2024/
-```
+The installer now prompts for required values even if `.env` already exists (unless `FORCE_PROMPT=0` is used).
 
 ---
 
-## نکات چند Inbound
-
-- در **Servers**:
-  - `Inbound ID` = پیش‌فرض سرور
-  - `Inbound IDs` = لیست مجاز مثل `1,2,3`
-- در **Packages**:
-  - `Inbound ID`:
-    - `0` یعنی پیش‌فرض سرور
-    - عدد > 0 یعنی تلاش برای استفاده از همان inbound روی سرور انتخابی
-
-در تایید سفارش، اگر inbound پکیج در لیست inboundهای سرور باشد، همان استفاده می‌شود؛ در غیر این صورت fallback به inbound پیش‌فرض سرور انجام می‌شود.
-
----
-
-## حذف کامل
+## Service commands
 
 ```bash
-bash uninstall.sh
+systemctl status atlas-bot
+systemctl restart atlas-bot
+journalctl -u atlas-bot -f
 ```
 
-حذف کامل دایرکتوری پروژه:
+---
 
-```bash
-bash uninstall.sh --purge-self --force
-```
+## Script overview
+
+- `bootstrap.sh`: one-line install/update/configure/status/restart/uninstall entrypoint.
+- `install.sh`: dependencies, venv, packages, env config, service setup, atlas command install.
+- `atlas_menu.sh`: interactive manager and command dispatcher.
+- `update.sh`: safe updater (`pull`, `pull-no-stash`, `hard`) with service + stash handling.
+- `uninstall.sh`: remove service/runtime files.
+
+---
+
+## Multi-inbound behavior
+
+- Server keeps:
+  - `inbound_id` (default)
+  - `inbound_ids` (allowed list, e.g. `1,2,3`)
+- Package can set:
+  - `inbound_id = 0` => use server default
+  - `inbound_id > 0` => use package inbound when available on chosen server
+
+If package inbound is not available on the selected server, the system falls back to server default inbound.
 
 ---
 
@@ -194,34 +130,34 @@ bash uninstall.sh --purge-self --force
 
 ### `atlas: command not found`
 
-نصب دستور `atlas` را دوباره انجام دهید:
+Run:
 
 ```bash
 bash install.sh --configure-only
 ```
 
-یا:
+or run bootstrap install again.
 
-```bash
-bash <(curl -Ls https://raw.githubusercontent.com/majazi041999-spec/AtlasSellBot/main/bootstrap.sh)
-```
+### Update blocked by local changes
 
-### هنگام update خطای local changes می‌گیرید
-
-از آپدیت امن استفاده کنید:
+Use:
 
 ```bash
 atlas update
 ```
 
-یا:
+or:
 
 ```bash
 bash update.sh pull
 ```
 
+### Non-interactive setup needs explicit values
+
+If running without TTY, make sure `.env` already contains required values (`BOT_TOKEN`, `ADMIN_IDS`, `WEB_ADMIN_PASSWORD`, `JWT_SECRET`).
+
 ---
 
 ## License
 
-For internal/private use unless otherwise specified by repository owner.
+Private/internal use unless repository owner specifies otherwise.

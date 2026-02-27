@@ -126,7 +126,7 @@ do_configure(){
     exit 1
   fi
   info "Running configure-only..."
-  run_root "cd "$INSTALL_DIR" && bash install.sh --configure-only"
+  run_root "cd \"$INSTALL_DIR\" && FORCE_PROMPT=1 bash install.sh --configure-only"
   write_manager_command
   ok "Configuration finished."
 }
