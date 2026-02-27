@@ -800,6 +800,13 @@ async def mig_confirm(cb: CallbackQuery):
     if new_link:
         text += f"\n\n *لینک جدید:*\n`{new_link}`"
     await cb.message.edit_text(text, parse_mode="Markdown")
+    if new_link:
+        try:
+            ch = await get_setting("channel_username", "AtlasChannel")
+            qr = build_qr_image(new_link, footer_text=ch)
+            await cb.message.answer_photo(qr, caption="🎨 QR Code لینک جدید شما")
+        except Exception:
+            pass
 
 
 # ─── REFERRAL ────────────────────────────────────────────────────

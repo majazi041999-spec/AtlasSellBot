@@ -2,6 +2,7 @@ import asyncio
 import uuid
 import time
 import json
+import sqlite3
 from datetime import datetime, timedelta, date
 from aiogram import Router, F, Bot
 from aiogram.types import Message, CallbackQuery
@@ -29,8 +30,33 @@ from bot.states import AddPackage, CreateConfig, BulkConfig, EditConfig, Broadca
 router = Router()
 
 
+def _db_admin_role(uid: int) -> str:
+    try:
+        conn = sqlite3.connect("atlas.db")
+        cur = conn.cursor()
+        cur.execute("SELECT value FROM settings WHERE key='owner_admin_id'")
+        own = cur.fetchone()
+        owner_id = int((own[0] if own else "0") or 0)
+        if uid in ADMIN_IDS or (owner_id and uid == owner_id):
+            conn.close()
+            return "owner"
+        cur.execute("SELECT is_admin, admin_role FROM users WHERE telegram_id=?", (uid,))
+        row = cur.fetchone()
+        conn.close()
+    except Exception:
+        return "none"
+    if not row or int(row[0] or 0) != 1:
+        return "none"
+    role = str(row[1] or "full").strip().lower()
+    return role if role in {"full", "finance"} else "full"
+
+
 def is_admin(uid: int) -> bool:
-    return uid in ADMIN_IDS
+    return _db_admin_role(uid) in ("owner", "full")
+
+
+def can_review_payments(uid: int) -> bool:
+    return _db_admin_role(uid) in ("owner", "full", "finance")
 
 
 # ─── STATS ───────────────────────────────────────────────────────
@@ -64,7 +90,7 @@ async def show_stats(msg: Message):
 
 @router.message(F.text == "💰 سفارش‌های در انتظار")
 async def pending_orders_list(msg: Message):
-    if not is_admin(msg.from_user.id):
+    if not can_review_payments(msg.from_user.id):
         return
     orders = await get_pending_orders()
     if not orders:
@@ -87,7 +113,7 @@ async def pending_orders_list(msg: Message):
 
 @router.callback_query(F.data.startswith("view_order:"))
 async def view_order(cb: CallbackQuery):
-    if not is_admin(cb.from_user.id):
+    if not can_review_payments(cb.from_user.id):
         return
     oid = int(cb.data.split(":")[1])
     order = await get_order(oid)
@@ -120,7 +146,7 @@ async def view_order(cb: CallbackQuery):
 
 @router.callback_query(F.data.startswith("approve:"))
 async def approve_order_start(cb: CallbackQuery):
-    if not is_admin(cb.from_user.id):
+    if not can_review_payments(cb.from_user.id):
         return
     oid = int(cb.data.split(":")[1])
     servers = [sv for sv in await get_servers() if await server_has_capacity(sv["id"])]
@@ -162,7 +188,7 @@ async def approve_order_start(cb: CallbackQuery):
 
 @router.callback_query(F.data.startswith("assign:"))
 async def assign_server(cb: CallbackQuery):
-    if not is_admin(cb.from_user.id):
+    if not can_review_payments(cb.from_user.id):
         return
     _, oid, sid = cb.data.split(":")
     await _do_approve(cb, int(oid), int(sid))
@@ -306,7 +332,7 @@ async def _do_approve(cb: CallbackQuery, oid: int, sid: int):
 
 @router.callback_query(F.data.startswith("reject:"))
 async def reject_order(cb: CallbackQuery):
-    if not is_admin(cb.from_user.id):
+    if not can_review_payments(cb.from_user.id):
         return
     oid = int(cb.data.split(":")[1])
     order = await get_order(oid)
@@ -733,6 +759,13 @@ async def single_server(cb: CallbackQuery, state: FSMContext):
     if link:
         text += f"\n\n🔗 *لینک:*\n`{link}`"
     await cb.message.edit_text(text, parse_mode="Markdown")
+    if link:
+        try:
+            ch = await get_setting("channel_username", "AtlasChannel")
+            qr = build_qr_image(link, footer_text=ch)
+            await cb.message.answer_photo(qr, caption=f"🎨 QR: {data['email']}")
+        except Exception:
+            pass
 
 
 # ─── BULK CONFIG ─────────────────────────────────────────────────
