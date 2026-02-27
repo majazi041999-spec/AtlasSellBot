@@ -168,6 +168,25 @@ async def assign_server(cb: CallbackQuery):
     await _do_approve(cb, int(oid), int(sid))
 
 
+
+
+def _server_inbound_choices(server: dict) -> list[int]:
+    raw = str(server.get("inbound_ids") or "").replace(" ", "")
+    out: list[int] = []
+    for tok in raw.split(","):
+        if not tok:
+            continue
+        try:
+            val = int(tok)
+        except ValueError:
+            continue
+        if val > 0 and val not in out:
+            out.append(val)
+    default_iid = int(server.get("inbound_id") or 1)
+    if default_iid not in out:
+        out.append(default_iid)
+    return out
+
 async def _build_config_name(order, idx: int = 0) -> str:
     prefix = await get_setting("cfg_name_prefix", "u")
     postfix = await get_setting("cfg_name_postfix", "")
@@ -216,6 +235,10 @@ async def _do_approve(cb: CallbackQuery, oid: int, sid: int):
     except Exception:
         pass
 
+    available_inbounds = _server_inbound_choices(server)
+    package_iid = int(order.get("package_inbound_id") or 0)
+    target_inbound = package_iid if package_iid in available_inbounds else int(server["inbound_id"])
+
     for i in range(1, max(1, bulk_count) + 1):
         if bulk_count > 1 and custom_prefix:
             seq = custom_start + i - 1
@@ -223,13 +246,13 @@ async def _do_approve(cb: CallbackQuery, oid: int, sid: int):
         else:
             email = await _build_config_name(order, i if bulk_count > 1 else 0)
         cuuid = str(uuid.uuid4())
-        ok = await client.add_client(server["inbound_id"], cuuid, email, each_gb, duration)
+        ok = await client.add_client(target_inbound, cuuid, email, each_gb, duration)
         if not ok:
             continue
         expire_ms = int((datetime.now() + timedelta(days=duration)).timestamp() * 1000)
-        link = await client.get_client_link(server["inbound_id"], email)
-        sub = await client.get_subscription_link(server["inbound_id"], email)
-        await save_config(user["id"], sid, cuuid, email, server["inbound_id"], each_gb, duration, expire_ms)
+        link = await client.get_client_link(target_inbound, email)
+        sub = await client.get_subscription_link(target_inbound, email)
+        await save_config(user["id"], sid, cuuid, email, target_inbound, each_gb, duration, expire_ms)
         created.append({"email": email, "link": link, "sub": sub})
 
     await client.close()
@@ -238,7 +261,7 @@ async def _do_approve(cb: CallbackQuery, oid: int, sid: int):
         return
 
     await update_order(oid, status="approved", server_id=sid,
-                       config_email=created[0]["email"], inbound_id=server["inbound_id"],
+                       config_email=created[0]["email"], inbound_id=target_inbound,
                        approved_at=datetime.now().isoformat())
 
     # referral: only first successful paid order
