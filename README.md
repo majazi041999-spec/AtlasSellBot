@@ -89,7 +89,7 @@ WEB_PORT=8000
 JWT_SECRET=...
 ```
 
-The installer now prompts for required values even if `.env` already exists (unless `FORCE_PROMPT=0` is used).
+The installer now prompts for required values even if `.env` already exists (unless `FORCE_PROMPT=0` is used), including bot token, admin ID, web panel username/password, and panel port.
 
 ---
 

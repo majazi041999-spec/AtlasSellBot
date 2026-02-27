@@ -169,7 +169,7 @@ configure_env_values(){
     current="$(grep -m1 "^${key}=" .env | cut -d= -f2- || true)"
 
     if [[ "$force_prompt" != "1" ]]; then
-      if [[ "$key" == "BOT_TOKEN" && -n "$current" ]] ||          [[ "$key" == "ADMIN_IDS" && -n "$current" && "$current" != "0" ]] ||          [[ "$key" == "WEB_ADMIN_PASSWORD" && -n "$current" && "$current" != "ChangeMe123!" ]] ||          [[ "$key" == "JWT_SECRET" && -n "$current" && "$current" != "please_change_this_secret_key_in_production" ]]; then
+      if [[ "$key" == "BOT_TOKEN" && -n "$current" ]] ||          [[ "$key" == "ADMIN_IDS" && -n "$current" && "$current" != "0" ]] ||          [[ "$key" == "WEB_ADMIN_USERNAME" && -n "$current" && "$current" != "atlas_admin" ]] ||          [[ "$key" == "WEB_ADMIN_PASSWORD" && -n "$current" && "$current" != "ChangeMe123!" ]] ||          [[ "$key" == "WEB_PORT" && -n "$current" ]] ||          [[ "$key" == "JWT_SECRET" && -n "$current" && "$current" != "please_change_this_secret_key_in_production" ]]; then
         return 0
       fi
     fi
@@ -221,8 +221,21 @@ configure_env_values(){
 
   prompt_value "BOT_TOKEN" "Telegram bot token" 0 1
   prompt_value "ADMIN_IDS" "Admin numeric ID (from @userinfobot)" 0 1
+  prompt_value "WEB_ADMIN_USERNAME" "Web panel username" 0 1
   prompt_value "WEB_ADMIN_PASSWORD" "Web panel password" 1 1
+  prompt_value "WEB_PORT" "Web panel port (default: 8000)" 0 0
   prompt_value "JWT_SECRET" "JWT secret" 0 1
+
+  local web_port
+  web_port="$(grep -m1 '^WEB_PORT=' .env | cut -d= -f2- || true)"
+  if [[ -z "$web_port" ]]; then
+    web_port="8000"
+  fi
+  if [[ ! "$web_port" =~ ^[0-9]+$ ]] || (( web_port < 1 || web_port > 65535 )); then
+    err "WEB_PORT must be a number between 1 and 65535"
+    exit 1
+  fi
+  upsert_env "WEB_PORT" "$web_port"
 
   ok ".env configuration checked"
 }

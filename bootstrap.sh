@@ -86,7 +86,7 @@ do_install(){
   fi
 
   info "Running installer..."
-  run_root "cd \"$INSTALL_DIR\" && bash install.sh"
+  run_root "cd \"$INSTALL_DIR\" && FORCE_PROMPT=1 bash install.sh"
   write_manager_command
 
   ok "Install finished."
