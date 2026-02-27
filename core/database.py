@@ -15,6 +15,7 @@ CREATE TABLE IF NOT EXISTS servers (
     password TEXT NOT NULL,
     sub_path TEXT DEFAULT '',
     inbound_id INTEGER DEFAULT 1,
+    inbound_ids TEXT DEFAULT '',
     is_active INTEGER DEFAULT 1,
     note TEXT DEFAULT '',
     created_at TEXT DEFAULT (datetime('now','localtime'))
@@ -40,6 +41,7 @@ CREATE TABLE IF NOT EXISTS packages (
     duration_days INTEGER NOT NULL,
     price INTEGER NOT NULL,
     description TEXT DEFAULT '',
+    inbound_id INTEGER DEFAULT 0,
     is_active INTEGER DEFAULT 1,
     sort_order INTEGER DEFAULT 0,
     created_at TEXT DEFAULT (datetime('now','localtime'))
@@ -125,12 +127,16 @@ async def _ensure_columns(db):
     migrations = {
         "servers": [
             ("max_active_configs", "INTEGER DEFAULT 0"),
+            ("inbound_ids", "TEXT DEFAULT ''"),
         ],
         "users": [
             ("discount_percent", "REAL DEFAULT 0"),
             ("price_per_gb", "INTEGER DEFAULT 0"),
             ("is_wholesale", "INTEGER DEFAULT 0"),
             ("wholesale_request_pending", "INTEGER DEFAULT 0"),
+        ],
+        "packages": [
+            ("inbound_id", "INTEGER DEFAULT 0"),
         ],
         "orders": [
             ("custom_name", "TEXT DEFAULT ''"),
@@ -169,11 +175,11 @@ async def get_server(sid: int) -> Optional[Dict]:
             r = await c.fetchone()
             return dict(r) if r else None
 
-async def add_server(name, url, username, password, sub_path, inbound_id, note='') -> int:
+async def add_server(name, url, username, password, sub_path, inbound_id, note='', inbound_ids: str = "") -> int:
     async with aiosqlite.connect(DB_PATH) as db:
         c = await db.execute(
-            "INSERT INTO servers(name,url,username,password,sub_path,inbound_id,note) VALUES(?,?,?,?,?,?,?)",
-            (name, url, username, password, sub_path, inbound_id, note)
+            "INSERT INTO servers(name,url,username,password,sub_path,inbound_id,note,inbound_ids) VALUES(?,?,?,?,?,?,?,?)",
+            (name, url, username, password, sub_path, inbound_id, note, inbound_ids)
         )
         await db.commit()
         return c.lastrowid
@@ -313,11 +319,11 @@ async def get_package(pid: int) -> Optional[Dict]:
             r = await c.fetchone()
             return dict(r) if r else None
 
-async def add_package(name, traffic_gb, duration_days, price, description='') -> int:
+async def add_package(name, traffic_gb, duration_days, price, description='', inbound_id: int = 0) -> int:
     async with aiosqlite.connect(DB_PATH) as db:
         c = await db.execute(
-            "INSERT INTO packages(name,traffic_gb,duration_days,price,description) VALUES(?,?,?,?,?)",
-            (name, traffic_gb, duration_days, price, description)
+            "INSERT INTO packages(name,traffic_gb,duration_days,price,description,inbound_id) VALUES(?,?,?,?,?,?)",
+            (name, traffic_gb, duration_days, price, description, inbound_id)
         )
         await db.commit()
         return c.lastrowid
@@ -383,7 +389,8 @@ async def get_order(oid: int) -> Optional[Dict]:
                    COALESCE(NULLIF(o.custom_name,''), p.name) as pkg_name,
                    COALESCE(NULLIF(o.custom_traffic_gb,0), p.traffic_gb) as traffic_gb,
                    COALESCE(NULLIF(o.custom_duration_days,0), p.duration_days) as duration_days,
-                   COALESCE(NULLIF(o.custom_price,0), p.price) as price
+                   COALESCE(NULLIF(o.custom_price,0), p.price) as price,
+                   COALESCE(p.inbound_id,0) as package_inbound_id
             FROM orders o
             JOIN users u ON o.user_id=u.id
             JOIN packages p ON o.package_id=p.id
@@ -406,7 +413,8 @@ async def get_pending_orders() -> List[Dict]:
                    COALESCE(NULLIF(o.custom_name,''), p.name) as pkg_name,
                    COALESCE(NULLIF(o.custom_traffic_gb,0), p.traffic_gb) as traffic_gb,
                    COALESCE(NULLIF(o.custom_duration_days,0), p.duration_days) as duration_days,
-                   COALESCE(NULLIF(o.custom_price,0), p.price) as price
+                   COALESCE(NULLIF(o.custom_price,0), p.price) as price,
+                   COALESCE(p.inbound_id,0) as package_inbound_id
             FROM orders o
             JOIN users u ON o.user_id=u.id
             JOIN packages p ON o.package_id=p.id
@@ -421,7 +429,8 @@ async def get_all_orders(limit=100) -> List[Dict]:
         async with db.execute("""
             SELECT o.*,u.telegram_id,u.username,u.full_name,
                    COALESCE(NULLIF(o.custom_name,''), p.name) as pkg_name,
-                   COALESCE(NULLIF(o.custom_price,0), p.price) as price
+                   COALESCE(NULLIF(o.custom_price,0), p.price) as price,
+                   COALESCE(p.inbound_id,0) as package_inbound_id
             FROM orders o
             JOIN users u ON o.user_id=u.id
             JOIN packages p ON o.package_id=p.id
