@@ -35,6 +35,8 @@ from core.database import (
     get_available_servers,
     get_legacy_claim_by_key,
     create_legacy_claim,
+    get_user_balance,
+    create_topup_request,
 )
 from core.xui_api import XUIClient, fmt_bytes, days_left
 from core.texts import get_text
@@ -50,8 +52,9 @@ from bot.keyboards import (
     wholesale_request_kb,
     wholesale_request_admin_kb,
     legacy_claim_admin_kb,
+    wallet_kb,
 )
-from bot.states import BuyService, WholesaleBuy, LegacySync
+from bot.states import BuyService, WholesaleBuy, LegacySync, WalletTopup
 
 router = Router()
 
@@ -92,6 +95,10 @@ async def _ensure_channel_membership(msg_or_cb) -> bool:
     return False
 
 
+def _fmt_toman(amount: int) -> str:
+    return f"{int(amount or 0):,}".replace(",", "،")
+
+
 async def _get_card_info():
     """✅ کارت بانکی را از Settings DB بخوان (fallback: .env)"""
     card_bank = await get_setting("card_bank", CARD_BANK)
@@ -99,6 +106,85 @@ async def _get_card_info():
     card_holder = await get_setting("card_holder", CARD_HOLDER)
     return card_bank, card_number, card_holder
 
+
+
+
+@router.message(F.text == "💳 کیف پول")
+async def wallet_home(msg: Message):
+    if not await _ensure_channel_membership(msg):
+        return
+    if await _blocked(msg.from_user.id):
+        await msg.answer(await get_text("blocked_message"))
+        return
+    user = await get_or_create_user(msg.from_user.id)
+    bal = await get_user_balance(user["id"])
+    await msg.answer(
+        f"💳 *کیف پول شما*\n\nموجودی فعلی: *{_fmt_toman(bal)} تومان*",
+        reply_markup=wallet_kb(),
+        parse_mode="Markdown",
+    )
+
+
+@router.callback_query(F.data == "wallet_topup")
+async def wallet_topup_start(cb: CallbackQuery, state: FSMContext):
+    await state.set_state(WalletTopup.waiting_amount)
+    await cb.message.answer("💵 مبلغ افزایش اعتبار را به تومان وارد کنید.\nمثال: `250000`", parse_mode="Markdown")
+    await cb.answer()
+
+
+@router.message(WalletTopup.waiting_amount)
+async def wallet_topup_amount(msg: Message, state: FSMContext):
+    raw = (msg.text or "").replace("،", "").replace(",", "").strip()
+    if not raw.isdigit() or int(raw) <= 0:
+        await msg.answer("❌ مبلغ نامعتبر است. فقط عدد تومان بفرستید.")
+        return
+    amount = int(raw)
+    await state.update_data(topup_amount=amount)
+    await state.set_state(WalletTopup.waiting_receipt)
+    card_bank, card_number, card_holder = await _get_card_info()
+    await msg.answer(
+        f"✅ مبلغ: *{_fmt_toman(amount)} تومان*\n\n"
+        f"لطفاً واریز را انجام دهید و تصویر فیش را ارسال کنید.\n\n"
+        f"🏦 {card_bank}\n`{card_number}`\n👤 {card_holder}",
+        parse_mode="Markdown",
+    )
+
+
+@router.message(WalletTopup.waiting_receipt, F.photo)
+async def wallet_topup_receipt(msg: Message, state: FSMContext, bot: Bot):
+    data = await state.get_data()
+    await state.clear()
+    amount = int(data.get("topup_amount", 0) or 0)
+    if amount <= 0:
+        await msg.answer("❌ خطا در مبلغ. دوباره از کیف پول تلاش کنید.")
+        return
+    user = await get_or_create_user(msg.from_user.id, msg.from_user.username, msg.from_user.full_name)
+    photo_id = msg.photo[-1].file_id
+    req_id = await create_topup_request(user["id"], amount, photo_id)
+
+    await msg.answer(
+        f"✅ درخواست افزایش اعتبار ثبت شد.\nمبلغ: *{_fmt_toman(amount)} تومان*\nپس از تایید ادمین، موجودی شما افزایش می‌یابد.",
+        parse_mode="Markdown",
+    )
+
+    from bot.keyboards import topup_review_kb
+    cap = (
+        f"💳 *درخواست افزایش اعتبار*\n"
+        f"#Topup_{req_id}\n"
+        f"👤 {user.get('full_name') or 'کاربر'} (@{user.get('username') or '—'})\n"
+        f"🆔 `{msg.from_user.id}`\n"
+        f"💵 مبلغ: *{_fmt_toman(amount)} تومان*"
+    )
+    for aid in ADMIN_IDS:
+        try:
+            await bot.send_photo(aid, photo_id, caption=cap, reply_markup=topup_review_kb(req_id), parse_mode="Markdown")
+        except Exception:
+            pass
+
+
+@router.message(WalletTopup.waiting_receipt)
+async def wallet_topup_receipt_wrong(msg: Message):
+    await msg.answer("❌ لطفاً تصویر فیش را ارسال کنید.")
 
 # ─── STATUS ──────────────────────────────────────────────────────
 @router.message(F.text == "📡 وضعیت سرویس")
@@ -159,6 +245,28 @@ async def _send_config_status(target, config_id: int):
         remaining = max(0, total - used)
         expire_ms = traffic.get("expiryTime", cfg["expire_timestamp"] or 0)
         enabled = traffic.get("enable", True)
+
+        # اگر شروع زمان از اولین اتصال باشد، بعد از اولین مصرف زمان را فعال کن
+        if cfg.get("starts_on_first_use", 0) and used > 0 and (cfg.get("duration_days", 0) or 0) > 0:
+            new_expire_ms = int((datetime.now() + timedelta(days=int(cfg.get("duration_days", 0) or 0))).timestamp() * 1000)
+            cli2 = XUIClient(cfg["server_url"], cfg["srv_user"], cfg["srv_pass"], cfg["sub_path"])
+            ok = await cli2.update_client(
+                cfg["inbound_id"],
+                cfg["uuid"],
+                cfg["email"],
+                cfg["traffic_gb"],
+                new_expire_ms,
+                bool(enabled),
+            )
+            await cli2.close()
+            if ok:
+                await update_config(
+                    config_id,
+                    expire_timestamp=new_expire_ms,
+                    starts_on_first_use=0,
+                    first_use_at=datetime.now().isoformat(),
+                )
+                expire_ms = new_expire_ms
     else:
         total = int(cfg["traffic_gb"] * 1024**3)
         used = 0
@@ -220,7 +328,10 @@ async def send_config_link(cb: CallbackQuery):
             body += f"\n *لینک سابسکریپشن:*\n`{sub}`\n"
         body += (
             "\n این لینک را کپی کن و در اپلیکیشن وارد کن.\n\n"
-            "_اپ‌های پیشنهادی: V2rayNG (اندروید) | Streisand (iOS) | Hiddify (ویندوز)_"
+            "اپ‌های پیشنهادی:\n"
+            "[📱 V2rayNG (اندروید)](https://github.com/2dust/v2rayNG/releases/latest) | "
+            "[🍎 Streisand (iOS)](https://apps.apple.com/us/app/streisand/id6450534064) | "
+            "[🪟 v2rayN (ویندوز)](https://github.com/2dust/v2rayN/releases/latest)"
         )
         await cb.message.answer(body, parse_mode="Markdown")
         try:
@@ -303,7 +414,7 @@ async def buy_pkg_selected(cb: CallbackQuery):
     user = await get_or_create_user(cb.from_user.id)
     oid = await create_order(user["id"], pid)
 
-    price = f"{pkg['price']:,}".replace(",", "،")
+    price = _fmt_toman(pkg['price'])
     card_bank, card_number, card_holder = await _get_card_info()
 
     text = (
@@ -765,7 +876,7 @@ async def mig_confirm(cb: CallbackQuery):
     new_uuid = str(_uuid.uuid4())
     new_email = f"{cfg['email'].split('_m')[0]}_m{int(time.time())}"
 
-    ok = await dst_cli.add_client(dst_srv["inbound_id"], new_uuid, new_email, rem_gb, new_days)
+    ok = await dst_cli.add_client(dst_srv["inbound_id"], new_uuid, new_email, rem_gb, new_days, starts_on_first_use=True)
     if not ok:
         await src_cli.close()
         await dst_cli.close()
@@ -781,8 +892,8 @@ async def mig_confirm(cb: CallbackQuery):
 
     # ذخیره کانفیگ جدید و غیرفعال کردن قدیمی
     await update_config(src_cid, is_active=0)
-    new_exp_ms = int((datetime.now() + timedelta(days=new_days)).timestamp() * 1000)
-    await save_config(user["id"], dst_sid, new_uuid, new_email, dst_srv["inbound_id"], rem_gb, new_days, new_exp_ms)
+    new_exp_ms = 0 if new_days > 0 else 0
+    await save_config(user["id"], dst_sid, new_uuid, new_email, dst_srv["inbound_id"], rem_gb, new_days, new_exp_ms, starts_on_first_use=1 if new_days > 0 else 0)
 
     # آپدیت شمارنده انتقال
     today = date.today().isoformat()
@@ -800,6 +911,13 @@ async def mig_confirm(cb: CallbackQuery):
     if new_link:
         text += f"\n\n *لینک جدید:*\n`{new_link}`"
     await cb.message.edit_text(text, parse_mode="Markdown")
+    if new_link:
+        try:
+            ch = await get_setting("channel_username", "AtlasChannel")
+            qr = build_qr_image(new_link, footer_text=ch)
+            await cb.message.answer_photo(qr, caption="🎨 QR Code لینک جدید شما")
+        except Exception:
+            pass
 
 
 # ─── REFERRAL ────────────────────────────────────────────────────
