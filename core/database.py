@@ -621,6 +621,36 @@ async def get_all_configs() -> List[Dict]:
         """) as cu:
             return [dict(r) for r in await cu.fetchall()]
 
+
+
+async def get_configs_by_base_email(base_email: str) -> List[Dict]:
+    base = (base_email or "").strip()
+    if not base:
+        return []
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT * FROM configs WHERE email=? OR email LIKE ? ORDER BY id DESC",
+            (base, f"{base}_m%"),
+        ) as c:
+            return [dict(r) for r in await c.fetchall()]
+
+
+async def delete_config_by_id(cid: int):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("DELETE FROM configs WHERE id=?", (cid,))
+        await db.commit()
+
+
+async def delete_configs_by_base_email(base_email: str) -> int:
+    base = (base_email or "").strip()
+    if not base:
+        return 0
+    async with aiosqlite.connect(DB_PATH) as db:
+        c = await db.execute("DELETE FROM configs WHERE email=? OR email LIKE ?", (base, f"{base}_m%"))
+        await db.commit()
+        return c.rowcount
+
 async def update_config(cid: int, **kw):
     fields = ','.join(f"{k}=?" for k in kw)
     async with aiosqlite.connect(DB_PATH) as db:

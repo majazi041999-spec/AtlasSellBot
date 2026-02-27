@@ -33,6 +33,8 @@ from core.database import (
     delete_package,
     delete_server,
     get_all_configs,
+    get_configs_by_base_email,
+    delete_configs_by_base_email,
     get_all_orders,
     get_all_users,
     get_user_business_stats,
@@ -415,6 +417,36 @@ async def config_toggle(request: Request, cid: int):
     if ok:
         await update_config(cid, is_active=1 if new_status else 0)
     return JSONResponse({"success": ok})
+
+
+@app.post(f"/{S}/configs/{{cid}}/delete")
+async def config_delete(request: Request, cid: int):
+    if not _auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+
+    cfg = await get_config(cid)
+    if not cfg:
+        return JSONResponse({"success": False, "error": "not found"}, status_code=404)
+
+    base_email = (cfg.get("email") or "").split("_m")[0]
+    rows = await get_configs_by_base_email(base_email)
+
+    deleted_remote = 0
+    for item in rows:
+        try:
+            srv = await get_server(item["server_id"])
+            if not srv:
+                continue
+            cli = XUIClient(srv["url"], srv["username"], srv["password"], srv["sub_path"])
+            ok = await cli.delete_client(item["inbound_id"], item["uuid"])
+            await cli.close()
+            if ok:
+                deleted_remote += 1
+        except Exception:
+            continue
+
+    deleted_local = await delete_configs_by_base_email(base_email)
+    return JSONResponse({"success": True, "deleted_local": deleted_local, "deleted_remote": deleted_remote})
 
 
 # ═══════════════════════════════ USERS ══════════════════════════════
