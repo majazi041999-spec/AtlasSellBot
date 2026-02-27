@@ -584,6 +584,13 @@ async def legacy_sync_start(msg: Message, state: FSMContext):
 @router.message(LegacySync.waiting_link)
 async def legacy_sync_submit(msg: Message, state: FSMContext):
     link = (msg.text or "").strip()
+    cmd = link.split()[0].split("@", 1)[0].lower() if link else ""
+    if cmd == "/cancel":
+        await state.clear()
+        user = await get_or_create_user(msg.from_user.id, msg.from_user.username, msg.from_user.full_name)
+        from bot.keyboards import user_menu
+        await msg.answer("❌ عملیات لغو شد.", reply_markup=user_menu(include_wholesale=bool(user.get("is_wholesale", 0))))
+        return
     key, email, raw_uuid = _extract_config_identity(link)
     if not key:
         await msg.answer("❌ لینک معتبر نیست. لطفاً لینک کامل کانفیگ را ارسال کنید.")
