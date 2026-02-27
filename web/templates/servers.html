@@ -31,7 +31,7 @@
         </div>
         <div style="margin-top:6px;font-size:.78rem;color:var(--txt2);direction:ltr;text-align:right">{{ srv.url }}{% if srv.sub_path %}/{{ srv.sub_path }}{% endif %}</div>
         <div style="margin-top:4px;font-size:.75rem;color:var(--txt3)">
-          Inbound: <code style="background:var(--bg3);padding:1px 6px;border-radius:4px">{{ srv.inbound_id }}</code>
+          Inbound پیش‌فرض: <code style="background:var(--bg3);padding:1px 6px;border-radius:4px">{{ srv.inbound_id }}</code>{% if srv.inbound_ids %} | همه اینباندها: <code style="background:var(--bg3);padding:1px 6px;border-radius:4px">{{ srv.inbound_ids }}</code>{% endif %}
           | ظرفیت: <code style="background:var(--bg3);padding:1px 6px;border-radius:4px">{{ srv.max_active_configs or "∞" }}</code>
           {% if srv.note %} · {{ srv.note }}{% endif %}
         </div>
@@ -39,7 +39,7 @@
     </div>
     <div style="display:flex;gap:6px;flex-shrink:0;flex-wrap:wrap">
       <button class="btn btn-outline btn-sm" onclick="testServer({{ srv.id }}, this)">🔗 تست</button>
-      <button class="btn btn-outline btn-sm" onclick="openEditModal({{ srv.id }}, '{{ srv.name|replace("'","&#39;") }}', '{{ srv.url }}', '{{ srv.username }}', '{{ srv.sub_path }}', {{ srv.inbound_id }}, '{{ srv.note|replace("'","&#39;") }}', {{ srv.max_active_configs or 0 }})">✏️ ویرایش</button>
+      <button class="btn btn-outline btn-sm" onclick="openEditModal({{ srv.id }}, '{{ srv.name|replace("'","&#39;") }}', '{{ srv.url }}', '{{ srv.username }}', '{{ srv.sub_path }}', {{ srv.inbound_id }}, '{{ (srv.inbound_ids or '')|replace("'","&#39;") }}', '{{ srv.note|replace("'","&#39;") }}', {{ srv.max_active_configs or 0 }})">✏️ ویرایش</button>
       <button class="btn btn-outline btn-sm" id="toggle-{{ srv.id }}"
         onclick="toggleServer({{ srv.id }}, {{ srv.is_active }}, this)"
       >{{ '🔴 غیرفعال' if srv.is_active else '🟢 فعال' }}</button>
@@ -83,9 +83,13 @@
         <input type="text" name="sub_path" class="form-control" placeholder="maqIa0kKGOqQ2Uts56" dir="ltr">
       </div>
       <div class="form-group">
-        <label>Inbound ID</label>
+        <label>Inbound ID پیش‌فرض</label>
         <input type="number" name="inbound_id" class="form-control" value="1" min="1" required>
       </div>
+    </div>
+    <div class="form-group">
+      <label>لیست همه Inbound IDها (اختیاری)</label>
+      <input type="text" name="inbound_ids" class="form-control" placeholder="مثال: 1,2,3">
     </div>
     <div class="form-group">
       <label>یادداشت (اختیاری)</label>
@@ -131,9 +135,13 @@
         <input type="text" name="sub_path" id="edit_sub" class="form-control" dir="ltr">
       </div>
       <div class="form-group">
-        <label>Inbound ID</label>
+        <label>Inbound ID پیش‌فرض</label>
         <input type="number" name="inbound_id" id="edit_iid" class="form-control" min="1">
       </div>
+    </div>
+    <div class="form-group">
+      <label>لیست همه Inbound IDها (اختیاری)</label>
+      <input type="text" name="inbound_ids" id="edit_iids" class="form-control" placeholder="مثال: 1,2,3">
     </div>
     <div class="form-group">
       <label>یادداشت</label>
@@ -186,13 +194,14 @@ async function deleteServer(id, name){
   else toast('خطا در حذف!','error');
 }
 
-function openEditModal(id, name, url, user, sub, iid, note, maxcap){
+function openEditModal(id, name, url, user, sub, iid, iids, note, maxcap){
   document.getElementById('edit_name').value = name;
   document.getElementById('edit_url').value = url;
   document.getElementById('edit_user').value = user;
   document.getElementById('edit_pass').value = '';
   document.getElementById('edit_sub').value = sub;
   document.getElementById('edit_iid').value = iid;
+  document.getElementById('edit_iids').value = iids;
   document.getElementById('edit_note').value = note;
   document.getElementById('edit_max_active_configs').value = maxcap || 0;
   document.getElementById('editForm').action = `/${S}/servers/${id}/edit`;
