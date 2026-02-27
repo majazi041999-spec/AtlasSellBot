@@ -16,7 +16,7 @@
 <div class="table-wrap">
 <table id="usrTable">
   <thead>
-    <tr><th>#</th><th>نام</th><th>همکاری عمده</th><th>سطح ادمین</th><th>آمار همکاری</th><th>تخفیف</th><th>قیمت هر GB</th><th>وضعیت</th><th>تاریخ</th><th>عملیات</th></tr>
+    <tr><th>#</th><th>نام</th><th>همکاری عمده</th><th>سطح ادمین</th><th>کیف پول (تومان)</th><th>آمار همکاری</th><th>تخفیف</th><th>قیمت هر GB</th><th>وضعیت</th><th>تاریخ</th><th>عملیات</th></tr>
   </thead>
   <tbody>
   {% for u in users %}
@@ -36,6 +36,14 @@
           <option value="full" {% if u.admin_role == 'full' or (u.is_admin and not u.admin_role) %}selected{% endif %}>ادمین کل</option>
         </select>
         <button class="btn btn-xs btn-outline" type="submit">💾</button>
+      </form>
+    </td>
+    <td>
+      <div style="font-weight:700;color:var(--p)">{{ "{:,}".format(u.balance_toman or 0) }}</div>
+      <form action="/{{ S }}/users/{{ u.id }}/balance_adjust" method="POST" style="display:flex;gap:6px;align-items:center;margin-top:6px">
+        <input type="number" name="amount" class="form-control" placeholder="مثبت/منفی" style="width:110px" required>
+        <input type="text" name="note" class="form-control" placeholder="توضیح" style="width:90px">
+        <button class="btn btn-xs btn-outline" type="submit">💰 اعمال</button>
       </form>
     </td>
     <td style="font-size:.78rem;color:var(--txt2)">
@@ -64,6 +72,31 @@
   </tbody>
 </table>
 </div>
+
+{% if pending_topups and pending_topups|length > 0 %}
+<div class="card" style="margin-top:14px">
+  <div class="sec-title" style="margin-bottom:10px">📥 درخواست‌های افزایش اعتبار در انتظار ({{ pending_topups|length }})</div>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>#</th><th>کاربر</th><th>مبلغ</th><th>تاریخ</th><th>اقدام</th></tr></thead>
+      <tbody>
+      {% for t in pending_topups %}
+        <tr>
+          <td>{{ t.id }}</td>
+          <td>{{ t.full_name or '—' }}<br><code>{{ t.telegram_id }}</code></td>
+          <td>{{ "{:,}".format(t.amount or 0) }} تومان</td>
+          <td>{{ t.created_at[:16] }}</td>
+          <td style="display:flex;gap:6px">
+            <form action="/{{ S }}/topups/{{ t.id }}/approve" method="POST"><button class="btn btn-xs btn-outline" type="submit">✅ تایید</button></form>
+            <form action="/{{ S }}/topups/{{ t.id }}/reject" method="POST"><button class="btn btn-xs btn-danger" type="submit">❌ رد</button></form>
+          </td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endif %}
 
 <div class="card pagination-wrap" style="margin-top:12px;display:flex;justify-content:space-between;align-items:center">
   <span style="color:var(--txt3)">صفحه {{ page }} از {{ total_pages }}</span>

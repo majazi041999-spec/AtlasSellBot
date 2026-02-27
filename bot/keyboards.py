@@ -26,7 +26,8 @@ def user_menu(include_wholesale: bool = True) -> ReplyKeyboardMarkup:
     b.row(KeyboardButton(text="📡 وضعیت سرویس"), KeyboardButton(text="🛒 خرید سرویس"))
     b.row(KeyboardButton(text="🔄 انتقال سرور"), KeyboardButton(text="📋 سفارش‌های من"))
     b.row(KeyboardButton(text="🔄 شروع مجدد"))
-    b.row(KeyboardButton(text="🎁 دعوت دوستان"), KeyboardButton(text="📞 پشتیبانی"))
+    b.row(KeyboardButton(text="💳 کیف پول"), KeyboardButton(text="🎁 دعوت دوستان"))
+    b.row(KeyboardButton(text="📞 پشتیبانی"))
     if include_wholesale:
         b.row(KeyboardButton(text="🏷️ خرید عمده"))
     b.row(KeyboardButton(text="🔗 سینک کانفیگ قبلی"))
@@ -162,5 +163,20 @@ def legacy_claim_admin_kb(claim_id: int) -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
     b.button(text="✅ تایید اتصال", callback_data=f"lg_appr:{claim_id}")
     b.button(text="❌ رد درخواست", callback_data=f"lg_rej:{claim_id}")
+    b.adjust(1)
+    return b.as_markup()
+
+
+def wallet_kb() -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    b.button(text="➕ افزایش اعتبار", callback_data="wallet_topup")
+    b.adjust(1)
+    return b.as_markup()
+
+
+def topup_review_kb(req_id: int) -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    b.button(text="✅ تایید افزایش اعتبار", callback_data=f"tp_appr:{req_id}")
+    b.button(text="❌ رد درخواست", callback_data=f"tp_rej:{req_id}")
     b.adjust(1)
     return b.as_markup()

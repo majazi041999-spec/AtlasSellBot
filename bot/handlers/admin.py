@@ -16,7 +16,8 @@ from core.database import (
     get_all_users, count_users, get_server, get_servers,
     save_config, get_user_by_telegram, get_setting, set_setting,
     get_user_by_id, server_has_capacity, count_active_configs_by_server, update_user,
-    get_legacy_claim, update_legacy_claim, get_config_by_email, get_config_by_uuid
+    get_legacy_claim, update_legacy_claim, get_config_by_email, get_config_by_uuid,
+    get_topup_request, update_topup_request, add_user_balance
 )
 from core.xui_api import XUIClient, fmt_bytes, days_left
 from core.qr import build_qr_image
@@ -28,6 +29,10 @@ from bot.keyboards import (
 from bot.states import AddPackage, CreateConfig, BulkConfig, EditConfig, Broadcast, PrivateMessage
 
 router = Router()
+
+
+def _fmt_toman(amount: int) -> str:
+    return f"{int(amount or 0):,}".replace(",", "،")
 
 
 def _db_admin_role(uid: int) -> str:
@@ -1166,3 +1171,70 @@ async def private_msg_send(msg: Message, state: FSMContext):
         await msg.answer("✅ پیام خصوصی ارسال شد.")
     except Exception:
         await msg.answer("❌ ارسال ناموفق بود. آیدی یا وضعیت چت کاربر را بررسی کنید.")
+
+
+@router.callback_query(F.data.startswith("tp_appr:"))
+async def topup_approve(cb: CallbackQuery):
+    if not can_review_payments(cb.from_user.id):
+        return
+    rid = int(cb.data.split(":")[1])
+    req = await get_topup_request(rid)
+    if not req:
+        await cb.answer("درخواست یافت نشد", show_alert=True)
+        return
+    if req.get("status") != "pending":
+        await cb.answer("قبلا بررسی شده", show_alert=True)
+        return
+
+    new_balance = await add_user_balance(
+        req["user_id"],
+        int(req["amount"]),
+        kind="topup",
+        note=f"topup_request:{rid}",
+        actor_telegram_id=cb.from_user.id,
+    )
+    await update_topup_request(
+        rid,
+        status="approved",
+        reviewer_telegram_id=cb.from_user.id,
+        reviewed_at=datetime.now().isoformat(),
+    )
+    try:
+        await cb.bot.send_message(
+            req["telegram_id"],
+            f"✅ افزایش اعتبار شما تایید شد.\n💳 موجودی جدید: *{_fmt_toman(new_balance)} تومان*",
+            parse_mode="Markdown",
+        )
+    except Exception:
+        pass
+    await cb.message.edit_caption((cb.message.caption or "") + "\n\n✅ تایید شد")
+    await cb.answer("انجام شد")
+
+
+@router.callback_query(F.data.startswith("tp_rej:"))
+async def topup_reject(cb: CallbackQuery):
+    if not can_review_payments(cb.from_user.id):
+        return
+    rid = int(cb.data.split(":")[1])
+    req = await get_topup_request(rid)
+    if not req:
+        await cb.answer("درخواست یافت نشد", show_alert=True)
+        return
+    if req.get("status") != "pending":
+        await cb.answer("قبلا بررسی شده", show_alert=True)
+        return
+
+    await update_topup_request(
+        rid,
+        status="rejected",
+        reviewer_telegram_id=cb.from_user.id,
+        reviewed_at=datetime.now().isoformat(),
+        admin_note="rejected",
+    )
+    try:
+        await cb.bot.send_message(req["telegram_id"], "❌ درخواست افزایش اعتبار شما رد شد. در صورت نیاز با پشتیبانی در ارتباط باشید.")
+    except Exception:
+        pass
+    await cb.message.edit_caption((cb.message.caption or "") + "\n\n❌ رد شد")
+    await cb.answer("رد شد")
+

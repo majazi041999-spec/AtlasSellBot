@@ -58,3 +58,8 @@ class LegacySync(StatesGroup):
 class PrivateMessage(StatesGroup):
     user_id = State()
     text = State()
+
+
+class WalletTopup(StatesGroup):
+    waiting_amount = State()
+    waiting_receipt = State()

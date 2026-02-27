@@ -35,6 +35,8 @@ from core.database import (
     get_available_servers,
     get_legacy_claim_by_key,
     create_legacy_claim,
+    get_user_balance,
+    create_topup_request,
 )
 from core.xui_api import XUIClient, fmt_bytes, days_left
 from core.texts import get_text
@@ -50,8 +52,9 @@ from bot.keyboards import (
     wholesale_request_kb,
     wholesale_request_admin_kb,
     legacy_claim_admin_kb,
+    wallet_kb,
 )
-from bot.states import BuyService, WholesaleBuy, LegacySync
+from bot.states import BuyService, WholesaleBuy, LegacySync, WalletTopup
 
 router = Router()
 
@@ -92,6 +95,10 @@ async def _ensure_channel_membership(msg_or_cb) -> bool:
     return False
 
 
+def _fmt_toman(amount: int) -> str:
+    return f"{int(amount or 0):,}".replace(",", "،")
+
+
 async def _get_card_info():
     """✅ کارت بانکی را از Settings DB بخوان (fallback: .env)"""
     card_bank = await get_setting("card_bank", CARD_BANK)
@@ -99,6 +106,85 @@ async def _get_card_info():
     card_holder = await get_setting("card_holder", CARD_HOLDER)
     return card_bank, card_number, card_holder
 
+
+
+
+@router.message(F.text == "💳 کیف پول")
+async def wallet_home(msg: Message):
+    if not await _ensure_channel_membership(msg):
+        return
+    if await _blocked(msg.from_user.id):
+        await msg.answer(await get_text("blocked_message"))
+        return
+    user = await get_or_create_user(msg.from_user.id)
+    bal = await get_user_balance(user["id"])
+    await msg.answer(
+        f"💳 *کیف پول شما*\n\nموجودی فعلی: *{_fmt_toman(bal)} تومان*",
+        reply_markup=wallet_kb(),
+        parse_mode="Markdown",
+    )
+
+
+@router.callback_query(F.data == "wallet_topup")
+async def wallet_topup_start(cb: CallbackQuery, state: FSMContext):
+    await state.set_state(WalletTopup.waiting_amount)
+    await cb.message.answer("💵 مبلغ افزایش اعتبار را به تومان وارد کنید.\nمثال: `250000`", parse_mode="Markdown")
+    await cb.answer()
+
+
+@router.message(WalletTopup.waiting_amount)
+async def wallet_topup_amount(msg: Message, state: FSMContext):
+    raw = (msg.text or "").replace("،", "").replace(",", "").strip()
+    if not raw.isdigit() or int(raw) <= 0:
+        await msg.answer("❌ مبلغ نامعتبر است. فقط عدد تومان بفرستید.")
+        return
+    amount = int(raw)
+    await state.update_data(topup_amount=amount)
+    await state.set_state(WalletTopup.waiting_receipt)
+    card_bank, card_number, card_holder = await _get_card_info()
+    await msg.answer(
+        f"✅ مبلغ: *{_fmt_toman(amount)} تومان*\n\n"
+        f"لطفاً واریز را انجام دهید و تصویر فیش را ارسال کنید.\n\n"
+        f"🏦 {card_bank}\n`{card_number}`\n👤 {card_holder}",
+        parse_mode="Markdown",
+    )
+
+
+@router.message(WalletTopup.waiting_receipt, F.photo)
+async def wallet_topup_receipt(msg: Message, state: FSMContext, bot: Bot):
+    data = await state.get_data()
+    await state.clear()
+    amount = int(data.get("topup_amount", 0) or 0)
+    if amount <= 0:
+        await msg.answer("❌ خطا در مبلغ. دوباره از کیف پول تلاش کنید.")
+        return
+    user = await get_or_create_user(msg.from_user.id, msg.from_user.username, msg.from_user.full_name)
+    photo_id = msg.photo[-1].file_id
+    req_id = await create_topup_request(user["id"], amount, photo_id)
+
+    await msg.answer(
+        f"✅ درخواست افزایش اعتبار ثبت شد.\nمبلغ: *{_fmt_toman(amount)} تومان*\nپس از تایید ادمین، موجودی شما افزایش می‌یابد.",
+        parse_mode="Markdown",
+    )
+
+    from bot.keyboards import topup_review_kb
+    cap = (
+        f"💳 *درخواست افزایش اعتبار*\n"
+        f"#Topup_{req_id}\n"
+        f"👤 {user.get('full_name') or 'کاربر'} (@{user.get('username') or '—'})\n"
+        f"🆔 `{msg.from_user.id}`\n"
+        f"💵 مبلغ: *{_fmt_toman(amount)} تومان*"
+    )
+    for aid in ADMIN_IDS:
+        try:
+            await bot.send_photo(aid, photo_id, caption=cap, reply_markup=topup_review_kb(req_id), parse_mode="Markdown")
+        except Exception:
+            pass
+
+
+@router.message(WalletTopup.waiting_receipt)
+async def wallet_topup_receipt_wrong(msg: Message):
+    await msg.answer("❌ لطفاً تصویر فیش را ارسال کنید.")
 
 # ─── STATUS ──────────────────────────────────────────────────────
 @router.message(F.text == "📡 وضعیت سرویس")
@@ -328,7 +414,7 @@ async def buy_pkg_selected(cb: CallbackQuery):
     user = await get_or_create_user(cb.from_user.id)
     oid = await create_order(user["id"], pid)
 
-    price = f"{pkg['price']:,}".replace(",", "،")
+    price = _fmt_toman(pkg['price'])
     card_bank, card_number, card_holder = await _get_card_info()
 
     text = (

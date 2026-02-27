@@ -33,9 +33,15 @@ from core.database import (
     delete_package,
     delete_server,
     get_all_configs,
+    get_configs_by_base_email,
+    delete_configs_by_base_email,
     get_all_orders,
     get_all_users,
     get_user_business_stats,
+    add_user_balance,
+    get_pending_topup_requests,
+    get_topup_request,
+    update_topup_request,
     get_config,
     get_order,  # noqa: F401
     get_package,
@@ -413,6 +419,36 @@ async def config_toggle(request: Request, cid: int):
     return JSONResponse({"success": ok})
 
 
+@app.post(f"/{S}/configs/{{cid}}/delete")
+async def config_delete(request: Request, cid: int):
+    if not _auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+
+    cfg = await get_config(cid)
+    if not cfg:
+        return JSONResponse({"success": False, "error": "not found"}, status_code=404)
+
+    base_email = (cfg.get("email") or "").split("_m")[0]
+    rows = await get_configs_by_base_email(base_email)
+
+    deleted_remote = 0
+    for item in rows:
+        try:
+            srv = await get_server(item["server_id"])
+            if not srv:
+                continue
+            cli = XUIClient(srv["url"], srv["username"], srv["password"], srv["sub_path"])
+            ok = await cli.delete_client(item["inbound_id"], item["uuid"])
+            await cli.close()
+            if ok:
+                deleted_remote += 1
+        except Exception:
+            continue
+
+    deleted_local = await delete_configs_by_base_email(base_email)
+    return JSONResponse({"success": True, "deleted_local": deleted_local, "deleted_remote": deleted_remote})
+
+
 # ═══════════════════════════════ USERS ══════════════════════════════
 @app.get(f"/{S}/users", response_class=HTMLResponse)
 async def users_page(request: Request):
@@ -426,9 +462,10 @@ async def users_page(request: Request):
     users = await get_all_users((page - 1) * per_page, per_page)
     for u in users:
         u["business"] = await get_user_business_stats(u["id"])
+    pending_topups = await get_pending_topup_requests(200)
     return _templates.TemplateResponse(
         "users.html",
-        await _ctx_ui(request, users=users, total=total, page=page, total_pages=total_pages, active="users"),
+        await _ctx_ui(request, users=users, pending_topups=pending_topups, total=total, page=page, total_pages=total_pages, active="users"),
     )
 
 
@@ -486,6 +523,38 @@ async def transfer_owner(request: Request, telegram_id: int = Form(...)):
     await update_user(user["id"], is_admin=1, admin_role="full")
     await set_setting("owner_admin_id", str(telegram_id))
     return RedirectResponse(f"/{S}/users?owner_ok=1", status_code=302)
+@app.post(f"/{S}/users/{{uid}}/balance_adjust")
+async def user_balance_adjust(request: Request, uid: int, amount: int = Form(...), note: str = Form("manual")):
+    if not _auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    amount = int(amount or 0)
+    if amount == 0:
+        return RedirectResponse(f"/{S}/users", status_code=302)
+    await add_user_balance(uid, amount, kind="manual", note=(note or "manual"), actor_telegram_id=0)
+    return RedirectResponse(f"/{S}/users", status_code=302)
+
+
+@app.post(f"/{S}/topups/{{rid}}/approve")
+async def topup_approve_web(request: Request, rid: int):
+    if not _auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    req = await get_topup_request(rid)
+    if req and req.get("status") == "pending":
+        await add_user_balance(req["user_id"], int(req["amount"]), kind="topup", note=f"topup_request:{rid}", actor_telegram_id=0)
+        await update_topup_request(rid, status="approved", reviewer_telegram_id=0, reviewed_at=datetime.now().isoformat())
+    return RedirectResponse(f"/{S}/users", status_code=302)
+
+
+@app.post(f"/{S}/topups/{{rid}}/reject")
+async def topup_reject_web(request: Request, rid: int):
+    if not _auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    req = await get_topup_request(rid)
+    if req and req.get("status") == "pending":
+        await update_topup_request(rid, status="rejected", reviewer_telegram_id=0, reviewed_at=datetime.now().isoformat(), admin_note="rejected_web")
+    return RedirectResponse(f"/{S}/users", status_code=302)
+
+
 @app.post(f"/{S}/users/{{uid}}/pricing")
 async def user_set_pricing(
     request: Request,

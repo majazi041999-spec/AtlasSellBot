@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS users (
     referred_by INTEGER,
     referral_bonus_gb REAL DEFAULT 0,
     admin_role TEXT DEFAULT 'none',
+    balance_toman INTEGER DEFAULT 0,
     created_at TEXT DEFAULT (datetime('now','localtime'))
 );
 
@@ -84,6 +85,32 @@ CREATE TABLE IF NOT EXISTS configs (
     created_at TEXT DEFAULT (datetime('now','localtime')),
     FOREIGN KEY(user_id) REFERENCES users(id),
     FOREIGN KEY(server_id) REFERENCES servers(id)
+);
+
+
+CREATE TABLE IF NOT EXISTS wallet_transactions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    amount INTEGER NOT NULL,
+    balance_after INTEGER DEFAULT 0,
+    kind TEXT DEFAULT 'manual',
+    note TEXT DEFAULT '',
+    actor_telegram_id INTEGER DEFAULT 0,
+    created_at TEXT DEFAULT (datetime('now','localtime')),
+    FOREIGN KEY(user_id) REFERENCES users(id)
+);
+
+CREATE TABLE IF NOT EXISTS topup_requests (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    amount INTEGER NOT NULL,
+    receipt_file_id TEXT DEFAULT '',
+    status TEXT DEFAULT 'pending',
+    reviewer_telegram_id INTEGER DEFAULT 0,
+    admin_note TEXT DEFAULT '',
+    created_at TEXT DEFAULT (datetime('now','localtime')),
+    reviewed_at TEXT,
+    FOREIGN KEY(user_id) REFERENCES users(id)
 );
 
 CREATE TABLE IF NOT EXISTS settings (
@@ -139,6 +166,7 @@ async def _ensure_columns(db):
             ("is_wholesale", "INTEGER DEFAULT 0"),
             ("wholesale_request_pending", "INTEGER DEFAULT 0"),
             ("admin_role", "TEXT DEFAULT 'none'"),
+            ("balance_toman", "INTEGER DEFAULT 0"),
         ],
         "configs": [
             ("starts_on_first_use", "INTEGER DEFAULT 0"),
@@ -302,6 +330,70 @@ async def get_user_business_stats(uid: int) -> Dict:
         async with db.execute("SELECT COUNT(*) FROM orders WHERE user_id=? AND status='pending'", (uid,)) as c:
             stats["pending_orders"] = (await c.fetchone())[0]
         return stats
+
+
+
+async def get_user_balance(user_id: int) -> int:
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT balance_toman FROM users WHERE id=?", (user_id,)) as c:
+            row = await c.fetchone()
+            return int((row[0] if row else 0) or 0)
+
+
+async def add_user_balance(user_id: int, amount: int, kind: str = "manual", note: str = "", actor_telegram_id: int = 0) -> int:
+    amount = int(amount or 0)
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT balance_toman FROM users WHERE id=?", (user_id,)) as c:
+            row = await c.fetchone()
+            cur = int((row[0] if row else 0) or 0)
+        new_bal = cur + amount
+        await db.execute("UPDATE users SET balance_toman=? WHERE id=?", (new_bal, user_id))
+        await db.execute(
+            "INSERT INTO wallet_transactions(user_id,amount,balance_after,kind,note,actor_telegram_id) VALUES(?,?,?,?,?,?)",
+            (user_id, amount, new_bal, kind, note, actor_telegram_id),
+        )
+        await db.commit()
+        return new_bal
+
+
+async def create_topup_request(user_id: int, amount: int, receipt_file_id: str) -> int:
+    async with aiosqlite.connect(DB_PATH) as db:
+        c = await db.execute(
+            "INSERT INTO topup_requests(user_id,amount,receipt_file_id,status) VALUES(?,?,?,'pending')",
+            (user_id, int(amount), receipt_file_id),
+        )
+        await db.commit()
+        return c.lastrowid
+
+
+async def get_topup_request(rid: int) -> Optional[Dict]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            """SELECT t.*, u.telegram_id, u.username, u.full_name FROM topup_requests t
+               JOIN users u ON t.user_id=u.id WHERE t.id=?""",
+            (rid,),
+        ) as c:
+            r = await c.fetchone()
+            return dict(r) if r else None
+
+
+async def get_pending_topup_requests(limit: int = 100) -> List[Dict]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            """SELECT t.*, u.telegram_id, u.username, u.full_name FROM topup_requests t
+               JOIN users u ON t.user_id=u.id WHERE t.status='pending' ORDER BY t.created_at DESC LIMIT ?""",
+            (limit,),
+        ) as c:
+            return [dict(r) for r in await c.fetchall()]
+
+
+async def update_topup_request(rid: int, **kw):
+    fields = ','.join(f"{k}=?" for k in kw)
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(f"UPDATE topup_requests SET {fields} WHERE id=?", (*kw.values(), rid))
+        await db.commit()
 
 async def count_users() -> int:
     async with aiosqlite.connect(DB_PATH) as db:
@@ -528,6 +620,36 @@ async def get_all_configs() -> List[Dict]:
             ORDER BY c.created_at DESC
         """) as cu:
             return [dict(r) for r in await cu.fetchall()]
+
+
+
+async def get_configs_by_base_email(base_email: str) -> List[Dict]:
+    base = (base_email or "").strip()
+    if not base:
+        return []
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT * FROM configs WHERE email=? OR email LIKE ? ORDER BY id DESC",
+            (base, f"{base}_m%"),
+        ) as c:
+            return [dict(r) for r in await c.fetchall()]
+
+
+async def delete_config_by_id(cid: int):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("DELETE FROM configs WHERE id=?", (cid,))
+        await db.commit()
+
+
+async def delete_configs_by_base_email(base_email: str) -> int:
+    base = (base_email or "").strip()
+    if not base:
+        return 0
+    async with aiosqlite.connect(DB_PATH) as db:
+        c = await db.execute("DELETE FROM configs WHERE email=? OR email LIKE ?", (base, f"{base}_m%"))
+        await db.commit()
+        return c.rowcount
 
 async def update_config(cid: int, **kw):
     fields = ','.join(f"{k}=?" for k in kw)
