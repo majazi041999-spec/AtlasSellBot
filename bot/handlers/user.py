@@ -159,6 +159,28 @@ async def _send_config_status(target, config_id: int):
         remaining = max(0, total - used)
         expire_ms = traffic.get("expiryTime", cfg["expire_timestamp"] or 0)
         enabled = traffic.get("enable", True)
+
+        # اگر شروع زمان از اولین اتصال باشد، بعد از اولین مصرف زمان را فعال کن
+        if cfg.get("starts_on_first_use", 0) and used > 0 and (cfg.get("duration_days", 0) or 0) > 0:
+            new_expire_ms = int((datetime.now() + timedelta(days=int(cfg.get("duration_days", 0) or 0))).timestamp() * 1000)
+            cli2 = XUIClient(cfg["server_url"], cfg["srv_user"], cfg["srv_pass"], cfg["sub_path"])
+            ok = await cli2.update_client(
+                cfg["inbound_id"],
+                cfg["uuid"],
+                cfg["email"],
+                cfg["traffic_gb"],
+                new_expire_ms,
+                bool(enabled),
+            )
+            await cli2.close()
+            if ok:
+                await update_config(
+                    config_id,
+                    expire_timestamp=new_expire_ms,
+                    starts_on_first_use=0,
+                    first_use_at=datetime.now().isoformat(),
+                )
+                expire_ms = new_expire_ms
     else:
         total = int(cfg["traffic_gb"] * 1024**3)
         used = 0
@@ -220,7 +242,10 @@ async def send_config_link(cb: CallbackQuery):
             body += f"\n *لینک سابسکریپشن:*\n`{sub}`\n"
         body += (
             "\n این لینک را کپی کن و در اپلیکیشن وارد کن.\n\n"
-            "_اپ‌های پیشنهادی: V2rayNG (اندروید) | Streisand (iOS) | Hiddify (ویندوز)_"
+            "اپ‌های پیشنهادی:\n"
+            "[📱 V2rayNG (اندروید)](https://github.com/2dust/v2rayNG/releases/latest) | "
+            "[🍎 Streisand (iOS)](https://apps.apple.com/us/app/streisand/id6450534064) | "
+            "[🪟 v2rayN (ویندوز)](https://github.com/2dust/v2rayN/releases/latest)"
         )
         await cb.message.answer(body, parse_mode="Markdown")
         try:
@@ -765,7 +790,7 @@ async def mig_confirm(cb: CallbackQuery):
     new_uuid = str(_uuid.uuid4())
     new_email = f"{cfg['email'].split('_m')[0]}_m{int(time.time())}"
 
-    ok = await dst_cli.add_client(dst_srv["inbound_id"], new_uuid, new_email, rem_gb, new_days)
+    ok = await dst_cli.add_client(dst_srv["inbound_id"], new_uuid, new_email, rem_gb, new_days, starts_on_first_use=True)
     if not ok:
         await src_cli.close()
         await dst_cli.close()
@@ -781,8 +806,8 @@ async def mig_confirm(cb: CallbackQuery):
 
     # ذخیره کانفیگ جدید و غیرفعال کردن قدیمی
     await update_config(src_cid, is_active=0)
-    new_exp_ms = int((datetime.now() + timedelta(days=new_days)).timestamp() * 1000)
-    await save_config(user["id"], dst_sid, new_uuid, new_email, dst_srv["inbound_id"], rem_gb, new_days, new_exp_ms)
+    new_exp_ms = 0 if new_days > 0 else 0
+    await save_config(user["id"], dst_sid, new_uuid, new_email, dst_srv["inbound_id"], rem_gb, new_days, new_exp_ms, starts_on_first_use=1 if new_days > 0 else 0)
 
     # آپدیت شمارنده انتقال
     today = date.today().isoformat()
@@ -800,6 +825,13 @@ async def mig_confirm(cb: CallbackQuery):
     if new_link:
         text += f"\n\n *لینک جدید:*\n`{new_link}`"
     await cb.message.edit_text(text, parse_mode="Markdown")
+    if new_link:
+        try:
+            ch = await get_setting("channel_username", "AtlasChannel")
+            qr = build_qr_image(new_link, footer_text=ch)
+            await cb.message.answer_photo(qr, caption="🎨 QR Code لینک جدید شما")
+        except Exception:
+            pass
 
 
 # ─── REFERRAL ────────────────────────────────────────────────────

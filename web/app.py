@@ -35,6 +35,7 @@ from core.database import (
     get_all_configs,
     get_all_orders,
     get_all_users,
+    get_user_business_stats,
     get_config,
     get_order,  # noqa: F401
     get_package,
@@ -423,6 +424,8 @@ async def users_page(request: Request):
     total_pages = max(1, (total + per_page - 1) // per_page)
     page = min(page, total_pages)
     users = await get_all_users((page - 1) * per_page, per_page)
+    for u in users:
+        u["business"] = await get_user_business_stats(u["id"])
     return _templates.TemplateResponse(
         "users.html",
         await _ctx_ui(request, users=users, total=total, page=page, total_pages=total_pages, active="users"),
@@ -442,6 +445,47 @@ async def user_toggle_block(request: Request, uid: int):
     return JSONResponse({"success": True})
 
 
+
+
+@app.post(f"/{S}/users/{{uid}}/toggle_wholesale")
+async def user_toggle_wholesale(request: Request, uid: int):
+    if not _auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    from core.database import get_user_by_id, update_user
+
+    u = await get_user_by_id(uid)
+    if not u:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    next_status = 0 if u.get("is_wholesale", 0) else 1
+    await update_user(uid, is_wholesale=next_status, wholesale_request_pending=0 if next_status else u.get("wholesale_request_pending", 0))
+    return JSONResponse({"success": True, "is_wholesale": bool(next_status)})
+
+
+@app.post(f"/{S}/users/{{uid}}/admin_role")
+async def user_set_admin_role(request: Request, uid: int, role: str = Form("none")):
+    if not _auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    role = (role or "none").strip().lower()
+    valid = {"none", "finance", "full"}
+    if role not in valid:
+        role = "none"
+    from core.database import update_user
+    await update_user(uid, is_admin=0 if role == "none" else 1, admin_role=role)
+    return RedirectResponse(f"/{S}/users", status_code=302)
+
+
+@app.post(f"/{S}/users/transfer_owner")
+async def transfer_owner(request: Request, telegram_id: int = Form(...)):
+    if not _auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    from core.database import get_user_by_telegram, set_setting, update_user
+
+    user = await get_user_by_telegram(telegram_id)
+    if not user:
+        return RedirectResponse(f"/{S}/users?owner_error=1", status_code=302)
+    await update_user(user["id"], is_admin=1, admin_role="full")
+    await set_setting("owner_admin_id", str(telegram_id))
+    return RedirectResponse(f"/{S}/users?owner_ok=1", status_code=302)
 @app.post(f"/{S}/users/{{uid}}/pricing")
 async def user_set_pricing(
     request: Request,

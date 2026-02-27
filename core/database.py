@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS users (
     referral_code TEXT UNIQUE,
     referred_by INTEGER,
     referral_bonus_gb REAL DEFAULT 0,
+    admin_role TEXT DEFAULT 'none',
     created_at TEXT DEFAULT (datetime('now','localtime'))
 );
 
@@ -75,6 +76,8 @@ CREATE TABLE IF NOT EXISTS configs (
     traffic_gb REAL NOT NULL,
     duration_days INTEGER NOT NULL,
     expire_timestamp INTEGER DEFAULT 0,
+    starts_on_first_use INTEGER DEFAULT 0,
+    first_use_at TEXT DEFAULT '',
     is_active INTEGER DEFAULT 1,
     migration_count INTEGER DEFAULT 0,
     last_migration_date TEXT DEFAULT '',
@@ -107,7 +110,8 @@ CREATE TABLE IF NOT EXISTS legacy_claims (
 INSERT OR IGNORE INTO settings VALUES
     ('welcome_message','به Atlas Account خوش آمدید! 🌐\nبهترین سرویس VPN با سرعت بالا.'),
     ('support_username',''),
-    ('maintenance_mode','0');
+    ('maintenance_mode','0'),
+    ('owner_admin_id','0');
 """
 
 
@@ -134,6 +138,11 @@ async def _ensure_columns(db):
             ("price_per_gb", "INTEGER DEFAULT 0"),
             ("is_wholesale", "INTEGER DEFAULT 0"),
             ("wholesale_request_pending", "INTEGER DEFAULT 0"),
+            ("admin_role", "TEXT DEFAULT 'none'"),
+        ],
+        "configs": [
+            ("starts_on_first_use", "INTEGER DEFAULT 0"),
+            ("first_use_at", "TEXT DEFAULT ''"),
         ],
         "packages": [
             ("inbound_id", "INTEGER DEFAULT 0"),
@@ -279,6 +288,20 @@ async def get_all_users(offset=0, limit=50) -> List[Dict]:
             "SELECT * FROM users ORDER BY created_at DESC LIMIT ? OFFSET ?", (limit, offset)
         ) as c:
             return [dict(r) for r in await c.fetchall()]
+
+
+async def get_user_business_stats(uid: int) -> Dict:
+    async with aiosqlite.connect(DB_PATH) as db:
+        stats = {"active_configs": 0, "total_configs": 0, "approved_orders": 0, "pending_orders": 0}
+        async with db.execute("SELECT COUNT(*) FROM configs WHERE user_id=?", (uid,)) as c:
+            stats["total_configs"] = (await c.fetchone())[0]
+        async with db.execute("SELECT COUNT(*) FROM configs WHERE user_id=? AND is_active=1", (uid,)) as c:
+            stats["active_configs"] = (await c.fetchone())[0]
+        async with db.execute("SELECT COUNT(*) FROM orders WHERE user_id=? AND status='approved'", (uid,)) as c:
+            stats["approved_orders"] = (await c.fetchone())[0]
+        async with db.execute("SELECT COUNT(*) FROM orders WHERE user_id=? AND status='pending'", (uid,)) as c:
+            stats["pending_orders"] = (await c.fetchone())[0]
+        return stats
 
 async def count_users() -> int:
     async with aiosqlite.connect(DB_PATH) as db:
@@ -462,12 +485,12 @@ async def has_previous_purchase(user_id: int) -> bool:
 
 # ══════════════════ CONFIGS ══════════════════
 
-async def save_config(user_id, server_id, uuid, email, inbound_id, traffic_gb, duration_days, expire_ts) -> int:
+async def save_config(user_id, server_id, uuid, email, inbound_id, traffic_gb, duration_days, expire_ts, starts_on_first_use: int = 0) -> int:
     async with aiosqlite.connect(DB_PATH) as db:
         c = await db.execute("""
-            INSERT INTO configs(user_id,server_id,uuid,email,inbound_id,traffic_gb,duration_days,expire_timestamp)
-            VALUES(?,?,?,?,?,?,?,?)
-        """, (user_id, server_id, uuid, email, inbound_id, traffic_gb, duration_days, expire_ts))
+            INSERT INTO configs(user_id,server_id,uuid,email,inbound_id,traffic_gb,duration_days,expire_timestamp,starts_on_first_use)
+            VALUES(?,?,?,?,?,?,?,?,?)
+        """, (user_id, server_id, uuid, email, inbound_id, traffic_gb, duration_days, expire_ts, starts_on_first_use))
         await db.commit()
         return c.lastrowid
 
