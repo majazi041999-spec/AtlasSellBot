@@ -6,8 +6,13 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
 from typing import List, Dict
 
 
-def admin_menu() -> ReplyKeyboardMarkup:
+def admin_menu(finance_only: bool = False) -> ReplyKeyboardMarkup:
     b = ReplyKeyboardBuilder()
+    if finance_only:
+        b.row(KeyboardButton(text="💰 سفارش‌های در انتظار"))
+        b.row(KeyboardButton(text="🔄 شروع مجدد"))
+        return b.as_markup(resize_keyboard=True)
+
     b.row(KeyboardButton(text="📊 آمار کلی"), KeyboardButton(text="💰 سفارش‌های در انتظار"))
     b.row(KeyboardButton(text="🔑 مدیریت کانفیگ"), KeyboardButton(text="📦 پکیج‌ها"))
     b.row(KeyboardButton(text="👥 کاربران"), KeyboardButton(text="📣 پیام همگانی"))
