@@ -11,7 +11,7 @@
 <div class="table-wrap">
 <table>
   <thead>
-    <tr><th>#</th><th>نام</th><th>حجم</th><th>مدت</th><th>قیمت (تومن)</th><th>توضیحات</th><th>وضعیت</th><th>عملیات</th></tr>
+    <tr><th>#</th><th>نام</th><th>حجم</th><th>مدت</th><th>قیمت (تومن)</th><th>Inbound</th><th>توضیحات</th><th>وضعیت</th><th>عملیات</th></tr>
   </thead>
   <tbody>
   {% for p in packages %}
@@ -21,6 +21,7 @@
     <td>{{ p.traffic_gb }} GB</td>
     <td>{{ p.duration_days }} روز</td>
     <td>{{ "{:,}".format(p.price) }}</td>
+    <td><code>{{ p.inbound_id or 0 }}</code></td>
     <td style="color:var(--txt2)">{{ p.description or '—' }}</td>
     <td>
       {% if p.is_active %}
@@ -30,7 +31,7 @@
       {% endif %}
     </td>
     <td style="white-space:nowrap">
-      <button class="btn btn-outline btn-xs" onclick="openEditPkg({{ p.id }}, '{{ p.name|replace("'","&#39;") }}', '{{ p.traffic_gb }}', '{{ p.duration_days }}', '{{ p.price }}', '{{ (p.description or '')|replace("'","&#39;") }}')">✏️ ویرایش</button>
+      <button class="btn btn-outline btn-xs" onclick="openEditPkg({{ p.id }}, '{{ p.name|replace("'","&#39;") }}', '{{ p.traffic_gb }}', '{{ p.duration_days }}', '{{ p.price }}', '{{ p.inbound_id or 0 }}', '{{ (p.description or '')|replace("'","&#39;") }}')">✏️ ویرایش</button>
       <button class="btn btn-outline btn-xs" onclick="togglePkg({{ p.id }}, this)">
         {{ '🔴 غیرفعال' if p.is_active else '🟢 فعال' }}
       </button>
@@ -68,6 +69,10 @@
       <input type="number" name="price" class="form-control" min="0" placeholder="100000" required>
     </div>
     <div class="form-group">
+      <label>Inbound ID پکیج (0 = پیش‌فرض سرور)</label>
+      <input type="number" name="inbound_id" class="form-control" min="0" value="0">
+    </div>
+    <div class="form-group">
       <label>توضیحات (اختیاری)</label>
       <input type="text" name="description" class="form-control" placeholder="مثال: مناسب کاربری عادی">
     </div>
@@ -92,6 +97,7 @@
       <div class="form-group"><label>مدت (روز)</label><input type="number" name="duration_days" id="e_days" class="form-control" min="1" required></div>
     </div>
     <div class="form-group"><label>قیمت (تومن)</label><input type="number" name="price" id="e_price" class="form-control" min="0" required></div>
+    <div class="form-group"><label>Inbound ID پکیج (0 = پیش‌فرض سرور)</label><input type="number" name="inbound_id" id="e_inbound_id" class="form-control" min="0"></div>
     <div class="form-group"><label>توضیحات</label><input type="text" name="description" id="e_desc" class="form-control"></div>
     <div style="display:flex;gap:8px;justify-content:flex-end">
       <button type="button" class="btn btn-outline" onclick="closeModal('editPkgModal')">انصراف</button>
@@ -125,11 +131,12 @@ async function deletePkg(id, name){
   else toast('خطا در حذف!','error');
 }
 
-function openEditPkg(id, name, gb, days, price, desc){
+function openEditPkg(id, name, gb, days, price, inboundId, desc){
   document.getElementById('e_name').value = name;
   document.getElementById('e_gb').value = gb;
   document.getElementById('e_days').value = days;
   document.getElementById('e_price').value = price;
+  document.getElementById('e_inbound_id').value = inboundId;
   document.getElementById('e_desc').value = desc;
   document.getElementById('editPkgForm').action = `/${S}/packages/${id}/edit`;
   openModal('editPkgModal');

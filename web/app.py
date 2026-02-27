@@ -187,12 +187,13 @@ async def server_add(
     password: str = Form(...),
     sub_path: str = Form(""),
     inbound_id: int = Form(1),
+    inbound_ids: str = Form(""),
     note: str = Form(""),
     max_active_configs: int = Form(0),
 ):
     if not _auth(request):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
-    sid = await add_server(name, url.rstrip("/"), username, password, sub_path.strip("/"), inbound_id, note)
+    sid = await add_server(name, url.rstrip("/"), username, password, sub_path.strip("/"), inbound_id, note, inbound_ids=inbound_ids)
     await update_server(sid, max_active_configs=max_active_configs)
     return RedirectResponse(f"/{S}/servers", status_code=302)
 
@@ -218,6 +219,7 @@ async def server_edit(
     password: str = Form(...),
     sub_path: str = Form(""),
     inbound_id: int = Form(1),
+    inbound_ids: str = Form(""),
     note: str = Form(""),
     max_active_configs: int = Form(0),
 ):
@@ -232,6 +234,7 @@ async def server_edit(
         sub_path=sub_path.strip("/"),
         inbound_id=inbound_id,
         note=note,
+        inbound_ids=inbound_ids,
         max_active_configs=max_active_configs,
     )
     return RedirectResponse(f"/{S}/servers", status_code=302)
@@ -271,9 +274,10 @@ async def packages_page(request: Request):
     page = min(page, total_pages)
     start = (page - 1) * per_page
     pkgs = pkgs_all[start:start + per_page]
+    servers = await get_servers(active_only=False)
     return _templates.TemplateResponse(
         "packages.html",
-        await _ctx_ui(request, packages=pkgs, total=total, page=page, total_pages=total_pages, active="packages"),
+        await _ctx_ui(request, packages=pkgs, total=total, page=page, total_pages=total_pages, servers=servers, active="packages"),
     )
 
 
@@ -285,10 +289,11 @@ async def pkg_add(
     duration_days: int = Form(...),
     price: int = Form(...),
     description: str = Form(""),
+    inbound_id: int = Form(0),
 ):
     if not _auth(request):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
-    await add_package(name, traffic_gb, duration_days, price, description)
+    await add_package(name, traffic_gb, duration_days, price, description, inbound_id=inbound_id)
     return RedirectResponse(f"/{S}/packages", status_code=302)
 
 
@@ -301,6 +306,7 @@ async def pkg_edit(
     duration_days: int = Form(...),
     price: int = Form(...),
     description: str = Form(""),
+    inbound_id: int = Form(0),
 ):
     if not _auth(request):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
@@ -311,6 +317,7 @@ async def pkg_edit(
         duration_days=duration_days,
         price=price,
         description=description,
+        inbound_id=inbound_id,
     )
     return RedirectResponse(f"/{S}/packages", status_code=302)
 
