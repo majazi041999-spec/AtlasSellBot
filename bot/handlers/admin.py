@@ -24,7 +24,7 @@ from core.qr import build_qr_image
 from bot.keyboards import (
     admin_menu, order_review_kb, order_server_select_kb,
     admin_configs_kb, adm_config_detail_kb, confirm_kb, packages_kb, servers_kb,
-    broadcast_target_kb, legacy_claim_admin_kb
+    broadcast_target_kb, legacy_claim_admin_kb, flow_cancel_kb
 )
 from bot.states import AddPackage, CreateConfig, BulkConfig, EditConfig, Broadcast, PrivateMessage
 
@@ -707,7 +707,7 @@ async def create_single_start(cb: CallbackQuery, state: FSMContext):
 async def single_email(msg: Message, state: FSMContext):
     await state.update_data(email=msg.text.strip().replace(" ", "_"))
     await state.set_state(CreateConfig.traffic)
-    await msg.answer("📊 حجم ترافیک (GB):")
+    await msg.answer("📊 حجم ترافیک (GB):", reply_markup=flow_cancel_kb())
 
 
 @router.message(CreateConfig.traffic)
@@ -719,7 +719,7 @@ async def single_traffic(msg: Message, state: FSMContext):
         return
     await state.update_data(traffic_gb=v)
     await state.set_state(CreateConfig.duration)
-    await msg.answer("📅 مدت (روز):")
+    await msg.answer("📅 مدت (روز):", reply_markup=flow_cancel_kb())
 
 
 @router.message(CreateConfig.duration)
@@ -802,7 +802,7 @@ async def bulk_count(msg: Message, state: FSMContext):
         return
     await state.update_data(count=n)
     await state.set_state(BulkConfig.traffic)
-    await msg.answer("📊 حجم هر کانفیگ (GB):")
+    await msg.answer("📊 حجم هر کانفیگ (GB):", reply_markup=flow_cancel_kb())
 
 
 @router.message(BulkConfig.traffic)
@@ -814,7 +814,7 @@ async def bulk_traffic(msg: Message, state: FSMContext):
         return
     await state.update_data(traffic_gb=v)
     await state.set_state(BulkConfig.duration)
-    await msg.answer("📅 مدت (روز):")
+    await msg.answer("📅 مدت (روز):", reply_markup=flow_cancel_kb())
 
 
 @router.message(BulkConfig.duration)
@@ -1146,7 +1146,7 @@ async def private_msg_start(msg: Message, state: FSMContext):
     if not is_admin(msg.from_user.id):
         return
     await state.set_state(PrivateMessage.user_id)
-    await msg.answer("🆔 آیدی عددی کاربر را ارسال کنید:")
+    await msg.answer("🆔 آیدی عددی کاربر را ارسال کنید:", reply_markup=flow_cancel_kb())
 
 
 @router.message(PrivateMessage.user_id)
@@ -1158,7 +1158,7 @@ async def private_msg_user(msg: Message, state: FSMContext):
         return
     await state.update_data(uid=uid)
     await state.set_state(PrivateMessage.text)
-    await msg.answer("✍️ متن پیام خصوصی را ارسال کنید:")
+    await msg.answer("✍️ متن پیام خصوصی را ارسال کنید:", reply_markup=flow_cancel_kb())
 
 
 @router.message(PrivateMessage.text)

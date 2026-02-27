@@ -53,6 +53,7 @@ from bot.keyboards import (
     wholesale_request_admin_kb,
     legacy_claim_admin_kb,
     wallet_kb,
+    flow_cancel_kb,
 )
 from bot.states import BuyService, WholesaleBuy, LegacySync, WalletTopup
 
@@ -128,7 +129,7 @@ async def wallet_home(msg: Message):
 @router.callback_query(F.data == "wallet_topup")
 async def wallet_topup_start(cb: CallbackQuery, state: FSMContext):
     await state.set_state(WalletTopup.waiting_amount)
-    await cb.message.answer("💵 مبلغ افزایش اعتبار را به تومان وارد کنید.\nمثال: `250000`", parse_mode="Markdown")
+    await cb.message.answer("💵 مبلغ افزایش اعتبار را به تومان وارد کنید.\nمثال: `250000`", parse_mode="Markdown", reply_markup=flow_cancel_kb())
     await cb.answer()
 
 
@@ -147,6 +148,7 @@ async def wallet_topup_amount(msg: Message, state: FSMContext):
         f"لطفاً واریز را انجام دهید و تصویر فیش را ارسال کنید.\n\n"
         f"🏦 {card_bank}\n`{card_number}`\n👤 {card_holder}",
         parse_mode="Markdown",
+        reply_markup=flow_cancel_kb(),
     )
 
 
@@ -184,7 +186,7 @@ async def wallet_topup_receipt(msg: Message, state: FSMContext, bot: Bot):
 
 @router.message(WalletTopup.waiting_receipt)
 async def wallet_topup_receipt_wrong(msg: Message):
-    await msg.answer("❌ لطفاً تصویر فیش را ارسال کنید.")
+    await msg.answer("❌ لطفاً تصویر فیش را ارسال کنید.", reply_markup=flow_cancel_kb())
 
 # ─── STATUS ──────────────────────────────────────────────────────
 @router.message(F.text == "📡 وضعیت سرویس")
@@ -443,7 +445,7 @@ async def prompt_receipt(cb: CallbackQuery, state: FSMContext):
     await state.set_state(BuyService.waiting_receipt)
     await state.update_data(order_id=oid)
     await update_order(oid, status="pending_receipt")
-    await cb.message.edit_text(" *ارسال فیش پرداخت*\n\nتصویر فیش واریزی را ارسال کنید ", parse_mode="Markdown")
+    await cb.message.edit_text(" *ارسال فیش پرداخت*\n\nتصویر فیش واریزی را ارسال کنید ", parse_mode="Markdown", reply_markup=flow_cancel_kb())
 
 
 @router.message(BuyService.waiting_receipt, F.photo)
@@ -483,7 +485,7 @@ async def receive_receipt(msg: Message, state: FSMContext, bot: Bot):
 
 @router.message(BuyService.waiting_receipt)
 async def wrong_receipt_format(msg: Message):
-    await msg.answer(" لطفاً *تصویر* (عکس) فیش را ارسال کنید.", parse_mode="Markdown")
+    await msg.answer(" لطفاً *تصویر* (عکس) فیش را ارسال کنید.", parse_mode="Markdown", reply_markup=flow_cancel_kb())
 
 
 @router.callback_query(F.data.startswith("cancel_order:"))
@@ -586,6 +588,7 @@ async def wholesale_duration(msg: Message, state: FSMContext):
         "📝 الگوی اسم کانفیگ‌ها را وارد کنید (مثال: `Mobile110 📱`)\n"
         "اگر نمی‌خواهید شخصی‌سازی شود، `-` بفرستید.",
         parse_mode="Markdown",
+        reply_markup=flow_cancel_kb(),
     )
 
 
@@ -594,7 +597,7 @@ async def wholesale_naming_prefix(msg: Message, state: FSMContext):
     prefix = msg.text.strip()
     await state.update_data(naming_prefix="" if prefix == "-" else prefix)
     await state.set_state(WholesaleBuy.naming_start)
-    await msg.answer("🔢 شماره شروع را وارد کنید (مثال: 151)")
+    await msg.answer("🔢 شماره شروع را وارد کنید (مثال: 151)", reply_markup=flow_cancel_kb())
 
 
 @router.message(WholesaleBuy.naming_start)
@@ -689,7 +692,7 @@ async def legacy_sync_start(msg: Message, state: FSMContext):
         "🔗 لینک کانفیگ قبلی خود را ارسال کنید تا برای اتصال به حساب شما بررسی شود.\n\n"
         "پس از تایید ادمین، سرویس به اکانت شما متصل می‌شود.\n"
         "برای لغو: /cancel"
-    )
+    , reply_markup=flow_cancel_kb())
 
 
 @router.message(LegacySync.waiting_link)

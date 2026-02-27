@@ -180,3 +180,11 @@ def topup_review_kb(req_id: int) -> InlineKeyboardMarkup:
     b.button(text="❌ رد درخواست", callback_data=f"tp_rej:{req_id}")
     b.adjust(1)
     return b.as_markup()
+
+
+def flow_cancel_kb() -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    b.button(text="❌ کنسل", callback_data="cancel")
+    b.button(text="🏠 شروع مجدد", callback_data="back_to_menu")
+    b.adjust(2)
+    return b.as_markup()
