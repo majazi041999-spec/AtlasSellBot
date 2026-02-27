@@ -3,26 +3,46 @@
 {% block topbar_title %}👥 مدیریت کاربران{% endblock %}
 
 {% block content %}
-<div class="sec-hd">
+<div class="sec-hd" style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap">
   <span class="sec-title">کل کاربران: {{ total }}</span>
-  <div class="search-box">
-    <input type="text" id="usrSearch" class="form-control" placeholder="جستجو..." oninput="filterTable('usrSearch','usrTable')">
-  </div>
+  <form action="/{{ S }}/users/transfer_owner" method="POST" style="display:flex;gap:6px;align-items:center">
+    <input type="number" name="telegram_id" class="form-control" placeholder="Telegram ID ادمین اصلی" required>
+    <button class="btn btn-sm btn-outline" type="submit">👑 انتقال ادمین اصلی</button>
+  </form>
+</div>
+<div class="search-box" style="margin:8px 0 12px">
+  <input type="text" id="usrSearch" class="form-control" placeholder="جستجو..." oninput="filterTable('usrSearch','usrTable')">
 </div>
 <div class="table-wrap">
 <table id="usrTable">
   <thead>
-    <tr><th>#</th><th>نام</th><th>یوزرنیم</th><th>Telegram ID</th><th>کد دعوت</th><th>تخفیف</th><th>قیمت هر GB</th><th>وضعیت</th><th>تاریخ</th><th>عملیات</th></tr>
+    <tr><th>#</th><th>نام</th><th>همکاری عمده</th><th>سطح ادمین</th><th>آمار همکاری</th><th>تخفیف</th><th>قیمت هر GB</th><th>وضعیت</th><th>تاریخ</th><th>عملیات</th></tr>
   </thead>
   <tbody>
   {% for u in users %}
   <tr id="usr-row-{{ u.id }}">
     <td>{{ u.id }}</td>
     <td><strong>{{ u.full_name or '—' }}</strong><br><span style='color:var(--txt3);font-size:.74rem'>@{{ u.username or '—' }}</span><br><code style='font-size:.72rem'>{{ u.telegram_id }}</code></td>
-    <td style="color:var(--txt2)">{{ ('@' + u.username) if u.username else '—' }}</td>
-    <td><code style="font-size:.75rem">{{ u.telegram_id }}</code></td>
-    <td><code style="font-size:.72rem;color:var(--p)">{{ u.referral_code or '—' }}</code></td>
-    
+    <td>
+      {% if u.is_wholesale %}<span class="badge b-green">✅ عمده‌فروش</span>{% else %}<span class="badge b-yellow">— عادی</span>{% endif %}
+      {% if u.wholesale_request_pending %}<br><span class="badge b-blue">درخواست در انتظار</span>{% endif %}
+      <br><button class="btn btn-xs btn-outline" onclick="toggleWholesale({{ u.id }})">{{ 'برداشتن عمده' if u.is_wholesale else 'پروموت به عمده' }}</button>
+    </td>
+    <td>
+      <form action="/{{ S }}/users/{{ u.id }}/admin_role" method="POST" style="display:flex;gap:6px;align-items:center">
+        <select name="role" class="form-control" style="min-width:130px">
+          <option value="none" {% if (u.admin_role or 'none') == 'none' %}selected{% endif %}>کاربر عادی</option>
+          <option value="finance" {% if u.admin_role == 'finance' %}selected{% endif %}>ادمین ساده (فیش)</option>
+          <option value="full" {% if u.admin_role == 'full' or (u.is_admin and not u.admin_role) %}selected{% endif %}>ادمین کل</option>
+        </select>
+        <button class="btn btn-xs btn-outline" type="submit">💾</button>
+      </form>
+    </td>
+    <td style="font-size:.78rem;color:var(--txt2)">
+      ✅ سفارش تایید: {{ u.business.approved_orders }}<br>
+      ⏳ سفارش انتظار: {{ u.business.pending_orders }}<br>
+      🔑 کانفیگ فعال: {{ u.business.active_configs }} / {{ u.business.total_configs }}
+    </td>
     <td>
       <form action="/{{ S }}/users/{{ u.id }}/pricing" method="POST" style="display:flex;gap:6px;align-items:center">
         <input type="number" name="discount_percent" class="form-control" value="{{ u.discount_percent or 0 }}" min="0" max="100" step="0.5" style="width:82px">
@@ -36,19 +56,9 @@
         <button class="btn btn-xs btn-outline" type="submit">💾</button>
       </form>
     </td>
-    <td>
-      {% if u.is_blocked %}
-      <span class="badge b-red">🔴 بلاک</span>
-      {% else %}
-      <span class="badge b-green">🟢 فعال</span>
-      {% endif %}
-    </td>
+    <td>{% if u.is_blocked %}<span class="badge b-red">🔴 بلاک</span>{% else %}<span class="badge b-green">🟢 فعال</span>{% endif %}</td>
     <td style="color:var(--txt3);font-size:.75rem">{{ u.created_at[:10] }}</td>
-    <td>
-      <button class="btn btn-outline btn-xs" onclick="toggleBlock({{ u.id }}, this)">
-        {{ '🔓 آنبلاک' if u.is_blocked else '🔒 بلاک' }}
-      </button>
-    </td>
+    <td><button class="btn btn-outline btn-xs" onclick="toggleBlock({{ u.id }}, this)">{{ '🔓 آنبلاک' if u.is_blocked else '🔒 بلاک' }}</button></td>
   </tr>
   {% endfor %}
   </tbody>
@@ -71,6 +81,11 @@ async function toggleBlock(id, btn){
   const r = await api(`/${S}/users/${id}/toggle_block`);
   if(r.success) location.reload();
   else toast('خطا!','error');
+}
+async function toggleWholesale(id){
+  const r = await api(`/${S}/users/${id}/toggle_wholesale`);
+  if(r.success) location.reload();
+  else toast('خطا در تغییر همکاری','error');
 }
 </script>
 {% endblock %}
