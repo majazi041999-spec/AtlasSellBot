@@ -57,6 +57,9 @@ run_action(){
     install)
       (cd "$DIR" && bash install.sh)
       ;;
+    configure)
+      (cd "$DIR" && bash install.sh --configure-only)
+      ;;
     uninstall)
       run_root_cmd "cd '$DIR' && bash uninstall.sh"
       ;;
@@ -73,6 +76,7 @@ Commands:
   update-hard       Force update (hard reset)
   reinstall-service Recreate systemd service file
   install           Run installer
+  configure         Configure .env (token/admin/password)
   uninstall         Run uninstall script
   menu              Open interactive menu (default)
 USAGE
@@ -104,7 +108,8 @@ show_menu(){
   echo " 7) آپدیت اجباری (hard)"
   echo " 8) نصب/بازسازی سرویس systemd"
   echo " 9) اجرای نصب مجدد (install.sh)"
-  echo "10) حذف (uninstall.sh)"
+  echo "10) تنظیم .env (توکن/ادمین/پسورد)"
+  echo "11) حذف (uninstall.sh)"
   echo " 0) خروج"
   echo ""
 }
@@ -127,7 +132,8 @@ while true; do
     7) run_action update-hard; pause ;;
     8) run_action reinstall-service; pause ;;
     9) run_action install; pause ;;
-    10) run_action uninstall; pause ;;
+    10) run_action configure; pause ;;
+    11) run_action uninstall; pause ;;
     0) ok "Bye"; exit 0 ;;
     *) warn "گزینه نامعتبر"; pause ;;
   esac

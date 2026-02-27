@@ -119,6 +119,18 @@ do_status(){
   run_root "systemctl --no-pager --full status '$SERVICE'"
 }
 
+do_configure(){
+  ensure_repo
+  if [[ ! -f "$INSTALL_DIR/install.sh" ]]; then
+    err "install.sh not found in $INSTALL_DIR"
+    exit 1
+  fi
+  info "Running configure-only..."
+  run_root "cd "$INSTALL_DIR" && bash install.sh --configure-only"
+  write_manager_command
+  ok "Configuration finished."
+}
+
 do_uninstall(){
   if [[ ! -d "$INSTALL_DIR" ]]; then
     warn "Install directory not found: $INSTALL_DIR"
@@ -134,6 +146,7 @@ case "$CMD" in
   update) do_update ;;
   restart) do_restart ;;
   status) do_status ;;
+  configure) do_configure ;;
   uninstall) do_uninstall ;;
   help|-h|--help)
     cat <<USAGE
@@ -142,6 +155,7 @@ Atlas bootstrap commands:
   update     Run update.sh pull
   restart    Restart systemd service ($SERVICE)
   status     Show systemd status
+  configure  Configure .env only (token/admin/password)
   uninstall  Run uninstall.sh --force
 
 Environment overrides:
