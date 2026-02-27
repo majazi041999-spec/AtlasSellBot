@@ -76,6 +76,38 @@ create_venv(){
   exit 1
 }
 
+
+install_atlas_command(){
+  local target="/usr/local/bin/atlas"
+  local tmpf atlas_dir
+  tmpf="$(mktemp)"
+  atlas_dir="$(pwd)"
+  cat > "$tmpf" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+ATLAS_DIR="__ATLAS_DIR__"
+if [[ -f "${ATLAS_DIR}/atlas_menu.sh" ]]; then
+  exec bash "${ATLAS_DIR}/atlas_menu.sh" "$@"
+fi
+echo "atlas_menu.sh not found in ${ATLAS_DIR}" >&2
+exit 1
+EOF
+  sed -i "s|__ATLAS_DIR__|${atlas_dir}|g" "$tmpf"
+
+  if [[ "$(id -u)" -eq 0 ]]; then
+    mv "$tmpf" "$target"
+    chmod +x "$target"
+  elif command -v sudo >/dev/null 2>&1; then
+    sudo mv "$tmpf" "$target"
+    sudo chmod +x "$target"
+  else
+    rm -f "$tmpf"
+    err "Could not install $target (need root/sudo)."
+    return 1
+  fi
+  ok "Command installed: atlas"
+}
+
 run_as_root(){
   if [[ "$(id -u)" -eq 0 ]]; then
     bash "$@"
