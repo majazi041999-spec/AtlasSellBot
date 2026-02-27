@@ -759,6 +759,13 @@ async def single_server(cb: CallbackQuery, state: FSMContext):
     if link:
         text += f"\n\n🔗 *لینک:*\n`{link}`"
     await cb.message.edit_text(text, parse_mode="Markdown")
+    if link:
+        try:
+            ch = await get_setting("channel_username", "AtlasChannel")
+            qr = build_qr_image(link, footer_text=ch)
+            await cb.message.answer_photo(qr, caption=f"🎨 QR: {data['email']}")
+        except Exception:
+            pass
 
 
 # ─── BULK CONFIG ─────────────────────────────────────────────────
