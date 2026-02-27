@@ -76,6 +76,8 @@ CREATE TABLE IF NOT EXISTS configs (
     traffic_gb REAL NOT NULL,
     duration_days INTEGER NOT NULL,
     expire_timestamp INTEGER DEFAULT 0,
+    starts_on_first_use INTEGER DEFAULT 0,
+    first_use_at TEXT DEFAULT '',
     is_active INTEGER DEFAULT 1,
     migration_count INTEGER DEFAULT 0,
     last_migration_date TEXT DEFAULT '',
@@ -137,6 +139,10 @@ async def _ensure_columns(db):
             ("is_wholesale", "INTEGER DEFAULT 0"),
             ("wholesale_request_pending", "INTEGER DEFAULT 0"),
             ("admin_role", "TEXT DEFAULT 'none'"),
+        ],
+        "configs": [
+            ("starts_on_first_use", "INTEGER DEFAULT 0"),
+            ("first_use_at", "TEXT DEFAULT ''"),
         ],
         "packages": [
             ("inbound_id", "INTEGER DEFAULT 0"),
@@ -479,12 +485,12 @@ async def has_previous_purchase(user_id: int) -> bool:
 
 # ══════════════════ CONFIGS ══════════════════
 
-async def save_config(user_id, server_id, uuid, email, inbound_id, traffic_gb, duration_days, expire_ts) -> int:
+async def save_config(user_id, server_id, uuid, email, inbound_id, traffic_gb, duration_days, expire_ts, starts_on_first_use: int = 0) -> int:
     async with aiosqlite.connect(DB_PATH) as db:
         c = await db.execute("""
-            INSERT INTO configs(user_id,server_id,uuid,email,inbound_id,traffic_gb,duration_days,expire_timestamp)
-            VALUES(?,?,?,?,?,?,?,?)
-        """, (user_id, server_id, uuid, email, inbound_id, traffic_gb, duration_days, expire_ts))
+            INSERT INTO configs(user_id,server_id,uuid,email,inbound_id,traffic_gb,duration_days,expire_timestamp,starts_on_first_use)
+            VALUES(?,?,?,?,?,?,?,?,?)
+        """, (user_id, server_id, uuid, email, inbound_id, traffic_gb, duration_days, expire_ts, starts_on_first_use))
         await db.commit()
         return c.lastrowid
 

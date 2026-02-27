@@ -272,13 +272,13 @@ async def _do_approve(cb: CallbackQuery, oid: int, sid: int):
         else:
             email = await _build_config_name(order, i if bulk_count > 1 else 0)
         cuuid = str(uuid.uuid4())
-        ok = await client.add_client(target_inbound, cuuid, email, each_gb, duration)
+        ok = await client.add_client(target_inbound, cuuid, email, each_gb, duration, starts_on_first_use=True)
         if not ok:
             continue
-        expire_ms = int((datetime.now() + timedelta(days=duration)).timestamp() * 1000)
+        expire_ms = 0 if duration > 0 else 0
         link = await client.get_client_link(target_inbound, email)
         sub = await client.get_subscription_link(target_inbound, email)
-        await save_config(user["id"], sid, cuuid, email, target_inbound, each_gb, duration, expire_ms)
+        await save_config(user["id"], sid, cuuid, email, target_inbound, each_gb, duration, expire_ms, starts_on_first_use=1 if duration > 0 else 0)
         created.append({"email": email, "link": link, "sub": sub})
 
     await client.close()
@@ -741,12 +741,12 @@ async def single_server(cb: CallbackQuery, state: FSMContext):
     cli = XUIClient(server["url"], server["username"], server["password"], server["sub_path"])
     cuuid = str(uuid.uuid4())
     ok = await cli.add_client(server["inbound_id"], cuuid, data["email"],
-                               data["traffic_gb"], data["duration_days"])
+                               data["traffic_gb"], data["duration_days"], starts_on_first_use=True)
     if not ok:
         await cli.close()
         await cb.message.edit_text("❌ خطا در ساخت کانفیگ روی سرور!")
         return
-    expire_ms = int((datetime.now() + timedelta(days=data["duration_days"])).timestamp() * 1000)
+    expire_ms = 0 if data["duration_days"] > 0 else 0
     link = await cli.get_client_link(server["inbound_id"], data["email"])
     await cli.close()
 
@@ -834,14 +834,14 @@ async def bulk_server(cb: CallbackQuery, state: FSMContext):
     await cb.message.edit_text(f"⏳ در حال ساخت {data['count']} کانفیگ...")
 
     cli = XUIClient(server["url"], server["username"], server["password"], server["sub_path"])
-    expire_ms = int((datetime.now() + timedelta(days=data["duration_days"])).timestamp() * 1000)
+    expire_ms = 0 if data["duration_days"] > 0 else 0
     results = []
 
     for i in range(1, data["count"] + 1):
         email = f"{data['prefix']}_{i:03d}"
         cuuid = str(uuid.uuid4())
         ok = await cli.add_client(server["inbound_id"], cuuid, email,
-                                   data["traffic_gb"], data["duration_days"])
+                                   data["traffic_gb"], data["duration_days"], starts_on_first_use=True)
         if ok:
             link = await cli.get_client_link(server["inbound_id"], email)
             results.append(f"✅ `{email}`\n`{link or '—'}`")
