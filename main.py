@@ -6,6 +6,7 @@ import asyncio
 import logging
 import os
 import sys
+import subprocess
 
 logging.basicConfig(
     level=logging.INFO,
@@ -21,6 +22,47 @@ logger = logging.getLogger("atlas")
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 logging.getLogger("aiogram").setLevel(logging.WARNING)
+
+
+async def _notify_update(bot):
+    from core.database import get_setting, set_setting, count_users, get_all_users
+
+    try:
+        build = subprocess.check_output(["git", "rev-parse", "--short", "HEAD"], text=True).strip()
+    except Exception:
+        build = "unknown"
+
+    last = await get_setting("last_update_broadcast", "")
+    if not build or build == "unknown" or build == last:
+        return
+
+    text = (
+        "🔔 *ربات آپدیت شد!*\n\n"
+        "لطفاً یک بار ربات را استارت کنید: /start\n\n"
+        "اپ‌های پیشنهادی:\n"
+        "[📱 V2rayNG (اندروید)](https://github.com/2dust/v2rayNG/releases/latest)\n"
+        "[🍎 Streisand (iOS)](https://apps.apple.com/us/app/streisand/id6450534064)\n"
+        "[🪟 v2rayN (ویندوز)](https://github.com/2dust/v2rayN/releases/latest)"
+    )
+
+    total = await count_users()
+    page = 0
+    sent = 0
+    while page * 200 < total:
+        users = await get_all_users(page * 200, 200)
+        if not users:
+            break
+        for u in users:
+            try:
+                await bot.send_message(u["telegram_id"], text, disable_web_page_preview=True)
+                sent += 1
+            except Exception:
+                pass
+        page += 1
+
+    await set_setting("last_update_broadcast", build)
+    logger.info(f"📣 update broadcast sent to {sent} users | build={build}")
+
 
 
 async def run_bot():
@@ -54,6 +96,7 @@ async def run_bot():
     bot_info = await bot.get_me()
     logger.info(f"🤖 ربات @{bot_info.username} آماده | ادمین‌ها: {ADMIN_IDS}")
 
+    await _notify_update(bot)
     await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
 
