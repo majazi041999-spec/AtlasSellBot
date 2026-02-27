@@ -63,6 +63,9 @@ run_action(){
     uninstall)
       run_root_cmd "cd '$DIR' && bash uninstall.sh"
       ;;
+    uninstall-full)
+      run_root_cmd "cd '$DIR' && bash uninstall.sh --purge-self --force"
+      ;;
     help|-h|--help)
       cat <<USAGE
 Usage: atlas [command]
@@ -78,6 +81,7 @@ Commands:
   install           Run installer
   configure         Configure .env (token/admin/password)
   uninstall         Run uninstall script
+  uninstall-full    Full reset uninstall (remove project dir too)
   menu              Open interactive menu (default)
 USAGE
       ;;
@@ -110,6 +114,7 @@ show_menu(){
   echo " 9) Run installer (install.sh)"
   echo "10) Configure .env (token/admin/password)"
   echo "11) Uninstall"
+  echo "12) Full reset uninstall (remove project dir)"
   echo " 0) Exit"
   echo ""
 }
@@ -134,6 +139,7 @@ while true; do
     9) run_action install; pause ;;
     10) run_action configure; pause ;;
     11) run_action uninstall; pause ;;
+    12) run_action uninstall-full; exit 0 ;;
     0) ok "Bye"; exit 0 ;;
     *) warn "Invalid option"; pause ;;
   esac

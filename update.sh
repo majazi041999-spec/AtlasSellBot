@@ -16,6 +16,7 @@ MODE="${1:-pull}"   # pull | hard | pull-no-stash
 need_cmd() { command -v "$1" >/dev/null 2>&1 || { echo "❌ '$1' is not installed"; exit 1; }; }
 need_cmd git
 need_cmd systemctl
+need_cmd python3
 
 cd "$REPO_DIR"
 git rev-parse --is-inside-work-tree >/dev/null 2>&1 || { echo "❌ Current directory is not a git repository"; exit 1; }
@@ -71,11 +72,11 @@ if [[ "$MODE" == "pull" || "$MODE" == "pull-no-stash" ]]; then
       exit 3
     fi
 
-    echo "⚠️ Local changes detected; stashing before update."
+    echo "⚠️ Local tracked changes detected; stashing before update."
     git diff > "$PATCH_FILE" || true
     echo "ℹ️ Diff backup: $PATCH_FILE"
 
-    git stash push -u -m "atlas-auto-stash-$STAMP" >/dev/null
+    git stash push -m "atlas-auto-stash-$STAMP" >/dev/null
     STASH_REF="stash@{0}"
     STASHED=1
   fi
@@ -100,10 +101,13 @@ case "$MODE" in
     ;;
 esac
 
-# update python deps
-if [[ -x "$REPO_DIR/.venv/bin/pip" ]]; then
-  "$REPO_DIR/.venv/bin/pip" install -r "$REPO_DIR/requirements.txt" --upgrade
+# ensure venv + update python deps
+if [[ ! -x "$REPO_DIR/.venv/bin/python" ]]; then
+  echo "ℹ️ .venv not found; creating virtual environment ..."
+  python3 -m venv "$REPO_DIR/.venv"
 fi
+"$REPO_DIR/.venv/bin/python" -m pip install --upgrade pip setuptools wheel >/dev/null
+"$REPO_DIR/.venv/bin/pip" install -r "$REPO_DIR/requirements.txt" --upgrade
 
 # reload service unit (if changed) and restart
 if [[ -f "$REPO_DIR/setup_service.sh" ]]; then
