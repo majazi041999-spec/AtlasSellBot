@@ -68,8 +68,11 @@ write_manager_command(){
   run_root "cat > '$manager' <<'EOS'
 #!/usr/bin/env bash
 set -euo pipefail
-SCRIPT_URL=\"https://raw.githubusercontent.com/majazi041999-spec/AtlasSellBot/main/bootstrap.sh\"
-exec bash <(curl -Ls \"$SCRIPT_URL\") \"$@\"
+INSTALL_DIR="${INSTALL_DIR:-/opt/AtlasSellBot}"
+if [[ -f "${INSTALL_DIR}/atlas_menu.sh" ]]; then
+  exec bash "${INSTALL_DIR}/atlas_menu.sh" "\$@"
+fi
+exec bash <(curl -Ls "https://raw.githubusercontent.com/majazi041999-spec/AtlasSellBot/main/bootstrap.sh") "\$@"
 EOS
 chmod +x '$manager'"
   ok "Command installed: atlas"
