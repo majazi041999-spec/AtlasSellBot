@@ -22,6 +22,11 @@
 {% if saved %}
 <div class="alert alert-success">✅ تنظیمات با موفقیت ذخیره شد.</div>
 {% endif %}
+{% if cert_result == "ok" %}
+<div class="alert alert-success">✅ عملیات سرتیفیکیت انجام شد. نتیجه در بخش SSL نمایش داده شده است.</div>
+{% elif cert_result == "error" %}
+<div class="alert alert-danger">❌ عملیات سرتیفیکیت با خطا مواجه شد. پیام خطا را در بخش SSL ببینید.</div>
+{% endif %}
 
 <div class="settings-header">
   <div>
@@ -82,6 +87,19 @@
       <div class="form-group"><label>شماره کارت</label><input class="form-control" type="text" name="card_number" value="{{ settings.card_number }}" /></div>
       <div class="form-group"><label>نام صاحب کارت</label><input class="form-control" type="text" name="card_holder" value="{{ settings.card_holder }}" /></div>
       <div class="form-group"><label>نام بانک</label><input class="form-control" type="text" name="card_bank" value="{{ settings.card_bank }}" /></div>
+    </section>
+
+
+
+    <section class="settings-card">
+      <h3>🔐 SSL دامنه و سرتیفیکیت</h3>
+      <p class="hint">برای صدور گواهی رایگان (Let's Encrypt) دامنه را وارد کنید. سیستم با acme.sh گواهی می‌گیرد و تلاش می‌کند روی 3x-ui اعمال کند.</p>
+      <div class="form-group"><label>دامنه پنل (مثال: panel.example.com)</label><input class="form-control" type="text" name="panel_domain" value="{{ settings.panel_domain }}" /></div>
+      <div class="form-group"><label>ایمیل (اختیاری برای اعلان‌های گواهی)</label><input class="form-control" type="email" name="cert_email" value="{{ settings.cert_email }}" /></div>
+      <div class="settings-note" style="margin-top:8px">{{ settings.cert_status or 'هنوز عملیاتی انجام نشده است.' }}</div>
+      <div class="form-group" style="margin-top:10px">
+        <button class="btn btn-outline" formaction="/{{ S }}/settings/certificate/apply" formmethod="post" type="submit">🚀 دریافت و اعمال خودکار سرتیفیکیت</button>
+      </div>
     </section>
 
     <section class="settings-card">

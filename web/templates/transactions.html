@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block title %}آخرین تراکنش‌ها{% endblock %}
+{% block topbar_title %}🧾 آخرین تراکنش‌ها{% endblock %}
+
+{% block content %}
+<div class="card">
+  <div class="sec-hd" style="margin-bottom:12px">
+    <span class="sec-title">🧾 تراکنش‌های اخیر (کیف پول / خرید با فیش)</span>
+  </div>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>نوع</th>
+          <th>شناسه</th>
+          <th>کاربر</th>
+          <th>مبلغ (تومان)</th>
+          <th>وضعیت</th>
+          <th>فیش</th>
+          <th>تاریخ</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for t in transactions %}
+        <tr>
+          <td>{% if t.tx_type == 'topup' %}💳 افزایش اعتبار{% else %}🛒 خرید سرویس{% endif %}</td>
+          <td>#{{ t.tx_id }}</td>
+          <td>{{ t.full_name or '—' }}<br><small style="color:var(--txt3)">@{{ t.username or '—' }} | {{ t.telegram_id }}</small></td>
+          <td>{{ '{:,}'.format(t.amount|int) }}</td>
+          <td><span class="badge b-gray">{{ t.status }}</span></td>
+          <td>
+            <a class="btn btn-xs btn-outline" href="/{{ S }}/receipts/{{ t.tx_type }}/{{ t.tx_id }}" target="_blank">🖼 مشاهده فیش</a>
+          </td>
+          <td style="color:var(--txt2);font-size:.78rem">{{ (t.created_at or '')[:16] }}</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="7" style="text-align:center;color:var(--txt3)">تراکنشی با فیش موجود نیست.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

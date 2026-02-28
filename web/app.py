@@ -6,11 +6,15 @@ All CSS/JS is embedded directly in HTML templates.
 import logging
 import os
 import time
+import subprocess
 from datetime import datetime, timedelta
 from typing import Optional
 
+from aiogram import Bot
+from aiogram.client.default import DefaultBotProperties
+from aiogram.enums import ParseMode
 from fastapi import FastAPI, Form, Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 from jose import JWTError, jwt
 
@@ -22,6 +26,7 @@ from core.config import (
     JWT_EXPIRE_HOURS,
     JWT_SECRET,
     REFERRAL_BONUS_GB,
+    BOT_TOKEN,
     WEB_ADMIN_PASSWORD,
     WEB_ADMIN_USERNAME,
     WEB_SECRET_PATH,
@@ -33,13 +38,25 @@ from core.database import (
     delete_package,
     delete_server,
     get_all_configs,
+    get_configs_by_base_email,
+    delete_configs_by_base_email,
     get_all_orders,
     get_all_users,
+    get_user_business_stats,
+    get_recent_receipt_transactions,
+    add_user_balance,
+    get_pending_topup_requests,
+    get_topup_request,
+    update_topup_request,
     get_config,
     get_order,  # noqa: F401
     get_package,
     get_packages,
     get_pending_orders,
+    get_available_servers,
+    server_has_capacity,
+    get_user_by_telegram,
+    save_config,
     get_server,
     get_servers,
     get_setting,
@@ -120,6 +137,48 @@ async def _ctx_ui(request: Request, **kw) -> dict:
     return ctx
 
 
+async def _update_broadcast_text() -> str:
+    return (
+        "🔔 *ربات آپدیت شد!*\n\n"
+        "لطفاً یک بار ربات را استارت کنید: /start\n\n"
+        "اپ‌های پیشنهادی:\n"
+        "[📱 V2rayNG (اندروید)](https://github.com/2dust/v2rayNG/releases/latest)\n"
+        "[🍎 Streisand (iOS)](https://apps.apple.com/us/app/streisand/id6450534064)\n"
+        "[🪟 v2rayN (ویندوز)](https://github.com/2dust/v2rayN/releases/latest)"
+    )
+
+
+async def _send_update_broadcast(build: str) -> int:
+    if not BOT_TOKEN or len(BOT_TOKEN) < 20:
+        raise RuntimeError("BOT_TOKEN is not configured")
+
+    text = await _update_broadcast_text()
+    total = await count_users()
+    page = 0
+    sent = 0
+
+    bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.MARKDOWN))
+    try:
+        while page * 200 < total:
+            users = await get_all_users(page * 200, 200)
+            if not users:
+                break
+            for u in users:
+                try:
+                    await bot.send_message(u["telegram_id"], text, disable_web_page_preview=True)
+                    sent += 1
+                except Exception:
+                    pass
+            page += 1
+    finally:
+        await bot.session.close()
+
+    await set_setting("last_update_broadcast", build)
+    await set_setting("pending_update_build", "")
+    await set_setting("update_broadcast_approved_build", "")
+    return sent
+
+
 # ═══════════════════════════════ AUTH ROUTES ════════════════════════
 @app.get(f"/{S}/login", response_class=HTMLResponse)
 async def login_page(request: Request):
@@ -160,10 +219,38 @@ async def dashboard(request: Request):
         return _redir_login()
     stats = await get_stats()
     pending = await get_pending_orders()
+    pending_update_build = await get_setting("pending_update_build", "")
+    last_update_broadcast = await get_setting("last_update_broadcast", "")
     return _templates.TemplateResponse(
         "dashboard.html",
-        await _ctx_ui(request, stats=stats, pending=pending[:6], active="dashboard"),
+        await _ctx_ui(
+            request,
+            stats=stats,
+            pending=pending[:6],
+            active="dashboard",
+            pending_update_build=pending_update_build,
+            last_update_broadcast=last_update_broadcast,
+        ),
     )
+
+
+@app.post(f"/{S}/updates/approve_send")
+async def approve_and_send_update(request: Request):
+    if not _auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+
+    build = (await get_setting("pending_update_build", "")).strip()
+    if not build:
+        return RedirectResponse(f"/{S}/dashboard", status_code=302)
+
+    await set_setting("update_broadcast_approved_build", build)
+    try:
+        sent = await _send_update_broadcast(build)
+        logger.info(f"update broadcast approved and sent from panel | build={build} sent={sent}")
+    except Exception as e:
+        logger.exception("failed to send approved update broadcast: %s", e)
+
+    return RedirectResponse(f"/{S}/dashboard", status_code=302)
 
 
 # ═══════════════════════════════ SERVERS ════════════════════════════
@@ -359,6 +446,58 @@ async def orders_page(request: Request):
     )
 
 
+@app.post(f"/{S}/orders/{{oid}}/reject")
+async def order_reject_web(request: Request, oid: int):
+    if not _auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    order = await get_order(oid)
+    if not order:
+        return RedirectResponse(f"/{S}/orders", status_code=302)
+    await update_order(oid, status="rejected")
+    return RedirectResponse(f"/{S}/orders", status_code=302)
+
+
+@app.post(f"/{S}/orders/{{oid}}/approve")
+async def order_approve_web(request: Request, oid: int):
+    if not _auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    order = await get_order(oid)
+    if not order:
+        return RedirectResponse(f"/{S}/orders", status_code=302)
+
+    servers = [sv for sv in await get_servers() if await server_has_capacity(sv["id"])]
+    if not servers:
+        return RedirectResponse(f"/{S}/orders", status_code=302)
+    sid = servers[0]["id"]
+    server = await get_server(sid)
+
+    user = await get_user_by_telegram(order["telegram_id"])
+    if not user:
+        return RedirectResponse(f"/{S}/orders", status_code=302)
+
+    bulk_count = int(order.get("bulk_count") or 1)
+    each_gb = float(order.get("bulk_each_gb") or order["traffic_gb"])
+    duration = int(order["duration_days"])
+    created = []
+
+    cli = XUIClient(server["url"], server["username"], server["password"], server["sub_path"])
+    target_inbound = int(server.get("inbound_id") or 1)
+    for i in range(1, max(1, bulk_count) + 1):
+        email = f"u{order['telegram_id']}_{i}_{int(time.time())}" if bulk_count > 1 else f"u{order['telegram_id']}_{int(time.time())}"
+        cuuid = os.urandom(16).hex()
+        ok = await cli.add_client(target_inbound, cuuid, email, each_gb, duration, starts_on_first_use=True)
+        if not ok:
+            continue
+        link = await cli.get_client_link(target_inbound, email)
+        await save_config(user["id"], sid, cuuid, email, target_inbound, each_gb, duration, 0, starts_on_first_use=1 if duration > 0 else 0)
+        created.append((email, link))
+    await cli.close()
+
+    if created:
+        await update_order(oid, status="approved", server_id=sid, config_email=created[0][0], inbound_id=target_inbound, approved_at=datetime.now().isoformat())
+    return RedirectResponse(f"/{S}/orders", status_code=302)
+
+
 # ═══════════════════════════════ CONFIGS ════════════════════════════
 @app.get(f"/{S}/configs", response_class=HTMLResponse)
 async def configs_page(request: Request):
@@ -412,6 +551,36 @@ async def config_toggle(request: Request, cid: int):
     return JSONResponse({"success": ok})
 
 
+@app.post(f"/{S}/configs/{{cid}}/delete")
+async def config_delete(request: Request, cid: int):
+    if not _auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+
+    cfg = await get_config(cid)
+    if not cfg:
+        return JSONResponse({"success": False, "error": "not found"}, status_code=404)
+
+    base_email = (cfg.get("email") or "").split("_m")[0]
+    rows = await get_configs_by_base_email(base_email)
+
+    deleted_remote = 0
+    for item in rows:
+        try:
+            srv = await get_server(item["server_id"])
+            if not srv:
+                continue
+            cli = XUIClient(srv["url"], srv["username"], srv["password"], srv["sub_path"])
+            ok = await cli.delete_client(item["inbound_id"], item["uuid"])
+            await cli.close()
+            if ok:
+                deleted_remote += 1
+        except Exception:
+            continue
+
+    deleted_local = await delete_configs_by_base_email(base_email)
+    return JSONResponse({"success": True, "deleted_local": deleted_local, "deleted_remote": deleted_remote})
+
+
 # ═══════════════════════════════ USERS ══════════════════════════════
 @app.get(f"/{S}/users", response_class=HTMLResponse)
 async def users_page(request: Request):
@@ -423,9 +592,12 @@ async def users_page(request: Request):
     total_pages = max(1, (total + per_page - 1) // per_page)
     page = min(page, total_pages)
     users = await get_all_users((page - 1) * per_page, per_page)
+    for u in users:
+        u["business"] = await get_user_business_stats(u["id"])
+    pending_topups = await get_pending_topup_requests(200)
     return _templates.TemplateResponse(
         "users.html",
-        await _ctx_ui(request, users=users, total=total, page=page, total_pages=total_pages, active="users"),
+        await _ctx_ui(request, users=users, pending_topups=pending_topups, total=total, page=page, total_pages=total_pages, active="users"),
     )
 
 
@@ -440,6 +612,79 @@ async def user_toggle_block(request: Request, uid: int):
         return JSONResponse({"error": "not found"}, status_code=404)
     await update_user(uid, is_blocked=0 if u["is_blocked"] else 1)
     return JSONResponse({"success": True})
+
+
+
+
+@app.post(f"/{S}/users/{{uid}}/toggle_wholesale")
+async def user_toggle_wholesale(request: Request, uid: int):
+    if not _auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    from core.database import get_user_by_id, update_user
+
+    u = await get_user_by_id(uid)
+    if not u:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    next_status = 0 if u.get("is_wholesale", 0) else 1
+    await update_user(uid, is_wholesale=next_status, wholesale_request_pending=0 if next_status else u.get("wholesale_request_pending", 0))
+    return JSONResponse({"success": True, "is_wholesale": bool(next_status)})
+
+
+@app.post(f"/{S}/users/{{uid}}/admin_role")
+async def user_set_admin_role(request: Request, uid: int, role: str = Form("none")):
+    if not _auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    role = (role or "none").strip().lower()
+    valid = {"none", "finance", "full"}
+    if role not in valid:
+        role = "none"
+    from core.database import update_user
+    await update_user(uid, is_admin=0 if role == "none" else 1, admin_role=role)
+    return RedirectResponse(f"/{S}/users", status_code=302)
+
+
+@app.post(f"/{S}/users/transfer_owner")
+async def transfer_owner(request: Request, telegram_id: int = Form(...)):
+    if not _auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    from core.database import get_user_by_telegram, set_setting, update_user
+
+    user = await get_user_by_telegram(telegram_id)
+    if not user:
+        return RedirectResponse(f"/{S}/users?owner_error=1", status_code=302)
+    await update_user(user["id"], is_admin=1, admin_role="full")
+    await set_setting("owner_admin_id", str(telegram_id))
+    return RedirectResponse(f"/{S}/users?owner_ok=1", status_code=302)
+@app.post(f"/{S}/users/{{uid}}/balance_adjust")
+async def user_balance_adjust(request: Request, uid: int, amount: int = Form(...), note: str = Form("manual")):
+    if not _auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    amount = int(amount or 0)
+    if amount == 0:
+        return RedirectResponse(f"/{S}/users", status_code=302)
+    await add_user_balance(uid, amount, kind="manual", note=(note or "manual"), actor_telegram_id=0)
+    return RedirectResponse(f"/{S}/users", status_code=302)
+
+
+@app.post(f"/{S}/topups/{{rid}}/approve")
+async def topup_approve_web(request: Request, rid: int):
+    if not _auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    req = await get_topup_request(rid)
+    if req and req.get("status") == "pending":
+        await add_user_balance(req["user_id"], int(req["amount"]), kind="topup", note=f"topup_request:{rid}", actor_telegram_id=0)
+        await update_topup_request(rid, status="approved", reviewer_telegram_id=0, reviewed_at=datetime.now().isoformat())
+    return RedirectResponse(f"/{S}/users", status_code=302)
+
+
+@app.post(f"/{S}/topups/{{rid}}/reject")
+async def topup_reject_web(request: Request, rid: int):
+    if not _auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    req = await get_topup_request(rid)
+    if req and req.get("status") == "pending":
+        await update_topup_request(rid, status="rejected", reviewer_telegram_id=0, reviewed_at=datetime.now().isoformat(), admin_note="rejected_web")
+    return RedirectResponse(f"/{S}/users", status_code=302)
 
 
 @app.post(f"/{S}/users/{{uid}}/pricing")
@@ -459,6 +704,46 @@ async def user_set_pricing(
 
     await update_user(uid, discount_percent=discount_percent, price_per_gb=price_per_gb)
     return RedirectResponse(f"/{S}/users", status_code=302)
+
+
+# ═══════════════════════════════ TRANSACTIONS ═══════════════════════
+@app.get(f"/{S}/transactions", response_class=HTMLResponse)
+async def transactions_page(request: Request):
+    if not _auth(request):
+        return _redir_login()
+    txs = await get_recent_receipt_transactions(200)
+    return _templates.TemplateResponse(
+        "transactions.html",
+        await _ctx_ui(request, transactions=txs, active="transactions"),
+    )
+
+
+@app.get(f"/{S}/receipts/{'{'}tx_type{'}'}/{'{'}tx_id{'}'}")
+async def receipt_image(request: Request, tx_type: str, tx_id: int):
+    if not _auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+
+    tx_type = (tx_type or "").strip().lower()
+    tx = None
+    for item in await get_recent_receipt_transactions(500):
+        if item.get("tx_type") == tx_type and int(item.get("tx_id") or 0) == int(tx_id):
+            tx = item
+            break
+    if not tx or not tx.get("receipt_file_id"):
+        return JSONResponse({"error": "not found"}, status_code=404)
+
+    bot = Bot(token=BOT_TOKEN)
+    try:
+        f = await bot.get_file(tx["receipt_file_id"])
+        stream = await bot.download_file(f.file_path)
+        stream.seek(0)
+        return StreamingResponse(stream, media_type="image/jpeg")
+    except Exception:
+        return JSONResponse({"error": "receipt unavailable"}, status_code=404)
+    finally:
+        await bot.session.close()
+
+
 
 
 # ═══════════════════════════════ SETTINGS ═══════════════════════════
@@ -491,6 +776,9 @@ async def settings_page(request: Request):
         "channel_username": await get_setting("channel_username", SETTINGS_DEFAULTS["channel_username"]),
         "default_server_id": await get_setting("default_server_id", "0"),
         "legacy_sync_enabled": await get_setting("legacy_sync_enabled", SETTINGS_DEFAULTS["legacy_sync_enabled"]),
+        "panel_domain": await get_setting("panel_domain", ""),
+        "cert_email": await get_setting("cert_email", ""),
+        "cert_status": await get_setting("cert_status", ""),
     }
 
     # ✅ کارت بانکی از دیتابیس Settings خوانده می‌شود (با fallback از .env)
@@ -502,9 +790,10 @@ async def settings_page(request: Request):
 
     servers = await get_servers(active_only=False)
     saved = request.query_params.get("saved")
+    cert_result = request.query_params.get("cert")
     return _templates.TemplateResponse(
         "settings.html",
-        await _ctx_ui(request, settings=settings, servers=servers, saved=saved, active="settings"),
+        await _ctx_ui(request, settings=settings, servers=servers, saved=saved, cert_result=cert_result, active="settings"),
     )
 
 
@@ -538,6 +827,8 @@ async def settings_save(
     card_number: str = Form(""),
     card_holder: str = Form(""),
     card_bank: str = Form(""),
+    panel_domain: str = Form(""),
+    cert_email: str = Form(""),
 ):
     if not _auth(request):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
@@ -575,8 +866,63 @@ async def settings_save(
     await set_setting("card_number", card_number.strip())
     await set_setting("card_holder", card_holder.strip())
     await set_setting("card_bank", card_bank.strip())
+    await set_setting("panel_domain", panel_domain.strip().lower())
+    await set_setting("cert_email", cert_email.strip().lower())
 
     return RedirectResponse(f"/{S}/settings?saved=1", status_code=302)
+
+
+@app.post(f"/{S}/settings/certificate/apply")
+async def settings_apply_certificate(request: Request):
+    if not _auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+
+    domain = (await get_setting("panel_domain", "")).strip().lower()
+    email = (await get_setting("cert_email", "")).strip().lower()
+    if not domain:
+        await set_setting("cert_status", "❌ دامنه تنظیم نشده است")
+        return RedirectResponse(f"/{S}/settings?cert=error", status_code=302)
+
+    cert_dir = f"/etc/ssl/atlas/{domain}"
+    fullchain = f"{cert_dir}/fullchain.cer"
+    keyfile = f"{cert_dir}/{domain}.key"
+    email_arg = f" --accountemail {email}" if email else ""
+
+    script = (
+        "set -e\n"
+        f"mkdir -p {cert_dir}\n"
+        "if [ ! -d \"$HOME/.acme.sh\" ]; then curl https://get.acme.sh | sh; fi\n"
+        "$HOME/.acme.sh/acme.sh --set-default-ca --server letsencrypt\n"
+        f"$HOME/.acme.sh/acme.sh --issue -d {domain} --standalone --force{email_arg}\n"
+        f"$HOME/.acme.sh/acme.sh --install-cert -d {domain} --fullchain-file {fullchain} --key-file {keyfile} --force\n"
+    )
+
+    try:
+        subprocess.run(["bash", "-lc", script], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=420)
+
+        applied = False
+        apply_cmds = [
+            f"x-ui setting -webCertFile {fullchain} -webKeyFile {keyfile}",
+            f"/usr/local/x-ui/x-ui setting -webCertFile {fullchain} -webKeyFile {keyfile}",
+        ]
+        for cmd in apply_cmds:
+            r = subprocess.run(["bash", "-lc", cmd], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            if r.returncode == 0:
+                applied = True
+                subprocess.run(["bash", "-lc", "x-ui restart || /usr/local/x-ui/x-ui restart || true"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                break
+
+        if applied:
+            await set_setting("cert_status", f"✅ گواهی صادر و روی پنل اعمال شد | دامنه: {domain}")
+        else:
+            await set_setting("cert_status", f"⚠️ گواهی صادر شد اما اعمال خودکار روی پنل انجام نشد. مسیر crt: {fullchain} | مسیر key: {keyfile}")
+
+        return RedirectResponse(f"/{S}/settings?cert=ok", status_code=302)
+    except Exception as e:
+        await set_setting("cert_status", f"❌ خطا در دریافت/اعمال گواهی: {e}")
+        return RedirectResponse(f"/{S}/settings?cert=error", status_code=302)
+
+
 
 
 @app.post(f"/{S}/settings/legacy_sync/reset")
