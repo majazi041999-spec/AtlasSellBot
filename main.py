@@ -95,6 +95,7 @@ async def run_bot():
     from core.config import BOT_TOKEN, ADMIN_IDS
     from core.database import init_db
     from bot.handlers import common, admin, user
+    from bot.middlewares import ChannelRequiredMiddleware
 
     if not BOT_TOKEN or len(BOT_TOKEN) < 20:
         logger.error("❌ BOT_TOKEN در فایل .env تنظیم نشده!")
@@ -108,6 +109,10 @@ async def run_bot():
         default=DefaultBotProperties(parse_mode=ParseMode.MARKDOWN)
     )
     dp = Dispatcher(storage=MemoryStorage())
+
+    # عضویت اجباری کانال: روی همه پیام‌ها/کال‌بک‌ها قبل از هندلرها چک شود
+    dp.message.middleware(ChannelRequiredMiddleware())
+    dp.callback_query.middleware(ChannelRequiredMiddleware())
 
     # ترتیب اهمیت دارد: common باید آخر باشه
     dp.include_router(admin.router)

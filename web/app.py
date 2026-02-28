@@ -6,6 +6,7 @@ All CSS/JS is embedded directly in HTML templates.
 import logging
 import os
 import time
+import subprocess
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -13,7 +14,7 @@ from aiogram import Bot
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from fastapi import FastAPI, Form, Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 from jose import JWTError, jwt
 
@@ -42,6 +43,7 @@ from core.database import (
     get_all_orders,
     get_all_users,
     get_user_business_stats,
+    get_recent_receipt_transactions,
     add_user_balance,
     get_pending_topup_requests,
     get_topup_request,
@@ -704,6 +706,46 @@ async def user_set_pricing(
     return RedirectResponse(f"/{S}/users", status_code=302)
 
 
+# ═══════════════════════════════ TRANSACTIONS ═══════════════════════
+@app.get(f"/{S}/transactions", response_class=HTMLResponse)
+async def transactions_page(request: Request):
+    if not _auth(request):
+        return _redir_login()
+    txs = await get_recent_receipt_transactions(200)
+    return _templates.TemplateResponse(
+        "transactions.html",
+        await _ctx_ui(request, transactions=txs, active="transactions"),
+    )
+
+
+@app.get(f"/{S}/receipts/{'{'}tx_type{'}'}/{'{'}tx_id{'}'}")
+async def receipt_image(request: Request, tx_type: str, tx_id: int):
+    if not _auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+
+    tx_type = (tx_type or "").strip().lower()
+    tx = None
+    for item in await get_recent_receipt_transactions(500):
+        if item.get("tx_type") == tx_type and int(item.get("tx_id") or 0) == int(tx_id):
+            tx = item
+            break
+    if not tx or not tx.get("receipt_file_id"):
+        return JSONResponse({"error": "not found"}, status_code=404)
+
+    bot = Bot(token=BOT_TOKEN)
+    try:
+        f = await bot.get_file(tx["receipt_file_id"])
+        stream = await bot.download_file(f.file_path)
+        stream.seek(0)
+        return StreamingResponse(stream, media_type="image/jpeg")
+    except Exception:
+        return JSONResponse({"error": "receipt unavailable"}, status_code=404)
+    finally:
+        await bot.session.close()
+
+
+
+
 # ═══════════════════════════════ SETTINGS ═══════════════════════════
 @app.get(f"/{S}/settings", response_class=HTMLResponse)
 async def settings_page(request: Request):
@@ -734,6 +776,9 @@ async def settings_page(request: Request):
         "channel_username": await get_setting("channel_username", SETTINGS_DEFAULTS["channel_username"]),
         "default_server_id": await get_setting("default_server_id", "0"),
         "legacy_sync_enabled": await get_setting("legacy_sync_enabled", SETTINGS_DEFAULTS["legacy_sync_enabled"]),
+        "panel_domain": await get_setting("panel_domain", ""),
+        "cert_email": await get_setting("cert_email", ""),
+        "cert_status": await get_setting("cert_status", ""),
     }
 
     # ✅ کارت بانکی از دیتابیس Settings خوانده می‌شود (با fallback از .env)
@@ -745,9 +790,10 @@ async def settings_page(request: Request):
 
     servers = await get_servers(active_only=False)
     saved = request.query_params.get("saved")
+    cert_result = request.query_params.get("cert")
     return _templates.TemplateResponse(
         "settings.html",
-        await _ctx_ui(request, settings=settings, servers=servers, saved=saved, active="settings"),
+        await _ctx_ui(request, settings=settings, servers=servers, saved=saved, cert_result=cert_result, active="settings"),
     )
 
 
@@ -781,6 +827,8 @@ async def settings_save(
     card_number: str = Form(""),
     card_holder: str = Form(""),
     card_bank: str = Form(""),
+    panel_domain: str = Form(""),
+    cert_email: str = Form(""),
 ):
     if not _auth(request):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
@@ -818,8 +866,63 @@ async def settings_save(
     await set_setting("card_number", card_number.strip())
     await set_setting("card_holder", card_holder.strip())
     await set_setting("card_bank", card_bank.strip())
+    await set_setting("panel_domain", panel_domain.strip().lower())
+    await set_setting("cert_email", cert_email.strip().lower())
 
     return RedirectResponse(f"/{S}/settings?saved=1", status_code=302)
+
+
+@app.post(f"/{S}/settings/certificate/apply")
+async def settings_apply_certificate(request: Request):
+    if not _auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+
+    domain = (await get_setting("panel_domain", "")).strip().lower()
+    email = (await get_setting("cert_email", "")).strip().lower()
+    if not domain:
+        await set_setting("cert_status", "❌ دامنه تنظیم نشده است")
+        return RedirectResponse(f"/{S}/settings?cert=error", status_code=302)
+
+    cert_dir = f"/etc/ssl/atlas/{domain}"
+    fullchain = f"{cert_dir}/fullchain.cer"
+    keyfile = f"{cert_dir}/{domain}.key"
+    email_arg = f" --accountemail {email}" if email else ""
+
+    script = (
+        "set -e\n"
+        f"mkdir -p {cert_dir}\n"
+        "if [ ! -d \"$HOME/.acme.sh\" ]; then curl https://get.acme.sh | sh; fi\n"
+        "$HOME/.acme.sh/acme.sh --set-default-ca --server letsencrypt\n"
+        f"$HOME/.acme.sh/acme.sh --issue -d {domain} --standalone --force{email_arg}\n"
+        f"$HOME/.acme.sh/acme.sh --install-cert -d {domain} --fullchain-file {fullchain} --key-file {keyfile} --force\n"
+    )
+
+    try:
+        subprocess.run(["bash", "-lc", script], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=420)
+
+        applied = False
+        apply_cmds = [
+            f"x-ui setting -webCertFile {fullchain} -webKeyFile {keyfile}",
+            f"/usr/local/x-ui/x-ui setting -webCertFile {fullchain} -webKeyFile {keyfile}",
+        ]
+        for cmd in apply_cmds:
+            r = subprocess.run(["bash", "-lc", cmd], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            if r.returncode == 0:
+                applied = True
+                subprocess.run(["bash", "-lc", "x-ui restart || /usr/local/x-ui/x-ui restart || true"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                break
+
+        if applied:
+            await set_setting("cert_status", f"✅ گواهی صادر و روی پنل اعمال شد | دامنه: {domain}")
+        else:
+            await set_setting("cert_status", f"⚠️ گواهی صادر شد اما اعمال خودکار روی پنل انجام نشد. مسیر crt: {fullchain} | مسیر key: {keyfile}")
+
+        return RedirectResponse(f"/{S}/settings?cert=ok", status_code=302)
+    except Exception as e:
+        await set_setting("cert_status", f"❌ خطا در دریافت/اعمال گواهی: {e}")
+        return RedirectResponse(f"/{S}/settings?cert=error", status_code=302)
+
+
 
 
 @app.post(f"/{S}/settings/legacy_sync/reset")

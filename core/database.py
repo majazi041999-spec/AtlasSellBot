@@ -396,6 +396,53 @@ async def update_topup_request(rid: int, **kw):
         await db.commit()
 
 
+async def get_recent_receipt_transactions(limit: int = 100) -> List[Dict]:
+    limit = max(1, int(limit or 100))
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        q = """
+            SELECT * FROM (
+                SELECT
+                    'topup' AS tx_type,
+                    t.id AS tx_id,
+                    t.user_id AS user_id,
+                    u.telegram_id AS telegram_id,
+                    u.username AS username,
+                    u.full_name AS full_name,
+                    t.amount AS amount,
+                    t.status AS status,
+                    t.receipt_file_id AS receipt_file_id,
+                    t.created_at AS created_at,
+                    t.reviewed_at AS reviewed_at
+                FROM topup_requests t
+                JOIN users u ON u.id=t.user_id
+                WHERE COALESCE(t.receipt_file_id,'') <> ''
+
+                UNION ALL
+
+                SELECT
+                    'order' AS tx_type,
+                    o.id AS tx_id,
+                    o.user_id AS user_id,
+                    u.telegram_id AS telegram_id,
+                    u.username AS username,
+                    u.full_name AS full_name,
+                    COALESCE(o.custom_price, p.price, 0) AS amount,
+                    o.status AS status,
+                    o.receipt_file_id AS receipt_file_id,
+                    o.created_at AS created_at,
+                    o.approved_at AS reviewed_at
+                FROM orders o
+                JOIN users u ON u.id=o.user_id
+                LEFT JOIN packages p ON p.id=o.package_id
+                WHERE COALESCE(o.receipt_file_id,'') <> ''
+            ) z
+            ORDER BY created_at DESC
+            LIMIT ?
+        """
+        async with db.execute(q, (limit,)) as c:
+            return [dict(r) for r in await c.fetchall()]
+
 
 async def get_all_admin_telegram_ids() -> List[int]:
     async with aiosqlite.connect(DB_PATH) as db:
