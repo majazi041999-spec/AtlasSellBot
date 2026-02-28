@@ -2,6 +2,7 @@ import asyncio
 import uuid
 import time
 import json
+import sqlite3
 from datetime import datetime, timedelta, date
 from aiogram import Router, F, Bot
 from aiogram.types import Message, CallbackQuery
@@ -15,23 +16,103 @@ from core.database import (
     get_all_users, count_users, get_server, get_servers,
     save_config, get_user_by_telegram, get_setting, set_setting,
     get_user_by_id, server_has_capacity, count_active_configs_by_server, update_user,
-    get_legacy_claim, update_legacy_claim, get_config_by_email, get_config_by_uuid
+    get_legacy_claim, update_legacy_claim, get_config_by_email, get_config_by_uuid,
+    get_topup_request, update_topup_request, add_user_balance
 )
 from core.xui_api import XUIClient, fmt_bytes, days_left
 from core.qr import build_qr_image
 from bot.keyboards import (
     admin_menu, order_review_kb, order_server_select_kb,
     admin_configs_kb, adm_config_detail_kb, confirm_kb, packages_kb, servers_kb,
-    broadcast_target_kb, legacy_claim_admin_kb
+    broadcast_target_kb, legacy_claim_admin_kb, flow_cancel_kb
 )
 from bot.states import AddPackage, CreateConfig, BulkConfig, EditConfig, Broadcast, PrivateMessage
 
 router = Router()
 
 
-def is_admin(uid: int) -> bool:
-    return uid in ADMIN_IDS
+def _fmt_toman(amount: int) -> str:
+    return f"{int(amount or 0):,}".replace(",", "،")
 
+
+def _db_admin_role(uid: int) -> str:
+    try:
+        conn = sqlite3.connect("atlas.db")
+        cur = conn.cursor()
+        cur.execute("SELECT value FROM settings WHERE key='owner_admin_id'")
+        own = cur.fetchone()
+        owner_id = int((own[0] if own else "0") or 0)
+        if uid in ADMIN_IDS or (owner_id and uid == owner_id):
+            conn.close()
+            return "owner"
+        cur.execute("SELECT is_admin, admin_role FROM users WHERE telegram_id=?", (uid,))
+        row = cur.fetchone()
+        conn.close()
+    except Exception:
+        return "none"
+    if not row or int(row[0] or 0) != 1:
+        return "none"
+    role = str(row[1] or "full").strip().lower()
+    return role if role in {"full", "finance"} else "full"
+
+
+def is_admin(uid: int) -> bool:
+    return _db_admin_role(uid) in ("owner", "full")
+
+
+def can_review_payments(uid: int) -> bool:
+    return _db_admin_role(uid) in ("owner", "full", "finance")
+
+
+
+
+@router.callback_query(F.data == "flow_back")
+async def flow_back_admin(cb: CallbackQuery, state: FSMContext):
+    cur = await state.get_state()
+    if not cur:
+        await cb.answer("مرحله‌ای برای برگشت وجود ندارد.", show_alert=True)
+        return
+
+    if cur.endswith("AddPackage:traffic"):
+        await state.set_state(AddPackage.name)
+        await cb.message.edit_text("✍️ نام پکیج را وارد کنید:", reply_markup=flow_cancel_kb())
+    elif cur.endswith("AddPackage:duration"):
+        await state.set_state(AddPackage.traffic)
+        await cb.message.edit_text("📊 حجم (GB):", reply_markup=flow_cancel_kb())
+    elif cur.endswith("AddPackage:price"):
+        await state.set_state(AddPackage.duration)
+        await cb.message.edit_text("📅 مدت (روز):", reply_markup=flow_cancel_kb())
+    elif cur.endswith("AddPackage:description"):
+        await state.set_state(AddPackage.price)
+        await cb.message.edit_text("💰 قیمت (تومان):", reply_markup=flow_cancel_kb())
+    elif cur.endswith("CreateConfig:traffic"):
+        await state.set_state(CreateConfig.email)
+        await cb.message.edit_text("📧 شناسه (ایمیل) کانفیگ را وارد کنید:\n_مثال: ali_vip_30d_", parse_mode="Markdown", reply_markup=flow_cancel_kb())
+    elif cur.endswith("CreateConfig:duration"):
+        await state.set_state(CreateConfig.traffic)
+        await cb.message.edit_text("📊 حجم ترافیک (GB):", reply_markup=flow_cancel_kb())
+    elif cur.endswith("CreateConfig:server"):
+        await state.set_state(CreateConfig.duration)
+        await cb.message.edit_text("📅 مدت (روز):", reply_markup=flow_cancel_kb())
+    elif cur.endswith("BulkConfig:count"):
+        await state.set_state(BulkConfig.prefix)
+        await cb.message.edit_text("📋 *ساخت گروهی*\n\nپیشوند نام کانفیگ‌ها:\n_مثال: vip_user_", parse_mode="Markdown", reply_markup=flow_cancel_kb())
+    elif cur.endswith("BulkConfig:traffic"):
+        await state.set_state(BulkConfig.count)
+        await cb.message.edit_text("🔢 تعداد کانفیگ (حداکثر ۵۰):", reply_markup=flow_cancel_kb())
+    elif cur.endswith("BulkConfig:duration"):
+        await state.set_state(BulkConfig.traffic)
+        await cb.message.edit_text("📊 حجم هر کانفیگ (GB):", reply_markup=flow_cancel_kb())
+    elif cur.endswith("BulkConfig:server"):
+        await state.set_state(BulkConfig.duration)
+        await cb.message.edit_text("📅 مدت (روز):", reply_markup=flow_cancel_kb())
+    elif cur.endswith("PrivateMessage:text"):
+        await state.set_state(PrivateMessage.user_id)
+        await cb.message.edit_text("🆔 آیدی عددی کاربر را ارسال کنید:", reply_markup=flow_cancel_kb())
+    else:
+        await cb.answer("برای این مرحله برگشت مستقیم تعریف نشده.", show_alert=True)
+        return
+    await cb.answer()
 
 # ─── STATS ───────────────────────────────────────────────────────
 
@@ -64,7 +145,7 @@ async def show_stats(msg: Message):
 
 @router.message(F.text == "💰 سفارش‌های در انتظار")
 async def pending_orders_list(msg: Message):
-    if not is_admin(msg.from_user.id):
+    if not can_review_payments(msg.from_user.id):
         return
     orders = await get_pending_orders()
     if not orders:
@@ -87,7 +168,7 @@ async def pending_orders_list(msg: Message):
 
 @router.callback_query(F.data.startswith("view_order:"))
 async def view_order(cb: CallbackQuery):
-    if not is_admin(cb.from_user.id):
+    if not can_review_payments(cb.from_user.id):
         return
     oid = int(cb.data.split(":")[1])
     order = await get_order(oid)
@@ -101,7 +182,7 @@ async def view_order(cb: CallbackQuery):
         f"👤 کاربر: {order['full_name']} (@{order['username'] or '—'})\n"
         f"📦 پکیج: {order['pkg_name']}\n"
         f"📊 حجم: {order['traffic_gb']} GB | 📅 {order['duration_days']} روز\n"
-        f"💰 مبلغ: {order['price']:,} تومن\n"
+        f"💰 مبلغ: {_fmt_toman(order['price'])} تومان\n"
         f"🕐 ثبت: {order['created_at'][:16]}"
     )
 
@@ -120,7 +201,7 @@ async def view_order(cb: CallbackQuery):
 
 @router.callback_query(F.data.startswith("approve:"))
 async def approve_order_start(cb: CallbackQuery):
-    if not is_admin(cb.from_user.id):
+    if not can_review_payments(cb.from_user.id):
         return
     oid = int(cb.data.split(":")[1])
     servers = [sv for sv in await get_servers() if await server_has_capacity(sv["id"])]
@@ -162,7 +243,7 @@ async def approve_order_start(cb: CallbackQuery):
 
 @router.callback_query(F.data.startswith("assign:"))
 async def assign_server(cb: CallbackQuery):
-    if not is_admin(cb.from_user.id):
+    if not can_review_payments(cb.from_user.id):
         return
     _, oid, sid = cb.data.split(":")
     await _do_approve(cb, int(oid), int(sid))
@@ -246,13 +327,13 @@ async def _do_approve(cb: CallbackQuery, oid: int, sid: int):
         else:
             email = await _build_config_name(order, i if bulk_count > 1 else 0)
         cuuid = str(uuid.uuid4())
-        ok = await client.add_client(target_inbound, cuuid, email, each_gb, duration)
+        ok = await client.add_client(target_inbound, cuuid, email, each_gb, duration, starts_on_first_use=True)
         if not ok:
             continue
-        expire_ms = int((datetime.now() + timedelta(days=duration)).timestamp() * 1000)
+        expire_ms = 0 if duration > 0 else 0
         link = await client.get_client_link(target_inbound, email)
         sub = await client.get_subscription_link(target_inbound, email)
-        await save_config(user["id"], sid, cuuid, email, target_inbound, each_gb, duration, expire_ms)
+        await save_config(user["id"], sid, cuuid, email, target_inbound, each_gb, duration, expire_ms, starts_on_first_use=1 if duration > 0 else 0)
         created.append({"email": email, "link": link, "sub": sub})
 
     await client.close()
@@ -302,11 +383,24 @@ async def _do_approve(cb: CallbackQuery, oid: int, sid: int):
         pass
 
     await cb.message.answer(f"✅ {len(created)} کانفیگ ساخته و برای کاربر ارسال شد.", parse_mode="Markdown")
+    try:
+        uname = order.get("username") or ""
+        display = ("@" + uname) if uname else (order.get("full_name") or "دوست عزیز")
+        support = await get_setting("support_username", "")
+        sup = f"@{support.lstrip('@')}" if support else "پشتیبانی"
+        await cb.bot.send_message(
+            order["telegram_id"],
+            f"🎉 {display} عزیز، خریدت با موفقیت انجام شد و سرویس برات فعال شد.\n\n"
+            f"🙏 ممنونیم از خریدت.\n"
+            f"اگر مشکلی داشتی با {sup} در ارتباط باش.",
+        )
+    except Exception:
+        pass
 
 
 @router.callback_query(F.data.startswith("reject:"))
 async def reject_order(cb: CallbackQuery):
-    if not is_admin(cb.from_user.id):
+    if not can_review_payments(cb.from_user.id):
         return
     oid = int(cb.data.split(":")[1])
     order = await get_order(oid)
@@ -676,7 +770,7 @@ async def create_single_start(cb: CallbackQuery, state: FSMContext):
 async def single_email(msg: Message, state: FSMContext):
     await state.update_data(email=msg.text.strip().replace(" ", "_"))
     await state.set_state(CreateConfig.traffic)
-    await msg.answer("📊 حجم ترافیک (GB):")
+    await msg.answer("📊 حجم ترافیک (GB):", reply_markup=flow_cancel_kb())
 
 
 @router.message(CreateConfig.traffic)
@@ -688,7 +782,7 @@ async def single_traffic(msg: Message, state: FSMContext):
         return
     await state.update_data(traffic_gb=v)
     await state.set_state(CreateConfig.duration)
-    await msg.answer("📅 مدت (روز):")
+    await msg.answer("📅 مدت (روز):", reply_markup=flow_cancel_kb())
 
 
 @router.message(CreateConfig.duration)
@@ -715,12 +809,12 @@ async def single_server(cb: CallbackQuery, state: FSMContext):
     cli = XUIClient(server["url"], server["username"], server["password"], server["sub_path"])
     cuuid = str(uuid.uuid4())
     ok = await cli.add_client(server["inbound_id"], cuuid, data["email"],
-                               data["traffic_gb"], data["duration_days"])
+                               data["traffic_gb"], data["duration_days"], starts_on_first_use=True)
     if not ok:
         await cli.close()
         await cb.message.edit_text("❌ خطا در ساخت کانفیگ روی سرور!")
         return
-    expire_ms = int((datetime.now() + timedelta(days=data["duration_days"])).timestamp() * 1000)
+    expire_ms = 0 if data["duration_days"] > 0 else 0
     link = await cli.get_client_link(server["inbound_id"], data["email"])
     await cli.close()
 
@@ -733,6 +827,13 @@ async def single_server(cb: CallbackQuery, state: FSMContext):
     if link:
         text += f"\n\n🔗 *لینک:*\n`{link}`"
     await cb.message.edit_text(text, parse_mode="Markdown")
+    if link:
+        try:
+            ch = await get_setting("channel_username", "AtlasChannel")
+            qr = build_qr_image(link, footer_text=ch)
+            await cb.message.answer_photo(qr, caption=f"🎨 QR: {data['email']}")
+        except Exception:
+            pass
 
 
 # ─── BULK CONFIG ─────────────────────────────────────────────────
@@ -764,7 +865,7 @@ async def bulk_count(msg: Message, state: FSMContext):
         return
     await state.update_data(count=n)
     await state.set_state(BulkConfig.traffic)
-    await msg.answer("📊 حجم هر کانفیگ (GB):")
+    await msg.answer("📊 حجم هر کانفیگ (GB):", reply_markup=flow_cancel_kb())
 
 
 @router.message(BulkConfig.traffic)
@@ -776,7 +877,7 @@ async def bulk_traffic(msg: Message, state: FSMContext):
         return
     await state.update_data(traffic_gb=v)
     await state.set_state(BulkConfig.duration)
-    await msg.answer("📅 مدت (روز):")
+    await msg.answer("📅 مدت (روز):", reply_markup=flow_cancel_kb())
 
 
 @router.message(BulkConfig.duration)
@@ -801,14 +902,14 @@ async def bulk_server(cb: CallbackQuery, state: FSMContext):
     await cb.message.edit_text(f"⏳ در حال ساخت {data['count']} کانفیگ...")
 
     cli = XUIClient(server["url"], server["username"], server["password"], server["sub_path"])
-    expire_ms = int((datetime.now() + timedelta(days=data["duration_days"])).timestamp() * 1000)
+    expire_ms = 0 if data["duration_days"] > 0 else 0
     results = []
 
     for i in range(1, data["count"] + 1):
         email = f"{data['prefix']}_{i:03d}"
         cuuid = str(uuid.uuid4())
         ok = await cli.add_client(server["inbound_id"], cuuid, email,
-                                   data["traffic_gb"], data["duration_days"])
+                                   data["traffic_gb"], data["duration_days"], starts_on_first_use=True)
         if ok:
             link = await cli.get_client_link(server["inbound_id"], email)
             results.append(f"✅ `{email}`\n`{link or '—'}`")
@@ -1108,7 +1209,7 @@ async def private_msg_start(msg: Message, state: FSMContext):
     if not is_admin(msg.from_user.id):
         return
     await state.set_state(PrivateMessage.user_id)
-    await msg.answer("🆔 آیدی عددی کاربر را ارسال کنید:")
+    await msg.answer("🆔 آیدی عددی کاربر را ارسال کنید:", reply_markup=flow_cancel_kb())
 
 
 @router.message(PrivateMessage.user_id)
@@ -1120,7 +1221,7 @@ async def private_msg_user(msg: Message, state: FSMContext):
         return
     await state.update_data(uid=uid)
     await state.set_state(PrivateMessage.text)
-    await msg.answer("✍️ متن پیام خصوصی را ارسال کنید:")
+    await msg.answer("✍️ متن پیام خصوصی را ارسال کنید:", reply_markup=flow_cancel_kb())
 
 
 @router.message(PrivateMessage.text)
@@ -1133,3 +1234,69 @@ async def private_msg_send(msg: Message, state: FSMContext):
         await msg.answer("✅ پیام خصوصی ارسال شد.")
     except Exception:
         await msg.answer("❌ ارسال ناموفق بود. آیدی یا وضعیت چت کاربر را بررسی کنید.")
+
+
+@router.callback_query(F.data.startswith("tp_appr:"))
+async def topup_approve(cb: CallbackQuery):
+    if not can_review_payments(cb.from_user.id):
+        return
+    rid = int(cb.data.split(":")[1])
+    req = await get_topup_request(rid)
+    if not req:
+        await cb.answer("درخواست یافت نشد", show_alert=True)
+        return
+    if req.get("status") != "pending":
+        await cb.answer("قبلا بررسی شده", show_alert=True)
+        return
+
+    new_balance = await add_user_balance(
+        req["user_id"],
+        int(req["amount"]),
+        kind="topup",
+        note=f"topup_request:{rid}",
+        actor_telegram_id=cb.from_user.id,
+    )
+    await update_topup_request(
+        rid,
+        status="approved",
+        reviewer_telegram_id=cb.from_user.id,
+        reviewed_at=datetime.now().isoformat(),
+    )
+    try:
+        await cb.bot.send_message(
+            req["telegram_id"],
+            f"✅ افزایش اعتبار شما تایید شد.\n💳 موجودی جدید: *{_fmt_toman(new_balance)} تومان*",
+            parse_mode="Markdown",
+        )
+    except Exception:
+        pass
+    await cb.message.edit_caption((cb.message.caption or "") + "\n\n✅ تایید شد")
+    await cb.answer("انجام شد")
+
+
+@router.callback_query(F.data.startswith("tp_rej:"))
+async def topup_reject(cb: CallbackQuery):
+    if not can_review_payments(cb.from_user.id):
+        return
+    rid = int(cb.data.split(":")[1])
+    req = await get_topup_request(rid)
+    if not req:
+        await cb.answer("درخواست یافت نشد", show_alert=True)
+        return
+    if req.get("status") != "pending":
+        await cb.answer("قبلا بررسی شده", show_alert=True)
+        return
+
+    await update_topup_request(
+        rid,
+        status="rejected",
+        reviewer_telegram_id=cb.from_user.id,
+        reviewed_at=datetime.now().isoformat(),
+        admin_note="rejected",
+    )
+    try:
+        await cb.bot.send_message(req["telegram_id"], "❌ درخواست افزایش اعتبار شما رد شد. در صورت نیاز با پشتیبانی در ارتباط باشید.")
+    except Exception:
+        pass
+    await cb.message.edit_caption((cb.message.caption or "") + "\n\n❌ رد شد")
+    await cb.answer("رد شد")
