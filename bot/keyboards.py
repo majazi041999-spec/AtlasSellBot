@@ -6,8 +6,13 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
 from typing import List, Dict
 
 
-def admin_menu() -> ReplyKeyboardMarkup:
+def admin_menu(finance_only: bool = False) -> ReplyKeyboardMarkup:
     b = ReplyKeyboardBuilder()
+    if finance_only:
+        b.row(KeyboardButton(text="💰 سفارش‌های در انتظار"))
+        b.row(KeyboardButton(text="🔄 شروع مجدد"))
+        return b.as_markup(resize_keyboard=True)
+
     b.row(KeyboardButton(text="📊 آمار کلی"), KeyboardButton(text="💰 سفارش‌های در انتظار"))
     b.row(KeyboardButton(text="🔑 مدیریت کانفیگ"), KeyboardButton(text="📦 پکیج‌ها"))
     b.row(KeyboardButton(text="👥 کاربران"), KeyboardButton(text="📣 پیام همگانی"))
@@ -21,7 +26,8 @@ def user_menu(include_wholesale: bool = True) -> ReplyKeyboardMarkup:
     b.row(KeyboardButton(text="📡 وضعیت سرویس"), KeyboardButton(text="🛒 خرید سرویس"))
     b.row(KeyboardButton(text="🔄 انتقال سرور"), KeyboardButton(text="📋 سفارش‌های من"))
     b.row(KeyboardButton(text="🔄 شروع مجدد"))
-    b.row(KeyboardButton(text="🎁 دعوت دوستان"), KeyboardButton(text="📞 پشتیبانی"))
+    b.row(KeyboardButton(text="💳 کیف پول"), KeyboardButton(text="🎁 دعوت دوستان"))
+    b.row(KeyboardButton(text="📞 پشتیبانی"))
     if include_wholesale:
         b.row(KeyboardButton(text="🏷️ خرید عمده"))
     b.row(KeyboardButton(text="🔗 سینک کانفیگ قبلی"))
@@ -78,6 +84,7 @@ def config_detail_kb(cid: int) -> InlineKeyboardMarkup:
     b.button(text="🔄 انتقال به سرور دیگر", callback_data=f"mig_start:{cid}")
     b.button(text="🔄 بروزرسانی سرویس", callback_data=f"cfg_refresh:{cid}")
     b.button(text="📡 لینک سابسکریپشن", callback_data=f"cfg_sub:{cid}")
+    b.button(text="🧾 QR Code", callback_data=f"cfg_qr:{cid}")
     b.button(text="🔙 بازگشت", callback_data="back_configs")
     b.adjust(1)
     return b.as_markup()
@@ -93,9 +100,11 @@ def servers_kb(servers: List[Dict], cb_prefix: str, extra_data: str = "") -> Inl
     return b.as_markup()
 
 
-def payment_kb(order_id: int) -> InlineKeyboardMarkup:
+def payment_kb(order_id: int, allow_wallet: bool = True) -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
     b.button(text="📸 ارسال فیش پرداخت", callback_data=f"receipt:{order_id}")
+    if allow_wallet:
+        b.button(text="💳 پرداخت از کیف پول", callback_data=f"pay_wallet:{order_id}")
     b.button(text="❌ انصراف از خرید", callback_data=f"cancel_order:{order_id}")
     b.adjust(1)
     return b.as_markup()
@@ -158,4 +167,27 @@ def legacy_claim_admin_kb(claim_id: int) -> InlineKeyboardMarkup:
     b.button(text="✅ تایید اتصال", callback_data=f"lg_appr:{claim_id}")
     b.button(text="❌ رد درخواست", callback_data=f"lg_rej:{claim_id}")
     b.adjust(1)
+    return b.as_markup()
+
+
+def wallet_kb() -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    b.button(text="➕ افزایش اعتبار", callback_data="wallet_topup")
+    b.adjust(1)
+    return b.as_markup()
+
+
+def topup_review_kb(req_id: int) -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    b.button(text="✅ تایید افزایش اعتبار", callback_data=f"tp_appr:{req_id}")
+    b.button(text="❌ رد درخواست", callback_data=f"tp_rej:{req_id}")
+    b.adjust(1)
+    return b.as_markup()
+
+
+def flow_cancel_kb() -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    b.button(text="❌ کنسل", callback_data="cancel")
+    b.button(text="🏠 شروع مجدد", callback_data="back_to_menu")
+    b.adjust(2)
     return b.as_markup()

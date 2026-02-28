@@ -11,15 +11,20 @@ from core.texts import get_text
 router = Router()
 
 
-def _is_admin(uid: int) -> bool:
-    return uid in ADMIN_IDS
+async def _admin_role(uid: int, user: dict) -> str:
+    owner_id = int(await get_setting("owner_admin_id", "0") or 0)
+    if uid in ADMIN_IDS or (owner_id and uid == owner_id):
+        return "owner"
+    if not user.get("is_admin", 0):
+        return "none"
+    role = (user.get("admin_role") or "full").strip().lower()
+    return role if role in {"full", "finance"} else "full"
 
 
 async def _menus(msg: Message):
-    from bot.keyboards import admin_menu, user_menu
     user = await get_or_create_user(msg.from_user.id, msg.from_user.username, msg.from_user.full_name)
-    is_adm = _is_admin(msg.from_user.id) or user.get("is_admin", 0)
-    return user, is_adm
+    role = await _admin_role(msg.from_user.id, user)
+    return user, role
 
 
 def _channel_join_kb(channel_username: str):
@@ -38,7 +43,7 @@ async def cmd_start(msg: Message, state: FSMContext):
     ref_code = args[1] if len(args) > 1 else None
 
     user = await get_or_create_user(msg.from_user.id, msg.from_user.username, msg.from_user.full_name)
-    is_adm = _is_admin(msg.from_user.id) or user.get("is_admin", 0)
+    role = await _admin_role(msg.from_user.id, user)
 
     # رجیستر referral (اگر قبلاً کسی دعوتش نکرده)
     if ref_code and not user.get("referred_by") and ref_code != user.get("referral_code"):
@@ -58,14 +63,14 @@ async def cmd_start(msg: Message, state: FSMContext):
                 pass
 
     maintenance = await get_setting("maintenance_mode", "0")
-    if maintenance == "1" and not is_adm:
+    if maintenance == "1" and role == "none":
         await msg.answer(await get_text("maintenance_message"))
         return
 
     welcome = await get_text("welcome_message")
-    text = f"{'🔐 *پنل مدیریت*' if is_adm else '🌐 *Atlas Account*'}\n\n{welcome}"
+    text = f"{'🔐 *پنل مدیریت*' if role != 'none' else '🌐 *Atlas Account*'}\n\n{welcome}"
 
-    kb = admin_menu() if is_adm else user_menu(include_wholesale=bool(user.get("is_wholesale", 0)))
+    kb = admin_menu(finance_only=(role == 'finance')) if role != 'none' else user_menu(include_wholesale=bool(user.get("is_wholesale", 0)))
     await msg.answer(text, reply_markup=kb, parse_mode="Markdown")
 
 
@@ -75,9 +80,9 @@ async def cmd_start(msg: Message, state: FSMContext):
 async def cancel_cmd(msg: Message, state: FSMContext):
     await state.clear()
     user = await get_or_create_user(msg.from_user.id, msg.from_user.username, msg.from_user.full_name)
-    is_adm = _is_admin(msg.from_user.id) or user.get("is_admin", 0)
+    role = await _admin_role(msg.from_user.id, user)
     from bot.keyboards import admin_menu, user_menu
-    kb = admin_menu() if is_adm else user_menu(include_wholesale=bool(user.get("is_wholesale", 0)))
+    kb = admin_menu(finance_only=(role == "finance")) if role != "none" else user_menu(include_wholesale=bool(user.get("is_wholesale", 0)))
     await msg.answer("❌ عملیات لغو شد.", reply_markup=kb)
 
 @router.message(F.text.regexp(r"^/"))
@@ -129,14 +134,15 @@ async def restart_menu(msg: Message, state: FSMContext):
     await state.clear()
     from bot.keyboards import admin_menu, user_menu
     user = await get_or_create_user(msg.from_user.id, msg.from_user.username, msg.from_user.full_name)
-    is_adm = _is_admin(msg.from_user.id) or user.get("is_admin", 0)
-    kb = admin_menu() if is_adm else user_menu(include_wholesale=bool(user.get("is_wholesale", 0)))
+    role = await _admin_role(msg.from_user.id, user)
+    kb = admin_menu(finance_only=(role == "finance")) if role != "none" else user_menu(include_wholesale=bool(user.get("is_wholesale", 0)))
     await msg.answer("✅ ربات برای شما بروزرسانی شد و منو دوباره بارگذاری شد.", reply_markup=kb)
 
 @router.message(F.text == "🌐 پنل مدیریت")
 async def panel_url(msg: Message):
     user = await get_or_create_user(msg.from_user.id)
-    if not (_is_admin(msg.from_user.id) or user.get("is_admin")):
+    role = await _admin_role(msg.from_user.id, user)
+    if role not in ("owner", "full"):
         return
     panel_help = await get_text("panel_url_help", port=WEB_PORT, secret=WEB_SECRET_PATH)
     await msg.answer(panel_help, parse_mode="Markdown")

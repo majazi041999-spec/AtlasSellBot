@@ -35,6 +35,10 @@ from core.database import (
     get_available_servers,
     get_legacy_claim_by_key,
     create_legacy_claim,
+    get_user_balance,
+    create_topup_request,
+    add_user_balance,
+    get_all_admin_telegram_ids,
 )
 from core.xui_api import XUIClient, fmt_bytes, days_left
 from core.texts import get_text
@@ -50,8 +54,10 @@ from bot.keyboards import (
     wholesale_request_kb,
     wholesale_request_admin_kb,
     legacy_claim_admin_kb,
+    wallet_kb,
+    flow_cancel_kb,
 )
-from bot.states import BuyService, WholesaleBuy, LegacySync
+from bot.states import BuyService, WholesaleBuy, LegacySync, WalletTopup
 
 router = Router()
 
@@ -92,6 +98,10 @@ async def _ensure_channel_membership(msg_or_cb) -> bool:
     return False
 
 
+def _fmt_toman(amount: int) -> str:
+    return f"{int(amount or 0):,}".replace(",", "،")
+
+
 async def _get_card_info():
     """✅ کارت بانکی را از Settings DB بخوان (fallback: .env)"""
     card_bank = await get_setting("card_bank", CARD_BANK)
@@ -99,6 +109,90 @@ async def _get_card_info():
     card_holder = await get_setting("card_holder", CARD_HOLDER)
     return card_bank, card_number, card_holder
 
+
+
+
+@router.message(F.text == "💳 کیف پول")
+async def wallet_home(msg: Message):
+    if not await _ensure_channel_membership(msg):
+        return
+    if await _blocked(msg.from_user.id):
+        await msg.answer(await get_text("blocked_message"))
+        return
+    user = await get_or_create_user(msg.from_user.id)
+    bal = await get_user_balance(user["id"])
+    await msg.answer(
+        f"💳 *کیف پول شما*\n\nموجودی فعلی: *{_fmt_toman(bal)} تومان*",
+        reply_markup=wallet_kb(),
+        parse_mode="Markdown",
+    )
+
+
+@router.callback_query(F.data == "wallet_topup")
+async def wallet_topup_start(cb: CallbackQuery, state: FSMContext):
+    await state.set_state(WalletTopup.waiting_amount)
+    await cb.message.answer("💵 مبلغ افزایش اعتبار را به تومان وارد کنید.\nمثال: `250000`", parse_mode="Markdown", reply_markup=flow_cancel_kb())
+    await cb.answer()
+
+
+@router.message(WalletTopup.waiting_amount)
+async def wallet_topup_amount(msg: Message, state: FSMContext):
+    raw = (msg.text or "").replace("،", "").replace(",", "").strip()
+    if not raw.isdigit() or int(raw) <= 0:
+        await msg.answer("❌ مبلغ نامعتبر است. فقط عدد تومان بفرستید.")
+        return
+    amount = int(raw)
+    await state.update_data(topup_amount=amount)
+    await state.set_state(WalletTopup.waiting_receipt)
+    card_bank, card_number, card_holder = await _get_card_info()
+    await msg.answer(
+        f"✅ مبلغ: *{_fmt_toman(amount)} تومان*\n\n"
+        f"لطفاً واریز را انجام دهید و تصویر فیش را ارسال کنید.\n\n"
+        f"🏦 {card_bank}\n`{card_number}`\n👤 {card_holder}",
+        parse_mode="Markdown",
+        reply_markup=flow_cancel_kb(),
+    )
+
+
+@router.message(WalletTopup.waiting_receipt, F.photo)
+async def wallet_topup_receipt(msg: Message, state: FSMContext, bot: Bot):
+    data = await state.get_data()
+    await state.clear()
+    amount = int(data.get("topup_amount", 0) or 0)
+    if amount <= 0:
+        await msg.answer("❌ خطا در مبلغ. دوباره از کیف پول تلاش کنید.")
+        return
+    user = await get_or_create_user(msg.from_user.id, msg.from_user.username, msg.from_user.full_name)
+    photo_id = msg.photo[-1].file_id
+    req_id = await create_topup_request(user["id"], amount, photo_id)
+
+    await msg.answer(
+        f"✅ درخواست افزایش اعتبار ثبت شد.\nمبلغ: *{_fmt_toman(amount)} تومان*\nپس از تایید ادمین، موجودی شما افزایش می‌یابد.",
+        parse_mode="Markdown",
+    )
+
+    from bot.keyboards import topup_review_kb
+    cap = (
+        f"💳 *درخواست افزایش اعتبار*\n"
+        f"#Topup_{req_id}\n"
+        f"👤 {user.get('full_name') or 'کاربر'} (@{user.get('username') or '—'})\n"
+        f"🆔 `{msg.from_user.id}`\n"
+        f"💵 مبلغ: *{_fmt_toman(amount)} تومان*"
+    )
+    admin_targets = list(dict.fromkeys(list(ADMIN_IDS) + await get_all_admin_telegram_ids()))
+    for aid in admin_targets:
+        try:
+            await bot.send_photo(aid, photo_id, caption=cap, reply_markup=topup_review_kb(req_id), parse_mode="Markdown")
+        except Exception:
+            try:
+                await bot.send_message(aid, cap, reply_markup=topup_review_kb(req_id), parse_mode="Markdown")
+            except Exception:
+                pass
+
+
+@router.message(WalletTopup.waiting_receipt)
+async def wallet_topup_receipt_wrong(msg: Message):
+    await msg.answer("❌ لطفاً تصویر فیش را ارسال کنید.", reply_markup=flow_cancel_kb())
 
 # ─── STATUS ──────────────────────────────────────────────────────
 @router.message(F.text == "📡 وضعیت سرویس")
@@ -159,6 +253,28 @@ async def _send_config_status(target, config_id: int):
         remaining = max(0, total - used)
         expire_ms = traffic.get("expiryTime", cfg["expire_timestamp"] or 0)
         enabled = traffic.get("enable", True)
+
+        # اگر شروع زمان از اولین اتصال باشد، بعد از اولین مصرف زمان را فعال کن
+        if cfg.get("starts_on_first_use", 0) and used > 0 and (cfg.get("duration_days", 0) or 0) > 0:
+            new_expire_ms = int((datetime.now() + timedelta(days=int(cfg.get("duration_days", 0) or 0))).timestamp() * 1000)
+            cli2 = XUIClient(cfg["server_url"], cfg["srv_user"], cfg["srv_pass"], cfg["sub_path"])
+            ok = await cli2.update_client(
+                cfg["inbound_id"],
+                cfg["uuid"],
+                cfg["email"],
+                cfg["traffic_gb"],
+                new_expire_ms,
+                bool(enabled),
+            )
+            await cli2.close()
+            if ok:
+                await update_config(
+                    config_id,
+                    expire_timestamp=new_expire_ms,
+                    starts_on_first_use=0,
+                    first_use_at=datetime.now().isoformat(),
+                )
+                expire_ms = new_expire_ms
     else:
         total = int(cfg["traffic_gb"] * 1024**3)
         used = 0
@@ -220,7 +336,10 @@ async def send_config_link(cb: CallbackQuery):
             body += f"\n *لینک سابسکریپشن:*\n`{sub}`\n"
         body += (
             "\n این لینک را کپی کن و در اپلیکیشن وارد کن.\n\n"
-            "_اپ‌های پیشنهادی: V2rayNG (اندروید) | Streisand (iOS) | Hiddify (ویندوز)_"
+            "اپ‌های پیشنهادی:\n"
+            "[📱 V2rayNG (اندروید)](https://github.com/2dust/v2rayNG/releases/latest) | "
+            "[🍎 Streisand (iOS)](https://apps.apple.com/us/app/streisand/id6450534064) | "
+            "[🪟 v2rayN (ویندوز)](https://github.com/2dust/v2rayN/releases/latest)"
         )
         await cb.message.answer(body, parse_mode="Markdown")
         try:
@@ -265,6 +384,31 @@ async def cfg_sub(cb: CallbackQuery):
 
 
 # ─── BUY ─────────────────────────────────────────────────────────
+
+
+@router.callback_query(F.data.startswith("cfg_qr:"))
+async def cfg_qr(cb: CallbackQuery):
+    if not await _ensure_channel_membership(cb):
+        return
+    cid = int(cb.data.split(":")[1])
+    cfg = await get_config(cid)
+    if not cfg:
+        await cb.answer("یافت نشد", show_alert=True)
+        return
+
+    cli = XUIClient(cfg["server_url"], cfg["srv_user"], cfg["srv_pass"], cfg["sub_path"])
+    link = await cli.get_client_link(cfg["inbound_id"], cfg["email"])
+    await cli.close()
+    if not link:
+        await cb.answer("❌ لینک کانفیگ یافت نشد", show_alert=True)
+        return
+
+    ch = await get_setting("channel_username", "AtlasChannel")
+    qr = build_qr_image(link, footer_text=ch)
+    await cb.message.answer_photo(qr, caption=f"🧾 QR Code سرویس `{cfg['email']}`", parse_mode="Markdown")
+    await cb.answer()
+
+
 @router.message(F.text == "🛒 خرید سرویس")
 async def buy_service(msg: Message):
     if not await _ensure_channel_membership(msg):
@@ -303,7 +447,7 @@ async def buy_pkg_selected(cb: CallbackQuery):
     user = await get_or_create_user(cb.from_user.id)
     oid = await create_order(user["id"], pid)
 
-    price = f"{pkg['price']:,}".replace(",", "،")
+    price = _fmt_toman(pkg['price'])
     card_bank, card_number, card_holder = await _get_card_info()
 
     text = (
@@ -311,7 +455,7 @@ async def buy_pkg_selected(cb: CallbackQuery):
         f"━━━━━━━━━━━━━━\n"
         f" {pkg['name']}\n"
         f" {pkg['traffic_gb']} GB | {pkg['duration_days']} روز\n"
-        f" مبلغ: *{price} تومن*\n\n"
+        f" مبلغ: *{price} تومان*\n\n"
         f"━━━━━━━━━━━━━━\n"
         f" *پرداخت کارت به کارت:*\n\n"
         f" {card_bank}\n"
@@ -326,13 +470,60 @@ async def buy_pkg_selected(cb: CallbackQuery):
     await cb.message.edit_text(text, reply_markup=payment_kb(oid), parse_mode="Markdown")
 
 
+
+
+@router.callback_query(F.data.startswith("pay_wallet:"))
+async def pay_with_wallet(cb: CallbackQuery):
+    if not await _ensure_channel_membership(cb):
+        return
+    if await _blocked(cb.from_user.id):
+        await cb.answer("حساب شما مسدود است", show_alert=True)
+        return
+    oid = int(cb.data.split(":")[1])
+    order = await get_order(oid)
+    if not order:
+        await cb.answer("سفارش یافت نشد", show_alert=True)
+        return
+    user = await get_or_create_user(cb.from_user.id)
+    if order.get("user_id") != user.get("id"):
+        await cb.answer("این سفارش متعلق به شما نیست", show_alert=True)
+        return
+    if str(order.get("status")) not in ("pending_payment", "pending_receipt"):
+        await cb.answer("این سفارش قابل پرداخت نیست", show_alert=True)
+        return
+
+    balance = await get_user_balance(user["id"])
+    price = int(order.get("price") or 0)
+    if balance < price:
+        await cb.answer(f"موجودی کافی نیست. موجودی: {_fmt_toman(balance)} تومان", show_alert=True)
+        return
+
+    await add_user_balance(user["id"], -price, kind="purchase", note=f"order:{oid}", actor_telegram_id=cb.from_user.id)
+    await update_order(oid, status="receipt_submitted", notes=((order.get("notes") or "") + "\nwallet_payment=1").strip())
+    await cb.answer("✅ پرداخت از کیف پول انجام شد. سفارش برای تایید ارسال شد.", show_alert=True)
+    await cb.message.edit_reply_markup(reply_markup=payment_kb(oid, allow_wallet=False))
+
+    caption = (
+        f"💳 *پرداخت کیف پول*\n"
+        f"سفارش: #{oid}\n"
+        f"کاربر: {cb.from_user.full_name or '—'} (@{cb.from_user.username or '—'})\n"
+        f"مبلغ: *{_fmt_toman(price)} تومان*"
+    )
+    admin_targets = list(dict.fromkeys(list(ADMIN_IDS) + await get_all_admin_telegram_ids()))
+    for aid in admin_targets:
+        try:
+            await cb.bot.send_message(aid, caption, reply_markup=order_review_kb(oid), parse_mode="Markdown")
+        except Exception:
+            pass
+
+
 @router.callback_query(F.data.startswith("receipt:"))
 async def prompt_receipt(cb: CallbackQuery, state: FSMContext):
     oid = int(cb.data.split(":")[1])
     await state.set_state(BuyService.waiting_receipt)
     await state.update_data(order_id=oid)
     await update_order(oid, status="pending_receipt")
-    await cb.message.edit_text(" *ارسال فیش پرداخت*\n\nتصویر فیش واریزی را ارسال کنید ", parse_mode="Markdown")
+    await cb.message.edit_text(" *ارسال فیش پرداخت*\n\nتصویر فیش واریزی را ارسال کنید ", parse_mode="Markdown", reply_markup=flow_cancel_kb())
 
 
 @router.message(BuyService.waiting_receipt, F.photo)
@@ -359,20 +550,24 @@ async def receive_receipt(msg: Message, state: FSMContext, bot: Bot):
         f" سفارش: #{oid}\n"
         f" {msg.from_user.full_name} (@{msg.from_user.username or '—'})\n"
         f" {order['pkg_name']}\n"
-        f" {order['price']:,} تومن"
+        f" {_fmt_toman(order['price'])} تومان"
     )
     from bot.keyboards import order_review_kb
 
-    for aid in ADMIN_IDS:
+    admin_targets = list(dict.fromkeys(list(ADMIN_IDS) + await get_all_admin_telegram_ids()))
+    for aid in admin_targets:
         try:
             await bot.send_photo(aid, photo_id, caption=caption, reply_markup=order_review_kb(oid), parse_mode="Markdown")
         except Exception:
-            pass
+            try:
+                await bot.send_message(aid, caption, reply_markup=order_review_kb(oid), parse_mode="Markdown")
+            except Exception:
+                pass
 
 
 @router.message(BuyService.waiting_receipt)
 async def wrong_receipt_format(msg: Message):
-    await msg.answer(" لطفاً *تصویر* (عکس) فیش را ارسال کنید.", parse_mode="Markdown")
+    await msg.answer(" لطفاً *تصویر* (عکس) فیش را ارسال کنید.", parse_mode="Markdown", reply_markup=flow_cancel_kb())
 
 
 @router.callback_query(F.data.startswith("cancel_order:"))
@@ -475,6 +670,7 @@ async def wholesale_duration(msg: Message, state: FSMContext):
         "📝 الگوی اسم کانفیگ‌ها را وارد کنید (مثال: `Mobile110 📱`)\n"
         "اگر نمی‌خواهید شخصی‌سازی شود، `-` بفرستید.",
         parse_mode="Markdown",
+        reply_markup=flow_cancel_kb(),
     )
 
 
@@ -483,7 +679,7 @@ async def wholesale_naming_prefix(msg: Message, state: FSMContext):
     prefix = msg.text.strip()
     await state.update_data(naming_prefix="" if prefix == "-" else prefix)
     await state.set_state(WholesaleBuy.naming_start)
-    await msg.answer("🔢 شماره شروع را وارد کنید (مثال: 151)")
+    await msg.answer("🔢 شماره شروع را وارد کنید (مثال: 151)", reply_markup=flow_cancel_kb())
 
 
 @router.message(WholesaleBuy.naming_start)
@@ -537,7 +733,7 @@ async def wholesale_naming_start(msg: Message, state: FSMContext):
         f"مدت: `{int(data['duration'])}` روز{naming_line}\n"
         f"قیمت هر GB: `{pricing['price_per_gb'] or 10000:,}` تومان\n"
         f"تخفیف شما: `{discount}%`\n"
-        f" مبلغ نهایی: *{final_price:,} تومان*\n\n"
+        f" مبلغ نهایی: *{_fmt_toman(final_price)} تومان*\n\n"
         f" {card_bank}\n `{card_number}`\n {card_holder}\n\n"
         f"برای ثبت پرداخت روی «ارسال فیش» بزنید."
     )
@@ -578,7 +774,7 @@ async def legacy_sync_start(msg: Message, state: FSMContext):
         "🔗 لینک کانفیگ قبلی خود را ارسال کنید تا برای اتصال به حساب شما بررسی شود.\n\n"
         "پس از تایید ادمین، سرویس به اکانت شما متصل می‌شود.\n"
         "برای لغو: /cancel"
-    )
+    , reply_markup=flow_cancel_kb())
 
 
 @router.message(LegacySync.waiting_link)
@@ -765,7 +961,7 @@ async def mig_confirm(cb: CallbackQuery):
     new_uuid = str(_uuid.uuid4())
     new_email = f"{cfg['email'].split('_m')[0]}_m{int(time.time())}"
 
-    ok = await dst_cli.add_client(dst_srv["inbound_id"], new_uuid, new_email, rem_gb, new_days)
+    ok = await dst_cli.add_client(dst_srv["inbound_id"], new_uuid, new_email, rem_gb, new_days, starts_on_first_use=True)
     if not ok:
         await src_cli.close()
         await dst_cli.close()
@@ -781,8 +977,8 @@ async def mig_confirm(cb: CallbackQuery):
 
     # ذخیره کانفیگ جدید و غیرفعال کردن قدیمی
     await update_config(src_cid, is_active=0)
-    new_exp_ms = int((datetime.now() + timedelta(days=new_days)).timestamp() * 1000)
-    await save_config(user["id"], dst_sid, new_uuid, new_email, dst_srv["inbound_id"], rem_gb, new_days, new_exp_ms)
+    new_exp_ms = 0 if new_days > 0 else 0
+    await save_config(user["id"], dst_sid, new_uuid, new_email, dst_srv["inbound_id"], rem_gb, new_days, new_exp_ms, starts_on_first_use=1 if new_days > 0 else 0)
 
     # آپدیت شمارنده انتقال
     today = date.today().isoformat()
@@ -800,6 +996,13 @@ async def mig_confirm(cb: CallbackQuery):
     if new_link:
         text += f"\n\n *لینک جدید:*\n`{new_link}`"
     await cb.message.edit_text(text, parse_mode="Markdown")
+    if new_link:
+        try:
+            ch = await get_setting("channel_username", "AtlasChannel")
+            qr = build_qr_image(new_link, footer_text=ch)
+            await cb.message.answer_photo(qr, caption="🎨 QR Code لینک جدید شما")
+        except Exception:
+            pass
 
 
 # ─── REFERRAL ────────────────────────────────────────────────────
