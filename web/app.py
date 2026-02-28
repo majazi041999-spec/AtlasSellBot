@@ -9,6 +9,9 @@ import time
 from datetime import datetime, timedelta
 from typing import Optional
 
+from aiogram import Bot
+from aiogram.client.default import DefaultBotProperties
+from aiogram.enums import ParseMode
 from fastapi import FastAPI, Form, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
@@ -22,6 +25,7 @@ from core.config import (
     JWT_EXPIRE_HOURS,
     JWT_SECRET,
     REFERRAL_BONUS_GB,
+    BOT_TOKEN,
     WEB_ADMIN_PASSWORD,
     WEB_ADMIN_USERNAME,
     WEB_SECRET_PATH,
@@ -131,6 +135,48 @@ async def _ctx_ui(request: Request, **kw) -> dict:
     return ctx
 
 
+async def _update_broadcast_text() -> str:
+    return (
+        "🔔 *ربات آپدیت شد!*\n\n"
+        "لطفاً یک بار ربات را استارت کنید: /start\n\n"
+        "اپ‌های پیشنهادی:\n"
+        "[📱 V2rayNG (اندروید)](https://github.com/2dust/v2rayNG/releases/latest)\n"
+        "[🍎 Streisand (iOS)](https://apps.apple.com/us/app/streisand/id6450534064)\n"
+        "[🪟 v2rayN (ویندوز)](https://github.com/2dust/v2rayN/releases/latest)"
+    )
+
+
+async def _send_update_broadcast(build: str) -> int:
+    if not BOT_TOKEN or len(BOT_TOKEN) < 20:
+        raise RuntimeError("BOT_TOKEN is not configured")
+
+    text = await _update_broadcast_text()
+    total = await count_users()
+    page = 0
+    sent = 0
+
+    bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.MARKDOWN))
+    try:
+        while page * 200 < total:
+            users = await get_all_users(page * 200, 200)
+            if not users:
+                break
+            for u in users:
+                try:
+                    await bot.send_message(u["telegram_id"], text, disable_web_page_preview=True)
+                    sent += 1
+                except Exception:
+                    pass
+            page += 1
+    finally:
+        await bot.session.close()
+
+    await set_setting("last_update_broadcast", build)
+    await set_setting("pending_update_build", "")
+    await set_setting("update_broadcast_approved_build", "")
+    return sent
+
+
 # ═══════════════════════════════ AUTH ROUTES ════════════════════════
 @app.get(f"/{S}/login", response_class=HTMLResponse)
 async def login_page(request: Request):
@@ -171,10 +217,38 @@ async def dashboard(request: Request):
         return _redir_login()
     stats = await get_stats()
     pending = await get_pending_orders()
+    pending_update_build = await get_setting("pending_update_build", "")
+    last_update_broadcast = await get_setting("last_update_broadcast", "")
     return _templates.TemplateResponse(
         "dashboard.html",
-        await _ctx_ui(request, stats=stats, pending=pending[:6], active="dashboard"),
+        await _ctx_ui(
+            request,
+            stats=stats,
+            pending=pending[:6],
+            active="dashboard",
+            pending_update_build=pending_update_build,
+            last_update_broadcast=last_update_broadcast,
+        ),
     )
+
+
+@app.post(f"/{S}/updates/approve_send")
+async def approve_and_send_update(request: Request):
+    if not _auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+
+    build = (await get_setting("pending_update_build", "")).strip()
+    if not build:
+        return RedirectResponse(f"/{S}/dashboard", status_code=302)
+
+    await set_setting("update_broadcast_approved_build", build)
+    try:
+        sent = await _send_update_broadcast(build)
+        logger.info(f"update broadcast approved and sent from panel | build={build} sent={sent}")
+    except Exception as e:
+        logger.exception("failed to send approved update broadcast: %s", e)
+
+    return RedirectResponse(f"/{S}/dashboard", status_code=302)
 
 
 # ═══════════════════════════════ SERVERS ════════════════════════════

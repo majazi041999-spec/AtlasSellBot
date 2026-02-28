@@ -5,7 +5,7 @@ import json
 import sqlite3
 from datetime import datetime, timedelta, date
 from aiogram import Router, F, Bot
-from aiogram.types import Message, CallbackQuery
+from aiogram.types import Message, CallbackQuery, BufferedInputFile
 from aiogram.fsm.context import FSMContext
 
 from core.config import ADMIN_IDS, WEB_SECRET_PATH, WEB_PORT
@@ -29,6 +29,11 @@ from bot.keyboards import (
 from bot.states import AddPackage, CreateConfig, BulkConfig, EditConfig, Broadcast, PrivateMessage
 
 router = Router()
+
+
+def _qr_input_file(link: str, footer_text: str) -> BufferedInputFile:
+    qr = build_qr_image(link, footer_text=footer_text)
+    return BufferedInputFile(qr.getvalue(), filename="atlas-qr.png")
 
 
 def _fmt_toman(amount: int) -> str:
@@ -375,8 +380,7 @@ async def _do_approve(cb: CallbackQuery, oid: int, sid: int):
             if item['link']:
                 try:
                     ch = await get_setting("channel_username", "AtlasChannel")
-                    qr = build_qr_image(item['link'], footer_text=ch)
-                    await cb.bot.send_photo(order["telegram_id"], qr, caption=f"🎨 QR: {item['email']}")
+                    await cb.bot.send_photo(order["telegram_id"], _qr_input_file(item['link'], ch), caption=f"🎨 QR: {item['email']}")
                 except Exception:
                     pass
     except Exception:
@@ -830,8 +834,7 @@ async def single_server(cb: CallbackQuery, state: FSMContext):
     if link:
         try:
             ch = await get_setting("channel_username", "AtlasChannel")
-            qr = build_qr_image(link, footer_text=ch)
-            await cb.message.answer_photo(qr, caption=f"🎨 QR: {data['email']}")
+            await cb.message.answer_photo(_qr_input_file(link, ch), caption=f"🎨 QR: {data['email']}")
         except Exception:
             pass
 

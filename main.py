@@ -24,19 +24,15 @@ logging.getLogger("httpcore").setLevel(logging.WARNING)
 logging.getLogger("aiogram").setLevel(logging.WARNING)
 
 
-async def _notify_update(bot):
-    from core.database import get_setting, set_setting, count_users, get_all_users
-
+def _current_build() -> str:
     try:
-        build = subprocess.check_output(["git", "rev-parse", "--short", "HEAD"], text=True).strip()
+        return subprocess.check_output(["git", "rev-parse", "--short", "HEAD"], text=True).strip()
     except Exception:
-        build = "unknown"
+        return "unknown"
 
-    last = await get_setting("last_update_broadcast", "")
-    if not build or build == "unknown" or build == last:
-        return
 
-    text = (
+def _update_text() -> str:
+    return (
         "🔔 *ربات آپدیت شد!*\n\n"
         "لطفاً یک بار ربات را استارت کنید: /start\n\n"
         "اپ‌های پیشنهادی:\n"
@@ -45,9 +41,14 @@ async def _notify_update(bot):
         "[🪟 v2rayN (ویندوز)](https://github.com/2dust/v2rayN/releases/latest)"
     )
 
+
+async def _broadcast_update(bot, build: str) -> int:
+    from core.database import count_users, get_all_users, set_setting
+
     total = await count_users()
     page = 0
     sent = 0
+    text = _update_text()
     while page * 200 < total:
         users = await get_all_users(page * 200, 200)
         if not users:
@@ -61,7 +62,27 @@ async def _notify_update(bot):
         page += 1
 
     await set_setting("last_update_broadcast", build)
+    await set_setting("pending_update_build", "")
+    await set_setting("update_broadcast_approved_build", "")
     logger.info(f"📣 update broadcast sent to {sent} users | build={build}")
+    return sent
+
+
+async def _notify_update(bot):
+    from core.database import get_setting, set_setting
+
+    build = _current_build()
+    last = await get_setting("last_update_broadcast", "")
+    if not build or build == "unknown" or build == last:
+        return
+
+    approved_build = await get_setting("update_broadcast_approved_build", "")
+    if approved_build == build:
+        await _broadcast_update(bot, build)
+        return
+
+    await set_setting("pending_update_build", build)
+    logger.info(f"⏸ update broadcast pending admin approval | build={build}")
 
 
 

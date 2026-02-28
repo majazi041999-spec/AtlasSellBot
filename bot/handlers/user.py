@@ -6,7 +6,7 @@ from urllib.parse import urlparse, parse_qs, unquote
 from datetime import datetime, timedelta, date
 
 from aiogram import Router, F, Bot
-from aiogram.types import Message, CallbackQuery
+from aiogram.types import Message, CallbackQuery, BufferedInputFile
 from aiogram.fsm.context import FSMContext
 
 from core.config import ADMIN_IDS, CARD_NUMBER, CARD_HOLDER, CARD_BANK, MAX_DAILY_MIGRATIONS, REFERRAL_BONUS_GB
@@ -108,6 +108,11 @@ async def _ensure_channel_membership(msg_or_cb) -> bool:
 
 def _fmt_toman(amount: int) -> str:
     return f"{int(amount or 0):,}".replace(",", "،")
+
+
+def _qr_input_file(link: str, footer_text: str) -> BufferedInputFile:
+    qr = build_qr_image(link, footer_text=footer_text)
+    return BufferedInputFile(qr.getvalue(), filename="atlas-qr.png")
 
 
 async def _get_card_info():
@@ -396,8 +401,7 @@ async def send_config_link(cb: CallbackQuery):
         await cb.message.answer(body, parse_mode="Markdown")
         try:
             ch = await get_setting("channel_username", "AtlasChannel")
-            qr = build_qr_image(link, footer_text=ch)
-            await cb.message.answer_photo(qr, caption="🎨 QR Code کانفیگ شما")
+            await cb.message.answer_photo(_qr_input_file(link, ch), caption="🎨 QR Code کانفیگ شما")
         except Exception:
             pass
         await cb.answer()
@@ -455,10 +459,12 @@ async def cfg_qr(cb: CallbackQuery):
         await cb.answer("❌ لینک کانفیگ یافت نشد", show_alert=True)
         return
 
-    ch = await get_setting("channel_username", "AtlasChannel")
-    qr = build_qr_image(link, footer_text=ch)
-    await cb.message.answer_photo(qr, caption=f"🧾 QR Code سرویس `{cfg['email']}`", parse_mode="Markdown")
-    await cb.answer()
+    try:
+        ch = await get_setting("channel_username", "AtlasChannel")
+        await cb.message.answer_photo(_qr_input_file(link, ch), caption=f"🧾 QR Code سرویس `{cfg['email']}`", parse_mode="Markdown")
+        await cb.answer()
+    except Exception:
+        await cb.answer("❌ ارسال QR Code ناموفق بود.", show_alert=True)
 
 
 @router.message(F.text == "🛒 خرید سرویس")
@@ -1067,8 +1073,7 @@ async def mig_confirm(cb: CallbackQuery):
     if new_link:
         try:
             ch = await get_setting("channel_username", "AtlasChannel")
-            qr = build_qr_image(new_link, footer_text=ch)
-            await cb.message.answer_photo(qr, caption="🎨 QR Code لینک جدید شما")
+            await cb.message.answer_photo(_qr_input_file(new_link, ch), caption="🎨 QR Code لینک جدید شما")
         except Exception:
             pass
 
