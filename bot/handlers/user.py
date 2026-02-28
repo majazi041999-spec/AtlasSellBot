@@ -203,6 +203,50 @@ async def wallet_topup_receipt_wrong(msg: Message):
     await msg.answer("❌ لطفاً تصویر فیش را ارسال کنید.", reply_markup=flow_cancel_kb())
 
 # ─── STATUS ──────────────────────────────────────────────────────
+
+
+@router.callback_query(F.data == "flow_back")
+async def flow_back_user(cb: CallbackQuery, state: FSMContext):
+    cur = await state.get_state()
+    if not cur:
+        await cb.answer("مرحله‌ای برای برگشت وجود ندارد.", show_alert=True)
+        return
+
+    if cur.endswith("WalletTopup:waiting_receipt"):
+        await state.set_state(WalletTopup.waiting_amount)
+        await cb.message.edit_text("💵 مبلغ افزایش اعتبار را به تومان وارد کنید.\nمثال: `250000`", parse_mode="Markdown", reply_markup=flow_cancel_kb())
+    elif cur.endswith("WholesaleBuy:traffic"):
+        await state.set_state(WholesaleBuy.count)
+        await cb.message.edit_text("🔢 تعداد کانفیگ موردنیاز را وارد کنید (مثلاً 5):", reply_markup=flow_cancel_kb())
+    elif cur.endswith("WholesaleBuy:duration"):
+        await state.set_state(WholesaleBuy.traffic)
+        await cb.message.edit_text("📊 حجم *هر کانفیگ* را به GB وارد کنید (مثلاً 20):", parse_mode="Markdown", reply_markup=flow_cancel_kb())
+    elif cur.endswith("WholesaleBuy:naming_prefix"):
+        await state.set_state(WholesaleBuy.duration)
+        await cb.message.edit_text("📅 مدت *هر کانفیگ* را به روز وارد کنید (مثلاً 30):", parse_mode="Markdown", reply_markup=flow_cancel_kb())
+    elif cur.endswith("WholesaleBuy:naming_start"):
+        await state.set_state(WholesaleBuy.naming_prefix)
+        await cb.message.edit_text("✍️ یک پیشوند نام وارد کنید (مثلاً `vip`):", parse_mode="Markdown", reply_markup=flow_cancel_kb())
+    elif cur.endswith("BuyService:waiting_receipt"):
+        data = await state.get_data()
+        oid = int(data.get("order_id") or 0)
+        await state.clear()
+        if oid:
+            await update_order(oid, status="pending_payment")
+            await cb.message.edit_text("⬅️ برگشتید به مرحله پرداخت.", reply_markup=payment_kb(oid), parse_mode="Markdown")
+        else:
+            await cb.message.edit_text("⬅️ برگشتید.")
+    elif cur.endswith("LegacySync:waiting_link"):
+        await state.clear()
+        user = await get_or_create_user(cb.from_user.id, cb.from_user.username, cb.from_user.full_name)
+        await cb.message.edit_text("⬅️ برگشتید به منو.")
+        await cb.message.answer("منوی اصلی", reply_markup=user_menu(include_wholesale=bool(user.get("is_wholesale", 0))))
+    else:
+        await cb.answer("برای این مرحله برگشت مستقیم تعریف نشده است.", show_alert=True)
+        return
+    await cb.answer()
+
+
 @router.message(F.text == "📡 وضعیت سرویس")
 async def user_status(msg: Message):
     if not await _ensure_channel_membership(msg):
@@ -604,7 +648,7 @@ async def wholesale_start(msg: Message, state: FSMContext):
         return
 
     await state.set_state(WholesaleBuy.count)
-    await msg.answer("️ خرید عمده\n\nتعداد کانفیگ موردنیاز را وارد کنید (مثال: 20)")
+    await msg.answer("️ خرید عمده\n\nتعداد کانفیگ موردنیاز را وارد کنید (مثال: 20)", reply_markup=flow_cancel_kb())
 
 
 
@@ -645,7 +689,7 @@ async def wholesale_count(msg: Message, state: FSMContext):
         return
     await state.update_data(count=count)
     await state.set_state(WholesaleBuy.traffic)
-    await msg.answer(" حجم هر کانفیگ (GB) را وارد کنید")
+    await msg.answer(" حجم هر کانفیگ (GB) را وارد کنید", reply_markup=flow_cancel_kb())
 
 
 @router.message(WholesaleBuy.traffic)
@@ -657,7 +701,7 @@ async def wholesale_traffic(msg: Message, state: FSMContext):
         return
     await state.update_data(traffic=gb)
     await state.set_state(WholesaleBuy.duration)
-    await msg.answer(" مدت هر کانفیگ (روز) را وارد کنید")
+    await msg.answer(" مدت هر کانفیگ (روز) را وارد کنید", reply_markup=flow_cancel_kb())
 
 
 @router.message(WholesaleBuy.duration)

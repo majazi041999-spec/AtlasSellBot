@@ -64,6 +64,56 @@ def can_review_payments(uid: int) -> bool:
     return _db_admin_role(uid) in ("owner", "full", "finance")
 
 
+
+
+@router.callback_query(F.data == "flow_back")
+async def flow_back_admin(cb: CallbackQuery, state: FSMContext):
+    cur = await state.get_state()
+    if not cur:
+        await cb.answer("مرحله‌ای برای برگشت وجود ندارد.", show_alert=True)
+        return
+
+    if cur.endswith("AddPackage:traffic"):
+        await state.set_state(AddPackage.name)
+        await cb.message.edit_text("✍️ نام پکیج را وارد کنید:", reply_markup=flow_cancel_kb())
+    elif cur.endswith("AddPackage:duration"):
+        await state.set_state(AddPackage.traffic)
+        await cb.message.edit_text("📊 حجم (GB):", reply_markup=flow_cancel_kb())
+    elif cur.endswith("AddPackage:price"):
+        await state.set_state(AddPackage.duration)
+        await cb.message.edit_text("📅 مدت (روز):", reply_markup=flow_cancel_kb())
+    elif cur.endswith("AddPackage:description"):
+        await state.set_state(AddPackage.price)
+        await cb.message.edit_text("💰 قیمت (تومان):", reply_markup=flow_cancel_kb())
+    elif cur.endswith("CreateConfig:traffic"):
+        await state.set_state(CreateConfig.email)
+        await cb.message.edit_text("📧 شناسه (ایمیل) کانفیگ را وارد کنید:\n_مثال: ali_vip_30d_", parse_mode="Markdown", reply_markup=flow_cancel_kb())
+    elif cur.endswith("CreateConfig:duration"):
+        await state.set_state(CreateConfig.traffic)
+        await cb.message.edit_text("📊 حجم ترافیک (GB):", reply_markup=flow_cancel_kb())
+    elif cur.endswith("CreateConfig:server"):
+        await state.set_state(CreateConfig.duration)
+        await cb.message.edit_text("📅 مدت (روز):", reply_markup=flow_cancel_kb())
+    elif cur.endswith("BulkConfig:count"):
+        await state.set_state(BulkConfig.prefix)
+        await cb.message.edit_text("📋 *ساخت گروهی*\n\nپیشوند نام کانفیگ‌ها:\n_مثال: vip_user_", parse_mode="Markdown", reply_markup=flow_cancel_kb())
+    elif cur.endswith("BulkConfig:traffic"):
+        await state.set_state(BulkConfig.count)
+        await cb.message.edit_text("🔢 تعداد کانفیگ (حداکثر ۵۰):", reply_markup=flow_cancel_kb())
+    elif cur.endswith("BulkConfig:duration"):
+        await state.set_state(BulkConfig.traffic)
+        await cb.message.edit_text("📊 حجم هر کانفیگ (GB):", reply_markup=flow_cancel_kb())
+    elif cur.endswith("BulkConfig:server"):
+        await state.set_state(BulkConfig.duration)
+        await cb.message.edit_text("📅 مدت (روز):", reply_markup=flow_cancel_kb())
+    elif cur.endswith("PrivateMessage:text"):
+        await state.set_state(PrivateMessage.user_id)
+        await cb.message.edit_text("🆔 آیدی عددی کاربر را ارسال کنید:", reply_markup=flow_cancel_kb())
+    else:
+        await cb.answer("برای این مرحله برگشت مستقیم تعریف نشده.", show_alert=True)
+        return
+    await cb.answer()
+
 # ─── STATS ───────────────────────────────────────────────────────
 
 @router.message(F.text == "📊 آمار کلی")

@@ -184,9 +184,11 @@ def topup_review_kb(req_id: int) -> InlineKeyboardMarkup:
     return b.as_markup()
 
 
-def flow_cancel_kb() -> InlineKeyboardMarkup:
+def flow_cancel_kb(show_back: bool = True) -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
+    if show_back:
+        b.button(text="⬅️ برگشت", callback_data="flow_back")
     b.button(text="❌ کنسل", callback_data="cancel")
     b.button(text="🏠 شروع مجدد", callback_data="back_to_menu")
-    b.adjust(2)
+    b.adjust(3 if show_back else 2)
     return b.as_markup()
