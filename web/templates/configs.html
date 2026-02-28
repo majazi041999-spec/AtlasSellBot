@@ -48,6 +48,7 @@
       <button class="btn btn-outline btn-xs" onclick="toggleCfg({{ c.id }}, this)">
         {{ '🔴 غیرفعال' if c.is_active else '🟢 فعال' }}
       </button>
+      <button class="btn btn-danger btn-xs" onclick="deleteCfg({{ c.id }}, this)" style="margin-right:6px">🗑️ حذف</button>
     </td>
   </tr>
   {% endfor %}
@@ -75,6 +76,22 @@ async function toggleCfg(id, btn){
   btn.disabled = false;
   if(r.success){ toast('وضعیت کانفیگ تغییر کرد','success'); setTimeout(()=>location.reload(),800); }
   else{ btn.innerHTML=orig; toast('خطا! اتصال سرور را بررسی کنید','error'); }
+}
+
+async function deleteCfg(id, btn){
+  if(!confirm('کانفیگ از سرور و دیتابیس حذف می‌شود. ادامه می‌دهید؟')) return;
+  const old = btn.innerHTML;
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spin"></span>';
+  const r = await api(`/${S}/configs/${id}/delete`);
+  if(r.success){
+    toast(`حذف شد (لوکال: ${r.deleted_local || 0} | سرور: ${r.deleted_remote || 0})`,'success');
+    setTimeout(()=>location.reload(),800);
+  }else{
+    btn.disabled=false;
+    btn.innerHTML=old;
+    toast('خطا در حذف کانفیگ','error');
+  }
 }
 </script>
 {% endblock %}

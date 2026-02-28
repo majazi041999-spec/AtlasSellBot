@@ -74,11 +74,11 @@ class XUIClient:
         return r.get("obj") if r and r.get("success") else None
 
     async def add_client(self, inbound_id: int, client_uuid: str, email: str,
-                          traffic_gb: float, expire_days: int) -> bool:
+                          traffic_gb: float, expire_days: int, starts_on_first_use: bool = False) -> bool:
         inbound = await self.get_inbound(inbound_id)
         protocol = inbound.get("protocol", "vless") if inbound else "vless"
         traffic_bytes = int(traffic_gb * 1024 ** 3)
-        expire_ms = int((datetime.now() + timedelta(days=expire_days)).timestamp() * 1000) if expire_days > 0 else 0
+        expire_ms = 0 if starts_on_first_use else (int((datetime.now() + timedelta(days=expire_days)).timestamp() * 1000) if expire_days > 0 else 0)
 
         if protocol == "trojan":
             client = {"password": client_uuid, "email": email, "totalGB": traffic_bytes,

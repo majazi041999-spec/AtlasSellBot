@@ -3,9 +3,13 @@
 {% block topbar_title %}💰 مدیریت سفارش‌ها{% endblock %}
 
 {% block content %}
+<div class="card" style="margin-bottom:14px;background:linear-gradient(135deg,rgba(124,111,255,.14),rgba(61,217,255,.08));border:1px solid rgba(124,111,255,.35)">
+  <div style="font-weight:800;font-size:1.03rem">💳 مرکز بررسی سفارش‌ها</div>
+  <div style="color:var(--txt2);margin-top:4px">تایید/رد پرداخت‌ها، مدیریت سریع سفارش‌های در انتظار و پیگیری وضعیت.</div>
+</div>
 {% if pending_count > 0 %}
 <div class="alert alert-info" style="margin-bottom:16px">
-  ⏳ <strong>{{ pending_count }} سفارش</strong> در انتظار تأیید شما هستند — تأیید/رد از طریق ربات تلگرام انجام می‌شود.
+  ⏳ <strong>{{ pending_count }} سفارش</strong> در انتظار تأیید شما هستند — می‌توانید از همین پنل تأیید/رد کنید.
 </div>
 {% endif %}
 
@@ -19,7 +23,7 @@
 <div class="table-wrap">
 <table id="orderTable">
   <thead>
-    <tr><th>#</th><th>کاربر</th><th>پکیج</th><th>مبلغ</th><th>وضعیت</th><th>تاریخ</th></tr>
+    <tr><th>#</th><th>کاربر</th><th>پکیج</th><th>مبلغ</th><th>وضعیت</th><th>تاریخ</th><th>عملیات</th></tr>
   </thead>
   <tbody>
   {% for o in orders %}
@@ -36,9 +40,19 @@
     <td>#{{ o.id }}</td>
     <td>{{ o.full_name or '—' }}<br><small style="color:var(--txt3)">{{ ('@' + o.username) if o.username else '—' }}</small></td>
     <td>{{ o.pkg_name }}</td>
-    <td>{{ "{:,}".format(o.price) }} T</td>
+    <td>{{ "{:,}".format(o.price) }} تومان</td>
     <td><span class="badge {{ si[1] }}">{{ si[0] }} {{ si[2] }}</span></td>
     <td style="color:var(--txt2);font-size:.75rem">{{ o.created_at[:16] }}</td>
+    <td>
+      {% if o.status == 'receipt_submitted' %}
+      <div style="display:flex;gap:6px">
+        <form action="/{{ S }}/orders/{{ o.id }}/approve" method="POST"><button class="btn btn-xs btn-outline" type="submit">✅ تایید</button></form>
+        <form action="/{{ S }}/orders/{{ o.id }}/reject" method="POST"><button class="btn btn-xs btn-danger" type="submit">❌ رد</button></form>
+      </div>
+      {% else %}
+      <span style="color:var(--txt3)">—</span>
+      {% endif %}
+    </td>
   </tr>
   {% endfor %}
   </tbody>

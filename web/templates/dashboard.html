@@ -36,6 +36,25 @@
   </div>
 </div>
 
+<div class="card" style="margin:18px 0 24px 0">
+  <div class="sec-hd" style="margin-bottom:10px">
+    <span class="sec-title">🚀 مدیریت اعلان آپدیت ربات</span>
+  </div>
+  {% if pending_update_build and pending_update_build != last_update_broadcast %}
+    <p style="margin:0 0 12px 0;color:var(--txt2)">
+      بیلد جدید شناسایی شد: <b>{{ pending_update_build }}</b><br>
+      تا وقتی تایید نکنید هیچ پیامی برای کاربران ارسال نمی‌شود.
+    </p>
+    <form method="post" action="/{{ S }}/updates/approve_send">
+      <button class="btn btn-primary" type="submit">✅ تایید و ارسال پیام آپدیت به همه کاربران</button>
+    </form>
+  {% else %}
+    <p style="margin:0;color:var(--txt3)">
+      در حال حاضر آپدیت تاییدنشده‌ای برای ارسال اعلان وجود ندارد.
+    </p>
+  {% endif %}
+</div>
+
 {% if pending %}
 <div class="sec-hd" style="margin-bottom:14px">
   <span class="sec-title">⏳ سفارش‌های در انتظار تأیید</span>
