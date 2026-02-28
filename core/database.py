@@ -395,6 +395,22 @@ async def update_topup_request(rid: int, **kw):
         await db.execute(f"UPDATE topup_requests SET {fields} WHERE id=?", (*kw.values(), rid))
         await db.commit()
 
+
+
+async def get_all_admin_telegram_ids() -> List[int]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT telegram_id FROM users WHERE is_admin=1") as c:
+            rows = await c.fetchall()
+            out = []
+            for r in rows:
+                try:
+                    tid = int(r[0])
+                except Exception:
+                    continue
+                if tid not in out:
+                    out.append(tid)
+            return out
+
 async def count_users() -> int:
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute("SELECT COUNT(*) FROM users") as c:

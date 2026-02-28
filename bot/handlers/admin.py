@@ -132,7 +132,7 @@ async def view_order(cb: CallbackQuery):
         f"👤 کاربر: {order['full_name']} (@{order['username'] or '—'})\n"
         f"📦 پکیج: {order['pkg_name']}\n"
         f"📊 حجم: {order['traffic_gb']} GB | 📅 {order['duration_days']} روز\n"
-        f"💰 مبلغ: {order['price']:,} تومن\n"
+        f"💰 مبلغ: {_fmt_toman(order['price'])} تومان\n"
         f"🕐 ثبت: {order['created_at'][:16]}"
     )
 
@@ -333,6 +333,19 @@ async def _do_approve(cb: CallbackQuery, oid: int, sid: int):
         pass
 
     await cb.message.answer(f"✅ {len(created)} کانفیگ ساخته و برای کاربر ارسال شد.", parse_mode="Markdown")
+    try:
+        uname = order.get("username") or ""
+        display = ("@" + uname) if uname else (order.get("full_name") or "دوست عزیز")
+        support = await get_setting("support_username", "")
+        sup = f"@{support.lstrip('@')}" if support else "پشتیبانی"
+        await cb.bot.send_message(
+            order["telegram_id"],
+            f"🎉 {display} عزیز، خریدت با موفقیت انجام شد و سرویس برات فعال شد.\n\n"
+            f"🙏 ممنونیم از خریدت.\n"
+            f"اگر مشکلی داشتی با {sup} در ارتباط باش.",
+        )
+    except Exception:
+        pass
 
 
 @router.callback_query(F.data.startswith("reject:"))
@@ -1237,4 +1250,3 @@ async def topup_reject(cb: CallbackQuery):
         pass
     await cb.message.edit_caption((cb.message.caption or "") + "\n\n❌ رد شد")
     await cb.answer("رد شد")
-

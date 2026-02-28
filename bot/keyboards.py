@@ -84,6 +84,7 @@ def config_detail_kb(cid: int) -> InlineKeyboardMarkup:
     b.button(text="🔄 انتقال به سرور دیگر", callback_data=f"mig_start:{cid}")
     b.button(text="🔄 بروزرسانی سرویس", callback_data=f"cfg_refresh:{cid}")
     b.button(text="📡 لینک سابسکریپشن", callback_data=f"cfg_sub:{cid}")
+    b.button(text="🧾 QR Code", callback_data=f"cfg_qr:{cid}")
     b.button(text="🔙 بازگشت", callback_data="back_configs")
     b.adjust(1)
     return b.as_markup()
@@ -99,9 +100,11 @@ def servers_kb(servers: List[Dict], cb_prefix: str, extra_data: str = "") -> Inl
     return b.as_markup()
 
 
-def payment_kb(order_id: int) -> InlineKeyboardMarkup:
+def payment_kb(order_id: int, allow_wallet: bool = True) -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
     b.button(text="📸 ارسال فیش پرداخت", callback_data=f"receipt:{order_id}")
+    if allow_wallet:
+        b.button(text="💳 پرداخت از کیف پول", callback_data=f"pay_wallet:{order_id}")
     b.button(text="❌ انصراف از خرید", callback_data=f"cancel_order:{order_id}")
     b.adjust(1)
     return b.as_markup()

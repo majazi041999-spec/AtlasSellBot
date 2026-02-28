@@ -47,6 +47,10 @@ from core.database import (
     get_package,
     get_packages,
     get_pending_orders,
+    get_available_servers,
+    server_has_capacity,
+    get_user_by_telegram,
+    save_config,
     get_server,
     get_servers,
     get_setting,
@@ -364,6 +368,58 @@ async def orders_page(request: Request):
         "orders.html",
         await _ctx_ui(request, orders=orders, total=total, page=page, total_pages=total_pages, pending_count=len(pending), active="orders"),
     )
+
+
+@app.post(f"/{S}/orders/{{oid}}/reject")
+async def order_reject_web(request: Request, oid: int):
+    if not _auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    order = await get_order(oid)
+    if not order:
+        return RedirectResponse(f"/{S}/orders", status_code=302)
+    await update_order(oid, status="rejected")
+    return RedirectResponse(f"/{S}/orders", status_code=302)
+
+
+@app.post(f"/{S}/orders/{{oid}}/approve")
+async def order_approve_web(request: Request, oid: int):
+    if not _auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    order = await get_order(oid)
+    if not order:
+        return RedirectResponse(f"/{S}/orders", status_code=302)
+
+    servers = [sv for sv in await get_servers() if await server_has_capacity(sv["id"])]
+    if not servers:
+        return RedirectResponse(f"/{S}/orders", status_code=302)
+    sid = servers[0]["id"]
+    server = await get_server(sid)
+
+    user = await get_user_by_telegram(order["telegram_id"])
+    if not user:
+        return RedirectResponse(f"/{S}/orders", status_code=302)
+
+    bulk_count = int(order.get("bulk_count") or 1)
+    each_gb = float(order.get("bulk_each_gb") or order["traffic_gb"])
+    duration = int(order["duration_days"])
+    created = []
+
+    cli = XUIClient(server["url"], server["username"], server["password"], server["sub_path"])
+    target_inbound = int(server.get("inbound_id") or 1)
+    for i in range(1, max(1, bulk_count) + 1):
+        email = f"u{order['telegram_id']}_{i}_{int(time.time())}" if bulk_count > 1 else f"u{order['telegram_id']}_{int(time.time())}"
+        cuuid = os.urandom(16).hex()
+        ok = await cli.add_client(target_inbound, cuuid, email, each_gb, duration, starts_on_first_use=True)
+        if not ok:
+            continue
+        link = await cli.get_client_link(target_inbound, email)
+        await save_config(user["id"], sid, cuuid, email, target_inbound, each_gb, duration, 0, starts_on_first_use=1 if duration > 0 else 0)
+        created.append((email, link))
+    await cli.close()
+
+    if created:
+        await update_order(oid, status="approved", server_id=sid, config_email=created[0][0], inbound_id=target_inbound, approved_at=datetime.now().isoformat())
+    return RedirectResponse(f"/{S}/orders", status_code=302)
 
 
 # ═══════════════════════════════ CONFIGS ════════════════════════════

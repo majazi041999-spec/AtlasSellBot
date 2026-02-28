@@ -37,6 +37,8 @@ from core.database import (
     create_legacy_claim,
     get_user_balance,
     create_topup_request,
+    add_user_balance,
+    get_all_admin_telegram_ids,
 )
 from core.xui_api import XUIClient, fmt_bytes, days_left
 from core.texts import get_text
@@ -177,11 +179,15 @@ async def wallet_topup_receipt(msg: Message, state: FSMContext, bot: Bot):
         f"🆔 `{msg.from_user.id}`\n"
         f"💵 مبلغ: *{_fmt_toman(amount)} تومان*"
     )
-    for aid in ADMIN_IDS:
+    admin_targets = list(dict.fromkeys(list(ADMIN_IDS) + await get_all_admin_telegram_ids()))
+    for aid in admin_targets:
         try:
             await bot.send_photo(aid, photo_id, caption=cap, reply_markup=topup_review_kb(req_id), parse_mode="Markdown")
         except Exception:
-            pass
+            try:
+                await bot.send_message(aid, cap, reply_markup=topup_review_kb(req_id), parse_mode="Markdown")
+            except Exception:
+                pass
 
 
 @router.message(WalletTopup.waiting_receipt)
@@ -378,6 +384,31 @@ async def cfg_sub(cb: CallbackQuery):
 
 
 # ─── BUY ─────────────────────────────────────────────────────────
+
+
+@router.callback_query(F.data.startswith("cfg_qr:"))
+async def cfg_qr(cb: CallbackQuery):
+    if not await _ensure_channel_membership(cb):
+        return
+    cid = int(cb.data.split(":")[1])
+    cfg = await get_config(cid)
+    if not cfg:
+        await cb.answer("یافت نشد", show_alert=True)
+        return
+
+    cli = XUIClient(cfg["server_url"], cfg["srv_user"], cfg["srv_pass"], cfg["sub_path"])
+    link = await cli.get_client_link(cfg["inbound_id"], cfg["email"])
+    await cli.close()
+    if not link:
+        await cb.answer("❌ لینک کانفیگ یافت نشد", show_alert=True)
+        return
+
+    ch = await get_setting("channel_username", "AtlasChannel")
+    qr = build_qr_image(link, footer_text=ch)
+    await cb.message.answer_photo(qr, caption=f"🧾 QR Code سرویس `{cfg['email']}`", parse_mode="Markdown")
+    await cb.answer()
+
+
 @router.message(F.text == "🛒 خرید سرویس")
 async def buy_service(msg: Message):
     if not await _ensure_channel_membership(msg):
@@ -424,7 +455,7 @@ async def buy_pkg_selected(cb: CallbackQuery):
         f"━━━━━━━━━━━━━━\n"
         f" {pkg['name']}\n"
         f" {pkg['traffic_gb']} GB | {pkg['duration_days']} روز\n"
-        f" مبلغ: *{price} تومن*\n\n"
+        f" مبلغ: *{price} تومان*\n\n"
         f"━━━━━━━━━━━━━━\n"
         f" *پرداخت کارت به کارت:*\n\n"
         f" {card_bank}\n"
@@ -437,6 +468,53 @@ async def buy_pkg_selected(cb: CallbackQuery):
         f"⏰ مهلت پرداخت: ۳۰ دقیقه"
     )
     await cb.message.edit_text(text, reply_markup=payment_kb(oid), parse_mode="Markdown")
+
+
+
+
+@router.callback_query(F.data.startswith("pay_wallet:"))
+async def pay_with_wallet(cb: CallbackQuery):
+    if not await _ensure_channel_membership(cb):
+        return
+    if await _blocked(cb.from_user.id):
+        await cb.answer("حساب شما مسدود است", show_alert=True)
+        return
+    oid = int(cb.data.split(":")[1])
+    order = await get_order(oid)
+    if not order:
+        await cb.answer("سفارش یافت نشد", show_alert=True)
+        return
+    user = await get_or_create_user(cb.from_user.id)
+    if order.get("user_id") != user.get("id"):
+        await cb.answer("این سفارش متعلق به شما نیست", show_alert=True)
+        return
+    if str(order.get("status")) not in ("pending_payment", "pending_receipt"):
+        await cb.answer("این سفارش قابل پرداخت نیست", show_alert=True)
+        return
+
+    balance = await get_user_balance(user["id"])
+    price = int(order.get("price") or 0)
+    if balance < price:
+        await cb.answer(f"موجودی کافی نیست. موجودی: {_fmt_toman(balance)} تومان", show_alert=True)
+        return
+
+    await add_user_balance(user["id"], -price, kind="purchase", note=f"order:{oid}", actor_telegram_id=cb.from_user.id)
+    await update_order(oid, status="receipt_submitted", notes=((order.get("notes") or "") + "\nwallet_payment=1").strip())
+    await cb.answer("✅ پرداخت از کیف پول انجام شد. سفارش برای تایید ارسال شد.", show_alert=True)
+    await cb.message.edit_reply_markup(reply_markup=payment_kb(oid, allow_wallet=False))
+
+    caption = (
+        f"💳 *پرداخت کیف پول*\n"
+        f"سفارش: #{oid}\n"
+        f"کاربر: {cb.from_user.full_name or '—'} (@{cb.from_user.username or '—'})\n"
+        f"مبلغ: *{_fmt_toman(price)} تومان*"
+    )
+    admin_targets = list(dict.fromkeys(list(ADMIN_IDS) + await get_all_admin_telegram_ids()))
+    for aid in admin_targets:
+        try:
+            await cb.bot.send_message(aid, caption, reply_markup=order_review_kb(oid), parse_mode="Markdown")
+        except Exception:
+            pass
 
 
 @router.callback_query(F.data.startswith("receipt:"))
@@ -472,15 +550,19 @@ async def receive_receipt(msg: Message, state: FSMContext, bot: Bot):
         f" سفارش: #{oid}\n"
         f" {msg.from_user.full_name} (@{msg.from_user.username or '—'})\n"
         f" {order['pkg_name']}\n"
-        f" {order['price']:,} تومن"
+        f" {_fmt_toman(order['price'])} تومان"
     )
     from bot.keyboards import order_review_kb
 
-    for aid in ADMIN_IDS:
+    admin_targets = list(dict.fromkeys(list(ADMIN_IDS) + await get_all_admin_telegram_ids()))
+    for aid in admin_targets:
         try:
             await bot.send_photo(aid, photo_id, caption=caption, reply_markup=order_review_kb(oid), parse_mode="Markdown")
         except Exception:
-            pass
+            try:
+                await bot.send_message(aid, caption, reply_markup=order_review_kb(oid), parse_mode="Markdown")
+            except Exception:
+                pass
 
 
 @router.message(BuyService.waiting_receipt)
@@ -651,7 +733,7 @@ async def wholesale_naming_start(msg: Message, state: FSMContext):
         f"مدت: `{int(data['duration'])}` روز{naming_line}\n"
         f"قیمت هر GB: `{pricing['price_per_gb'] or 10000:,}` تومان\n"
         f"تخفیف شما: `{discount}%`\n"
-        f" مبلغ نهایی: *{final_price:,} تومان*\n\n"
+        f" مبلغ نهایی: *{_fmt_toman(final_price)} تومان*\n\n"
         f" {card_bank}\n `{card_number}`\n {card_holder}\n\n"
         f"برای ثبت پرداخت روی «ارسال فیش» بزنید."
     )
