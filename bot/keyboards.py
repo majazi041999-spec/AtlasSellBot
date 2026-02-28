@@ -62,11 +62,10 @@ def packages_kb(pkgs: List[Dict]) -> InlineKeyboardMarkup:
     for p in pkgs:
         gb = int(p['traffic_gb']) if p['traffic_gb'] == int(p['traffic_gb']) else p['traffic_gb']
         price = f"{p['price']:,}".replace(",", "،")
-        b.button(
-            text=f"{'🥉' if p['price'] < 100000 else '🥈' if p['price'] < 200000 else '🥇'} {p['name']}  |  {gb}GB  |  {p['duration_days']}روز  |  {price}T",
-            callback_data=f"buy:{p['id']}"
-        )
-    b.adjust(1)
+        tier = '🥉' if p['price'] < 100000 else '🥈' if p['price'] < 200000 else '🥇'
+        b.button(text=f"{tier} {p['name']}", callback_data=f"buy:{p['id']}")
+        b.button(text=f"{gb}GB | {p['duration_days']}روز | {price}تومان", callback_data=f"buy:{p['id']}")
+    b.adjust(2)
     return b.as_markup()
 
 

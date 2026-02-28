@@ -67,6 +67,14 @@ async def _blocked(uid: int) -> bool:
     return bool(u.get("is_blocked", 0))
 
 
+def _channel_join_kb(channel_username: str):
+    from aiogram.utils.keyboard import InlineKeyboardBuilder
+    ch = channel_username.strip().lstrip("@")
+    b = InlineKeyboardBuilder()
+    b.button(text="📢 عضویت در کانال", url=f"https://t.me/{ch}")
+    return b.as_markup()
+
+
 async def _is_channel_member(msg_or_cb) -> bool:
     force = await get_setting("force_channel", "0")
     channel_username = await get_setting("channel_username", "")
@@ -89,12 +97,12 @@ async def _ensure_channel_membership(msg_or_cb) -> bool:
 
     channel_username = await get_setting("channel_username", "")
     ch = channel_username if channel_username.startswith("@") else f"@{channel_username}"
-    text = f" برای استفاده از ربات باید عضو کانال شوید:\n{ch}\n\nبعد از عضویت دوباره تلاش کنید."
+    text = f"❌ قبل از استفاده از امکانات ربات باید عضو کانال شوید.\n\nکانال: {ch}\n\nبعد از عضویت دوباره تلاش کنید."
     if isinstance(msg_or_cb, Message):
-        await msg_or_cb.answer(text)
+        await msg_or_cb.answer(text, reply_markup=_channel_join_kb(channel_username))
     else:
-        await msg_or_cb.answer("ابتدا در کانال عضو شوید.", show_alert=True)
-        await msg_or_cb.message.answer(text)
+        await msg_or_cb.answer("❌ ابتدا باید در کانال عضو شوید.", show_alert=True)
+        await msg_or_cb.message.answer(text, reply_markup=_channel_join_kb(channel_username))
     return False
 
 
@@ -425,15 +433,11 @@ async def buy_service(msg: Message):
         await msg.answer("⛔ فعلاً هیچ سروری ظرفیت خالی برای فروش ندارد.")
         return
 
-    text = " *پکیج مورد نظر را انتخاب کنید:*\n\n"
-    for p in pkgs:
-        price = f"{p['price']:,}".replace(",", "،")
-        text += f"• *{p['name']}* — {p['traffic_gb']}GB / {p['duration_days']} روز / {price} تومن\n"
-        if p["description"]:
-            text += f" _{p['description']}_\n"
-        text += "\n"
-
-    await msg.answer(text.strip(), reply_markup=packages_kb(pkgs), parse_mode="Markdown")
+    await msg.answer(
+        "🛒 *پکیج مورد نظر را انتخاب کنید:*\n\nروی هر بخش از کارت پکیج بزنید تا همان پکیج انتخاب شود.",
+        reply_markup=packages_kb(pkgs),
+        parse_mode="Markdown",
+    )
 
 
 @router.callback_query(F.data.startswith("buy:"))
@@ -906,6 +910,19 @@ async def mig_start(cb: CallbackQuery):
         await cb.answer("❌ سرور دیگری برای انتقال موجود نیست!", show_alert=True)
         return
 
+    from aiogram.utils.keyboard import InlineKeyboardBuilder
+    from core.database import count_active_configs_by_server
+    kb = InlineKeyboardBuilder()
+    for s in others:
+        cap = int(s.get("max_active_configs") or 0)
+        label = f"🖥️ {s['name']}"
+        if cap > 0:
+            used = await count_active_configs_by_server(s["id"])
+            if used >= cap:
+                label += " — ⛔ ظرفیت پر شده"
+        kb.button(text=label, callback_data=f"mig_confirm:{s['id']}:{cid}")
+    kb.adjust(1)
+
     remaining = MAX_DAILY_MIGRATIONS - today_cnt
     await cb.message.edit_text(
         f" *انتقال سرویس*\n\n"
@@ -913,7 +930,7 @@ async def mig_start(cb: CallbackQuery):
         f"️ سرور فعلی: `{cfg['server_name']}`\n"
         f" انتقال باقی‌مانده امروز: `{remaining}`\n\n"
         "سرور مقصد را انتخاب کنید:",
-        reply_markup=servers_kb(others, "mig_confirm", str(cid)),
+        reply_markup=kb.as_markup(),
         parse_mode="Markdown",
     )
 
@@ -956,6 +973,13 @@ async def mig_confirm(cb: CallbackQuery):
 
     # ساخت کانفیگ جدید
     dst_srv = await get_server(dst_sid)
+    cap = int(dst_srv.get("max_active_configs") or 0)
+    if cap > 0:
+        from core.database import count_active_configs_by_server
+        used = await count_active_configs_by_server(dst_sid)
+        if used >= cap:
+            await cb.answer("⛔ ظرفیت این سرور پر شده است", show_alert=True)
+            return
     dst_cli = XUIClient(dst_srv["url"], dst_srv["username"], dst_srv["password"], dst_srv["sub_path"])
 
     new_uuid = str(_uuid.uuid4())
