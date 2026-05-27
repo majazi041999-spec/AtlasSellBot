@@ -5,7 +5,7 @@ import secrets
 import time
 import logging
 from datetime import datetime, timedelta
-from typing import Optional, Dict, List
+from typing import Optional, Dict, List, Any
 from urllib.parse import urlparse, quote
 import base64
 
@@ -13,13 +13,15 @@ logger = logging.getLogger(__name__)
 
 
 class XUIClient:
-    def __init__(self, base_url: str, username: str, password: str, sub_path: str = ""):
+    def __init__(self, base_url: str, username: str, password: str, sub_path: str = "", api_token: str = ""):
         self.base_url = base_url.rstrip("/")
         sub = sub_path.strip("/")
         self.panel_url = f"{self.base_url}/{sub}" if sub else self.base_url
         self.username = username
         self.password = password
+        self.api_token = (api_token or "").strip()
         self._cookie: Optional[str] = None
+        self._csrf_token: Optional[str] = None
         self._http = httpx.AsyncClient(verify=False, timeout=20.0)
 
     async def _login(self) -> bool:
@@ -30,27 +32,55 @@ class XUIClient:
             )
             if r.status_code == 200 and r.json().get("success"):
                 self._cookie = "; ".join(f"{k}={v}" for k, v in r.cookies.items())
+                await self._load_csrf_token()
                 return True
         except Exception as e:
             logger.error(f"XUI login error: {e}")
         return False
 
+    async def _load_csrf_token(self) -> None:
+        try:
+            r = await self._http.get(
+                f"{self.panel_url}/csrf-token",
+                headers={"Cookie": self._cookie or ""},
+            )
+            if r.status_code == 200:
+                data = r.json()
+                if data.get("success"):
+                    self._csrf_token = data.get("obj") or data.get("token")
+        except Exception:
+            self._csrf_token = None
+
+    def _headers(self, extra: Optional[Dict[str, str]] = None, unsafe: bool = False) -> Dict[str, str]:
+        headers = dict(extra or {})
+        if self.api_token:
+            headers["Authorization"] = f"Bearer {self.api_token}"
+        elif self._cookie:
+            headers["Cookie"] = self._cookie
+            if unsafe and self._csrf_token:
+                headers["X-CSRF-Token"] = self._csrf_token
+        return headers
+
     async def _req(self, method: str, path: str, **kw) -> Optional[Dict]:
-        if not self._cookie:
+        unsafe = method.upper() not in {"GET", "HEAD", "OPTIONS", "TRACE"}
+        if not self.api_token and not self._cookie:
             if not await self._login():
                 return None
         try:
+            headers = self._headers(kw.pop("headers", None), unsafe=unsafe)
             r = await self._http.request(
                 method, f"{self.panel_url}{path}",
-                headers={"Cookie": self._cookie}, **kw
+                headers=headers, **kw
             )
-            if r.status_code == 401:
+            if r.status_code in (401, 403) and not self.api_token:
                 self._cookie = None
+                self._csrf_token = None
                 if not await self._login():
                     return None
+                headers = self._headers(unsafe=unsafe)
                 r = await self._http.request(
                     method, f"{self.panel_url}{path}",
-                    headers={"Cookie": self._cookie}, **kw
+                    headers=headers, **kw
                 )
             if r.status_code == 200:
                 return r.json()
@@ -59,6 +89,9 @@ class XUIClient:
         return None
 
     async def test_connection(self) -> bool:
+        if self.api_token:
+            r = await self._req("GET", "/panel/api/inbounds/options")
+            return bool(r and r.get("success"))
         return await self._login()
 
     async def get_inbounds(self) -> List[Dict]:
@@ -70,8 +103,69 @@ class XUIClient:
         return r.get("obj") if r and r.get("success") else None
 
     async def get_client_traffic(self, email: str) -> Optional[Dict]:
-        r = await self._req("GET", f"/panel/api/inbounds/getClientTraffics/{email}")
+        enc = quote(email, safe="")
+        r = await self._req("GET", f"/panel/api/clients/traffic/{enc}")
+        if r and r.get("success"):
+            return r.get("obj")
+        r = await self._req("GET", f"/panel/api/inbounds/getClientTraffics/{enc}")
         return r.get("obj") if r and r.get("success") else None
+
+    async def get_client(self, email: str) -> Optional[Dict]:
+        enc = quote(email, safe="")
+        r = await self._req("GET", f"/panel/api/clients/get/{enc}")
+        if r and r.get("success"):
+            obj = r.get("obj")
+            if isinstance(obj, dict) and isinstance(obj.get("client"), dict):
+                client = obj["client"]
+                client["inboundIds"] = obj.get("inboundIds") or []
+                return client
+            return obj if isinstance(obj, dict) else None
+        return None
+
+    def _json_obj(self, value: Any, default: Optional[Any] = None) -> Any:
+        if default is None:
+            default = {}
+        if isinstance(value, (dict, list)):
+            return value
+        if isinstance(value, str) and value.strip():
+            try:
+                return json.loads(value)
+            except Exception:
+                return default
+        return default
+
+    def _client_payload(self, protocol: str, client_uuid: str, email: str, traffic_bytes: int,
+                        expire_ms: int, enable: bool = True, existing: Optional[Dict] = None) -> Dict:
+        existing = dict(existing or {})
+        sub_id = existing.get("subId") or secrets.token_hex(8)
+        base = {
+            "email": email,
+            "totalGB": traffic_bytes,
+            "expiryTime": expire_ms,
+            "enable": enable,
+            "tgId": existing.get("tgId", 0) or 0,
+            "subId": sub_id,
+            "limitIp": existing.get("limitIp", 0) or 0,
+            "reset": existing.get("reset", 0) or 0,
+            "comment": existing.get("comment", "") or "",
+        }
+        if existing.get("group"):
+            base["group"] = existing.get("group")
+
+        if protocol == "trojan":
+            base["password"] = existing.get("password") or client_uuid
+        elif protocol == "shadowsocks":
+            base["password"] = existing.get("password") or client_uuid.replace("-", "")
+            if existing.get("method"):
+                base["method"] = existing.get("method")
+        elif protocol == "hysteria":
+            base["auth"] = existing.get("auth") or client_uuid.replace("-", "")
+        else:
+            base["id"] = existing.get("id") or existing.get("uuid") or client_uuid
+            base["flow"] = existing.get("flow", "") or ""
+            if existing.get("security"):
+                base["security"] = existing.get("security")
+        return base
 
     async def add_client(self, inbound_id: int, client_uuid: str, email: str,
                           traffic_gb: float, expire_days: int, starts_on_first_use: bool = False) -> bool:
@@ -80,13 +174,12 @@ class XUIClient:
         traffic_bytes = int(traffic_gb * 1024 ** 3)
         expire_ms = 0 if starts_on_first_use else (int((datetime.now() + timedelta(days=expire_days)).timestamp() * 1000) if expire_days > 0 else 0)
 
-        if protocol == "trojan":
-            client = {"password": client_uuid, "email": email, "totalGB": traffic_bytes,
-                      "expiryTime": expire_ms, "enable": True, "tgId": "", "subId": secrets.token_hex(8), "limitIp": 0}
-        else:
-            client = {"id": client_uuid, "email": email, "totalGB": traffic_bytes,
-                      "expiryTime": expire_ms, "enable": True, "tgId": "", "subId": secrets.token_hex(8),
-                      "limitIp": 0, "flow": ""}
+        client = self._client_payload(protocol, client_uuid, email, traffic_bytes, expire_ms, True)
+
+        payload = {"client": client, "inboundIds": [int(inbound_id)]}
+        r = await self._req("POST", "/panel/api/clients/add", json=payload)
+        if r and r.get("success"):
+            return True
 
         payload = {"id": inbound_id, "settings": json.dumps({"clients": [client]})}
         r = await self._req("POST", "/panel/api/inbounds/addClient", json=payload)
@@ -98,30 +191,50 @@ class XUIClient:
         protocol = inbound.get("protocol", "vless") if inbound else "vless"
         traffic_bytes = int(traffic_gb * 1024 ** 3)
 
-        if protocol == "trojan":
-            client = {"password": client_uuid, "email": email, "totalGB": traffic_bytes,
-                      "expiryTime": expire_ms, "enable": enable, "tgId": "", "subId": secrets.token_hex(8), "limitIp": 0}
-        else:
-            client = {"id": client_uuid, "email": email, "totalGB": traffic_bytes,
-                      "expiryTime": expire_ms, "enable": enable, "tgId": "", "subId": secrets.token_hex(8),
-                      "limitIp": 0, "flow": ""}
+        existing = await self.get_client(email)
+        client = self._client_payload(protocol, client_uuid, email, traffic_bytes, expire_ms, enable, existing)
+
+        r = await self._req("POST", f"/panel/api/clients/update/{quote(email, safe='')}", json=client)
+        if r and r.get("success"):
+            return True
 
         payload = {"id": inbound_id, "settings": json.dumps({"clients": [client]})}
         r = await self._req("POST", f"/panel/api/inbounds/updateClient/{client_uuid}", json=payload)
         return bool(r and r.get("success"))
 
-    async def delete_client(self, inbound_id: int, client_uuid: str) -> bool:
+    async def delete_client(self, inbound_id: int, client_uuid: str, email: str = "") -> bool:
+        if not email:
+            inbound = await self.get_inbound(inbound_id)
+            if inbound:
+                settings = self._json_obj(inbound.get("settings"), {})
+                for c in settings.get("clients", []) or []:
+                    ident = c.get("id") or c.get("password") or c.get("auth") or c.get("email")
+                    if ident == client_uuid:
+                        email = c.get("email", "")
+                        break
+        if email:
+            r = await self._req("POST", f"/panel/api/clients/del/{quote(email, safe='')}")
+            if r and r.get("success"):
+                return True
         r = await self._req("POST", f"/panel/api/inbounds/{inbound_id}/delClient/{client_uuid}")
         return bool(r and r.get("success"))
 
     async def get_client_link(self, inbound_id: int, email: str) -> Optional[str]:
         try:
+            r = await self._req("GET", f"/panel/api/clients/links/{quote(email, safe='')}")
+            if r and r.get("success"):
+                obj = r.get("obj")
+                if isinstance(obj, list) and obj:
+                    return str(obj[0])
+                if isinstance(obj, str) and obj:
+                    return obj
+
             inbound = await self.get_inbound(inbound_id)
             if not inbound:
                 return None
             protocol = inbound.get("protocol", "vless")
-            settings = json.loads(inbound.get("settings", "{}"))
-            stream = json.loads(inbound.get("streamSettings", "{}"))
+            settings = self._json_obj(inbound.get("settings"), {})
+            stream = self._json_obj(inbound.get("streamSettings"), {})
             clients = settings.get("clients", [])
             client = next((c for c in clients if c.get("email") == email), None)
             if not client:
@@ -218,9 +331,11 @@ class XUIClient:
             inbound = await self.get_inbound(inbound_id)
             if not inbound:
                 return None
-            settings = json.loads(inbound.get("settings", "{}"))
+            settings = self._json_obj(inbound.get("settings"), {})
             clients = settings.get("clients", [])
             client = next((c for c in clients if c.get("email") == email), None)
+            if not client:
+                client = await self.get_client(email)
             if not client:
                 return None
             sub_id = client.get("subId", "")

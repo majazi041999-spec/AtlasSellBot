@@ -7,6 +7,7 @@ AtlasSellBot is a Telegram sales bot + web admin panel for VPN/service provision
 - Telegram bot for ordering and account actions.
 - FastAPI web admin panel for servers, packages, orders, configs, users, settings.
 - Multi-inbound support per server (`inbound_ids`) with package-level inbound override (`packages.inbound_id`).
+- Compatible with current 3x-ui client APIs (`/panel/api/clients/*`) and Bearer API tokens.
 - Interactive terminal manager command: `atlas`.
 - One-line bootstrap install/update commands.
 - Safe updater with auto-stash support.
@@ -123,6 +124,10 @@ journalctl -u atlas-bot -f
   - `inbound_id > 0` => use package inbound when available on chosen server
 
 If package inbound is not available on the selected server, the system falls back to server default inbound.
+
+## 3x-ui v3.1+ API token
+
+Newer 3x-ui versions protect session-cookie POST requests with CSRF. For best reliability, create an API token in 3x-ui (`Settings -> Security -> API Token`) and save it on the server record in the Atlas web panel. Username/password still work as a fallback.
 
 ---
 

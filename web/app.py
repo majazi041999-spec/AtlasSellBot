@@ -272,6 +272,7 @@ async def server_add(
     url: str = Form(...),
     username: str = Form(...),
     password: str = Form(...),
+    api_token: str = Form(""),
     sub_path: str = Form(""),
     inbound_id: int = Form(1),
     inbound_ids: str = Form(""),
@@ -280,7 +281,7 @@ async def server_add(
 ):
     if not _auth(request):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
-    sid = await add_server(name, url.rstrip("/"), username, password, sub_path.strip("/"), inbound_id, note, inbound_ids=inbound_ids)
+    sid = await add_server(name, url.rstrip("/"), username, password, sub_path.strip("/"), inbound_id, note, inbound_ids=inbound_ids, api_token=api_token.strip())
     await update_server(sid, max_active_configs=max_active_configs)
     return RedirectResponse(f"/{S}/servers", status_code=302)
 
@@ -304,6 +305,7 @@ async def server_edit(
     url: str = Form(...),
     username: str = Form(...),
     password: str = Form(...),
+    api_token: str = Form(""),
     sub_path: str = Form(""),
     inbound_id: int = Form(1),
     inbound_ids: str = Form(""),
@@ -312,18 +314,24 @@ async def server_edit(
 ):
     if not _auth(request):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
-    await update_server(
-        sid,
+    srv = await get_server(sid)
+    if not srv:
+        return JSONResponse({"error": "not found"}, status_code=404)
+
+    updates = dict(
         name=name,
         url=url.rstrip("/"),
         username=username,
-        password=password,
+        password=password or srv.get("password", ""),
         sub_path=sub_path.strip("/"),
         inbound_id=inbound_id,
         note=note,
         inbound_ids=inbound_ids,
         max_active_configs=max_active_configs,
     )
+    if api_token.strip():
+        updates["api_token"] = api_token.strip()
+    await update_server(sid, **updates)
     return RedirectResponse(f"/{S}/servers", status_code=302)
 
 
@@ -342,7 +350,7 @@ async def server_test(request: Request, sid: int):
     srv = await get_server(sid)
     if not srv:
         return JSONResponse({"success": False, "msg": "not found"})
-    cli = XUIClient(srv["url"], srv["username"], srv["password"], srv["sub_path"])
+    cli = XUIClient(srv["url"], srv["username"], srv["password"], srv["sub_path"], srv.get("api_token", ""))
     ok = await cli.test_connection()
     await cli.close()
     return JSONResponse({"success": ok})
@@ -480,7 +488,7 @@ async def order_approve_web(request: Request, oid: int):
     duration = int(order["duration_days"])
     created = []
 
-    cli = XUIClient(server["url"], server["username"], server["password"], server["sub_path"])
+    cli = XUIClient(server["url"], server["username"], server["password"], server["sub_path"], server.get("api_token", ""))
     target_inbound = int(server.get("inbound_id") or 1)
     for i in range(1, max(1, bulk_count) + 1):
         email = f"u{order['telegram_id']}_{i}_{int(time.time())}" if bulk_count > 1 else f"u{order['telegram_id']}_{int(time.time())}"
@@ -535,7 +543,7 @@ async def config_toggle(request: Request, cid: int):
     if not cfg:
         return JSONResponse({"error": "not found"}, status_code=404)
     srv = await get_server(cfg["server_id"])
-    cli = XUIClient(srv["url"], srv["username"], srv["password"], srv["sub_path"])
+    cli = XUIClient(srv["url"], srv["username"], srv["password"], srv["sub_path"], srv.get("api_token", ""))
     new_status = not cfg["is_active"]
     ok = await cli.update_client(
         cfg["inbound_id"],
@@ -569,8 +577,8 @@ async def config_delete(request: Request, cid: int):
             srv = await get_server(item["server_id"])
             if not srv:
                 continue
-            cli = XUIClient(srv["url"], srv["username"], srv["password"], srv["sub_path"])
-            ok = await cli.delete_client(item["inbound_id"], item["uuid"])
+            cli = XUIClient(srv["url"], srv["username"], srv["password"], srv["sub_path"], srv.get("api_token", ""))
+            ok = await cli.delete_client(item["inbound_id"], item["uuid"], item.get("email", ""))
             await cli.close()
             if ok:
                 deleted_remote += 1

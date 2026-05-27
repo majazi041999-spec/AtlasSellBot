@@ -298,7 +298,7 @@ async def _send_config_status(target, config_id: int):
         return
 
     # get_config already JOINs server data → use cfg aliases directly
-    cli = XUIClient(cfg["server_url"], cfg["srv_user"], cfg["srv_pass"], cfg["sub_path"])
+    cli = XUIClient(cfg["server_url"], cfg["srv_user"], cfg["srv_pass"], cfg["sub_path"], cfg.get("srv_api_token", ""))
     traffic = await cli.get_client_traffic(cfg["email"])
     await cli.close()
 
@@ -314,7 +314,7 @@ async def _send_config_status(target, config_id: int):
         # اگر شروع زمان از اولین اتصال باشد، بعد از اولین مصرف زمان را فعال کن
         if cfg.get("starts_on_first_use", 0) and used > 0 and (cfg.get("duration_days", 0) or 0) > 0:
             new_expire_ms = int((datetime.now() + timedelta(days=int(cfg.get("duration_days", 0) or 0))).timestamp() * 1000)
-            cli2 = XUIClient(cfg["server_url"], cfg["srv_user"], cfg["srv_pass"], cfg["sub_path"])
+            cli2 = XUIClient(cfg["server_url"], cfg["srv_user"], cfg["srv_pass"], cfg["sub_path"], cfg.get("srv_api_token", ""))
             ok = await cli2.update_client(
                 cfg["inbound_id"],
                 cfg["uuid"],
@@ -382,7 +382,7 @@ async def send_config_link(cb: CallbackQuery):
         await cb.answer("سرویس یافت نشد", show_alert=True)
         return
 
-    cli = XUIClient(cfg["server_url"], cfg["srv_user"], cfg["srv_pass"], cfg["sub_path"])
+    cli = XUIClient(cfg["server_url"], cfg["srv_user"], cfg["srv_pass"], cfg["sub_path"], cfg.get("srv_api_token", ""))
     link = await cli.get_client_link(cfg["inbound_id"], cfg["email"])
     sub = await cli.get_subscription_link(cfg["inbound_id"], cfg["email"])
     await cli.close()
@@ -428,7 +428,7 @@ async def cfg_sub(cb: CallbackQuery):
         await cb.answer("یافت نشد", show_alert=True)
         return
 
-    cli = XUIClient(cfg["server_url"], cfg["srv_user"], cfg["srv_pass"], cfg["sub_path"])
+    cli = XUIClient(cfg["server_url"], cfg["srv_user"], cfg["srv_pass"], cfg["sub_path"], cfg.get("srv_api_token", ""))
     sub = await cli.get_subscription_link(cfg["inbound_id"], cfg["email"])
     await cli.close()
 
@@ -452,7 +452,7 @@ async def cfg_qr(cb: CallbackQuery):
         await cb.answer("یافت نشد", show_alert=True)
         return
 
-    cli = XUIClient(cfg["server_url"], cfg["srv_user"], cfg["srv_pass"], cfg["sub_path"])
+    cli = XUIClient(cfg["server_url"], cfg["srv_user"], cfg["srv_pass"], cfg["sub_path"], cfg.get("srv_api_token", ""))
     link = await cli.get_client_link(cfg["inbound_id"], cfg["email"])
     await cli.close()
     if not link:
@@ -1006,7 +1006,7 @@ async def mig_confirm(cb: CallbackQuery):
 
     # دریافت آمار واقعی
     src_srv = await get_server(cfg["server_id"])
-    src_cli = XUIClient(src_srv["url"], src_srv["username"], src_srv["password"], src_srv["sub_path"])
+    src_cli = XUIClient(src_srv["url"], src_srv["username"], src_srv["password"], src_srv["sub_path"], src_srv.get("api_token", ""))
     traffic = await src_cli.get_client_traffic(cfg["email"])
     if traffic:
         total_b = traffic.get("total", int(cfg["traffic_gb"] * 1024**3))
@@ -1030,7 +1030,7 @@ async def mig_confirm(cb: CallbackQuery):
         if used >= cap:
             await cb.answer("⛔ ظرفیت این سرور پر شده است", show_alert=True)
             return
-    dst_cli = XUIClient(dst_srv["url"], dst_srv["username"], dst_srv["password"], dst_srv["sub_path"])
+    dst_cli = XUIClient(dst_srv["url"], dst_srv["username"], dst_srv["password"], dst_srv["sub_path"], dst_srv.get("api_token", ""))
 
     new_uuid = str(_uuid.uuid4())
     new_email = f"{cfg['email'].split('_m')[0]}_m{int(time.time())}"

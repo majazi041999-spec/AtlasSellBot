@@ -292,7 +292,7 @@ async def _do_approve(cb: CallbackQuery, oid: int, sid: int):
 
     await cb.answer("⏳ در حال ساخت کانفیگ...")
     server = await get_server(sid)
-    client = XUIClient(server["url"], server["username"], server["password"], server["sub_path"])
+    client = XUIClient(server["url"], server["username"], server["password"], server["sub_path"], server.get("api_token", ""))
 
     bulk_count = int(order.get("bulk_count") or 1)
     each_gb = float(order.get("bulk_each_gb") or order["traffic_gb"])
@@ -650,7 +650,7 @@ async def toggle_cfg(cb: CallbackQuery):
     server = await get_server(cfg["server_id"])
     new_status = not cfg["is_active"]
     traffic_bytes = int(cfg["traffic_gb"] * 1024 ** 3)
-    cli = XUIClient(server["url"], server["username"], server["password"], server["sub_path"])
+    cli = XUIClient(server["url"], server["username"], server["password"], server["sub_path"], server.get("api_token", ""))
     ok = await cli.update_client(cfg["inbound_id"], cfg["uuid"], cfg["email"],
                                   cfg["traffic_gb"], cfg["expire_timestamp"] or 0, new_status)
     await cli.close()
@@ -684,7 +684,7 @@ async def edit_gb_apply(msg: Message, state: FSMContext):
     cid = data["cid"]
     cfg = await get_config(cid)
     server = await get_server(cfg["server_id"])
-    cli = XUIClient(server["url"], server["username"], server["password"], server["sub_path"])
+    cli = XUIClient(server["url"], server["username"], server["password"], server["sub_path"], server.get("api_token", ""))
     ok = await cli.update_client(cfg["inbound_id"], cfg["uuid"], cfg["email"],
                                   new_gb, cfg["expire_timestamp"] or 0, bool(cfg["is_active"]))
     await cli.close()
@@ -718,7 +718,7 @@ async def edit_exp_apply(msg: Message, state: FSMContext):
     cfg = await get_config(cid)
     server = await get_server(cfg["server_id"])
     new_exp_ms = int((datetime.now() + timedelta(days=days)).timestamp() * 1000)
-    cli = XUIClient(server["url"], server["username"], server["password"], server["sub_path"])
+    cli = XUIClient(server["url"], server["username"], server["password"], server["sub_path"], server.get("api_token", ""))
     ok = await cli.update_client(cfg["inbound_id"], cfg["uuid"], cfg["email"],
                                   cfg["traffic_gb"], new_exp_ms, bool(cfg["is_active"]))
     await cli.close()
@@ -749,8 +749,8 @@ async def del_cfg_do(cb: CallbackQuery):
     cfg = await get_config(cid)
     if cfg:
         server = await get_server(cfg["server_id"])
-        cli = XUIClient(server["url"], server["username"], server["password"], server["sub_path"])
-        await cli.delete_client(cfg["inbound_id"], cfg["uuid"])
+        cli = XUIClient(server["url"], server["username"], server["password"], server["sub_path"], server.get("api_token", ""))
+        await cli.delete_client(cfg["inbound_id"], cfg["uuid"], cfg.get("email", ""))
         await cli.close()
         await update_config(cid, is_active=0)
     await cb.answer("✅ حذف شد")
@@ -810,7 +810,7 @@ async def single_server(cb: CallbackQuery, state: FSMContext):
     server = await get_server(sid)
     await cb.message.edit_text("⏳ در حال ساخت کانفیگ...")
 
-    cli = XUIClient(server["url"], server["username"], server["password"], server["sub_path"])
+    cli = XUIClient(server["url"], server["username"], server["password"], server["sub_path"], server.get("api_token", ""))
     cuuid = str(uuid.uuid4())
     ok = await cli.add_client(server["inbound_id"], cuuid, data["email"],
                                data["traffic_gb"], data["duration_days"], starts_on_first_use=True)
@@ -904,7 +904,7 @@ async def bulk_server(cb: CallbackQuery, state: FSMContext):
     server = await get_server(sid)
     await cb.message.edit_text(f"⏳ در حال ساخت {data['count']} کانفیگ...")
 
-    cli = XUIClient(server["url"], server["username"], server["password"], server["sub_path"])
+    cli = XUIClient(server["url"], server["username"], server["password"], server["sub_path"], server.get("api_token", ""))
     expire_ms = 0 if data["duration_days"] > 0 else 0
     results = []
 
@@ -1029,7 +1029,7 @@ async def _find_remote_legacy_client(email: str, client_uuid: str) -> dict | Non
     """Search all active servers/inbounds and return matching client meta for legacy claim import."""
     servers = await get_servers(active_only=True)
     for srv in servers:
-        xui = XUIClient(srv["url"], srv["username"], srv["password"], srv.get("sub_path") or "")
+        xui = XUIClient(srv["url"], srv["username"], srv["password"], srv.get("sub_path") or "", srv.get("api_token", ""))
         try:
             inbounds = await xui.get_inbounds()
             for inbound in inbounds:

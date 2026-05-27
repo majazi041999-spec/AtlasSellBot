@@ -13,6 +13,7 @@ CREATE TABLE IF NOT EXISTS servers (
     url TEXT NOT NULL,
     username TEXT NOT NULL,
     password TEXT NOT NULL,
+    api_token TEXT DEFAULT '',
     sub_path TEXT DEFAULT '',
     inbound_id INTEGER DEFAULT 1,
     inbound_ids TEXT DEFAULT '',
@@ -159,6 +160,7 @@ async def _ensure_columns(db):
         "servers": [
             ("max_active_configs", "INTEGER DEFAULT 0"),
             ("inbound_ids", "TEXT DEFAULT ''"),
+            ("api_token", "TEXT DEFAULT ''"),
         ],
         "users": [
             ("discount_percent", "REAL DEFAULT 0"),
@@ -212,11 +214,11 @@ async def get_server(sid: int) -> Optional[Dict]:
             r = await c.fetchone()
             return dict(r) if r else None
 
-async def add_server(name, url, username, password, sub_path, inbound_id, note='', inbound_ids: str = "") -> int:
+async def add_server(name, url, username, password, sub_path, inbound_id, note='', inbound_ids: str = "", api_token: str = "") -> int:
     async with aiosqlite.connect(DB_PATH) as db:
         c = await db.execute(
-            "INSERT INTO servers(name,url,username,password,sub_path,inbound_id,note,inbound_ids) VALUES(?,?,?,?,?,?,?,?)",
-            (name, url, username, password, sub_path, inbound_id, note, inbound_ids)
+            "INSERT INTO servers(name,url,username,password,api_token,sub_path,inbound_id,note,inbound_ids) VALUES(?,?,?,?,?,?,?,?,?)",
+            (name, url, username, password, api_token, sub_path, inbound_id, note, inbound_ids)
         )
         await db.commit()
         return c.lastrowid
@@ -655,6 +657,7 @@ async def get_config(cid: int) -> Optional[Dict]:
         async with db.execute("""
             SELECT c.*,s.name as server_name,s.url as server_url,
                    s.username as srv_user,s.password as srv_pass,
+                   s.api_token as srv_api_token,
                    s.sub_path,s.inbound_id as srv_inbound
             FROM configs c JOIN servers s ON c.server_id=s.id WHERE c.id=?
         """, (cid,)) as cu:
