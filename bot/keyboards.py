@@ -192,3 +192,17 @@ def flow_cancel_kb(show_back: bool = True) -> InlineKeyboardMarkup:
     b.button(text="🏠 شروع مجدد", callback_data="back_to_menu")
     b.adjust(3 if show_back else 2)
     return b.as_markup()
+
+
+def packages_kb(pkgs: List[Dict]) -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    for p in pkgs:
+        gb = int(p["traffic_gb"]) if p["traffic_gb"] == int(p["traffic_gb"]) else p["traffic_gb"]
+        price = f"{int(p['price']):,}".replace(",", "،")
+        tier = "🥉" if p["price"] < 100000 else "🥈" if p["price"] < 200000 else "🥇"
+        b.button(
+            text=f"{tier} {p['name']} | {gb}GB | {p['duration_days']} روز | {price} تومان",
+            callback_data=f"buy:{p['id']}",
+        )
+    b.adjust(1)
+    return b.as_markup()

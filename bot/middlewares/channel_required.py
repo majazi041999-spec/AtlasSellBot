@@ -9,6 +9,55 @@ from core.database import get_or_create_user, get_setting
 
 
 class ChannelRequiredMiddleware(BaseMiddleware):
+    @staticmethod
+    def _channel_ref(raw: str) -> str:
+        raw = (raw or "").strip()
+        if raw.startswith("https://t.me/") or raw.startswith("http://t.me/"):
+            tail = raw.rstrip("/").rsplit("/", 1)[-1].strip()
+            return f"@{tail}" if tail and not tail.startswith("+") else raw
+        if raw.startswith("t.me/"):
+            tail = raw.rstrip("/").rsplit("/", 1)[-1].strip()
+            return f"@{tail}" if tail and not tail.startswith("+") else f"https://{raw}"
+        if raw.startswith("-100") or raw.startswith("@"):
+            return raw
+        return f"@{raw}"
+
+    @staticmethod
+    def _channel_url(raw: str) -> str:
+        raw = (raw or "").strip()
+        if raw.startswith("http://") or raw.startswith("https://"):
+            return raw
+        return f"https://t.me/{raw.lstrip('@')}"
+
+    @staticmethod
+    async def is_member(bot, uid: int, channel_username: str) -> bool:
+        if not uid:
+            return False
+        ch = ChannelRequiredMiddleware._channel_ref(channel_username)
+        try:
+            member = await bot.get_chat_member(ch, uid)
+            return member.status in ("member", "administrator", "creator")
+        except Exception:
+            return False
+
+    @staticmethod
+    def join_kb(channel_username: str):
+        b = InlineKeyboardBuilder()
+        b.button(text="عضویت در کانال", url=ChannelRequiredMiddleware._channel_url(channel_username))
+        b.button(text="بررسی عضویت", callback_data="check_channel_join")
+        b.adjust(1)
+        return b.as_markup()
+
+    @staticmethod
+    def join_text(channel_username: str) -> str:
+        ch = ChannelRequiredMiddleware._channel_ref(channel_username)
+        channel_label = ch if not ch.startswith("http") else "لینک عضویت"
+        return (
+            "برای استفاده از امکانات ربات، ابتدا باید عضو کانال شوید.\n\n"
+            f"کانال: {channel_label}\n\n"
+            "بعد از عضویت روی «بررسی عضویت» بزنید یا /start را دوباره ارسال کنید."
+        )
+
     async def __call__(
         self,
         handler: Callable[[Any, Dict[str, Any]], Awaitable[Any]],
@@ -29,29 +78,24 @@ class ChannelRequiredMiddleware(BaseMiddleware):
         if user.get("is_admin", 0) or (owner_id and uid == owner_id):
             return await handler(event, data)
 
-        ch = channel_username if channel_username.startswith("@") else f"@{channel_username}"
+        if await self.is_member(event.bot, uid, channel_username):
+            if isinstance(event, CallbackQuery) and event.data == "check_channel_join":
+                await event.answer("عضویت تایید شد.")
+                if event.message:
+                    from bot.keyboards import admin_menu, user_menu
 
-        try:
-            member = await event.bot.get_chat_member(ch, uid)
-            if member.status in ("member", "administrator", "creator"):
-                return await handler(event, data)
-        except Exception:
-            pass
+                    role = "full" if user.get("is_admin", 0) else "none"
+                    kb = admin_menu() if role != "none" else user_menu(include_wholesale=bool(user.get("is_wholesale", 0)))
+                    await event.message.answer("عضویت شما تایید شد. منوی ربات فعال است.", reply_markup=kb)
+                return None
+            return await handler(event, data)
 
-        kb = self._join_kb(channel_username)
-        text = f"⚠️ شما در کانال عضو نیستید.\n\nبرای استفاده از امکانات ربات اول باید عضو شوید:\n{ch}"
-
+        text = self.join_text(channel_username)
+        kb = self.join_kb(channel_username)
         if isinstance(event, Message):
-            await event.answer(text, reply_markup=kb)
+            await event.answer(text, reply_markup=kb, parse_mode=None)
         else:
-            await event.answer("⚠️ ابتدا در کانال عضو شوید.", show_alert=True)
+            await event.answer("ابتدا باید عضو کانال شوید.", show_alert=True)
             if event.message:
-                await event.message.answer(text, reply_markup=kb)
+                await event.message.answer(text, reply_markup=kb, parse_mode=None)
         return None
-
-    @staticmethod
-    def _join_kb(channel_username: str):
-        ch = channel_username.strip().lstrip("@")
-        b = InlineKeyboardBuilder()
-        b.button(text="📢 عضویت در کانال", url=f"https://t.me/{ch}")
-        return b.as_markup()
