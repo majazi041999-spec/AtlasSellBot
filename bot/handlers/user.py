@@ -40,7 +40,7 @@ from core.database import (
     add_user_balance,
     get_all_admin_telegram_ids,
 )
-from core.xui_api import XUIClient, fmt_bytes, days_left
+from core.xui_api import XUIClient, fmt_bytes, days_left, expiry_ms_from_days
 from core.texts import get_text
 from core.qr import build_qr_image
 
@@ -195,10 +195,10 @@ async def wallet_topup_receipt(msg: Message, state: FSMContext, bot: Bot):
     admin_targets = list(dict.fromkeys(list(ADMIN_IDS) + await get_all_admin_telegram_ids()))
     for aid in admin_targets:
         try:
-            await bot.send_photo(aid, photo_id, caption=cap, reply_markup=topup_review_kb(req_id), parse_mode="Markdown")
+            await bot.send_photo(aid, photo_id, caption=cap, reply_markup=topup_review_kb(req_id), parse_mode=None)
         except Exception:
             try:
-                await bot.send_message(aid, cap, reply_markup=topup_review_kb(req_id), parse_mode="Markdown")
+                await bot.send_message(aid, cap, reply_markup=topup_review_kb(req_id), parse_mode=None)
             except Exception:
                 pass
 
@@ -401,7 +401,7 @@ async def send_config_link(cb: CallbackQuery):
         await cb.message.answer(body, parse_mode="Markdown")
         try:
             ch = await get_setting("channel_username", "AtlasChannel")
-            await cb.message.answer_photo(_qr_input_file(link, ch), caption="🎨 QR Code کانفیگ شما")
+            await cb.message.answer_photo(_qr_input_file(link, ch), caption="QR Code کانفیگ شما", parse_mode=None)
         except Exception:
             pass
         await cb.answer()
@@ -461,7 +461,7 @@ async def cfg_qr(cb: CallbackQuery):
 
     try:
         ch = await get_setting("channel_username", "AtlasChannel")
-        await cb.message.answer_photo(_qr_input_file(link, ch), caption=f"🧾 QR Code سرویس `{cfg['email']}`", parse_mode="Markdown")
+        await cb.message.answer_photo(_qr_input_file(link, ch), caption=f"QR Code سرویس {cfg['email']}", parse_mode=None)
         await cb.answer()
     except Exception:
         await cb.answer("❌ ارسال QR Code ناموفق بود.", show_alert=True)
@@ -553,22 +553,28 @@ async def pay_with_wallet(cb: CallbackQuery):
         return
 
     await add_user_balance(user["id"], -price, kind="purchase", note=f"order:{oid}", actor_telegram_id=cb.from_user.id)
-    await update_order(oid, status="receipt_submitted", notes=((order.get("notes") or "") + "\nwallet_payment=1").strip())
-    await cb.answer("✅ پرداخت از کیف پول انجام شد. سفارش برای تایید ارسال شد.", show_alert=True)
-    await cb.message.edit_reply_markup(reply_markup=payment_kb(oid, allow_wallet=False))
+    await update_order(oid, notes=((order.get("notes") or "") + "\nwallet_payment=1").strip())
+    await cb.answer("✅ پرداخت از کیف پول انجام شد. کانفیگ در حال ساخت است...", show_alert=True)
 
-    caption = (
-        f"💳 *پرداخت کیف پول*\n"
-        f"سفارش: #{oid}\n"
-        f"کاربر: {cb.from_user.full_name or '—'} (@{cb.from_user.username or '—'})\n"
-        f"مبلغ: *{_fmt_toman(price)} تومان*"
-    )
-    admin_targets = list(dict.fromkeys(list(ADMIN_IDS) + await get_all_admin_telegram_ids()))
-    for aid in admin_targets:
-        try:
-            await cb.bot.send_message(aid, caption, reply_markup=order_review_kb(oid), parse_mode="Markdown")
-        except Exception:
-            pass
+    servers = [sv for sv in await get_available_servers()]
+    if not servers:
+        await update_order(oid, status="receipt_submitted")
+        await cb.message.answer("پرداخت انجام شد، اما سرور فعالی برای ساخت کانفیگ پیدا نشد. سفارش برای بررسی ادمین ارسال شد.")
+        return
+
+    default_sid_raw = await get_setting("default_server_id", "0")
+    try:
+        default_sid = int(default_sid_raw or 0)
+    except (TypeError, ValueError):
+        default_sid = 0
+    server = next((sv for sv in servers if sv["id"] == default_sid), servers[0])
+
+    from bot.handlers.admin import _do_approve
+    ok = await _do_approve(cb, oid, int(server["id"]))
+    if not ok:
+        await add_user_balance(user["id"], price, kind="refund", note=f"order_failed:{oid}", actor_telegram_id=0)
+        await update_order(oid, status="pending_payment")
+        await cb.message.answer("ساخت کانفیگ ناموفق بود و مبلغ به کیف پول شما برگشت داده شد. لطفاً با پشتیبانی هماهنگ کنید.")
 
 
 @router.callback_query(F.data.startswith("receipt:"))
@@ -611,10 +617,10 @@ async def receive_receipt(msg: Message, state: FSMContext, bot: Bot):
     admin_targets = list(dict.fromkeys(list(ADMIN_IDS) + await get_all_admin_telegram_ids()))
     for aid in admin_targets:
         try:
-            await bot.send_photo(aid, photo_id, caption=caption, reply_markup=order_review_kb(oid), parse_mode="Markdown")
+            await bot.send_photo(aid, photo_id, caption=caption, reply_markup=order_review_kb(oid), parse_mode=None)
         except Exception:
             try:
-                await bot.send_message(aid, caption, reply_markup=order_review_kb(oid), parse_mode="Markdown")
+                await bot.send_message(aid, caption, reply_markup=order_review_kb(oid), parse_mode=None)
             except Exception:
                 pass
 
@@ -1035,7 +1041,7 @@ async def mig_confirm(cb: CallbackQuery):
     new_uuid = str(_uuid.uuid4())
     new_email = f"{cfg['email'].split('_m')[0]}_m{int(time.time())}"
 
-    ok = await dst_cli.add_client(dst_srv["inbound_id"], new_uuid, new_email, rem_gb, new_days, starts_on_first_use=True)
+    ok = await dst_cli.add_client(dst_srv["inbound_id"], new_uuid, new_email, rem_gb, new_days, starts_on_first_use=False)
     if not ok:
         await src_cli.close()
         await dst_cli.close()
@@ -1051,8 +1057,8 @@ async def mig_confirm(cb: CallbackQuery):
 
     # ذخیره کانفیگ جدید و غیرفعال کردن قدیمی
     await update_config(src_cid, is_active=0)
-    new_exp_ms = 0 if new_days > 0 else 0
-    await save_config(user["id"], dst_sid, new_uuid, new_email, dst_srv["inbound_id"], rem_gb, new_days, new_exp_ms, starts_on_first_use=1 if new_days > 0 else 0)
+    new_exp_ms = expiry_ms_from_days(new_days)
+    await save_config(user["id"], dst_sid, new_uuid, new_email, dst_srv["inbound_id"], rem_gb, new_days, new_exp_ms, starts_on_first_use=0)
 
     # آپدیت شمارنده انتقال
     today = date.today().isoformat()
@@ -1073,7 +1079,7 @@ async def mig_confirm(cb: CallbackQuery):
     if new_link:
         try:
             ch = await get_setting("channel_username", "AtlasChannel")
-            await cb.message.answer_photo(_qr_input_file(new_link, ch), caption="🎨 QR Code لینک جدید شما")
+            await cb.message.answer_photo(_qr_input_file(new_link, ch), caption="QR Code لینک جدید شما", parse_mode=None)
         except Exception:
             pass
 

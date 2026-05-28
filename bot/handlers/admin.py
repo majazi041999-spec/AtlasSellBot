@@ -17,14 +17,14 @@ from core.database import (
     save_config, get_user_by_telegram, get_setting, set_setting,
     get_user_by_id, server_has_capacity, count_active_configs_by_server, update_user,
     get_legacy_claim, update_legacy_claim, get_config_by_email, get_config_by_uuid,
-    get_topup_request, update_topup_request, add_user_balance
+    get_topup_request, get_pending_topup_requests, update_topup_request, add_user_balance
 )
-from core.xui_api import XUIClient, fmt_bytes, days_left
+from core.xui_api import XUIClient, fmt_bytes, days_left, expiry_ms_from_days
 from core.qr import build_qr_image
 from bot.keyboards import (
     admin_menu, order_review_kb, order_server_select_kb,
     admin_configs_kb, adm_config_detail_kb, confirm_kb, packages_kb, servers_kb,
-    broadcast_target_kb, legacy_claim_admin_kb, flow_cancel_kb
+    broadcast_target_kb, legacy_claim_admin_kb, flow_cancel_kb, topup_review_kb
 )
 from bot.states import AddPackage, CreateConfig, BulkConfig, EditConfig, Broadcast, PrivateMessage
 
@@ -153,7 +153,8 @@ async def pending_orders_list(msg: Message):
     if not can_review_payments(msg.from_user.id):
         return
     orders = await get_pending_orders()
-    if not orders:
+    topups = await get_pending_topup_requests(100)
+    if not orders and not topups:
         await msg.answer("✅ هیچ سفارش در انتظاری وجود ندارد.")
         return
 
@@ -164,9 +165,14 @@ async def pending_orders_list(msg: Message):
             text=f"📤 #{o['id']} — {o['full_name'] or 'کاربر'} — {o['pkg_name']}",
             callback_data=f"view_order:{o['id']}"
         )
+    for t in topups:
+        b.button(
+            text=f"💳 شارژ #{t['id']} — {t['full_name'] or 'کاربر'} — {_fmt_toman(t['amount'])} تومان",
+            callback_data=f"view_topup:{t['id']}",
+        )
     b.adjust(1)
     await msg.answer(
-        f"💰 *سفارش‌های در انتظار بررسی* ({len(orders)} مورد)",
+        f"💰 *در انتظار بررسی* | خرید: {len(orders)} | شارژ کیف پول: {len(topups)}",
         reply_markup=b.as_markup(), parse_mode="Markdown"
     )
 
@@ -194,14 +200,42 @@ async def view_order(cb: CallbackQuery):
     if order.get("receipt_file_id"):
         await cb.message.answer_photo(
             order["receipt_file_id"],
-            caption=text + "\n\n📸 *فیش پرداخت ارسال شده*",
-            reply_markup=order_review_kb(oid), parse_mode="Markdown"
+            caption=text + "\n\nفیش پرداخت ارسال شده",
+            reply_markup=order_review_kb(oid), parse_mode=None
         )
     else:
         await cb.message.edit_text(
             text + "\n\n⏳ هنوز فیش ارسال نشده",
             reply_markup=order_review_kb(oid), parse_mode="Markdown"
         )
+
+
+@router.callback_query(F.data.startswith("view_topup:"))
+async def view_topup(cb: CallbackQuery):
+    if not can_review_payments(cb.from_user.id):
+        return
+    rid = int(cb.data.split(":")[1])
+    req = await get_topup_request(rid)
+    if not req:
+        await cb.answer("درخواست یافت نشد", show_alert=True)
+        return
+    text = (
+        f"درخواست افزایش اعتبار #{rid}\n"
+        f"کاربر: {req.get('full_name') or '—'} (@{req.get('username') or '—'})\n"
+        f"آیدی: {req.get('telegram_id')}\n"
+        f"مبلغ: {_fmt_toman(req.get('amount') or 0)} تومان\n"
+        f"وضعیت: {req.get('status')}"
+    )
+    if req.get("receipt_file_id"):
+        await cb.message.answer_photo(
+            req["receipt_file_id"],
+            caption=text,
+            reply_markup=topup_review_kb(rid),
+            parse_mode=None,
+        )
+    else:
+        await cb.message.answer(text, reply_markup=topup_review_kb(rid), parse_mode=None)
+    await cb.answer()
 
 
 @router.callback_query(F.data.startswith("approve:"))
@@ -285,10 +319,10 @@ async def _build_config_name(order, idx: int = 0) -> str:
 async def _do_approve(cb: CallbackQuery, oid: int, sid: int):
     order = await get_order(oid)
     if not order:
-        return
+        return False
     if not await server_has_capacity(sid):
         await cb.message.answer("⛔ ظرفیت این سرور تکمیل شده است. سرور دیگری انتخاب کنید.")
-        return
+        return False
 
     await cb.answer("⏳ در حال ساخت کانفیگ...")
     server = await get_server(sid)
@@ -302,7 +336,7 @@ async def _do_approve(cb: CallbackQuery, oid: int, sid: int):
     if not user:
         await cb.message.answer("❌ کاربر در دیتابیس یافت نشد!")
         await client.close()
-        return
+        return False
 
     created = []
     remaining_cap = (server.get("max_active_configs") or 0)
@@ -332,32 +366,42 @@ async def _do_approve(cb: CallbackQuery, oid: int, sid: int):
         else:
             email = await _build_config_name(order, i if bulk_count > 1 else 0)
         cuuid = str(uuid.uuid4())
-        ok = await client.add_client(target_inbound, cuuid, email, each_gb, duration, starts_on_first_use=True)
+        ok = await client.add_client(target_inbound, cuuid, email, each_gb, duration, starts_on_first_use=False)
         if not ok:
             continue
-        expire_ms = 0 if duration > 0 else 0
+        expire_ms = expiry_ms_from_days(duration)
         link = await client.get_client_link(target_inbound, email)
         sub = await client.get_subscription_link(target_inbound, email)
-        await save_config(user["id"], sid, cuuid, email, target_inbound, each_gb, duration, expire_ms, starts_on_first_use=1 if duration > 0 else 0)
+        await save_config(user["id"], sid, cuuid, email, target_inbound, each_gb, duration, expire_ms, starts_on_first_use=0)
         created.append({"email": email, "link": link, "sub": sub})
 
     await client.close()
     if not created:
         await cb.message.answer("❌ خطا در ساخت کانفیگ روی سرور! اتصال/ظرفیت سرور را بررسی کنید.")
-        return
+        return False
+
+    # referral: only first successful paid order
+    from core.database import has_previous_purchase
+    from core.config import REFERRAL_BONUS_GB
+    is_first_purchase = not await has_previous_purchase(user["id"])
 
     await update_order(oid, status="approved", server_id=sid,
                        config_email=created[0]["email"], inbound_id=target_inbound,
                        approved_at=datetime.now().isoformat())
 
-    # referral: only first successful paid order
-    from core.database import has_previous_purchase
-    from core.config import REFERRAL_BONUS_GB
-    if not await has_previous_purchase(user["id"]) and order.get("referred_by"):
+    if is_first_purchase and order.get("referred_by"):
         referrer = await get_user_by_id(order["referred_by"])
         if referrer:
             new_bonus = referrer.get("referral_bonus_gb", 0) + REFERRAL_BONUS_GB
             await update_user(referrer["id"], referral_bonus_gb=new_bonus)
+            try:
+                await cb.bot.send_message(
+                    referrer["telegram_id"],
+                    f"🎁 هدیه دعوت شما فعال شد: {REFERRAL_BONUS_GB}GB به اعتبار هدیه‌تان اضافه شد.",
+                    parse_mode=None,
+                )
+            except Exception:
+                pass
 
     head = (
         f"🎉 *سرویس شما فعال شد!*\n"
@@ -369,18 +413,18 @@ async def _do_approve(cb: CallbackQuery, oid: int, sid: int):
         f"📅 مدت: `{duration}` روز\n"
     )
     try:
-        await cb.bot.send_message(order["telegram_id"], head, parse_mode="Markdown")
+        await cb.bot.send_message(order["telegram_id"], head, parse_mode=None)
         for item in created[:20]:
             txt = f"📧 `{item['email']}`\n"
             if item['link']:
                 txt += f"🔗 `{item['link']}`\n"
             if item['sub']:
                 txt += f"📡 سابسکریپشن:\n`{item['sub']}`\n"
-            await cb.bot.send_message(order["telegram_id"], txt, parse_mode="Markdown")
+            await cb.bot.send_message(order["telegram_id"], txt, parse_mode=None)
             if item['link']:
                 try:
                     ch = await get_setting("channel_username", "AtlasChannel")
-                    await cb.bot.send_photo(order["telegram_id"], _qr_input_file(item['link'], ch), caption=f"🎨 QR: {item['email']}")
+                    await cb.bot.send_photo(order["telegram_id"], _qr_input_file(item['link'], ch), caption=f"QR: {item['email']}", parse_mode=None)
                 except Exception:
                     pass
     except Exception:
@@ -400,6 +444,7 @@ async def _do_approve(cb: CallbackQuery, oid: int, sid: int):
         )
     except Exception:
         pass
+    return True
 
 
 @router.callback_query(F.data.startswith("reject:"))
@@ -813,12 +858,12 @@ async def single_server(cb: CallbackQuery, state: FSMContext):
     cli = XUIClient(server["url"], server["username"], server["password"], server["sub_path"], server.get("api_token", ""))
     cuuid = str(uuid.uuid4())
     ok = await cli.add_client(server["inbound_id"], cuuid, data["email"],
-                               data["traffic_gb"], data["duration_days"], starts_on_first_use=True)
+                               data["traffic_gb"], data["duration_days"], starts_on_first_use=False)
     if not ok:
         await cli.close()
         await cb.message.edit_text("❌ خطا در ساخت کانفیگ روی سرور!")
         return
-    expire_ms = 0 if data["duration_days"] > 0 else 0
+    expire_ms = expiry_ms_from_days(data["duration_days"])
     link = await cli.get_client_link(server["inbound_id"], data["email"])
     await cli.close()
 
@@ -834,7 +879,7 @@ async def single_server(cb: CallbackQuery, state: FSMContext):
     if link:
         try:
             ch = await get_setting("channel_username", "AtlasChannel")
-            await cb.message.answer_photo(_qr_input_file(link, ch), caption=f"🎨 QR: {data['email']}")
+            await cb.message.answer_photo(_qr_input_file(link, ch), caption=f"QR: {data['email']}", parse_mode=None)
         except Exception:
             pass
 
@@ -905,14 +950,14 @@ async def bulk_server(cb: CallbackQuery, state: FSMContext):
     await cb.message.edit_text(f"⏳ در حال ساخت {data['count']} کانفیگ...")
 
     cli = XUIClient(server["url"], server["username"], server["password"], server["sub_path"], server.get("api_token", ""))
-    expire_ms = 0 if data["duration_days"] > 0 else 0
+    expire_ms = expiry_ms_from_days(data["duration_days"])
     results = []
 
     for i in range(1, data["count"] + 1):
         email = f"{data['prefix']}_{i:03d}"
         cuuid = str(uuid.uuid4())
         ok = await cli.add_client(server["inbound_id"], cuuid, email,
-                                   data["traffic_gb"], data["duration_days"], starts_on_first_use=True)
+                                   data["traffic_gb"], data["duration_days"], starts_on_first_use=False)
         if ok:
             link = await cli.get_client_link(server["inbound_id"], email)
             results.append(f"✅ `{email}`\n`{link or '—'}`")
@@ -1273,7 +1318,10 @@ async def topup_approve(cb: CallbackQuery):
         )
     except Exception:
         pass
-    await cb.message.edit_caption((cb.message.caption or "") + "\n\n✅ تایید شد")
+    try:
+        await cb.message.edit_caption((cb.message.caption or "") + "\n\n✅ تایید شد")
+    except Exception:
+        await cb.message.answer("✅ افزایش اعتبار تایید شد.")
     await cb.answer("انجام شد")
 
 
@@ -1301,5 +1349,8 @@ async def topup_reject(cb: CallbackQuery):
         await cb.bot.send_message(req["telegram_id"], "❌ درخواست افزایش اعتبار شما رد شد. در صورت نیاز با پشتیبانی در ارتباط باشید.")
     except Exception:
         pass
-    await cb.message.edit_caption((cb.message.caption or "") + "\n\n❌ رد شد")
+    try:
+        await cb.message.edit_caption((cb.message.caption or "") + "\n\n❌ رد شد")
+    except Exception:
+        await cb.message.answer("❌ درخواست افزایش اعتبار رد شد.")
     await cb.answer("رد شد")

@@ -7,12 +7,14 @@ import logging
 import os
 import time
 import subprocess
+import uuid
 from datetime import datetime, timedelta
 from typing import Optional
 
 from aiogram import Bot
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
+from aiogram.types import BufferedInputFile
 from fastapi import FastAPI, Form, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
@@ -55,7 +57,9 @@ from core.database import (
     get_pending_orders,
     get_available_servers,
     server_has_capacity,
+    get_user_by_id,
     get_user_by_telegram,
+    has_previous_purchase,
     save_config,
     get_server,
     get_servers,
@@ -67,6 +71,7 @@ from core.database import (
     update_order,  # noqa: F401
     update_package,
     update_server,
+    update_user,
     reset_legacy_claims,
 )
 from core.panel_content import (
@@ -76,7 +81,8 @@ from core.panel_content import (
     SETTINGS_DEFAULTS,
     UI_DEFAULTS,
 )
-from core.xui_api import XUIClient
+from core.xui_api import XUIClient, expiry_ms_from_days
+from core.qr import build_qr_image
 
 logger = logging.getLogger(__name__)
 
@@ -487,22 +493,59 @@ async def order_approve_web(request: Request, oid: int):
     each_gb = float(order.get("bulk_each_gb") or order["traffic_gb"])
     duration = int(order["duration_days"])
     created = []
+    is_first_purchase = not await has_previous_purchase(user["id"])
 
     cli = XUIClient(server["url"], server["username"], server["password"], server["sub_path"], server.get("api_token", ""))
     target_inbound = int(server.get("inbound_id") or 1)
     for i in range(1, max(1, bulk_count) + 1):
         email = f"u{order['telegram_id']}_{i}_{int(time.time())}" if bulk_count > 1 else f"u{order['telegram_id']}_{int(time.time())}"
-        cuuid = os.urandom(16).hex()
-        ok = await cli.add_client(target_inbound, cuuid, email, each_gb, duration, starts_on_first_use=True)
+        cuuid = str(uuid.uuid4())
+        ok = await cli.add_client(target_inbound, cuuid, email, each_gb, duration, starts_on_first_use=False)
         if not ok:
             continue
         link = await cli.get_client_link(target_inbound, email)
-        await save_config(user["id"], sid, cuuid, email, target_inbound, each_gb, duration, 0, starts_on_first_use=1 if duration > 0 else 0)
-        created.append((email, link))
+        sub = await cli.get_subscription_link(target_inbound, email)
+        await save_config(user["id"], sid, cuuid, email, target_inbound, each_gb, duration, expiry_ms_from_days(duration), starts_on_first_use=0)
+        created.append((email, link, sub))
     await cli.close()
 
     if created:
         await update_order(oid, status="approved", server_id=sid, config_email=created[0][0], inbound_id=target_inbound, approved_at=datetime.now().isoformat())
+        if is_first_purchase and order.get("referred_by"):
+            referrer = await get_user_by_id(order["referred_by"])
+            if referrer:
+                await update_user(
+                    referrer["id"],
+                    referral_bonus_gb=float(referrer.get("referral_bonus_gb") or 0) + REFERRAL_BONUS_GB,
+                )
+        if BOT_TOKEN and len(BOT_TOKEN) > 20:
+            bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.MARKDOWN))
+            try:
+                await bot.send_message(
+                    order["telegram_id"],
+                    f"🎉 *سرویس شما فعال شد!*\n\nسفارش: {order['pkg_name']}\nسرور: {server['name']}\nتعداد کانفیگ: `{len(created)}`",
+                    parse_mode=None,
+                )
+                for email, link, sub in created[:20]:
+                    txt = f"📧 `{email}`\n"
+                    if link:
+                        txt += f"🔗 `{link}`\n"
+                    if sub:
+                        txt += f"📡 Subscription:\n`{sub}`\n"
+                    await bot.send_message(order["telegram_id"], txt, parse_mode=None)
+                    if link:
+                        try:
+                            qr = build_qr_image(link, footer_text=await get_setting("channel_username", "AtlasChannel"))
+                            await bot.send_photo(
+                                order["telegram_id"],
+                                BufferedInputFile(qr.getvalue(), filename="atlas-qr.png"),
+                                caption=f"QR: {email}",
+                                parse_mode=None,
+                            )
+                        except Exception:
+                            pass
+            finally:
+                await bot.session.close()
     return RedirectResponse(f"/{S}/orders", status_code=302)
 
 

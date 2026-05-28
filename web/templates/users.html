@@ -86,7 +86,8 @@
           <td>{{ t.full_name or '—' }}<br><code>{{ t.telegram_id }}</code></td>
           <td>{{ "{:,}".format(t.amount or 0) }} تومان</td>
           <td>{{ t.created_at[:16] }}</td>
-          <td style="display:flex;gap:6px">
+          <td style="display:flex;gap:6px;flex-wrap:wrap">
+            <a class="btn btn-xs btn-outline" href="/{{ S }}/receipts/topup/{{ t.id }}" target="_blank">View receipt</a>
             <form action="/{{ S }}/topups/{{ t.id }}/approve" method="POST"><button class="btn btn-xs btn-outline" type="submit">✅ تایید</button></form>
             <form action="/{{ S }}/topups/{{ t.id }}/reject" method="POST"><button class="btn btn-xs btn-danger" type="submit">❌ رد</button></form>
           </td>

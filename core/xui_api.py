@@ -172,7 +172,7 @@ class XUIClient:
         inbound = await self.get_inbound(inbound_id)
         protocol = inbound.get("protocol", "vless") if inbound else "vless"
         traffic_bytes = int(traffic_gb * 1024 ** 3)
-        expire_ms = 0 if starts_on_first_use else (int((datetime.now() + timedelta(days=expire_days)).timestamp() * 1000) if expire_days > 0 else 0)
+        expire_ms = expiry_ms_from_days(expire_days)
 
         client = self._client_payload(protocol, client_uuid, email, traffic_bytes, expire_ms, True)
 
@@ -375,3 +375,9 @@ def used_pct(total: int, down: int, up: int) -> int:
     if total <= 0:
         return 0
     return min(100, int((down + up) / total * 100))
+
+def expiry_ms_from_days(days: int) -> int:
+    days = int(days or 0)
+    if days <= 0:
+        return 0
+    return int((datetime.now() + timedelta(days=days)).timestamp() * 1000)

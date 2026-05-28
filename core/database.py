@@ -688,6 +688,24 @@ async def get_all_configs() -> List[Dict]:
             return [dict(r) for r in await cu.fetchall()]
 
 
+async def get_configs_needing_expiry_repair(limit: int = 500) -> List[Dict]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute("""
+            SELECT c.*,s.name as server_name,s.url as server_url,
+                   s.username as srv_user,s.password as srv_pass,
+                   s.api_token as srv_api_token,s.sub_path
+            FROM configs c
+            JOIN servers s ON c.server_id=s.id
+            WHERE c.is_active=1
+              AND c.duration_days > 0
+              AND (COALESCE(c.expire_timestamp,0) <= 0 OR COALESCE(c.starts_on_first_use,0)=1)
+            ORDER BY c.id ASC
+            LIMIT ?
+        """, (max(1, int(limit or 500)),)) as cu:
+            return [dict(r) for r in await cu.fetchall()]
+
+
 
 async def get_configs_by_base_email(base_email: str) -> List[Dict]:
     base = (base_email or "").strip()

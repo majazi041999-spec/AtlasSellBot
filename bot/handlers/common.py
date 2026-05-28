@@ -4,7 +4,7 @@ from aiogram.filters import CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
-from core.config import ADMIN_IDS, WEB_SECRET_PATH, WEB_PORT
+from core.config import ADMIN_IDS, WEB_SECRET_PATH, WEB_PORT, REFERRAL_BONUS_GB
 from core.database import get_or_create_user, get_user_by_referral_code, update_user, get_setting
 from core.texts import get_text
 
@@ -56,7 +56,7 @@ async def cmd_start(msg: Message, state: FSMContext):
                     referrer["telegram_id"],
                     f"🎉 *یک دوست جدید با لینک دعوت شما ثبت‌نام کرد!*\n\n"
                     f"👤 {msg.from_user.full_name or 'کاربر جدید'}\n\n"
-                    f"هنگامی که اولین خریدش را انجام دهد، شما {5} GB هدیه دریافت می‌کنید 🎁",
+                    f"هنگامی که اولین خریدش را انجام دهد، شما {REFERRAL_BONUS_GB} GB هدیه دریافت می‌کنید 🎁",
                     parse_mode="Markdown"
                 )
             except Exception:

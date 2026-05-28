@@ -7,6 +7,7 @@ import logging
 import os
 import sys
 import subprocess
+from datetime import datetime, timedelta
 
 logging.basicConfig(
     level=logging.INFO,
@@ -85,6 +86,54 @@ async def _notify_update(bot):
     logger.info(f"⏸ update broadcast pending admin approval | build={build}")
 
 
+def _parse_db_datetime(value: str) -> datetime:
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S.%f", "%Y-%m-%dT%H:%M:%S"):
+        try:
+            return datetime.strptime((value or "")[:26], fmt)
+        except Exception:
+            pass
+    return datetime.now()
+
+
+async def _repair_missing_expiries():
+    from core.database import get_configs_needing_expiry_repair, update_config
+    from core.xui_api import XUIClient
+
+    repaired = failed = 0
+    for cfg in await get_configs_needing_expiry_repair():
+        start = _parse_db_datetime(cfg.get("created_at", ""))
+        expire_ms = int((start + timedelta(days=int(cfg.get("duration_days") or 0))).timestamp() * 1000)
+        if expire_ms <= int(datetime.now().timestamp() * 1000):
+            expire_ms = int((datetime.now() + timedelta(days=int(cfg.get("duration_days") or 0))).timestamp() * 1000)
+        cli = XUIClient(
+            cfg["server_url"],
+            cfg["srv_user"],
+            cfg["srv_pass"],
+            cfg.get("sub_path") or "",
+            cfg.get("srv_api_token") or "",
+        )
+        try:
+            ok = await cli.update_client(
+                cfg["inbound_id"],
+                cfg["uuid"],
+                cfg["email"],
+                cfg["traffic_gb"],
+                expire_ms,
+                bool(cfg.get("is_active", 1)),
+            )
+            if ok:
+                await update_config(cfg["id"], expire_timestamp=expire_ms, starts_on_first_use=0)
+                repaired += 1
+            else:
+                failed += 1
+        except Exception:
+            failed += 1
+        finally:
+            await cli.close()
+    if repaired or failed:
+        logger.info(f"🛠 expiry repair done | repaired={repaired} failed={failed}")
+
+
 
 async def run_bot():
     from aiogram import Bot, Dispatcher
@@ -103,6 +152,7 @@ async def run_bot():
 
     await init_db()
     logger.info("✅ دیتابیس آماده")
+    await _repair_missing_expiries()
 
     bot = Bot(
         token=BOT_TOKEN,
