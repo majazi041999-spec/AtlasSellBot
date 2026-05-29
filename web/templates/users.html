@@ -13,6 +13,58 @@
 <div class="search-box" style="margin:8px 0 12px">
   <input type="text" id="usrSearch" class="form-control" placeholder="جستجو..." oninput="filterTable('usrSearch','usrTable')">
 </div>
+
+<style>
+.wholesale-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin:12px 0}
+.wholesale-stat{background:var(--bg2);border:1px solid var(--line);border-radius:8px;padding:12px}
+.wholesale-stat b{display:block;font-size:1.35rem;margin-top:4px}
+.wholesale-panel{margin:12px 0 14px}
+.wholesale-actions{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+@media (max-width:900px){
+  .wholesale-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+}
+@media (max-width:640px){
+  .wholesale-grid{grid-template-columns:1fr}
+  .sec-hd form{width:100%;flex-wrap:wrap}
+  .sec-hd form input{min-width:0;flex:1}
+  .table-wrap table{min-width:980px}
+}
+</style>
+
+<div class="card wholesale-panel">
+  <div class="sec-title" style="margin-bottom:10px">مدیریت کاربران عمده</div>
+  <div class="wholesale-grid">
+    <div class="wholesale-stat"><span>عمده‌های فعال</span><b>{{ wholesale_stats.active if wholesale_stats else 0 }}</b></div>
+    <div class="wholesale-stat"><span>درخواست‌های انتظار</span><b>{{ wholesale_stats.pending if wholesale_stats else 0 }}</b></div>
+    <div class="wholesale-stat"><span>سفارش تایید شده</span><b>{{ wholesale_stats.approved_orders if wholesale_stats else 0 }}</b></div>
+    <div class="wholesale-stat"><span>کانفیگ فعال</span><b>{{ wholesale_stats.active_configs if wholesale_stats else 0 }}</b></div>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>کاربر</th><th>وضعیت</th><th>آمار</th><th>قیمت/تخفیف</th><th>اقدام</th></tr></thead>
+      <tbody>
+      {% for u in wholesale_users %}
+      <tr>
+        <td><strong>{{ u.full_name or '—' }}</strong><br><span style="color:var(--txt3);font-size:.74rem">@{{ u.username or '—' }}</span><br><code>{{ u.telegram_id }}</code></td>
+        <td>{% if u.is_wholesale %}<span class="badge b-green">فعال</span>{% else %}<span class="badge b-blue">در انتظار بررسی</span>{% endif %}</td>
+        <td style="font-size:.78rem;color:var(--txt2)">سفارش: {{ u.business.approved_orders }}<br>فعال: {{ u.business.active_configs }} / {{ u.business.total_configs }}<br>کیف پول: {{ "{:,}".format(u.balance_toman or 0) }}</td>
+        <td>
+          <form action="/{{ S }}/users/{{ u.id }}/pricing" method="POST" class="wholesale-actions">
+            <input type="number" name="discount_percent" class="form-control" value="{{ u.discount_percent or 0 }}" min="0" max="100" step="0.5" style="width:82px">
+            <input type="number" name="price_per_gb" class="form-control" value="{{ u.price_per_gb or 0 }}" min="0" style="width:110px">
+            <button class="btn btn-xs btn-outline" type="submit">ذخیره</button>
+          </form>
+        </td>
+        <td><button class="btn btn-xs btn-outline" onclick="toggleWholesale({{ u.id }})">{{ 'برداشتن عمده' if u.is_wholesale else 'تایید عمده' }}</button></td>
+      </tr>
+      {% else %}
+      <tr><td colspan="5" style="text-align:center;color:var(--txt3)">هنوز کاربر عمده یا درخواست در انتظار ندارید.</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
 <div class="table-wrap">
 <table id="usrTable">
   <thead>

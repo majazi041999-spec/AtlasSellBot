@@ -7,6 +7,25 @@ from typing import List, Dict
 import time
 
 
+def _button(builder: InlineKeyboardBuilder, text: str, style: str | None = None, **kwargs):
+    if style:
+        try:
+            builder.button(text=text, style=style, **kwargs)
+            return
+        except Exception:
+            pass
+    builder.button(text=text, **kwargs)
+
+
+def _inline_button(text: str, style: str | None = None, **kwargs) -> InlineKeyboardButton:
+    if style:
+        try:
+            return InlineKeyboardButton(text=text, style=style, **kwargs)
+        except Exception:
+            pass
+    return InlineKeyboardButton(text=text, **kwargs)
+
+
 def admin_menu(finance_only: bool = False) -> ReplyKeyboardMarkup:
     b = ReplyKeyboardBuilder()
     if finance_only:
@@ -37,23 +56,23 @@ def user_menu(include_wholesale: bool = True) -> ReplyKeyboardMarkup:
 
 def broadcast_target_kb() -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
-    b.button(text="👥 همه کاربران", callback_data="bc_target:all")
-    b.button(text="🏷️ فقط کاربران عمده", callback_data="bc_target:wholesale")
+    _button(b, text="👥 همه کاربران", callback_data="bc_target:all", style="primary")
+    _button(b, text="🏷️ فقط کاربران عمده", callback_data="bc_target:wholesale", style="primary")
     b.adjust(1)
     return b.as_markup()
 
 
 def wholesale_request_kb() -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
-    b.button(text="📝 ارسال درخواست همکاری عمده", callback_data="wh_req")
+    _button(b, text="📝 ارسال درخواست همکاری عمده", callback_data="wh_req", style="success")
     b.adjust(1)
     return b.as_markup()
 
 
 def wholesale_request_admin_kb(user_id: int) -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
-    b.button(text="✅ تایید همکاری عمده", callback_data=f"wh_appr:{user_id}")
-    b.button(text="❌ رد درخواست", callback_data=f"wh_rej:{user_id}")
+    _button(b, text="✅ تایید همکاری عمده", callback_data=f"wh_appr:{user_id}", style="success")
+    _button(b, text="❌ رد درخواست", callback_data=f"wh_rej:{user_id}", style="danger")
     b.adjust(1)
     return b.as_markup()
 
@@ -64,8 +83,8 @@ def packages_kb(pkgs: List[Dict]) -> InlineKeyboardMarkup:
         gb = int(p['traffic_gb']) if p['traffic_gb'] == int(p['traffic_gb']) else p['traffic_gb']
         price = f"{p['price']:,}".replace(",", "،")
         tier = '🥉' if p['price'] < 100000 else '🥈' if p['price'] < 200000 else '🥇'
-        b.button(text=f"{tier} {p['name']}", callback_data=f"buy:{p['id']}")
-        b.button(text=f"{gb}GB | {p['duration_days']}روز | {price}تومان", callback_data=f"buy:{p['id']}")
+        _button(b, text=f"{tier} {p['name']}", callback_data=f"buy:{p['id']}", style="primary")
+        _button(b, text=f"{gb}GB | {p['duration_days']}روز | {price}تومان", callback_data=f"buy:{p['id']}", style="success")
     b.adjust(2)
     return b.as_markup()
 
@@ -78,20 +97,20 @@ def configs_kb(configs: List[Dict]) -> InlineKeyboardMarkup:
         expired = expire_ms > 0 and expire_ms <= now_ms
         icon = "🔴" if not c.get("is_active", 1) or expired else "🟢"
         suffix = " | منقضی" if expired else ""
-        b.button(text=f"{icon} {c['email']}{suffix}", callback_data=f"cfg:{c['id']}")
+        _button(b, text=f"{icon} {c['email']}{suffix}", callback_data=f"cfg:{c['id']}", style="danger" if expired else "primary")
     b.adjust(1)
     return b.as_markup()
 
 
 def config_detail_kb(cid: int) -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
-    b.button(text="🔗 دریافت لینک اتصال", callback_data=f"cfg_link:{cid}")
-    b.button(text="♻️ تمدید سرویس", callback_data=f"cfg_renew:{cid}")
-    b.button(text="🔄 انتقال به سرور دیگر", callback_data=f"mig_start:{cid}")
-    b.button(text="🔄 بروزرسانی سرویس", callback_data=f"cfg_refresh:{cid}")
-    b.button(text="📡 لینک سابسکریپشن", callback_data=f"cfg_sub:{cid}")
-    b.button(text="🧾 QR Code", callback_data=f"cfg_qr:{cid}")
-    b.button(text="🔙 بازگشت", callback_data="back_configs")
+    _button(b, text="🔗 دریافت لینک اتصال", callback_data=f"cfg_link:{cid}", style="primary")
+    _button(b, text="♻️ تمدید سرویس", callback_data=f"cfg_renew:{cid}", style="success")
+    _button(b, text="🔄 انتقال به سرور دیگر", callback_data=f"mig_start:{cid}", style="primary")
+    _button(b, text="🔄 بروزرسانی سرویس", callback_data=f"cfg_refresh:{cid}", style="primary")
+    _button(b, text="📡 لینک سابسکریپشن", callback_data=f"cfg_sub:{cid}", style="primary")
+    _button(b, text="🧾 QR Code", callback_data=f"cfg_qr:{cid}", style="primary")
+    _button(b, text="🔙 بازگشت", callback_data="back_configs", style="primary")
     b.adjust(1)
     return b.as_markup()
 
@@ -100,26 +119,26 @@ def servers_kb(servers: List[Dict], cb_prefix: str, extra_data: str = "") -> Inl
     b = InlineKeyboardBuilder()
     for s in servers:
         cb = f"{cb_prefix}:{s['id']}" + (f":{extra_data}" if extra_data else "")
-        b.button(text=f"🖥️ {s['name']}", callback_data=cb)
-    b.button(text="❌ لغو", callback_data="cancel")
+        _button(b, text=f"🖥️ {s['name']}", callback_data=cb, style="primary")
+    _button(b, text="❌ لغو", callback_data="cancel", style="danger")
     b.adjust(1)
     return b.as_markup()
 
 
 def payment_kb(order_id: int, allow_wallet: bool = True) -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
-    b.button(text="📸 ارسال فیش پرداخت", callback_data=f"receipt:{order_id}")
+    _button(b, text="📸 ارسال فیش پرداخت", callback_data=f"receipt:{order_id}", style="primary")
     if allow_wallet:
-        b.button(text="💳 پرداخت از کیف پول", callback_data=f"pay_wallet:{order_id}")
-    b.button(text="❌ انصراف از خرید", callback_data=f"cancel_order:{order_id}")
+        _button(b, text="💳 پرداخت از کیف پول", callback_data=f"pay_wallet:{order_id}", style="success")
+    _button(b, text="❌ انصراف از خرید", callback_data=f"cancel_order:{order_id}", style="danger")
     b.adjust(1)
     return b.as_markup()
 
 
 def order_review_kb(order_id: int) -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
-    b.button(text="✅ تأیید و ارسال کانفیگ", callback_data=f"approve:{order_id}")
-    b.button(text="❌ رد کردن", callback_data=f"reject:{order_id}")
+    _button(b, text="✅ تأیید و ارسال کانفیگ", callback_data=f"approve:{order_id}", style="success")
+    _button(b, text="❌ رد کردن", callback_data=f"reject:{order_id}", style="danger")
     b.adjust(2)
     return b.as_markup()
 
@@ -127,15 +146,15 @@ def order_review_kb(order_id: int) -> InlineKeyboardMarkup:
 def order_server_select_kb(servers: List[Dict], order_id: int) -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
     for s in servers:
-        b.button(text=f"🖥️ {s['name']}", callback_data=f"assign:{order_id}:{s['id']}")
+        _button(b, text=f"🖥️ {s['name']}", callback_data=f"assign:{order_id}:{s['id']}", style="primary")
     b.adjust(1)
     return b.as_markup()
 
 
 def confirm_kb(yes_cb: str, no_cb: str = "cancel") -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
-    b.button(text="✅ بله", callback_data=yes_cb)
-    b.button(text="❌ خیر", callback_data=no_cb)
+    _button(b, text="✅ بله", callback_data=yes_cb, style="success")
+    _button(b, text="❌ خیر", callback_data=no_cb, style="danger")
     b.adjust(2)
     return b.as_markup()
 
@@ -145,12 +164,12 @@ def admin_configs_kb(configs: List[Dict], page: int = 0) -> InlineKeyboardMarkup
     chunk = configs[page * 10: page * 10 + 10]
     for c in chunk:
         icon = "🟢" if c['is_active'] else "🔴"
-        b.button(text=f"{icon} {c['email']}", callback_data=f"adm_cfg:{c['id']}")
+        _button(b, text=f"{icon} {c['email']}", callback_data=f"adm_cfg:{c['id']}", style="success" if c['is_active'] else "danger")
     nav = []
     if page > 0:
-        nav.append(InlineKeyboardButton(text="◀️", callback_data=f"adm_cfg_pg:{page-1}"))
+        nav.append(_inline_button(text="◀️", callback_data=f"adm_cfg_pg:{page-1}", style="primary"))
     if (page + 1) * 10 < len(configs):
-        nav.append(InlineKeyboardButton(text="▶️", callback_data=f"adm_cfg_pg:{page+1}"))
+        nav.append(_inline_button(text="▶️", callback_data=f"adm_cfg_pg:{page+1}", style="primary"))
     b.adjust(1)
     if nav:
         b.row(*nav)
@@ -159,34 +178,34 @@ def admin_configs_kb(configs: List[Dict], page: int = 0) -> InlineKeyboardMarkup
 
 def adm_config_detail_kb(cid: int, active: bool) -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
-    b.button(text="🔴 غیرفعال" if active else "🟢 فعال", callback_data=f"toggle_cfg:{cid}")
-    b.button(text="📊 تغییر حجم", callback_data=f"edit_gb:{cid}")
-    b.button(text="📅 تمدید تاریخ", callback_data=f"edit_exp:{cid}")
-    b.button(text="🗑️ حذف", callback_data=f"del_cfg:{cid}")
-    b.button(text="🔙 بازگشت", callback_data="adm_cfg_list")
+    _button(b, text="🔴 غیرفعال" if active else "🟢 فعال", callback_data=f"toggle_cfg:{cid}", style="danger" if active else "success")
+    _button(b, text="📊 تغییر حجم", callback_data=f"edit_gb:{cid}", style="primary")
+    _button(b, text="📅 تمدید تاریخ", callback_data=f"edit_exp:{cid}", style="success")
+    _button(b, text="🗑️ حذف", callback_data=f"del_cfg:{cid}", style="danger")
+    _button(b, text="🔙 بازگشت", callback_data="adm_cfg_list", style="primary")
     b.adjust(2, 2, 1)
     return b.as_markup()
 
 
 def legacy_claim_admin_kb(claim_id: int) -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
-    b.button(text="✅ تایید اتصال", callback_data=f"lg_appr:{claim_id}")
-    b.button(text="❌ رد درخواست", callback_data=f"lg_rej:{claim_id}")
+    _button(b, text="✅ تایید اتصال", callback_data=f"lg_appr:{claim_id}", style="success")
+    _button(b, text="❌ رد درخواست", callback_data=f"lg_rej:{claim_id}", style="danger")
     b.adjust(1)
     return b.as_markup()
 
 
 def wallet_kb() -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
-    b.button(text="➕ افزایش اعتبار", callback_data="wallet_topup")
+    _button(b, text="➕ افزایش اعتبار", callback_data="wallet_topup", style="success")
     b.adjust(1)
     return b.as_markup()
 
 
 def topup_review_kb(req_id: int) -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
-    b.button(text="✅ تایید افزایش اعتبار", callback_data=f"tp_appr:{req_id}")
-    b.button(text="❌ رد درخواست", callback_data=f"tp_rej:{req_id}")
+    _button(b, text="✅ تایید افزایش اعتبار", callback_data=f"tp_appr:{req_id}", style="success")
+    _button(b, text="❌ رد درخواست", callback_data=f"tp_rej:{req_id}", style="danger")
     b.adjust(1)
     return b.as_markup()
 
@@ -194,9 +213,9 @@ def topup_review_kb(req_id: int) -> InlineKeyboardMarkup:
 def flow_cancel_kb(show_back: bool = True) -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
     if show_back:
-        b.button(text="⬅️ برگشت", callback_data="flow_back")
-    b.button(text="❌ کنسل", callback_data="cancel")
-    b.button(text="🏠 شروع مجدد", callback_data="back_to_menu")
+        _button(b, text="⬅️ برگشت", callback_data="flow_back", style="primary")
+    _button(b, text="❌ کنسل", callback_data="cancel", style="danger")
+    _button(b, text="🏠 شروع مجدد", callback_data="back_to_menu", style="primary")
     b.adjust(3 if show_back else 2)
     return b.as_markup()
 
@@ -207,9 +226,11 @@ def packages_kb(pkgs: List[Dict]) -> InlineKeyboardMarkup:
         gb = int(p["traffic_gb"]) if p["traffic_gb"] == int(p["traffic_gb"]) else p["traffic_gb"]
         price = f"{int(p['price']):,}".replace(",", "،")
         tier = "🥉" if p["price"] < 100000 else "🥈" if p["price"] < 200000 else "🥇"
-        b.button(
+        _button(
+            b,
             text=f"{tier} {p['name']} | {gb}GB | {p['duration_days']} روز | {price} تومان",
             callback_data=f"buy:{p['id']}",
+            style="primary",
         )
     b.adjust(1)
     return b.as_markup()

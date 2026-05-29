@@ -23,6 +23,7 @@ from core.database import (
     get_topup_request, get_pending_topup_requests, update_topup_request, add_user_balance,
     claim_order_for_approval,
     clear_config_alerts,
+    add_review_message,
 )
 from core.xui_api import XUIClient, fmt_bytes, days_left, expiry_ms_from_days
 from core.qr import build_qr_image
@@ -260,11 +261,12 @@ async def view_order(cb: CallbackQuery):
     )
 
     if order.get("receipt_file_id"):
-        await cb.message.answer_photo(
+        sent = await cb.message.answer_photo(
             order["receipt_file_id"],
             caption=text + "\n\nفیش پرداخت ارسال شده",
             reply_markup=order_review_kb(oid), parse_mode=None
         )
+        await add_review_message("order", oid, sent.chat.id, sent.message_id)
     else:
         await cb.message.edit_text(
             text + "\n\n⏳ هنوز فیش ارسال نشده",
@@ -289,14 +291,16 @@ async def view_topup(cb: CallbackQuery):
         f"وضعیت: {req.get('status')}"
     )
     if req.get("receipt_file_id"):
-        await cb.message.answer_photo(
+        sent = await cb.message.answer_photo(
             req["receipt_file_id"],
             caption=text,
             reply_markup=topup_review_kb(rid),
             parse_mode=None,
         )
+        await add_review_message("topup", rid, sent.chat.id, sent.message_id)
     else:
-        await cb.message.answer(text, reply_markup=topup_review_kb(rid), parse_mode=None)
+        sent = await cb.message.answer(text, reply_markup=topup_review_kb(rid), parse_mode=None)
+        await add_review_message("topup", rid, sent.chat.id, sent.message_id)
     await cb.answer()
 
 

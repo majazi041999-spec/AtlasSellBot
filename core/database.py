@@ -147,6 +147,16 @@ CREATE TABLE IF NOT EXISTS config_alerts (
     FOREIGN KEY(config_id) REFERENCES configs(id)
 );
 
+CREATE TABLE IF NOT EXISTS review_messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    tx_type TEXT NOT NULL,
+    tx_id INTEGER NOT NULL,
+    chat_id INTEGER NOT NULL,
+    message_id INTEGER NOT NULL,
+    created_at TEXT DEFAULT (datetime('now','localtime')),
+    UNIQUE(tx_type, tx_id, chat_id, message_id)
+);
+
 INSERT OR IGNORE INTO settings VALUES
     ('welcome_message','به Atlas Account خوش آمدید! 🌐\nبهترین سرویس VPN با سرعت بالا.'),
     ('support_username',''),
@@ -349,6 +359,19 @@ async def get_user_business_stats(uid: int) -> Dict:
         return stats
 
 
+async def get_wholesale_users(limit: int = 200) -> List[Dict]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            """SELECT * FROM users
+               WHERE is_wholesale=1 OR wholesale_request_pending=1
+               ORDER BY is_wholesale DESC, wholesale_request_pending DESC, created_at DESC
+               LIMIT ?""",
+            (max(1, int(limit or 200)),),
+        ) as c:
+            return [dict(r) for r in await c.fetchall()]
+
+
 
 async def get_user_balance(user_id: int) -> int:
     async with aiosqlite.connect(DB_PATH) as db:
@@ -411,6 +434,26 @@ async def update_topup_request(rid: int, **kw):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(f"UPDATE topup_requests SET {fields} WHERE id=?", (*kw.values(), rid))
         await db.commit()
+
+
+async def add_review_message(tx_type: str, tx_id: int, chat_id: int, message_id: int):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """INSERT OR IGNORE INTO review_messages(tx_type,tx_id,chat_id,message_id)
+               VALUES(?,?,?,?)""",
+            (tx_type, int(tx_id), int(chat_id), int(message_id)),
+        )
+        await db.commit()
+
+
+async def get_review_messages(tx_type: str, tx_id: int) -> List[Dict]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT * FROM review_messages WHERE tx_type=? AND tx_id=? ORDER BY id ASC",
+            (tx_type, int(tx_id)),
+        ) as c:
+            return [dict(r) for r in await c.fetchall()]
 
 
 async def get_recent_receipt_transactions(limit: int = 100) -> List[Dict]:

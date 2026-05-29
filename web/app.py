@@ -58,6 +58,7 @@ from core.database import (
     get_available_servers,
     server_has_capacity,
     get_user_by_id,
+    get_wholesale_users,
     get_user_by_telegram,
     has_previous_purchase,
     save_config,
@@ -75,6 +76,7 @@ from core.database import (
     reset_legacy_claims,
     claim_order_for_approval,
     clear_config_alerts,
+    get_review_messages,
 )
 from core.panel_content import (
     BOT_TEXT_DEFAULTS,
@@ -94,6 +96,37 @@ _dir = os.path.dirname(os.path.abspath(__file__))
 _templates = Jinja2Templates(directory=os.path.join(_dir, "templates"))
 
 S = WEB_SECRET_PATH  # short alias
+
+
+async def _clear_review_buttons(tx_type: str, tx_id: int, status_text: str = ""):
+    if not BOT_TOKEN or len(BOT_TOKEN) <= 20:
+        return
+    rows = await get_review_messages(tx_type, tx_id)
+    if not rows:
+        return
+    bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.MARKDOWN))
+    try:
+        for row in rows:
+            chat_id = int(row["chat_id"])
+            message_id = int(row["message_id"])
+            try:
+                if status_text:
+                    await bot.edit_message_caption(
+                        chat_id=chat_id,
+                        message_id=message_id,
+                        caption=status_text,
+                        reply_markup=None,
+                        parse_mode=None,
+                    )
+                else:
+                    await bot.edit_message_reply_markup(chat_id=chat_id, message_id=message_id, reply_markup=None)
+            except Exception:
+                try:
+                    await bot.edit_message_reply_markup(chat_id=chat_id, message_id=message_id, reply_markup=None)
+                except Exception:
+                    pass
+    finally:
+        await bot.session.close()
 
 
 @app.on_event("startup")
@@ -470,6 +503,7 @@ async def order_reject_web(request: Request, oid: int):
     if not order:
         return RedirectResponse(f"/{S}/orders", status_code=302)
     await update_order(oid, status="rejected")
+    await _clear_review_buttons("order", oid)
     return RedirectResponse(f"/{S}/orders", status_code=302)
 
 
@@ -534,6 +568,7 @@ async def order_approve_web(request: Request, oid: int):
             inbound_id=cfg["inbound_id"],
             approved_at=datetime.now().isoformat(),
         )
+        await _clear_review_buttons("order", oid)
         if BOT_TOKEN and len(BOT_TOKEN) > 20:
             bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.MARKDOWN))
             try:
@@ -594,6 +629,7 @@ async def order_approve_web(request: Request, oid: int):
 
     if created:
         await update_order(oid, status="approved", server_id=sid, config_email=created[0][0], inbound_id=target_inbound, approved_at=datetime.now().isoformat())
+        await _clear_review_buttons("order", oid)
         if is_first_purchase and order.get("referred_by"):
             referrer = await get_user_by_id(order["referred_by"])
             if referrer:
@@ -730,10 +766,29 @@ async def users_page(request: Request):
     users = await get_all_users((page - 1) * per_page, per_page)
     for u in users:
         u["business"] = await get_user_business_stats(u["id"])
+    wholesale_users = await get_wholesale_users(200)
+    for u in wholesale_users:
+        u["business"] = await get_user_business_stats(u["id"])
+    wholesale_stats = {
+        "active": sum(1 for u in wholesale_users if u.get("is_wholesale")),
+        "pending": sum(1 for u in wholesale_users if u.get("wholesale_request_pending")),
+        "approved_orders": sum(int((u.get("business") or {}).get("approved_orders") or 0) for u in wholesale_users),
+        "active_configs": sum(int((u.get("business") or {}).get("active_configs") or 0) for u in wholesale_users),
+    }
     pending_topups = await get_pending_topup_requests(200)
     return _templates.TemplateResponse(
         "users.html",
-        await _ctx_ui(request, users=users, pending_topups=pending_topups, total=total, page=page, total_pages=total_pages, active="users"),
+        await _ctx_ui(
+            request,
+            users=users,
+            wholesale_users=wholesale_users,
+            wholesale_stats=wholesale_stats,
+            pending_topups=pending_topups,
+            total=total,
+            page=page,
+            total_pages=total_pages,
+            active="users",
+        ),
     )
 
 
@@ -810,6 +865,7 @@ async def topup_approve_web(request: Request, rid: int):
     if req and req.get("status") == "pending":
         await add_user_balance(req["user_id"], int(req["amount"]), kind="topup", note=f"topup_request:{rid}", actor_telegram_id=0)
         await update_topup_request(rid, status="approved", reviewer_telegram_id=0, reviewed_at=datetime.now().isoformat())
+        await _clear_review_buttons("topup", rid)
     return RedirectResponse(f"/{S}/users", status_code=302)
 
 
@@ -820,6 +876,7 @@ async def topup_reject_web(request: Request, rid: int):
     req = await get_topup_request(rid)
     if req and req.get("status") == "pending":
         await update_topup_request(rid, status="rejected", reviewer_telegram_id=0, reviewed_at=datetime.now().isoformat(), admin_note="rejected_web")
+        await _clear_review_buttons("topup", rid)
     return RedirectResponse(f"/{S}/users", status_code=302)
 
 

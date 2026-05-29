@@ -43,6 +43,7 @@ from core.database import (
     create_topup_request,
     add_user_balance,
     get_all_admin_telegram_ids,
+    add_review_message,
 )
 from core.xui_api import XUIClient, fmt_bytes, days_left, expiry_ms_from_days
 from core.texts import get_text
@@ -236,10 +237,12 @@ async def wallet_topup_receipt(msg: Message, state: FSMContext, bot: Bot):
     admin_targets = list(dict.fromkeys(list(ADMIN_IDS) + await get_all_admin_telegram_ids()))
     for aid in admin_targets:
         try:
-            await bot.send_photo(aid, photo_id, caption=cap, reply_markup=topup_review_kb(req_id), parse_mode=None)
+            sent = await bot.send_photo(aid, photo_id, caption=cap, reply_markup=topup_review_kb(req_id), parse_mode=None)
+            await add_review_message("topup", req_id, sent.chat.id, sent.message_id)
         except Exception:
             try:
-                await bot.send_message(aid, cap, reply_markup=topup_review_kb(req_id), parse_mode=None)
+                sent = await bot.send_message(aid, cap, reply_markup=topup_review_kb(req_id), parse_mode=None)
+                await add_review_message("topup", req_id, sent.chat.id, sent.message_id)
             except Exception:
                 pass
 
@@ -656,6 +659,15 @@ async def pay_with_wallet(cb: CallbackQuery):
     await add_user_balance(user["id"], -price, kind="purchase", note=f"order:{oid}", actor_telegram_id=cb.from_user.id)
     await update_order(oid, status="receipt_submitted", notes=((order.get("notes") or "") + "\nwallet_payment=1").strip())
     await cb.answer("✅ پرداخت از کیف پول انجام شد. سفارش در حال پردازش است...", show_alert=True)
+    await _notify_admins_plain(
+        cb.bot,
+        "💳 خرید با کیف پول\n\n"
+        f"کاربر: {order.get('full_name') or cb.from_user.full_name or '-'} (@{order.get('username') or cb.from_user.username or '-'})\n"
+        f"Telegram ID: {cb.from_user.id}\n"
+        f"سفارش: #{oid} | {order.get('pkg_name') or '-'}\n"
+        f"حجم: {order.get('traffic_gb')} GB | مدت: {order.get('duration_days')} روز\n"
+        f"مبلغ: {_fmt_toman(price)} تومان",
+    )
 
     if int(order.get("renew_config_id") or 0) > 0:
         cfg = await get_config(int(order["renew_config_id"]))
@@ -727,10 +739,12 @@ async def receive_receipt(msg: Message, state: FSMContext, bot: Bot):
     admin_targets = list(dict.fromkeys(list(ADMIN_IDS) + await get_all_admin_telegram_ids()))
     for aid in admin_targets:
         try:
-            await bot.send_photo(aid, photo_id, caption=caption, reply_markup=order_review_kb(oid), parse_mode=None)
+            sent = await bot.send_photo(aid, photo_id, caption=caption, reply_markup=order_review_kb(oid), parse_mode=None)
+            await add_review_message("order", oid, sent.chat.id, sent.message_id)
         except Exception:
             try:
-                await bot.send_message(aid, caption, reply_markup=order_review_kb(oid), parse_mode=None)
+                sent = await bot.send_message(aid, caption, reply_markup=order_review_kb(oid), parse_mode=None)
+                await add_review_message("order", oid, sent.chat.id, sent.message_id)
             except Exception:
                 pass
 
@@ -908,6 +922,17 @@ async def wholesale_naming_start(msg: Message, state: FSMContext):
         f"برای ثبت پرداخت روی «ارسال فیش» بزنید."
     )
     await msg.answer(text, reply_markup=payment_kb(oid), parse_mode="Markdown")
+    await _notify_admins_plain(
+        msg.bot,
+        "🏷️ سفارش عمده جدید\n\n"
+        f"کاربر: {msg.from_user.full_name or '-'} (@{msg.from_user.username or '-'})\n"
+        f"Telegram ID: {msg.from_user.id}\n"
+        f"سفارش: #{oid}\n"
+        f"تعداد: {data['count']} کانفیگ\n"
+        f"حجم هر کانفیگ: {data['traffic']} GB | مدت: {int(data['duration'])} روز\n"
+        f"مبلغ: {_fmt_toman(final_price)} تومان\n"
+        f"الگوی نام: {data.get('naming_prefix') or '-'}",
+    )
 
 
 def _extract_config_identity(link: str):
@@ -967,6 +992,18 @@ async def _notify_legacy_claim_admins(bot: Bot, claim_id: int, from_user, email:
                 f"claim: #{claim_id}",
                 reply_markup=legacy_claim_admin_kb(claim_id),
             )
+        except Exception:
+            pass
+
+
+async def _admin_targets() -> list[int]:
+    return list(dict.fromkeys([*ADMIN_IDS, *(await get_all_admin_telegram_ids())]))
+
+
+async def _notify_admins_plain(bot: Bot, text: str):
+    for aid in await _admin_targets():
+        try:
+            await bot.send_message(aid, text, parse_mode=None)
         except Exception:
             pass
 
