@@ -2,8 +2,11 @@ import asyncio
 import uuid
 import time
 import json
+import base64
+import binascii
 import sqlite3
 from datetime import datetime, timedelta, date
+from urllib.parse import urlparse, parse_qs, unquote
 from aiogram import Router, F, Bot
 from aiogram.types import Message, CallbackQuery, BufferedInputFile
 from aiogram.fsm.context import FSMContext
@@ -17,7 +20,9 @@ from core.database import (
     save_config, get_user_by_telegram, get_setting, set_setting,
     get_user_by_id, server_has_capacity, count_active_configs_by_server, update_user,
     get_legacy_claim, update_legacy_claim, get_config_by_email, get_config_by_uuid,
-    get_topup_request, get_pending_topup_requests, update_topup_request, add_user_balance
+    get_topup_request, get_pending_topup_requests, update_topup_request, add_user_balance,
+    claim_order_for_approval,
+    clear_config_alerts,
 )
 from core.xui_api import XUIClient, fmt_bytes, days_left, expiry_ms_from_days
 from core.qr import build_qr_image
@@ -38,6 +43,51 @@ def _qr_input_file(link: str, footer_text: str) -> BufferedInputFile:
 
 def _fmt_toman(amount: int) -> str:
     return f"{int(amount or 0):,}".replace(",", "،")
+
+
+def _extract_config_identity_from_text(text: str) -> tuple[str, str]:
+    def decode_b64_text(value: str) -> str:
+        raw = (value or "").strip()
+        raw += "=" * (-len(raw) % 4)
+        for decoder in (base64.urlsafe_b64decode, base64.b64decode):
+            try:
+                return decoder(raw.encode()).decode("utf-8", "ignore")
+            except (binascii.Error, UnicodeDecodeError, ValueError):
+                continue
+        return ""
+
+    raw = (text or "").strip()
+    token = ""
+    for part in raw.replace("\n", " ").split():
+        clean = part.strip().strip("`'\"")
+        if "://" in clean:
+            token = clean
+            break
+    if not token:
+        token = raw.strip().strip("`'\"")
+
+    try:
+        if token.lower().startswith("vmess://"):
+            payload = token[8:].split("#", 1)[0].split("?", 1)[0]
+            try:
+                obj = json.loads(decode_b64_text(payload))
+            except Exception:
+                obj = {}
+            return (obj.get("ps") or obj.get("remark") or obj.get("email") or "").strip(), (obj.get("id") or "").strip()
+
+        p = urlparse(token)
+        if p.scheme not in ("vless", "vmess", "trojan", "ss", "hysteria", "hysteria2", "hy2"):
+            return "", ""
+        email = unquote((p.fragment or "").strip())
+        client_uuid = unquote((p.username or "").strip())
+        q = parse_qs(p.query or "")
+        if not email and q.get("remark"):
+            email = unquote(q["remark"][0])
+        if not email and q.get("email"):
+            email = unquote(q["email"][0])
+        return email, client_uuid
+    except Exception:
+        return "", ""
 
 
 def _db_admin_role(uid: int) -> str:
@@ -118,6 +168,18 @@ async def flow_back_admin(cb: CallbackQuery, state: FSMContext):
         await cb.answer("برای این مرحله برگشت مستقیم تعریف نشده.", show_alert=True)
         return
     await cb.answer()
+
+
+@router.message(lambda msg: bool(msg.text and _db_admin_role(msg.from_user.id) == "owner" and any(_extract_config_identity_from_text(msg.text))))
+async def owner_config_link_lookup(msg: Message):
+    email, client_uuid = _extract_config_identity_from_text(msg.text or "")
+    await msg.answer("⏳ دارم داخل همه سرورهای ثبت‌شده می‌گردم...", parse_mode=None)
+    info = await _lookup_remote_config_status(email, client_uuid)
+    if not info:
+        await msg.answer("❌ این کانفیگ با ایمیل/UUID داخل لینک، روی سرورهای ثبت‌شده پیدا نشد.", parse_mode=None)
+        return
+    await msg.answer(_format_remote_config_status(info), parse_mode=None)
+
 
 # ─── STATS ───────────────────────────────────────────────────────
 
@@ -243,6 +305,18 @@ async def approve_order_start(cb: CallbackQuery):
     if not can_review_payments(cb.from_user.id):
         return
     oid = int(cb.data.split(":")[1])
+    order = await get_order(oid)
+    if not order:
+        await cb.answer("سفارش یافت نشد", show_alert=True)
+        return
+    if int(order.get("renew_config_id") or 0) > 0:
+        cfg = await get_config(int(order["renew_config_id"]))
+        if not cfg:
+            await cb.answer("سرویس تمدیدی پیدا نشد", show_alert=True)
+            return
+        await _do_approve(cb, oid, int(cfg["server_id"]))
+        return
+
     servers = [sv for sv in await get_servers() if await server_has_capacity(sv["id"])]
     if not servers:
         await cb.answer("❌ هیچ سروری فعال نیست!", show_alert=True)
@@ -264,6 +338,11 @@ async def approve_order_start(cb: CallbackQuery):
     if len(servers) == 1:
         await _do_approve(cb, oid, servers[0]["id"])
         return
+
+    try:
+        await cb.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
 
     try:
         await cb.message.edit_text(
@@ -307,20 +386,133 @@ def _server_inbound_choices(server: dict) -> list[int]:
         out.append(default_iid)
     return out
 
+
+def _safe_config_suffix(value: str) -> str:
+    cleaned = "".join(ch for ch in (value or "").strip() if ch.isalnum() or ch in ("_", "-", "."))
+    return cleaned[:24]
+
+
 async def _build_config_name(order, idx: int = 0) -> str:
     prefix = await get_setting("cfg_name_prefix", "u")
     postfix = await get_setting("cfg_name_postfix", "")
     rand_len = int(await get_setting("cfg_name_rand_len", "6") or 6)
     random_part = uuid.uuid4().hex[:max(2, min(16, rand_len))]
     idx_part = f"_{idx:02d}" if idx > 0 else ""
-    return f"{prefix}{order['telegram_id']}{idx_part}_{random_part}{postfix}".replace(" ", "_")
+    base = f"{prefix}{order['telegram_id']}{idx_part}_{random_part}{postfix}".replace(" ", "_")
+    suffix = _safe_config_suffix(order.get("custom_config_name") or "")
+    return f"{base}_{suffix}" if suffix else base
+
+
+async def _do_renew(cb: CallbackQuery, order: dict) -> bool:
+    cid = int(order.get("renew_config_id") or 0)
+    cfg = await get_config(cid)
+    if not cfg:
+        await update_order(order["id"], status="receipt_submitted")
+        await cb.message.answer("❌ سرویس برای تمدید پیدا نشد.")
+        return False
+
+    now_ms = int(time.time() * 1000)
+    base_expire = int(cfg.get("expire_timestamp") or 0)
+    if base_expire < now_ms:
+        base_expire = now_ms
+    duration = int(order.get("duration_days") or cfg.get("duration_days") or 0)
+    new_expire_ms = base_expire + duration * 86400000 if duration > 0 else 0
+    traffic_gb = float(order.get("traffic_gb") or cfg.get("traffic_gb") or 0)
+
+    client = XUIClient(cfg["server_url"], cfg["srv_user"], cfg["srv_pass"], cfg["sub_path"], cfg.get("srv_api_token", ""))
+    try:
+        ok = await client.update_client(cfg["inbound_id"], cfg["uuid"], cfg["email"], traffic_gb, new_expire_ms, True)
+        if ok:
+            await client.reset_client_traffic(cfg["inbound_id"], cfg["email"])
+            link = await client.get_client_link(cfg["inbound_id"], cfg["email"])
+            sub = await client.get_subscription_link(cfg["inbound_id"], cfg["email"])
+        else:
+            link = sub = None
+    finally:
+        await client.close()
+
+    if not ok:
+        await update_order(order["id"], status="receipt_submitted")
+        await cb.message.answer("❌ تمدید روی سرور انجام نشد. اتصال سرور یا وضعیت کانفیگ را بررسی کنید.")
+        return False
+
+    await update_config(
+        cid,
+        traffic_gb=traffic_gb,
+        duration_days=duration,
+        expire_timestamp=new_expire_ms,
+        is_active=1,
+        starts_on_first_use=0,
+    )
+    await clear_config_alerts(cid)
+    await update_order(
+        order["id"],
+        status="approved",
+        server_id=cfg["server_id"],
+        config_email=cfg["email"],
+        inbound_id=cfg["inbound_id"],
+        approved_at=datetime.now().isoformat(),
+    )
+
+    try:
+        text = (
+            "✅ سرویس شما تمدید شد.\n\n"
+            f"کانفیگ: {cfg['email']}\n"
+            f"حجم جدید: {traffic_gb} GB\n"
+            f"مدت تمدید: {duration} روز\n"
+        )
+        if link:
+            text += f"\nلینک اتصال:\n{link}\n"
+        if sub:
+            text += f"\nلینک سابسکریپشن:\n{sub}\n"
+        await cb.bot.send_message(order["telegram_id"], text, parse_mode=None)
+        if link:
+            try:
+                ch = await get_setting("channel_username", "AtlasChannel")
+                await cb.bot.send_photo(order["telegram_id"], _qr_input_file(link, ch), caption=f"QR: {cfg['email']}", parse_mode=None)
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    try:
+        if cb.message.photo:
+            caption = cb.message.caption or ""
+            await cb.message.edit_caption(caption + ("" if "تمدید شد" in caption else "\n\n✅ تمدید شد"), reply_markup=None, parse_mode=None)
+        else:
+            await cb.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+    await cb.message.answer("✅ سرویس تمدید شد و به کاربر اطلاع داده شد.", parse_mode=None)
+    return True
 
 
 async def _do_approve(cb: CallbackQuery, oid: int, sid: int):
     order = await get_order(oid)
     if not order:
         return False
+    if order.get("status") == "approved":
+        try:
+            await cb.message.edit_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+        await cb.answer("این سفارش قبلاً تایید شده است.", show_alert=True)
+        return False
+    if order.get("status") != "receipt_submitted":
+        await cb.answer("این سفارش آماده تایید نیست یا قبلاً بررسی شده.", show_alert=True)
+        return False
+    if not await claim_order_for_approval(oid):
+        try:
+            await cb.message.edit_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+        await cb.answer("این سفارش همین الان توسط ادمین دیگری در حال پردازش است یا قبلاً بررسی شده.", show_alert=True)
+        return False
+    if int(order.get("renew_config_id") or 0) > 0:
+        await cb.answer("⏳ در حال تمدید سرویس...")
+        return await _do_renew(cb, order)
     if not await server_has_capacity(sid):
+        await update_order(oid, status="receipt_submitted")
         await cb.message.answer("⛔ ظرفیت این سرور تکمیل شده است. سرور دیگری انتخاب کنید.")
         return False
 
@@ -335,6 +527,7 @@ async def _do_approve(cb: CallbackQuery, oid: int, sid: int):
     user = await get_user_by_telegram(order["telegram_id"])
     if not user:
         await cb.message.answer("❌ کاربر در دیتابیس یافت نشد!")
+        await update_order(oid, status="receipt_submitted")
         await client.close()
         return False
 
@@ -377,6 +570,7 @@ async def _do_approve(cb: CallbackQuery, oid: int, sid: int):
 
     await client.close()
     if not created:
+        await update_order(oid, status="receipt_submitted")
         await cb.message.answer("❌ خطا در ساخت کانفیگ روی سرور! اتصال/ظرفیت سرور را بررسی کنید.")
         return False
 
@@ -430,6 +624,15 @@ async def _do_approve(cb: CallbackQuery, oid: int, sid: int):
     except Exception:
         pass
 
+    try:
+        if cb.message.photo:
+            caption = cb.message.caption or ""
+            suffix = "\n\n✅ تایید شد"
+            await cb.message.edit_caption(caption + ("" if "تایید شد" in caption else suffix), reply_markup=None, parse_mode=None)
+        else:
+            await cb.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
     await cb.message.answer(f"✅ {len(created)} کانفیگ ساخته و برای کاربر ارسال شد.", parse_mode="Markdown")
     try:
         uname = order.get("username") or ""
@@ -1070,44 +1273,161 @@ async def wholesale_reject(cb: CallbackQuery):
     await cb.message.edit_text("❌ درخواست همکاری عمده رد شد.")
 
 
-async def _find_remote_legacy_client(email: str, client_uuid: str) -> dict | None:
-    """Search all active servers/inbounds and return matching client meta for legacy claim import."""
-    servers = await get_servers(active_only=True)
-    for srv in servers:
+def _json_obj(value, default=None):
+    if default is None:
+        default = {}
+    if isinstance(value, (dict, list)):
+        return value
+    if isinstance(value, str) and value.strip():
+        try:
+            return json.loads(value)
+        except Exception:
+            return default
+    return default
+
+
+async def _lookup_remote_config_status(email: str, client_uuid: str) -> dict | None:
+    email = (email or "").strip()
+    client_uuid = (client_uuid or "").strip()
+    if not email and not client_uuid:
+        return None
+
+    for srv in await get_servers(active_only=True):
         xui = XUIClient(srv["url"], srv["username"], srv["password"], srv.get("sub_path") or "", srv.get("api_token", ""))
         try:
             inbounds = await xui.get_inbounds()
             for inbound in inbounds:
-                try:
-                    settings = json.loads(inbound.get("settings") or "{}")
-                except Exception:
-                    continue
+                settings = _json_obj(inbound.get("settings"), {})
+                for c in settings.get("clients", []) or []:
+                    c_email = (c.get("email") or "").strip()
+                    c_uuid = (c.get("id") or c.get("password") or c.get("auth") or "").strip()
+                    if email and c_email == email:
+                        matched = True
+                    elif client_uuid and c_uuid == client_uuid:
+                        matched = True
+                    else:
+                        matched = False
+                    if not matched:
+                        continue
 
+                    traffic = await xui.get_client_traffic(c_email) if c_email else None
+                    total = int((traffic or {}).get("total") or c.get("totalGB") or 0)
+                    down = int((traffic or {}).get("down") or c.get("down") or 0)
+                    up = int((traffic or {}).get("up") or c.get("up") or 0)
+                    expire_ms = int((traffic or {}).get("expiryTime") or c.get("expiryTime") or 0)
+                    enabled = bool((traffic or {}).get("enable", c.get("enable", True)))
+                    return {
+                        "server_name": srv.get("name") or srv.get("url"),
+                        "server_id": srv.get("id"),
+                        "inbound_id": int(inbound.get("id") or srv.get("inbound_id") or 1),
+                        "protocol": inbound.get("protocol") or "-",
+                        "email": c_email or email,
+                        "uuid": c_uuid or client_uuid,
+                        "total": total,
+                        "used": down + up,
+                        "down": down,
+                        "up": up,
+                        "remaining": max(0, total - down - up) if total > 0 else 0,
+                        "expire_ms": expire_ms,
+                        "enabled": enabled,
+                    }
+        finally:
+            await xui.close()
+    return None
+
+
+def _format_remote_config_status(info: dict) -> str:
+    total = int(info.get("total") or 0)
+    used = int(info.get("used") or 0)
+    remaining = int(info.get("remaining") or 0)
+    expire_ms = int(info.get("expire_ms") or 0)
+    dl = days_left(expire_ms)
+    if dl < 0:
+        dl_text = "نامحدود"
+    elif dl == 0:
+        dl_text = "منقضی یا کمتر از یک روز"
+    else:
+        dl_text = f"{dl} روز"
+    if total > 0:
+        traffic = (
+            f"مصرف شده: {fmt_bytes(used)}\n"
+            f"باقی‌مانده: {fmt_bytes(remaining)}\n"
+            f"حجم کل: {fmt_bytes(total)}"
+        )
+    else:
+        traffic = "حجم کل: نامحدود"
+    status = "فعال" if info.get("enabled", True) else "غیرفعال"
+    return (
+        "🔎 اطلاعات کانفیگ\n\n"
+        f"ایمیل: {info.get('email') or '-'}\n"
+        f"UUID/Auth: {info.get('uuid') or '-'}\n"
+        f"سرور: {info.get('server_name') or '-'}\n"
+        f"Inbound: {info.get('inbound_id') or '-'} | Protocol: {info.get('protocol') or '-'}\n"
+        f"وضعیت: {status}\n\n"
+        f"{traffic}\n"
+        f"زمان باقی‌مانده: {dl_text}"
+    )
+
+
+async def _find_remote_legacy_client(email: str, client_uuid: str) -> dict | None:
+    """Search all active servers/inbounds and return matching client meta for legacy claim import."""
+    email = (email or "").strip()
+    client_uuid = (client_uuid or "").strip()
+    servers = await get_servers(active_only=True)
+    for srv in servers:
+        xui = XUIClient(srv["url"], srv["username"], srv["password"], srv.get("sub_path") or "", srv.get("api_token", ""))
+        try:
+            if email:
+                api_client = await xui.get_client(email)
+                if isinstance(api_client, dict):
+                    inbound_ids = api_client.get("inboundIds") or []
+                    inbound_id = int((inbound_ids[0] if inbound_ids else 0) or srv.get("inbound_id") or 1)
+                    api_uuid = (api_client.get("id") or api_client.get("password") or api_client.get("auth") or client_uuid or "").strip()
+                    if api_uuid or not client_uuid:
+                        total_bytes = int(api_client.get("totalGB") or 0)
+                        expire_ms = int(api_client.get("expiryTime") or 0)
+                        duration_days = max(1, int((expire_ms - int(time.time() * 1000)) / 86400000)) if expire_ms > 0 else 0
+                        return {
+                            "server_id": srv["id"],
+                            "inbound_id": inbound_id,
+                            "uuid": api_uuid or client_uuid or email,
+                            "email": (api_client.get("email") or email).strip(),
+                            "traffic_gb": round(total_bytes / (1024 ** 3), 2) if total_bytes > 0 else 0,
+                            "duration_days": duration_days,
+                            "expire_ms": expire_ms,
+                            "is_active": 1 if api_client.get("enable", True) else 0,
+                        }
+
+            inbounds = await xui.get_inbounds()
+            for inbound in inbounds:
+                settings = _json_obj(inbound.get("settings"), {})
                 clients = settings.get("clients") or []
                 for c in clients:
                     c_email = (c.get("email") or "").strip()
-                    c_uuid = (c.get("id") or c.get("password") or "").strip()
-                    if email and c_email != email:
+                    c_uuid = (c.get("id") or c.get("password") or c.get("auth") or "").strip()
+                    if not email and not client_uuid:
                         continue
-                    if client_uuid and c_uuid != client_uuid and (not email):
+                    matched_email = bool(email and c_email == email)
+                    matched_uuid = bool(client_uuid and c_uuid == client_uuid)
+                    if not (matched_email or matched_uuid):
                         continue
 
                     total_bytes = int(c.get("totalGB") or 0)
                     traffic_gb = round(total_bytes / (1024 ** 3), 2) if total_bytes > 0 else 0
-                    expire_ts = int((c.get("expiryTime") or 0) / 1000) if (c.get("expiryTime") or 0) > 0 else 0
-                    if expire_ts > 0:
-                        duration_days = max(1, int((expire_ts - int(time.time())) / 86400))
+                    expire_ms = int(c.get("expiryTime") or 0)
+                    if expire_ms > 0:
+                        duration_days = max(1, int((expire_ms - int(time.time() * 1000)) / 86400000))
                     else:
                         duration_days = 0
 
                     return {
                         "server_id": srv["id"],
                         "inbound_id": int(inbound.get("id") or srv.get("inbound_id") or 1),
-                        "uuid": c_uuid,
+                        "uuid": c_uuid or client_uuid or c_email,
                         "email": c_email or email,
                         "traffic_gb": traffic_gb,
                         "duration_days": duration_days,
-                        "expire_ts": expire_ts,
+                        "expire_ms": expire_ms,
                         "is_active": 1 if c.get("enable", True) else 0,
                     }
         finally:
@@ -1122,23 +1442,27 @@ async def legacy_claim_approve(cb: CallbackQuery):
         return
     cid = int(cb.data.split(":")[1])
     claim = await get_legacy_claim(cid)
-    if not claim or claim.get("status") != "pending":
-        await cb.answer("این درخواست قبلاً بررسی شده.", show_alert=True)
+    if not claim:
+        await cb.answer("درخواست پیدا نشد.", show_alert=True)
+        return
+    if claim.get("status") == "approved":
+        await cb.answer("این درخواست قبلاً تایید شده است.", show_alert=True)
         return
 
     email = (claim.get("email") or "").strip()
-    if not email:
-        await update_legacy_claim(cid, status="rejected", reviewer_id=cb.from_user.id, reviewed_at=datetime.now().isoformat(), admin_note="missing_email")
-        await cb.message.edit_text("❌ ایمیل کانفیگ در لینک پیدا نشد؛ درخواست رد شد.")
+    claim_uuid = (claim.get("uuid") or "").strip()
+    if not email and not claim_uuid:
+        await update_legacy_claim(cid, status="rejected", reviewer_id=cb.from_user.id, reviewed_at=datetime.now().isoformat(), admin_note="missing_identity")
+        await cb.message.edit_text("❌ ایمیل یا UUID کانفیگ در لینک پیدا نشد؛ درخواست رد شد.")
         return
 
     cfg = await get_config_by_email(email) if email else None
-    if not cfg and (claim.get("uuid") or "").strip():
-        cfg = await get_config_by_uuid(claim["uuid"].strip())
+    if not cfg and claim_uuid:
+        cfg = await get_config_by_uuid(claim_uuid)
 
     # اگر داخل DB نبود، مستقیم از همه سرورها/اینباندها جستجو و ایمپورت می‌کنیم.
     if not cfg:
-        remote = await _find_remote_legacy_client(email, (claim.get("uuid") or "").strip())
+        remote = await _find_remote_legacy_client(email, claim_uuid)
         if remote and remote.get("email") and remote.get("uuid"):
             try:
                 cfg_id = await save_config(
@@ -1149,7 +1473,7 @@ async def legacy_claim_approve(cb: CallbackQuery):
                     remote["inbound_id"],
                     remote["traffic_gb"],
                     remote["duration_days"],
-                    remote["expire_ts"],
+                    remote["expire_ms"],
                 )
                 cfg = await get_config(cfg_id)
             except Exception:
@@ -1319,8 +1643,12 @@ async def topup_approve(cb: CallbackQuery):
     except Exception:
         pass
     try:
-        await cb.message.edit_caption((cb.message.caption or "") + "\n\n✅ تایید شد")
+        await cb.message.edit_caption((cb.message.caption or "") + "\n\n✅ تایید شد", reply_markup=None, parse_mode=None)
     except Exception:
+        try:
+            await cb.message.edit_reply_markup(reply_markup=None)
+        except Exception:
+            pass
         await cb.message.answer("✅ افزایش اعتبار تایید شد.")
     await cb.answer("انجام شد")
 
@@ -1350,7 +1678,11 @@ async def topup_reject(cb: CallbackQuery):
     except Exception:
         pass
     try:
-        await cb.message.edit_caption((cb.message.caption or "") + "\n\n❌ رد شد")
+        await cb.message.edit_caption((cb.message.caption or "") + "\n\n❌ رد شد", reply_markup=None, parse_mode=None)
     except Exception:
+        try:
+            await cb.message.edit_reply_markup(reply_markup=None)
+        except Exception:
+            pass
         await cb.message.answer("❌ درخواست افزایش اعتبار رد شد.")
     await cb.answer("رد شد")

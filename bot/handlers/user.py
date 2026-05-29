@@ -1,6 +1,8 @@
 import uuid as _uuid
 import time
 import json
+import base64
+import binascii
 import aiosqlite
 from urllib.parse import urlparse, parse_qs, unquote
 from datetime import datetime, timedelta, date
@@ -34,6 +36,8 @@ from core.database import (
     create_custom_order,
     get_available_servers,
     get_legacy_claim_by_key,
+    get_legacy_claim_by_identity,
+    update_legacy_claim,
     create_legacy_claim,
     get_user_balance,
     create_topup_request,
@@ -122,6 +126,43 @@ async def _get_card_info():
     card_holder = await get_setting("card_holder", CARD_HOLDER)
     return card_bank, card_number, card_holder
 
+
+def _safe_user_config_name(value: str) -> str:
+    cleaned = "".join(ch for ch in (value or "").strip() if ch.isalnum() or ch in ("_", "-", "."))
+    return cleaned[:24]
+
+
+async def _calc_renew_price(user_id: int, traffic_gb: float, duration_days: int) -> int:
+    for pkg in await get_packages(active_only=True):
+        if abs(float(pkg.get("traffic_gb") or 0) - float(traffic_gb or 0)) < 0.001 and int(pkg.get("duration_days") or 0) == int(duration_days or 0):
+            return int(pkg.get("price") or 0)
+    pricing = await get_user_pricing(user_id)
+    base = int(float(traffic_gb or 0) * int(pricing.get("price_per_gb") or 0))
+    if base <= 0:
+        base = int(float(traffic_gb or 0) * 10000)
+    discount = float(pricing.get("discount_percent") or 0)
+    return int(base * (100 - discount) / 100)
+
+
+async def _payment_text(oid: int, title: str, traffic_gb: float, duration_days: int, price: int) -> str:
+    card_bank, card_number, card_holder = await _get_card_info()
+    return (
+        f" *سفارش شما — #{oid}*\n"
+        f"━━━━━━━━━━━━━━\n"
+        f" {title}\n"
+        f" {traffic_gb} GB | {duration_days} روز\n"
+        f" مبلغ: *{_fmt_toman(price)} تومان*\n\n"
+        f"━━━━━━━━━━━━━━\n"
+        f" *پرداخت کارت به کارت:*\n\n"
+        f" {card_bank}\n"
+        f" `{card_number}`\n"
+        f" به نام: {card_holder}\n\n"
+        f" *مراحل:*\n"
+        f"1. مبلغ را به کارت بالا واریز کن\n"
+        f"2. روی «ارسال فیش» بزن و عکس فیش را بفرست\n"
+        f"3. پس از تأیید، سرویس فعال/تمدید می‌شود\n\n"
+        f"⏰ مهلت پرداخت: ۳۰ دقیقه"
+    )
 
 
 
@@ -241,6 +282,14 @@ async def flow_back_user(cb: CallbackQuery, state: FSMContext):
             await cb.message.edit_text("⬅️ برگشتید به مرحله پرداخت.", reply_markup=payment_kb(oid), parse_mode="Markdown")
         else:
             await cb.message.edit_text("⬅️ برگشتید.")
+    elif cur.endswith("BuyService:custom_name"):
+        await state.clear()
+        pkgs = await get_packages(active_only=True)
+        await cb.message.edit_text(
+            "🛒 *پکیج مورد نظر را انتخاب کنید:*",
+            reply_markup=packages_kb(pkgs),
+            parse_mode="Markdown",
+        )
     elif cur.endswith("LegacySync:waiting_link"):
         await state.clear()
         user = await get_or_create_user(cb.from_user.id, cb.from_user.username, cb.from_user.full_name)
@@ -372,6 +421,39 @@ async def _send_config_status(target, config_id: int):
         await target.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
 
 
+@router.callback_query(F.data.startswith("cfg_renew:"))
+async def renew_config_start(cb: CallbackQuery):
+    if not await _ensure_channel_membership(cb):
+        return
+    cid = int(cb.data.split(":")[1])
+    user = await get_or_create_user(cb.from_user.id, cb.from_user.username, cb.from_user.full_name)
+    cfg = await get_config(cid)
+    if not cfg or int(cfg.get("user_id") or 0) != int(user["id"]):
+        await cb.answer("این سرویس برای شما پیدا نشد.", show_alert=True)
+        return
+
+    traffic_gb = float(cfg.get("traffic_gb") or 0)
+    duration_days = int(cfg.get("duration_days") or 0)
+    if traffic_gb <= 0 or duration_days <= 0:
+        await cb.answer("این سرویس برای تمدید خودکار قابل محاسبه نیست. با پشتیبانی هماهنگ کنید.", show_alert=True)
+        return
+
+    price = await _calc_renew_price(user["id"], traffic_gb, duration_days)
+    oid = await create_custom_order(
+        user["id"],
+        f"تمدید {cfg['email']}",
+        traffic_gb,
+        duration_days,
+        price,
+        notes=f"renew_config:{cid}",
+    )
+    await update_order(oid, renew_config_id=cid)
+    text = await _payment_text(oid, f"تمدید سرویس {cfg['email']}", traffic_gb, duration_days, price)
+    text += "\n\nبعد از تأیید، همین کانفیگ تمدید می‌شود و حجم مصرفی آن ریست می‌شود."
+    await cb.message.answer(text, reply_markup=payment_kb(oid), parse_mode="Markdown")
+    await cb.answer()
+
+
 @router.callback_query(F.data.startswith("cfg_link:"))
 async def send_config_link(cb: CallbackQuery):
     if not await _ensure_channel_membership(cb):
@@ -491,37 +573,56 @@ async def buy_service(msg: Message):
 
 
 @router.callback_query(F.data.startswith("buy:"))
-async def buy_pkg_selected(cb: CallbackQuery):
+async def buy_pkg_selected(cb: CallbackQuery, state: FSMContext):
     pid = int(cb.data.split(":")[1])
     pkg = await get_package(pid)
     if not pkg or not pkg["is_active"]:
         await cb.answer("❌ این پکیج در دسترس نیست.", show_alert=True)
         return
 
-    user = await get_or_create_user(cb.from_user.id)
-    oid = await create_order(user["id"], pid)
-
-    price = _fmt_toman(pkg['price'])
-    card_bank, card_number, card_holder = await _get_card_info()
-
-    text = (
-        f" *سفارش شما — #{oid}*\n"
-        f"━━━━━━━━━━━━━━\n"
-        f" {pkg['name']}\n"
-        f" {pkg['traffic_gb']} GB | {pkg['duration_days']} روز\n"
-        f" مبلغ: *{price} تومان*\n\n"
-        f"━━━━━━━━━━━━━━\n"
-        f" *پرداخت کارت به کارت:*\n\n"
-        f" {card_bank}\n"
-        f" `{card_number}`\n"
-        f" به نام: {card_holder}\n\n"
-        f" *مراحل:*\n"
-        f"۱. مبلغ را به کارت بالا واریز کن\n"
-        f"۲. روی «ارسال فیش» بزن و عکس فیش را بفرست\n"
-        f"۳. پس از تأیید، لینک کانفیگ ارسال می‌شه ⚡\n\n"
-        f"⏰ مهلت پرداخت: ۳۰ دقیقه"
+    await state.set_state(BuyService.custom_name)
+    await state.update_data(package_id=pid)
+    await cb.message.edit_text(
+        "✍️ اگر می‌خواهید انتهای اسم کانفیگ یک نام دلخواه اضافه شود، همینجا بفرستید.\n\n"
+        "مثال: `mobile` یا `ali`\n"
+        "اگر نمی‌خواهید، `-` را بفرستید.\n\n"
+        "اسم اصلی ربات حفظ می‌شود و نام دلخواه شما بعد از آن می‌آید.",
+        parse_mode="Markdown",
+        reply_markup=flow_cancel_kb(),
     )
-    await cb.message.edit_text(text, reply_markup=payment_kb(oid), parse_mode="Markdown")
+    await cb.answer()
+
+
+@router.message(BuyService.custom_name)
+async def buy_custom_name(msg: Message, state: FSMContext):
+    data = await state.get_data()
+    pid = int(data.get("package_id") or 0)
+    pkg = await get_package(pid)
+    if not pkg or not pkg["is_active"]:
+        await state.clear()
+        await msg.answer("❌ این پکیج دیگر در دسترس نیست.")
+        return
+
+    raw_name = (msg.text or "").strip()
+    cmd = raw_name.split()[0].split("@", 1)[0].lower() if raw_name else ""
+    if cmd == "/cancel":
+        await state.clear()
+        user = await get_or_create_user(msg.from_user.id, msg.from_user.username, msg.from_user.full_name)
+        await msg.answer("❌ عملیات لغو شد.", reply_markup=user_menu(include_wholesale=bool(user.get("is_wholesale", 0))))
+        return
+    custom_name = "" if raw_name == "-" else _safe_user_config_name(raw_name)
+    if raw_name != "-" and not custom_name:
+        await msg.answer("❌ نام فقط می‌تواند شامل حرف، عدد، خط تیره و آندرلاین باشد. دوباره بفرستید یا `-` را بفرستید.", parse_mode="Markdown")
+        return
+
+    user = await get_or_create_user(msg.from_user.id, msg.from_user.username, msg.from_user.full_name)
+    oid = await create_order(user["id"], pid, custom_config_name=custom_name)
+
+    text = await _payment_text(oid, pkg["name"], pkg["traffic_gb"], pkg["duration_days"], int(pkg["price"]))
+    if custom_name:
+        text += f"\n\nنام دلخواه انتهای کانفیگ: `{custom_name}`"
+    await state.clear()
+    await msg.answer(text, reply_markup=payment_kb(oid), parse_mode="Markdown")
 
 
 
@@ -553,24 +654,33 @@ async def pay_with_wallet(cb: CallbackQuery):
         return
 
     await add_user_balance(user["id"], -price, kind="purchase", note=f"order:{oid}", actor_telegram_id=cb.from_user.id)
-    await update_order(oid, notes=((order.get("notes") or "") + "\nwallet_payment=1").strip())
-    await cb.answer("✅ پرداخت از کیف پول انجام شد. کانفیگ در حال ساخت است...", show_alert=True)
+    await update_order(oid, status="receipt_submitted", notes=((order.get("notes") or "") + "\nwallet_payment=1").strip())
+    await cb.answer("✅ پرداخت از کیف پول انجام شد. سفارش در حال پردازش است...", show_alert=True)
 
-    servers = [sv for sv in await get_available_servers()]
-    if not servers:
-        await update_order(oid, status="receipt_submitted")
-        await cb.message.answer("پرداخت انجام شد، اما سرور فعالی برای ساخت کانفیگ پیدا نشد. سفارش برای بررسی ادمین ارسال شد.")
-        return
+    if int(order.get("renew_config_id") or 0) > 0:
+        cfg = await get_config(int(order["renew_config_id"]))
+        if not cfg:
+            await add_user_balance(user["id"], price, kind="refund", note=f"renew_failed:{oid}", actor_telegram_id=0)
+            await update_order(oid, status="pending_payment")
+            await cb.message.answer("سرویس برای تمدید پیدا نشد و مبلغ به کیف پول شما برگشت داده شد.")
+            return
+        server_id = int(cfg["server_id"])
+    else:
+        servers = [sv for sv in await get_available_servers()]
+        if not servers:
+            await cb.message.answer("پرداخت انجام شد، اما سرور فعالی برای ساخت کانفیگ پیدا نشد. سفارش برای بررسی ادمین ارسال شد.")
+            return
 
-    default_sid_raw = await get_setting("default_server_id", "0")
-    try:
-        default_sid = int(default_sid_raw or 0)
-    except (TypeError, ValueError):
-        default_sid = 0
-    server = next((sv for sv in servers if sv["id"] == default_sid), servers[0])
+        default_sid_raw = await get_setting("default_server_id", "0")
+        try:
+            default_sid = int(default_sid_raw or 0)
+        except (TypeError, ValueError):
+            default_sid = 0
+        server = next((sv for sv in servers if sv["id"] == default_sid), servers[0])
+        server_id = int(server["id"])
 
     from bot.handlers.admin import _do_approve
-    ok = await _do_approve(cb, oid, int(server["id"]))
+    ok = await _do_approve(cb, oid, server_id)
     if not ok:
         await add_user_balance(user["id"], price, kind="refund", note=f"order_failed:{oid}", actor_telegram_id=0)
         await update_order(oid, status="pending_payment")
@@ -801,19 +911,64 @@ async def wholesale_naming_start(msg: Message, state: FSMContext):
 
 
 def _extract_config_identity(link: str):
+    def decode_b64_text(value: str) -> str:
+        raw = (value or "").strip()
+        raw += "=" * (-len(raw) % 4)
+        for decoder in (base64.urlsafe_b64decode, base64.b64decode):
+            try:
+                return decoder(raw.encode()).decode("utf-8", "ignore")
+            except (binascii.Error, UnicodeDecodeError, ValueError):
+                continue
+        return ""
+
     try:
-        p = urlparse(link.strip())
-        if p.scheme not in ("vless", "vmess", "trojan", "ss"):
+        raw_link = link.strip()
+        if raw_link.lower().startswith("vmess://"):
+            payload = raw_link[8:].split("#", 1)[0].split("?", 1)[0]
+            decoded = decode_b64_text(payload)
+            try:
+                obj = json.loads(decoded)
+            except Exception:
+                obj = {}
+            raw_uuid = (obj.get("id") or "").strip()
+            email = (obj.get("ps") or obj.get("remark") or obj.get("email") or "").strip()
+            if not raw_uuid and not email:
+                return None, None, None
+            key_part = raw_uuid or email
+            return f"vmess|{key_part}".lower(), email, raw_uuid
+
+        p = urlparse(raw_link)
+        if p.scheme not in ("vless", "vmess", "trojan", "ss", "hysteria", "hysteria2", "hy2"):
             return None, None, None
         email = unquote((p.fragment or "").strip())
-        raw_uuid = p.username or ""
+        raw_uuid = unquote((p.username or "").strip())
         q = parse_qs(p.query or "")
         if not email and "remark" in q and q["remark"]:
-            email = q["remark"][0]
-        key = f"{p.scheme}|{raw_uuid}|{email}".strip().lower()
+            email = unquote(q["remark"][0])
+        if not email and "email" in q and q["email"]:
+            email = unquote(q["email"][0])
+        key_part = raw_uuid or email or p.netloc or raw_link
+        key = f"{p.scheme}|{key_part}".strip().lower()
         return key, email, raw_uuid
     except Exception:
         return None, None, None
+
+
+async def _notify_legacy_claim_admins(bot: Bot, claim_id: int, from_user, email: str):
+    targets = list(dict.fromkeys([*ADMIN_IDS, *(await get_all_admin_telegram_ids())]))
+    for aid in targets:
+        try:
+            await bot.send_message(
+                aid,
+                "🧾 درخواست سینک کانفیگ قدیمی\n\n"
+                f"کاربر: {from_user.full_name or '-'} (@{from_user.username or '-'})\n"
+                f"Telegram ID: {from_user.id}\n"
+                f"email: {email or '-'}\n"
+                f"claim: #{claim_id}",
+                reply_markup=legacy_claim_admin_kb(claim_id),
+            )
+        except Exception:
+            pass
 
 
 @router.message(F.text == "🔗 سینک کانفیگ قبلی")
@@ -852,7 +1007,7 @@ async def legacy_sync_submit(msg: Message, state: FSMContext):
         await msg.answer("❌ لینک معتبر نیست. لطفاً لینک کامل کانفیگ را ارسال کنید.")
         return
 
-    dup = await get_legacy_claim_by_key(key)
+    dup = await get_legacy_claim_by_key(key) or await get_legacy_claim_by_identity(email=email, uuid=raw_uuid)
     if dup:
         status = dup.get("status", "pending")
         if status == "approved":
@@ -860,26 +1015,29 @@ async def legacy_sync_submit(msg: Message, state: FSMContext):
         elif status == "pending":
             await msg.answer("⏳ برای این کانفیگ قبلاً درخواست ثبت شده و در حال بررسی است.")
         else:
-            await msg.answer("⚠️ این کانفیگ قبلاً بررسی شده است. برای بررسی مجدد با پشتیبانی در تماس باشید.")
+            user = await get_or_create_user(msg.from_user.id, msg.from_user.username, msg.from_user.full_name)
+            await update_legacy_claim(
+                dup["id"],
+                user_id=user["id"],
+                telegram_id=msg.from_user.id,
+                config_link=link,
+                config_key=key,
+                email=email,
+                uuid=raw_uuid,
+                status="pending",
+                admin_note="retry_by_user",
+                reviewed_at=None,
+                reviewer_id=0,
+            )
+            await _notify_legacy_claim_admins(msg.bot, dup["id"], msg.from_user, email)
+            await state.clear()
+            await msg.answer("✅ درخواست قبلی دوباره برای بررسی ادمین ارسال شد.")
         return
 
     user = await get_or_create_user(msg.from_user.id, msg.from_user.username, msg.from_user.full_name)
     claim_id = await create_legacy_claim(user["id"], msg.from_user.id, link, key, email=email, uuid=raw_uuid)
 
-    for aid in ADMIN_IDS:
-        try:
-            await msg.bot.send_message(
-                aid,
-                f"🧷 *درخواست سینک کانفیگ قدیمی*\n\n"
-                f"👤 {msg.from_user.full_name or '—'} (@{msg.from_user.username or '—'})\n"
-                f"🆔 `{msg.from_user.id}`\n"
-                f"📧 email: `{email or '—'}`\n"
-                f"🧾 claim: #{claim_id}",
-                parse_mode="Markdown",
-                reply_markup=legacy_claim_admin_kb(claim_id),
-            )
-        except Exception:
-            pass
+    await _notify_legacy_claim_admins(msg.bot, claim_id, msg.from_user, email)
 
     await state.clear()
     await msg.answer("✅ درخواست شما ثبت شد. پس از تایید ادمین، سرویس به حساب شما متصل می‌شود.")

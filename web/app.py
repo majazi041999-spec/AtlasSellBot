@@ -73,6 +73,8 @@ from core.database import (
     update_server,
     update_user,
     reset_legacy_claims,
+    claim_order_for_approval,
+    clear_config_alerts,
 )
 from core.panel_content import (
     BOT_TEXT_DEFAULTS,
@@ -307,16 +309,16 @@ async def server_toggle(request: Request, sid: int):
 async def server_edit(
     request: Request,
     sid: int,
-    name: str = Form(...),
-    url: str = Form(...),
-    username: str = Form(...),
-    password: str = Form(...),
+    name: Optional[str] = Form(None),
+    url: Optional[str] = Form(None),
+    username: Optional[str] = Form(None),
+    password: str = Form(""),
     api_token: str = Form(""),
-    sub_path: str = Form(""),
-    inbound_id: int = Form(1),
-    inbound_ids: str = Form(""),
-    note: str = Form(""),
-    max_active_configs: int = Form(0),
+    sub_path: Optional[str] = Form(None),
+    inbound_id: Optional[int] = Form(None),
+    inbound_ids: Optional[str] = Form(None),
+    note: Optional[str] = Form(None),
+    max_active_configs: Optional[int] = Form(None),
 ):
     if not _auth(request):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
@@ -325,15 +327,15 @@ async def server_edit(
         return JSONResponse({"error": "not found"}, status_code=404)
 
     updates = dict(
-        name=name,
-        url=url.rstrip("/"),
-        username=username,
+        name=(name if name is not None and name.strip() else srv.get("name", "")),
+        url=((url if url is not None and url.strip() else srv.get("url", "")).rstrip("/")),
+        username=(username if username is not None and username.strip() else srv.get("username", "")),
         password=password or srv.get("password", ""),
-        sub_path=sub_path.strip("/"),
-        inbound_id=inbound_id,
-        note=note,
-        inbound_ids=inbound_ids,
-        max_active_configs=max_active_configs,
+        sub_path=(sub_path if sub_path is not None else srv.get("sub_path", "")).strip("/"),
+        inbound_id=inbound_id if inbound_id is not None else int(srv.get("inbound_id") or 1),
+        note=note if note is not None else srv.get("note", ""),
+        inbound_ids=inbound_ids if inbound_ids is not None else srv.get("inbound_ids", ""),
+        max_active_configs=max_active_configs if max_active_configs is not None else int(srv.get("max_active_configs") or 0),
     )
     if api_token.strip():
         updates["api_token"] = api_token.strip()
@@ -478,15 +480,94 @@ async def order_approve_web(request: Request, oid: int):
     order = await get_order(oid)
     if not order:
         return RedirectResponse(f"/{S}/orders", status_code=302)
+    if order.get("status") == "approved":
+        return RedirectResponse(f"/{S}/orders", status_code=302)
+    if order.get("status") != "receipt_submitted":
+        return RedirectResponse(f"/{S}/orders", status_code=302)
+    if not await claim_order_for_approval(oid):
+        return RedirectResponse(f"/{S}/orders", status_code=302)
+
+    if int(order.get("renew_config_id") or 0) > 0:
+        cfg = await get_config(int(order["renew_config_id"]))
+        if not cfg:
+            await update_order(oid, status="receipt_submitted")
+            return RedirectResponse(f"/{S}/orders", status_code=302)
+
+        duration = int(order.get("duration_days") or cfg.get("duration_days") or 0)
+        traffic_gb = float(order.get("traffic_gb") or cfg.get("traffic_gb") or 0)
+        now_ms = int(time.time() * 1000)
+        base_expire = int(cfg.get("expire_timestamp") or 0)
+        if base_expire < now_ms:
+            base_expire = now_ms
+        new_expire_ms = base_expire + duration * 86400000 if duration > 0 else 0
+
+        cli = XUIClient(cfg["server_url"], cfg["srv_user"], cfg["srv_pass"], cfg["sub_path"], cfg.get("srv_api_token", ""))
+        try:
+            ok = await cli.update_client(cfg["inbound_id"], cfg["uuid"], cfg["email"], traffic_gb, new_expire_ms, True)
+            if ok:
+                await cli.reset_client_traffic(cfg["inbound_id"], cfg["email"])
+                link = await cli.get_client_link(cfg["inbound_id"], cfg["email"])
+                sub = await cli.get_subscription_link(cfg["inbound_id"], cfg["email"])
+            else:
+                link = sub = None
+        finally:
+            await cli.close()
+
+        if not ok:
+            await update_order(oid, status="receipt_submitted")
+            return RedirectResponse(f"/{S}/orders", status_code=302)
+
+        await update_config(
+            cfg["id"],
+            traffic_gb=traffic_gb,
+            duration_days=duration,
+            expire_timestamp=new_expire_ms,
+            is_active=1,
+            starts_on_first_use=0,
+        )
+        await clear_config_alerts(cfg["id"])
+        await update_order(
+            oid,
+            status="approved",
+            server_id=cfg["server_id"],
+            config_email=cfg["email"],
+            inbound_id=cfg["inbound_id"],
+            approved_at=datetime.now().isoformat(),
+        )
+        if BOT_TOKEN and len(BOT_TOKEN) > 20:
+            bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.MARKDOWN))
+            try:
+                text = f"✅ سرویس شما تمدید شد.\n\nکانفیگ: {cfg['email']}\nحجم: {traffic_gb} GB\nمدت تمدید: {duration} روز\n"
+                if link:
+                    text += f"\nلینک اتصال:\n{link}\n"
+                if sub:
+                    text += f"\nلینک سابسکریپشن:\n{sub}\n"
+                await bot.send_message(order["telegram_id"], text, parse_mode=None)
+                if link:
+                    try:
+                        qr = build_qr_image(link, footer_text=await get_setting("channel_username", "AtlasChannel"))
+                        await bot.send_photo(
+                            order["telegram_id"],
+                            BufferedInputFile(qr.getvalue(), filename="atlas-qr.png"),
+                            caption=f"QR: {cfg['email']}",
+                            parse_mode=None,
+                        )
+                    except Exception:
+                        pass
+            finally:
+                await bot.session.close()
+        return RedirectResponse(f"/{S}/orders", status_code=302)
 
     servers = [sv for sv in await get_servers() if await server_has_capacity(sv["id"])]
     if not servers:
+        await update_order(oid, status="receipt_submitted")
         return RedirectResponse(f"/{S}/orders", status_code=302)
     sid = servers[0]["id"]
     server = await get_server(sid)
 
     user = await get_user_by_telegram(order["telegram_id"])
     if not user:
+        await update_order(oid, status="receipt_submitted")
         return RedirectResponse(f"/{S}/orders", status_code=302)
 
     bulk_count = int(order.get("bulk_count") or 1)
@@ -497,8 +578,10 @@ async def order_approve_web(request: Request, oid: int):
 
     cli = XUIClient(server["url"], server["username"], server["password"], server["sub_path"], server.get("api_token", ""))
     target_inbound = int(server.get("inbound_id") or 1)
+    suffix = "".join(ch for ch in (order.get("custom_config_name") or "").strip() if ch.isalnum() or ch in ("_", "-", "."))[:24]
     for i in range(1, max(1, bulk_count) + 1):
-        email = f"u{order['telegram_id']}_{i}_{int(time.time())}" if bulk_count > 1 else f"u{order['telegram_id']}_{int(time.time())}"
+        base_email = f"u{order['telegram_id']}_{i}_{int(time.time())}" if bulk_count > 1 else f"u{order['telegram_id']}_{int(time.time())}"
+        email = f"{base_email}_{suffix}" if suffix else base_email
         cuuid = str(uuid.uuid4())
         ok = await cli.add_client(target_inbound, cuuid, email, each_gb, duration, starts_on_first_use=False)
         if not ok:
@@ -546,6 +629,8 @@ async def order_approve_web(request: Request, oid: int):
                             pass
             finally:
                 await bot.session.close()
+    else:
+        await update_order(oid, status="receipt_submitted")
     return RedirectResponse(f"/{S}/orders", status_code=302)
 
 

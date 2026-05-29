@@ -64,6 +64,8 @@ CREATE TABLE IF NOT EXISTS orders (
     created_at TEXT DEFAULT (datetime('now','localtime')),
     approved_at TEXT,
     notes TEXT,
+    custom_config_name TEXT DEFAULT '',
+    renew_config_id INTEGER DEFAULT 0,
     FOREIGN KEY(user_id) REFERENCES users(id),
     FOREIGN KEY(package_id) REFERENCES packages(id)
 );
@@ -135,6 +137,16 @@ CREATE TABLE IF NOT EXISTS legacy_claims (
     FOREIGN KEY(user_id) REFERENCES users(id)
 );
 
+CREATE TABLE IF NOT EXISTS config_alerts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    config_id INTEGER NOT NULL,
+    alert_type TEXT NOT NULL,
+    threshold TEXT NOT NULL,
+    sent_at TEXT DEFAULT (datetime('now','localtime')),
+    UNIQUE(config_id, alert_type, threshold),
+    FOREIGN KEY(config_id) REFERENCES configs(id)
+);
+
 INSERT OR IGNORE INTO settings VALUES
     ('welcome_message','به Atlas Account خوش آمدید! 🌐\nبهترین سرویس VPN با سرعت بالا.'),
     ('support_username',''),
@@ -150,6 +162,7 @@ async def init_db():
             if s:
                 await db.execute(s)
         await _ensure_columns(db)
+        await db.execute("UPDATE orders SET status='receipt_submitted' WHERE status='processing'")
         await db.commit()
 
 
@@ -184,6 +197,8 @@ async def _ensure_columns(db):
             ("custom_price", "INTEGER DEFAULT 0"),
             ("bulk_count", "INTEGER DEFAULT 1"),
             ("bulk_each_gb", "REAL DEFAULT 0"),
+            ("custom_config_name", "TEXT DEFAULT ''"),
+            ("renew_config_id", "INTEGER DEFAULT 0"),
         ],
     }
     for table, cols in migrations.items():
@@ -551,11 +566,11 @@ async def create_custom_order(user_id: int, name: str, total_traffic_gb: float, 
         )
         await db.commit()
         return c.lastrowid
-async def create_order(user_id: int, package_id: int) -> int:
+async def create_order(user_id: int, package_id: int, custom_config_name: str = '') -> int:
     async with aiosqlite.connect(DB_PATH) as db:
         c = await db.execute(
-            "INSERT INTO orders(user_id,package_id,status) VALUES(?,?,'pending_payment')",
-            (user_id, package_id)
+            "INSERT INTO orders(user_id,package_id,status,custom_config_name) VALUES(?,?,'pending_payment',?)",
+            (user_id, package_id, custom_config_name)
         )
         await db.commit()
         return c.lastrowid
@@ -584,6 +599,16 @@ async def update_order(oid: int, **kw):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(f"UPDATE orders SET {fields} WHERE id=?", (*kw.values(), oid))
         await db.commit()
+
+
+async def claim_order_for_approval(oid: int) -> bool:
+    async with aiosqlite.connect(DB_PATH) as db:
+        c = await db.execute(
+            "UPDATE orders SET status='processing' WHERE id=? AND status='receipt_submitted'",
+            (oid,),
+        )
+        await db.commit()
+        return (c.rowcount or 0) > 0
 
 async def get_pending_orders() -> List[Dict]:
     async with aiosqlite.connect(DB_PATH) as db:
@@ -670,8 +695,8 @@ async def get_user_configs(user_id: int) -> List[Dict]:
         async with db.execute("""
             SELECT c.*,s.name as server_name
             FROM configs c JOIN servers s ON c.server_id=s.id
-            WHERE c.user_id=? AND c.is_active=1
-            ORDER BY c.created_at DESC
+            WHERE c.user_id=?
+            ORDER BY c.is_active DESC, c.created_at DESC
         """, (user_id,)) as cu:
             return [dict(r) for r in await cu.fetchall()]
 
@@ -686,6 +711,48 @@ async def get_all_configs() -> List[Dict]:
             ORDER BY c.created_at DESC
         """) as cu:
             return [dict(r) for r in await cu.fetchall()]
+
+
+async def get_active_configs_for_alerts(limit: int = 500) -> List[Dict]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute("""
+            SELECT c.*,s.name as server_name,s.url as server_url,
+                   s.username as srv_user,s.password as srv_pass,
+                   s.api_token as srv_api_token,s.sub_path,
+                   u.telegram_id,u.full_name
+            FROM configs c
+            JOIN servers s ON c.server_id=s.id
+            JOIN users u ON c.user_id=u.id
+            WHERE c.is_active=1 AND s.is_active=1
+            ORDER BY c.id ASC
+            LIMIT ?
+        """, (max(1, int(limit or 500)),)) as cu:
+            return [dict(r) for r in await cu.fetchall()]
+
+
+async def get_config_alerts_sent(config_id: int) -> set[tuple[str, str]]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT alert_type, threshold FROM config_alerts WHERE config_id=?",
+            (config_id,),
+        ) as c:
+            return {(str(r[0]), str(r[1])) for r in await c.fetchall()}
+
+
+async def mark_config_alert_sent(config_id: int, alert_type: str, threshold: str):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "INSERT OR IGNORE INTO config_alerts(config_id,alert_type,threshold) VALUES(?,?,?)",
+            (config_id, alert_type, threshold),
+        )
+        await db.commit()
+
+
+async def clear_config_alerts(config_id: int):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("DELETE FROM config_alerts WHERE config_id=?", (config_id,))
+        await db.commit()
 
 
 async def get_configs_needing_expiry_repair(limit: int = 500) -> List[Dict]:
@@ -814,6 +881,29 @@ async def get_legacy_claim_by_key(config_key: str) -> Optional[Dict]:
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         async with db.execute("SELECT * FROM legacy_claims WHERE config_key=?", (config_key,)) as c:
+            r = await c.fetchone()
+            return dict(r) if r else None
+
+
+async def get_legacy_claim_by_identity(email: str = '', uuid: str = '') -> Optional[Dict]:
+    email = (email or '').strip()
+    uuid = (uuid or '').strip()
+    if not email and not uuid:
+        return None
+    clauses = []
+    params = []
+    if email:
+        clauses.append("email=?")
+        params.append(email)
+    if uuid:
+        clauses.append("uuid=?")
+        params.append(uuid)
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            f"SELECT * FROM legacy_claims WHERE {' OR '.join(clauses)} ORDER BY id DESC LIMIT 1",
+            params,
+        ) as c:
             r = await c.fetchone()
             return dict(r) if r else None
 

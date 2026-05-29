@@ -4,6 +4,7 @@ from aiogram.types import (
 )
 from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
 from typing import List, Dict
+import time
 
 
 def admin_menu(finance_only: bool = False) -> ReplyKeyboardMarkup:
@@ -71,8 +72,13 @@ def packages_kb(pkgs: List[Dict]) -> InlineKeyboardMarkup:
 
 def configs_kb(configs: List[Dict]) -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
+    now_ms = int(time.time() * 1000)
     for c in configs:
-        b.button(text=f"🔑 {c['email']}", callback_data=f"cfg:{c['id']}")
+        expire_ms = int(c.get("expire_timestamp") or 0)
+        expired = expire_ms > 0 and expire_ms <= now_ms
+        icon = "🔴" if not c.get("is_active", 1) or expired else "🟢"
+        suffix = " | منقضی" if expired else ""
+        b.button(text=f"{icon} {c['email']}{suffix}", callback_data=f"cfg:{c['id']}")
     b.adjust(1)
     return b.as_markup()
 
@@ -80,6 +86,7 @@ def configs_kb(configs: List[Dict]) -> InlineKeyboardMarkup:
 def config_detail_kb(cid: int) -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
     b.button(text="🔗 دریافت لینک اتصال", callback_data=f"cfg_link:{cid}")
+    b.button(text="♻️ تمدید سرویس", callback_data=f"cfg_renew:{cid}")
     b.button(text="🔄 انتقال به سرور دیگر", callback_data=f"mig_start:{cid}")
     b.button(text="🔄 بروزرسانی سرویس", callback_data=f"cfg_refresh:{cid}")
     b.button(text="📡 لینک سابسکریپشن", callback_data=f"cfg_sub:{cid}")

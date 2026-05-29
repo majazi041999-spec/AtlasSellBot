@@ -134,6 +134,118 @@ async def _repair_missing_expiries():
         logger.info(f"🛠 expiry repair done | repaired={repaired} failed={failed}")
 
 
+VOLUME_ALERTS = [
+    (1024 ** 3, "volume_1gb", "۱ گیگابایت"),
+    (500 * 1024 ** 2, "volume_500mb", "۵۰۰ مگابایت"),
+    (200 * 1024 ** 2, "volume_200mb", "۲۰۰ مگابایت"),
+]
+TIME_ALERTS = [
+    (3, "time_3d", "۳ روز"),
+    (2, "time_2d", "۲ روز"),
+    (1, "time_1d", "۱ روز"),
+]
+
+
+def _pick_crossed_threshold(value: int, thresholds: list[tuple[int, str, str]]):
+    selected = None
+    crossed = []
+    for limit, key, label in thresholds:
+        if value <= limit:
+            selected = (limit, key, label)
+            crossed.append((limit, key, label))
+    return selected, crossed
+
+
+async def _config_alert_worker(bot):
+    from core.database import (
+        get_active_configs_for_alerts,
+        get_config_alerts_sent,
+        mark_config_alert_sent,
+        get_setting,
+        update_config,
+    )
+    from core.xui_api import XUIClient, fmt_bytes, days_left
+
+    await asyncio.sleep(20)
+    while True:
+        checked = sent = 0
+        try:
+            configs = await get_active_configs_for_alerts(1000)
+            for cfg in configs:
+                checked += 1
+                total = int(float(cfg.get("traffic_gb") or 0) * 1024 ** 3)
+                used = 0
+                expire_ms = int(cfg.get("expire_timestamp") or 0)
+                cli = XUIClient(
+                    cfg["server_url"],
+                    cfg["srv_user"],
+                    cfg["srv_pass"],
+                    cfg.get("sub_path") or "",
+                    cfg.get("srv_api_token") or "",
+                )
+                try:
+                    traffic = await cli.get_client_traffic(cfg["email"])
+                    if traffic:
+                        total = int(traffic.get("total") or total)
+                        used = int(traffic.get("down") or 0) + int(traffic.get("up") or 0)
+                        remote_expire = int(traffic.get("expiryTime") or 0)
+                        if remote_expire > 0:
+                            expire_ms = remote_expire
+                            if remote_expire != int(cfg.get("expire_timestamp") or 0):
+                                await update_config(cfg["id"], expire_timestamp=remote_expire)
+                finally:
+                    await cli.close()
+
+                sent_alerts = await get_config_alerts_sent(cfg["id"])
+                remaining = max(0, total - used) if total > 0 else 0
+
+                volume_selected = None
+                volume_crossed = []
+                if total > 0:
+                    volume_selected, volume_crossed = _pick_crossed_threshold(remaining, VOLUME_ALERTS)
+
+                time_selected = None
+                time_crossed = []
+                dl = days_left(expire_ms)
+                if dl >= 0:
+                    time_selected, time_crossed = _pick_crossed_threshold(dl, TIME_ALERTS)
+
+                messages = []
+                if volume_selected and ("volume", volume_selected[1]) not in sent_alerts:
+                    for _, key, _ in volume_crossed:
+                        await mark_config_alert_sent(cfg["id"], "volume", key)
+                    messages.append(
+                        f"حجم سرویس {cfg['email']} رو به اتمام است.\n"
+                        f"باقی‌مانده: {fmt_bytes(remaining)}\n"
+                        f"مصرف‌شده: {fmt_bytes(used)} از {fmt_bytes(total)}"
+                    )
+                if time_selected and ("time", time_selected[1]) not in sent_alerts:
+                    for _, key, _ in time_crossed:
+                        await mark_config_alert_sent(cfg["id"], "time", key)
+                    messages.append(
+                        f"زمان سرویس {cfg['email']} رو به اتمام است.\n"
+                        f"زمان باقی‌مانده: حدود {time_selected[2]}"
+                    )
+
+                for text in messages:
+                    try:
+                        await bot.send_message(cfg["telegram_id"], "⚠️ " + text, parse_mode=None)
+                        sent += 1
+                        await asyncio.sleep(0.1)
+                    except Exception:
+                        pass
+        except Exception as e:
+            logger.exception("config alert worker failed: %s", e)
+
+        if checked or sent:
+            logger.info(f"config alerts checked={checked} sent={sent}")
+        try:
+            interval = int(await get_setting("config_alert_check_interval", "3600") or 3600)
+        except Exception:
+            interval = 3600
+        await asyncio.sleep(max(300, interval))
+
+
 
 async def run_bot():
     from aiogram import Bot, Dispatcher
@@ -173,6 +285,7 @@ async def run_bot():
     logger.info(f"🤖 ربات @{bot_info.username} آماده | ادمین‌ها: {ADMIN_IDS}")
 
     await _notify_update(bot)
+    asyncio.create_task(_config_alert_worker(bot))
     await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
 

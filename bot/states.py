@@ -30,6 +30,7 @@ class EditConfig(StatesGroup):
 
 
 class BuyService(StatesGroup):
+    custom_name = State()
     waiting_receipt = State()
 
 

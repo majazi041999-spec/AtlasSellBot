@@ -202,6 +202,14 @@ class XUIClient:
         r = await self._req("POST", f"/panel/api/inbounds/updateClient/{client_uuid}", json=payload)
         return bool(r and r.get("success"))
 
+    async def reset_client_traffic(self, inbound_id: int, email: str) -> bool:
+        enc = quote(email, safe="")
+        r = await self._req("POST", f"/panel/api/inbounds/{int(inbound_id)}/resetClientTraffic/{enc}")
+        if r and r.get("success"):
+            return True
+        r = await self._req("POST", f"/panel/api/clients/resetTraffic/{enc}")
+        return bool(r and r.get("success"))
+
     async def delete_client(self, inbound_id: int, client_uuid: str, email: str = "") -> bool:
         if not email:
             inbound = await self.get_inbound(inbound_id)
