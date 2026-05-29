@@ -5,6 +5,7 @@ import time
 from datetime import datetime, date
 from typing import Optional, List, Dict
 from core.config import DB_PATH
+from core.jalali import jalali_date_key, jalali_display, tehran_now
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS servers (
@@ -157,6 +158,29 @@ CREATE TABLE IF NOT EXISTS review_messages (
     UNIQUE(tx_type, tx_id, chat_id, message_id)
 );
 
+CREATE TABLE IF NOT EXISTS daily_reports (
+    jalali_date TEXT PRIMARY KEY,
+    gregorian_date TEXT NOT NULL,
+    jalali_display TEXT NOT NULL,
+    sales_amount INTEGER DEFAULT 0,
+    orders_approved INTEGER DEFAULT 0,
+    renewals INTEGER DEFAULT 0,
+    new_configs INTEGER DEFAULT 0,
+    active_configs INTEGER DEFAULT 0,
+    expired_configs INTEGER DEFAULT 0,
+    new_users INTEGER DEFAULT 0,
+    wallet_topups INTEGER DEFAULT 0,
+    wallet_topup_amount INTEGER DEFAULT 0,
+    pending_orders INTEGER DEFAULT 0,
+    total_revenue INTEGER DEFAULT 0,
+    total_approved_orders INTEGER DEFAULT 0,
+    total_users INTEGER DEFAULT 0,
+    total_configs INTEGER DEFAULT 0,
+    sent_to_admins INTEGER DEFAULT 0,
+    created_at TEXT DEFAULT (datetime('now','localtime')),
+    updated_at TEXT DEFAULT (datetime('now','localtime'))
+);
+
 INSERT OR IGNORE INTO settings VALUES
     ('welcome_message','به Atlas Account خوش آمدید! 🌐\nبهترین سرویس VPN با سرعت بالا.'),
     ('support_username',''),
@@ -209,6 +233,15 @@ async def _ensure_columns(db):
             ("bulk_each_gb", "REAL DEFAULT 0"),
             ("custom_config_name", "TEXT DEFAULT ''"),
             ("renew_config_id", "INTEGER DEFAULT 0"),
+            ("referral_bonus_applied", "INTEGER DEFAULT 0"),
+        ],
+        "daily_reports": [
+            ("renewals", "INTEGER DEFAULT 0"),
+            ("sent_to_admins", "INTEGER DEFAULT 0"),
+            ("total_revenue", "INTEGER DEFAULT 0"),
+            ("total_approved_orders", "INTEGER DEFAULT 0"),
+            ("total_users", "INTEGER DEFAULT 0"),
+            ("total_configs", "INTEGER DEFAULT 0"),
         ],
     }
     for table, cols in migrations.items():
@@ -609,11 +642,11 @@ async def create_custom_order(user_id: int, name: str, total_traffic_gb: float, 
         )
         await db.commit()
         return c.lastrowid
-async def create_order(user_id: int, package_id: int, custom_config_name: str = '') -> int:
+async def create_order(user_id: int, package_id: int, custom_config_name: str = '', custom_price: int = 0) -> int:
     async with aiosqlite.connect(DB_PATH) as db:
         c = await db.execute(
-            "INSERT INTO orders(user_id,package_id,status,custom_config_name) VALUES(?,?,'pending_payment',?)",
-            (user_id, package_id, custom_config_name)
+            "INSERT INTO orders(user_id,package_id,status,custom_config_name,custom_price) VALUES(?,?,'pending_payment',?,?)",
+            (user_id, package_id, custom_config_name, int(custom_price or 0))
         )
         await db.commit()
         return c.lastrowid
@@ -900,11 +933,156 @@ async def get_stats() -> Dict:
             'active_configs': await q("SELECT COUNT(*) FROM configs WHERE is_active=1"),
             'total_orders': await q("SELECT COUNT(*) FROM orders WHERE status='approved'"),
             'pending_orders': await q("SELECT COUNT(*) FROM orders WHERE status='receipt_submitted'"),
-            'total_revenue': await q("SELECT COALESCE(SUM(p.price),0) FROM orders o JOIN packages p ON o.package_id=p.id WHERE o.status='approved'"),
+            'total_revenue': await q("SELECT COALESCE(SUM(COALESCE(NULLIF(o.custom_price,0), p.price)),0) FROM orders o JOIN packages p ON o.package_id=p.id WHERE o.status='approved'"),
             'active_servers': await q("SELECT COUNT(*) FROM servers WHERE is_active=1"),
             'total_servers': await q("SELECT COUNT(*) FROM servers"),
             'today_orders': await q("SELECT COUNT(*) FROM orders WHERE status='approved' AND date(approved_at)=date('now','localtime')"),
         }
+
+
+async def build_daily_report(gregorian_date: str | None = None) -> Dict:
+    now = tehran_now()
+    gdate = gregorian_date or now.strftime("%Y-%m-%d")
+    jkey = jalali_date_key(now)
+    jdisplay = jalali_display(now)
+    now_ms = int(time.time() * 1000)
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        async def q(sql, *args):
+            async with db.execute(sql, args) as c:
+                row = await c.fetchone()
+                return row[0] if row else 0
+
+        sales_amount = await q(
+            """SELECT COALESCE(SUM(COALESCE(NULLIF(o.custom_price,0), p.price)),0)
+               FROM orders o JOIN packages p ON o.package_id=p.id
+               WHERE o.status='approved' AND date(o.approved_at)=?""",
+            gdate,
+        )
+        report = {
+            "jalali_date": jkey,
+            "gregorian_date": gdate,
+            "jalali_display": jdisplay,
+            "sales_amount": int(sales_amount or 0),
+            "orders_approved": int(await q("SELECT COUNT(*) FROM orders WHERE status='approved' AND date(approved_at)=?", gdate) or 0),
+            "renewals": int(await q("SELECT COUNT(*) FROM orders WHERE status='approved' AND COALESCE(renew_config_id,0)>0 AND date(approved_at)=?", gdate) or 0),
+            "new_configs": int(await q("SELECT COUNT(*) FROM configs WHERE date(created_at)=?", gdate) or 0),
+            "active_configs": int(await q("SELECT COUNT(*) FROM configs WHERE is_active=1") or 0),
+            "expired_configs": int(await q("SELECT COUNT(*) FROM configs WHERE COALESCE(expire_timestamp,0)>0 AND expire_timestamp<=?", now_ms) or 0),
+            "new_users": int(await q("SELECT COUNT(*) FROM users WHERE date(created_at)=?", gdate) or 0),
+            "wallet_topups": int(await q("SELECT COUNT(*) FROM topup_requests WHERE status='approved' AND date(reviewed_at)=?", gdate) or 0),
+            "wallet_topup_amount": int(await q("SELECT COALESCE(SUM(amount),0) FROM topup_requests WHERE status='approved' AND date(reviewed_at)=?", gdate) or 0),
+            "pending_orders": int(await q("SELECT COUNT(*) FROM orders WHERE status='receipt_submitted'") or 0),
+            "total_revenue": int(await q(
+                """SELECT COALESCE(SUM(COALESCE(NULLIF(o.custom_price,0), p.price)),0)
+                   FROM orders o JOIN packages p ON o.package_id=p.id
+                   WHERE o.status='approved'"""
+            ) or 0),
+            "total_approved_orders": int(await q("SELECT COUNT(*) FROM orders WHERE status='approved'") or 0),
+            "total_users": int(await q("SELECT COUNT(*) FROM users") or 0),
+            "total_configs": int(await q("SELECT COUNT(*) FROM configs") or 0),
+            "sent_to_admins": 0,
+        }
+        return report
+
+
+async def get_daily_report(jalali_date: str) -> Optional[Dict]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute("SELECT * FROM daily_reports WHERE jalali_date=?", (jalali_date,)) as c:
+            r = await c.fetchone()
+            return dict(r) if r else None
+
+
+async def snapshot_daily_report(gregorian_date: str | None = None) -> Dict:
+    report = await build_daily_report(gregorian_date)
+    existing = await get_daily_report(report["jalali_date"])
+    report["sent_to_admins"] = int((existing or {}).get("sent_to_admins") or 0)
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """INSERT INTO daily_reports(
+                   jalali_date,gregorian_date,jalali_display,sales_amount,orders_approved,renewals,
+                   new_configs,active_configs,expired_configs,new_users,wallet_topups,wallet_topup_amount,
+                   pending_orders,total_revenue,total_approved_orders,total_users,total_configs,sent_to_admins,updated_at
+               )
+               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now','localtime'))
+               ON CONFLICT(jalali_date) DO UPDATE SET
+                   gregorian_date=excluded.gregorian_date,
+                   jalali_display=excluded.jalali_display,
+                   sales_amount=excluded.sales_amount,
+                   orders_approved=excluded.orders_approved,
+                   renewals=excluded.renewals,
+                   new_configs=excluded.new_configs,
+                   active_configs=excluded.active_configs,
+                   expired_configs=excluded.expired_configs,
+                   new_users=excluded.new_users,
+                   wallet_topups=excluded.wallet_topups,
+                   wallet_topup_amount=excluded.wallet_topup_amount,
+                   pending_orders=excluded.pending_orders,
+                   total_revenue=excluded.total_revenue,
+                   total_approved_orders=excluded.total_approved_orders,
+                   total_users=excluded.total_users,
+                   total_configs=excluded.total_configs,
+                   updated_at=datetime('now','localtime')""",
+            (
+                report["jalali_date"],
+                report["gregorian_date"],
+                report["jalali_display"],
+                report["sales_amount"],
+                report["orders_approved"],
+                report["renewals"],
+                report["new_configs"],
+                report["active_configs"],
+                report["expired_configs"],
+                report["new_users"],
+                report["wallet_topups"],
+                report["wallet_topup_amount"],
+                report["pending_orders"],
+                report["total_revenue"],
+                report["total_approved_orders"],
+                report["total_users"],
+                report["total_configs"],
+                report["sent_to_admins"],
+            ),
+        )
+        await db.commit()
+    return await get_daily_report(report["jalali_date"]) or report
+
+
+async def get_recent_daily_reports(limit: int = 30) -> List[Dict]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT * FROM daily_reports ORDER BY gregorian_date DESC LIMIT ?",
+            (max(1, int(limit or 30)),),
+        ) as c:
+            return [dict(r) for r in await c.fetchall()]
+
+
+async def mark_daily_report_sent(jalali_date: str):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE daily_reports SET sent_to_admins=1 WHERE jalali_date=?", (jalali_date,))
+        await db.commit()
+
+
+def format_daily_report(report: Dict) -> str:
+    def toman(value) -> str:
+        return f"{int(value or 0):,}".replace(",", "،")
+
+    return (
+        f"گزارش روزانه {report.get('jalali_display') or report.get('jalali_date')}\n"
+        f"فروش امروز: {toman(report.get('sales_amount'))} تومان\n"
+        f"سفارش تایید شده: {int(report.get('orders_approved') or 0)}\n"
+        f"تمدیدها: {int(report.get('renewals') or 0)}\n"
+        f"کانفیگ جدید: {int(report.get('new_configs') or 0)}\n"
+        f"کاربر جدید: {int(report.get('new_users') or 0)}\n"
+        f"شارژ کیف پول: {int(report.get('wallet_topups') or 0)} مورد | {toman(report.get('wallet_topup_amount'))} تومان\n"
+        f"سفارش‌های در انتظار: {int(report.get('pending_orders') or 0)}\n\n"
+        f"جمع کل فروش: {toman(report.get('total_revenue'))} تومان\n"
+        f"کل سفارش‌های موفق: {int(report.get('total_approved_orders') or 0)}\n"
+        f"کانفیگ فعال/منقضی: {int(report.get('active_configs') or 0)} / {int(report.get('expired_configs') or 0)}\n"
+        f"کل کاربران: {int(report.get('total_users') or 0)}"
+    )
 
 
 # ══════════════════ LEGACY CONFIG CLAIMS ══════════════════

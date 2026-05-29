@@ -1,0 +1,128 @@
+{% extends "base.html" %}
+{% block title %}گزارش‌ها{% endblock %}
+{% block topbar_title %}📈 گزارش روزانه{% endblock %}
+
+{% block content %}
+<style>
+.report-hero{
+  display:grid;
+  grid-template-columns:1.2fr .8fr;
+  gap:16px;
+  margin-bottom:20px;
+}
+.report-panel{
+  background:var(--card);
+  border:1px solid var(--border);
+  border-radius:var(--radius);
+  padding:18px;
+}
+.report-title{
+  display:flex;
+  justify-content:space-between;
+  gap:12px;
+  align-items:center;
+  margin-bottom:14px;
+}
+.report-title h2{font-size:1rem}
+.report-date{color:var(--txt2);font-size:.82rem}
+.metric-grid{
+  display:grid;
+  grid-template-columns:repeat(3,minmax(0,1fr));
+  gap:10px;
+}
+.metric{
+  background:rgba(255,255,255,.035);
+  border:1px solid rgba(255,255,255,.06);
+  border-radius:8px;
+  padding:12px;
+  min-width:0;
+}
+.metric strong{
+  display:block;
+  font-size:1.05rem;
+  color:var(--txt);
+  overflow-wrap:anywhere;
+}
+.metric span{display:block;color:var(--txt3);font-size:.74rem;margin-top:3px}
+.report-note{
+  color:var(--txt2);
+  font-size:.82rem;
+  line-height:1.9;
+}
+.report-note b{color:var(--txt)}
+@media (max-width:800px){
+  .report-hero{grid-template-columns:1fr}
+  .metric-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+}
+@media (max-width:480px){
+  .metric-grid{grid-template-columns:1fr}
+  .report-title{align-items:flex-start;flex-direction:column}
+}
+</style>
+
+<div class="report-hero">
+  <section class="report-panel">
+    <div class="report-title">
+      <h2>گزارش امروز</h2>
+      <div class="report-date">{{ today.jalali_display }} | {{ today.gregorian_date }}</div>
+    </div>
+    <div class="metric-grid">
+      <div class="metric"><strong>{{ "{:,}".format(today.sales_amount or 0) }}</strong><span>فروش امروز تومان</span></div>
+      <div class="metric"><strong>{{ today.orders_approved or 0 }}</strong><span>سفارش تایید شده</span></div>
+      <div class="metric"><strong>{{ today.renewals or 0 }}</strong><span>تمدید سرویس</span></div>
+      <div class="metric"><strong>{{ today.new_configs or 0 }}</strong><span>کانفیگ جدید</span></div>
+      <div class="metric"><strong>{{ today.new_users or 0 }}</strong><span>کاربر جدید</span></div>
+      <div class="metric"><strong>{{ today.pending_orders or 0 }}</strong><span>در انتظار بررسی</span></div>
+    </div>
+  </section>
+
+  <aside class="report-panel">
+    <div class="report-title">
+      <h2>جمع کل</h2>
+    </div>
+    <p class="report-note">
+      فروش کل: <b>{{ "{:,}".format(today.total_revenue or 0) }}</b> تومان<br>
+      کل سفارش‌های موفق: <b>{{ today.total_approved_orders or 0 }}</b><br>
+      کانفیگ فعال: <b>{{ today.active_configs or 0 }}</b><br>
+      کانفیگ منقضی: <b>{{ today.expired_configs or 0 }}</b><br>
+      کل کاربران: <b>{{ today.total_users or 0 }}</b>
+    </p>
+  </aside>
+</div>
+
+<div class="card">
+  <div class="card-title">آرشیو گزارش‌های ذخیره‌شده</div>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>تاریخ شمسی</th>
+          <th>فروش روز</th>
+          <th>سفارش موفق</th>
+          <th>تمدید</th>
+          <th>کانفیگ جدید</th>
+          <th>کاربر جدید</th>
+          <th>شارژ کیف پول</th>
+          <th>جمع کل فروش</th>
+        </tr>
+      </thead>
+      <tbody>
+      {% for r in reports %}
+        <tr>
+          <td><b>{{ r.jalali_display }}</b><br><small>{{ r.gregorian_date }}</small></td>
+          <td>{{ "{:,}".format(r.sales_amount or 0) }}</td>
+          <td>{{ r.orders_approved or 0 }}</td>
+          <td>{{ r.renewals or 0 }}</td>
+          <td>{{ r.new_configs or 0 }}</td>
+          <td>{{ r.new_users or 0 }}</td>
+          <td>{{ r.wallet_topups or 0 }} / {{ "{:,}".format(r.wallet_topup_amount or 0) }}</td>
+          <td>{{ "{:,}".format(r.total_revenue or 0) }}</td>
+        </tr>
+      {% else %}
+        <tr><td colspan="8">هنوز گزارشی ذخیره نشده است.</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

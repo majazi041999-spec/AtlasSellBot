@@ -33,7 +33,8 @@ def admin_menu(finance_only: bool = False) -> ReplyKeyboardMarkup:
         b.row(KeyboardButton(text="🔄 شروع مجدد"))
         return b.as_markup(resize_keyboard=True)
 
-    b.row(KeyboardButton(text="📊 آمار کلی"), KeyboardButton(text="💰 سفارش‌های در انتظار"))
+    b.row(KeyboardButton(text="📊 آمار کلی"), KeyboardButton(text="📈 گزارش روزانه"))
+    b.row(KeyboardButton(text="💰 سفارش‌های در انتظار"))
     b.row(KeyboardButton(text="🔑 مدیریت کانفیگ"), KeyboardButton(text="📦 پکیج‌ها"))
     b.row(KeyboardButton(text="👥 کاربران"), KeyboardButton(text="📣 پیام همگانی"))
     b.row(KeyboardButton(text="✉️ پیام خصوصی"), KeyboardButton(text="🌐 پنل مدیریت"))
@@ -83,9 +84,8 @@ def packages_kb(pkgs: List[Dict]) -> InlineKeyboardMarkup:
         gb = int(p['traffic_gb']) if p['traffic_gb'] == int(p['traffic_gb']) else p['traffic_gb']
         price = f"{p['price']:,}".replace(",", "،")
         tier = '🥉' if p['price'] < 100000 else '🥈' if p['price'] < 200000 else '🥇'
-        _button(b, text=f"{tier} {p['name']}", callback_data=f"buy:{p['id']}", style="primary")
-        _button(b, text=f"{gb}GB | {p['duration_days']}روز | {price}تومان", callback_data=f"buy:{p['id']}", style="success")
-    b.adjust(2)
+        _button(b, text=f"{tier} {p['name']} | {gb}GB | {p['duration_days']}روز | {price}تومان", callback_data=f"buy:{p['id']}", style="primary")
+    b.adjust(1)
     return b.as_markup()
 
 

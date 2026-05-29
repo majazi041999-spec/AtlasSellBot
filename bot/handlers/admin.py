@@ -24,6 +24,9 @@ from core.database import (
     claim_order_for_approval,
     clear_config_alerts,
     add_review_message,
+    snapshot_daily_report,
+    get_recent_daily_reports,
+    format_daily_report,
 )
 from core.xui_api import XUIClient, fmt_bytes, days_left, expiry_ms_from_days
 from core.qr import build_qr_image
@@ -207,6 +210,23 @@ async def show_stats(msg: Message):
         f"{srv_lines}",
         parse_mode="Markdown"
     )
+
+
+@router.message(F.text == "📈 گزارش روزانه")
+async def show_daily_report(msg: Message):
+    if not is_admin(msg.from_user.id):
+        return
+    today = await snapshot_daily_report()
+    recent = await get_recent_daily_reports(7)
+    lines = [format_daily_report(today)]
+    if recent:
+        lines.append("\n۷ گزارش آخر:")
+        for r in recent[:7]:
+            lines.append(
+                f"{r.get('jalali_display')}: فروش {int(r.get('sales_amount') or 0):,} تومان | "
+                f"{int(r.get('orders_approved') or 0)} سفارش | {int(r.get('new_configs') or 0)} کانفیگ"
+            )
+    await msg.answer("\n".join(lines), parse_mode=None)
 
 
 # ─── PENDING ORDERS ───────────────────────────────────────────────
@@ -536,6 +556,10 @@ async def _do_approve(cb: CallbackQuery, oid: int, sid: int):
         return False
 
     created = []
+    bonus_pending = 0.0
+    bonus_applied = 0.0
+    if not int(order.get("referral_bonus_applied") or 0):
+        bonus_pending = max(0.0, float(user.get("referral_bonus_gb") or 0))
     remaining_cap = (server.get("max_active_configs") or 0)
     if remaining_cap:
         used = await count_active_configs_by_server(sid)
@@ -563,14 +587,18 @@ async def _do_approve(cb: CallbackQuery, oid: int, sid: int):
         else:
             email = await _build_config_name(order, i if bulk_count > 1 else 0)
         cuuid = str(uuid.uuid4())
-        ok = await client.add_client(target_inbound, cuuid, email, each_gb, duration, starts_on_first_use=False)
+        config_gb = each_gb + bonus_pending if bonus_pending > 0 else each_gb
+        ok = await client.add_client(target_inbound, cuuid, email, config_gb, duration, starts_on_first_use=False)
         if not ok:
             continue
+        if bonus_pending > 0:
+            bonus_applied = bonus_pending
+            bonus_pending = 0.0
         expire_ms = expiry_ms_from_days(duration)
         link = await client.get_client_link(target_inbound, email)
         sub = await client.get_subscription_link(target_inbound, email)
-        await save_config(user["id"], sid, cuuid, email, target_inbound, each_gb, duration, expire_ms, starts_on_first_use=0)
-        created.append({"email": email, "link": link, "sub": sub})
+        await save_config(user["id"], sid, cuuid, email, target_inbound, config_gb, duration, expire_ms, starts_on_first_use=0)
+        created.append({"email": email, "link": link, "sub": sub, "traffic_gb": config_gb})
 
     await client.close()
     if not created:
@@ -586,6 +614,10 @@ async def _do_approve(cb: CallbackQuery, oid: int, sid: int):
     await update_order(oid, status="approved", server_id=sid,
                        config_email=created[0]["email"], inbound_id=target_inbound,
                        approved_at=datetime.now().isoformat())
+
+    if bonus_applied > 0:
+        await update_user(user["id"], referral_bonus_gb=0)
+        await update_order(oid, referral_bonus_applied=1)
 
     if is_first_purchase and order.get("referred_by"):
         referrer = await get_user_by_id(order["referred_by"])
@@ -610,6 +642,8 @@ async def _do_approve(cb: CallbackQuery, oid: int, sid: int):
         f"📊 حجم هر کانفیگ: `{each_gb} GB`\n"
         f"📅 مدت: `{duration}` روز\n"
     )
+    if bonus_applied > 0:
+        head += f"🎁 هدیه رفرال اعمال شد: `{bonus_applied:g} GB` روی اولین کانفیگ\n"
     try:
         await cb.bot.send_message(order["telegram_id"], head, parse_mode=None)
         for item in created[:20]:

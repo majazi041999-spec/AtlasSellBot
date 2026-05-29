@@ -145,6 +145,17 @@ async def _calc_renew_price(user_id: int, traffic_gb: float, duration_days: int)
     return int(base * (100 - discount) / 100)
 
 
+async def _calc_package_price_for_user(user_id: int, pkg: dict) -> tuple[int, int, float, int]:
+    pricing = await get_user_pricing(user_id)
+    base_price = int(pkg.get("price") or 0)
+    price_per_gb = int(pricing.get("price_per_gb") or 0)
+    if price_per_gb > 0:
+        base_price = int(float(pkg.get("traffic_gb") or 0) * price_per_gb)
+    discount = max(0.0, min(100.0, float(pricing.get("discount_percent") or 0)))
+    final_price = int(base_price * (100 - discount) / 100)
+    return max(0, final_price), max(0, base_price), discount, price_per_gb
+
+
 async def _payment_text(oid: int, title: str, traffic_gb: float, duration_days: int, price: int) -> str:
     card_bank, card_number, card_holder = await _get_card_info()
     return (
@@ -619,9 +630,16 @@ async def buy_custom_name(msg: Message, state: FSMContext):
         return
 
     user = await get_or_create_user(msg.from_user.id, msg.from_user.username, msg.from_user.full_name)
-    oid = await create_order(user["id"], pid, custom_config_name=custom_name)
+    final_price, base_price, discount, price_per_gb = await _calc_package_price_for_user(user["id"], pkg)
+    oid = await create_order(user["id"], pid, custom_config_name=custom_name, custom_price=final_price)
 
-    text = await _payment_text(oid, pkg["name"], pkg["traffic_gb"], pkg["duration_days"], int(pkg["price"]))
+    text = await _payment_text(oid, pkg["name"], pkg["traffic_gb"], pkg["duration_days"], final_price)
+    if price_per_gb > 0 or discount > 0:
+        text += f"\n\nقیمت پایه: `{_fmt_toman(base_price)}` تومان"
+        if price_per_gb > 0:
+            text += f"\nقیمت اختصاصی هر GB: `{_fmt_toman(price_per_gb)}` تومان"
+        if discount > 0:
+            text += f"\nتخفیف شما: `{discount:g}%`"
     if custom_name:
         text += f"\n\nنام دلخواه انتهای کانفیگ: `{custom_name}`"
     await state.clear()

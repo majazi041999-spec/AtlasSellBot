@@ -77,6 +77,8 @@ from core.database import (
     claim_order_for_approval,
     clear_config_alerts,
     get_review_messages,
+    snapshot_daily_report,
+    get_recent_daily_reports,
 )
 from core.panel_content import (
     BOT_TEXT_DEFAULTS,
@@ -295,6 +297,18 @@ async def approve_and_send_update(request: Request):
 
 
 # ═══════════════════════════════ SERVERS ════════════════════════════
+@app.get(f"/{S}/reports", response_class=HTMLResponse)
+async def reports_page(request: Request):
+    if not _auth(request):
+        return _redir_login()
+    today = await snapshot_daily_report()
+    reports = await get_recent_daily_reports(60)
+    return _templates.TemplateResponse(
+        "reports.html",
+        await _ctx_ui(request, today=today, reports=reports, active="reports"),
+    )
+
+
 @app.get(f"/{S}/servers", response_class=HTMLResponse)
 async def servers_page(request: Request):
     if not _auth(request):
@@ -609,6 +623,10 @@ async def order_approve_web(request: Request, oid: int):
     each_gb = float(order.get("bulk_each_gb") or order["traffic_gb"])
     duration = int(order["duration_days"])
     created = []
+    bonus_pending = 0.0
+    bonus_applied = 0.0
+    if not int(order.get("referral_bonus_applied") or 0):
+        bonus_pending = max(0.0, float(user.get("referral_bonus_gb") or 0))
     is_first_purchase = not await has_previous_purchase(user["id"])
 
     cli = XUIClient(server["url"], server["username"], server["password"], server["sub_path"], server.get("api_token", ""))
@@ -618,17 +636,24 @@ async def order_approve_web(request: Request, oid: int):
         base_email = f"u{order['telegram_id']}_{i}_{int(time.time())}" if bulk_count > 1 else f"u{order['telegram_id']}_{int(time.time())}"
         email = f"{base_email}_{suffix}" if suffix else base_email
         cuuid = str(uuid.uuid4())
-        ok = await cli.add_client(target_inbound, cuuid, email, each_gb, duration, starts_on_first_use=False)
+        config_gb = each_gb + bonus_pending if bonus_pending > 0 else each_gb
+        ok = await cli.add_client(target_inbound, cuuid, email, config_gb, duration, starts_on_first_use=False)
         if not ok:
             continue
+        if bonus_pending > 0:
+            bonus_applied = bonus_pending
+            bonus_pending = 0.0
         link = await cli.get_client_link(target_inbound, email)
         sub = await cli.get_subscription_link(target_inbound, email)
-        await save_config(user["id"], sid, cuuid, email, target_inbound, each_gb, duration, expiry_ms_from_days(duration), starts_on_first_use=0)
-        created.append((email, link, sub))
+        await save_config(user["id"], sid, cuuid, email, target_inbound, config_gb, duration, expiry_ms_from_days(duration), starts_on_first_use=0)
+        created.append((email, link, sub, config_gb))
     await cli.close()
 
     if created:
         await update_order(oid, status="approved", server_id=sid, config_email=created[0][0], inbound_id=target_inbound, approved_at=datetime.now().isoformat())
+        if bonus_applied > 0:
+            await update_user(user["id"], referral_bonus_gb=0)
+            await update_order(oid, referral_bonus_applied=1)
         await _clear_review_buttons("order", oid)
         if is_first_purchase and order.get("referred_by"):
             referrer = await get_user_by_id(order["referred_by"])
@@ -645,7 +670,13 @@ async def order_approve_web(request: Request, oid: int):
                     f"🎉 *سرویس شما فعال شد!*\n\nسفارش: {order['pkg_name']}\nسرور: {server['name']}\nتعداد کانفیگ: `{len(created)}`",
                     parse_mode=None,
                 )
-                for email, link, sub in created[:20]:
+                if bonus_applied > 0:
+                    await bot.send_message(
+                        order["telegram_id"],
+                        f"🎁 هدیه رفرال شما اعمال شد: {bonus_applied:g} GB روی اولین کانفیگ",
+                        parse_mode=None,
+                    )
+                for email, link, sub, _traffic_gb in created[:20]:
                     txt = f"📧 `{email}`\n"
                     if link:
                         txt += f"🔗 `{link}`\n"

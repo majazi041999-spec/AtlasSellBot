@@ -246,6 +246,36 @@ async def _config_alert_worker(bot):
         await asyncio.sleep(max(300, interval))
 
 
+async def _daily_report_worker(bot):
+    from core.config import ADMIN_IDS
+    from core.database import (
+        snapshot_daily_report,
+        mark_daily_report_sent,
+        format_daily_report,
+        get_all_admin_telegram_ids,
+    )
+    from core.jalali import tehran_now
+
+    await asyncio.sleep(35)
+    while True:
+        try:
+            report = await snapshot_daily_report()
+            now = tehran_now()
+            if now.hour >= 23 and not int(report.get("sent_to_admins") or 0):
+                text = format_daily_report(report)
+                targets = list(dict.fromkeys(list(ADMIN_IDS) + await get_all_admin_telegram_ids()))
+                for aid in targets:
+                    try:
+                        await bot.send_message(aid, text, parse_mode=None)
+                        await asyncio.sleep(0.1)
+                    except Exception:
+                        pass
+                await mark_daily_report_sent(report["jalali_date"])
+        except Exception as e:
+            logger.exception("daily report worker failed: %s", e)
+        await asyncio.sleep(1800)
+
+
 
 async def run_bot():
     from aiogram import Bot, Dispatcher
@@ -286,6 +316,7 @@ async def run_bot():
 
     await _notify_update(bot)
     asyncio.create_task(_config_alert_worker(bot))
+    asyncio.create_task(_daily_report_worker(bot))
     await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
 
