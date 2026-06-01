@@ -22,6 +22,13 @@ if [[ -x "${DIR}/.venv/bin/python" ]]; then
   PYTHON_BIN="${DIR}/.venv/bin/python"
 fi
 
+if [[ "$RUN_AS_USER" != "root" ]]; then
+  RUN_AS_GROUP="$(id -gn "$RUN_AS_USER")"
+  chown -R "${RUN_AS_USER}:${RUN_AS_GROUP}" "$DIR"
+  find "$DIR" -type d -exec chmod u+rwx {} \;
+  find "$DIR" -type f -exec chmod u+rw {} \;
+fi
+
 cat > "/etc/systemd/system/${NAME}.service" <<EOF
 [Unit]
 Description=Atlas Account Bot (Bot + Web Panel)
