@@ -6,6 +6,11 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
 from typing import List, Dict
 import time
 
+try:
+    from aiogram.types import CopyTextButton
+except Exception:
+    CopyTextButton = None
+
 
 def _button(builder: InlineKeyboardBuilder, text: str, style: str | None = None, **kwargs):
     if style:
@@ -24,6 +29,15 @@ def _inline_button(text: str, style: str | None = None, **kwargs) -> InlineKeybo
         except Exception:
             pass
     return InlineKeyboardButton(text=text, **kwargs)
+
+
+def _copy_text_button(text: str, value: str, style: str | None = None) -> InlineKeyboardButton | None:
+    if not value or CopyTextButton is None:
+        return None
+    try:
+        return _inline_button(text=text, copy_text=CopyTextButton(text=value), style=style)
+    except Exception:
+        return None
 
 
 def admin_menu(finance_only: bool = False) -> ReplyKeyboardMarkup:
@@ -218,6 +232,17 @@ def flow_cancel_kb(show_back: bool = True) -> InlineKeyboardMarkup:
     _button(b, text="🏠 شروع مجدد", callback_data="back_to_menu", style="primary")
     b.adjust(3 if show_back else 2)
     return b.as_markup()
+
+
+def config_links_kb(link: str = "", sub: str = "") -> InlineKeyboardMarkup | None:
+    rows = []
+    link_btn = _copy_text_button("📋 کپی لینک اتصال", link, style="success")
+    sub_btn = _copy_text_button("📋 کپی لینک سابسکریپشن", sub, style="primary")
+    if link_btn:
+        rows.append([link_btn])
+    if sub_btn:
+        rows.append([sub_btn])
+    return InlineKeyboardMarkup(inline_keyboard=rows) if rows else None
 
 
 def packages_kb(pkgs: List[Dict]) -> InlineKeyboardMarkup:

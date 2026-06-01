@@ -122,6 +122,38 @@ class XUIClient:
             return obj if isinstance(obj, dict) else None
         return None
 
+    async def find_client(self, email: str = "", client_uuid: str = "") -> Optional[Dict]:
+        email = (email or "").strip()
+        client_uuid = (client_uuid or "").strip()
+
+        api_client = None
+        if email:
+            api_client = await self.get_client(email)
+            if api_client:
+                inbound_ids = api_client.get("inboundIds") or api_client.get("inbound_ids") or []
+                inbound_id = 0
+                if isinstance(inbound_ids, list) and inbound_ids:
+                    try:
+                        inbound_id = int(inbound_ids[0])
+                    except Exception:
+                        inbound_id = 0
+                if inbound_id:
+                    return {"client": api_client, "inbound_id": inbound_id, "inbound": None}
+
+        for inbound in await self.get_inbounds():
+            settings = self._json_obj(inbound.get("settings"), {})
+            for client in settings.get("clients", []) or []:
+                ident = client.get("id") or client.get("password") or client.get("auth") or ""
+                if (email and client.get("email") == email) or (client_uuid and ident == client_uuid):
+                    return {
+                        "client": client,
+                        "inbound_id": int(inbound.get("id") or 0),
+                        "inbound": inbound,
+                    }
+        if api_client:
+            return {"client": api_client, "inbound_id": 0, "inbound": None}
+        return None
+
     def _json_obj(self, value: Any, default: Optional[Any] = None) -> Any:
         if default is None:
             default = {}

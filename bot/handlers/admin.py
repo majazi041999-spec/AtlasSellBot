@@ -33,7 +33,8 @@ from core.qr import build_qr_image
 from bot.keyboards import (
     admin_menu, order_review_kb, order_server_select_kb,
     admin_configs_kb, adm_config_detail_kb, confirm_kb, packages_kb, servers_kb,
-    broadcast_target_kb, legacy_claim_admin_kb, flow_cancel_kb, topup_review_kb
+    broadcast_target_kb, legacy_claim_admin_kb, flow_cancel_kb, topup_review_kb,
+    config_links_kb,
 )
 from bot.states import AddPackage, CreateConfig, BulkConfig, EditConfig, Broadcast, PrivateMessage
 
@@ -428,6 +429,8 @@ async def _build_config_name(order, idx: int = 0) -> str:
 
 
 async def _do_renew(cb: CallbackQuery, order: dict) -> bool:
+    from core.renewal import find_and_renew_config
+
     cid = int(order.get("renew_config_id") or 0)
     cfg = await get_config(cid)
     if not cfg:
@@ -435,46 +438,26 @@ async def _do_renew(cb: CallbackQuery, order: dict) -> bool:
         await cb.message.answer("❌ سرویس برای تمدید پیدا نشد.")
         return False
 
-    now_ms = int(time.time() * 1000)
-    base_expire = int(cfg.get("expire_timestamp") or 0)
-    if base_expire < now_ms:
-        base_expire = now_ms
     duration = int(order.get("duration_days") or cfg.get("duration_days") or 0)
-    new_expire_ms = base_expire + duration * 86400000 if duration > 0 else 0
     traffic_gb = float(order.get("traffic_gb") or cfg.get("traffic_gb") or 0)
-
-    client = XUIClient(cfg["server_url"], cfg["srv_user"], cfg["srv_pass"], cfg["sub_path"], cfg.get("srv_api_token", ""))
-    try:
-        ok = await client.update_client(cfg["inbound_id"], cfg["uuid"], cfg["email"], traffic_gb, new_expire_ms, True)
-        if ok:
-            await client.reset_client_traffic(cfg["inbound_id"], cfg["email"])
-            link = await client.get_client_link(cfg["inbound_id"], cfg["email"])
-            sub = await client.get_subscription_link(cfg["inbound_id"], cfg["email"])
-        else:
-            link = sub = None
-    finally:
-        await client.close()
-
-    if not ok:
+    result = await find_and_renew_config(cfg, traffic_gb, duration)
+    if not result.get("ok"):
         await update_order(order["id"], status="receipt_submitted")
-        await cb.message.answer("❌ تمدید روی سرور انجام نشد. اتصال سرور یا وضعیت کانفیگ را بررسی کنید.")
+        await cb.message.answer(
+            "❌ تمدید انجام نشد. کانفیگ روی هیچ‌کدام از سرورهای فعال پیدا نشد یا آپدیت نشد.\n"
+            f"جزئیات: {result.get('error') or '-'}",
+            parse_mode=None,
+        )
         return False
-
-    await update_config(
-        cid,
-        traffic_gb=traffic_gb,
-        duration_days=duration,
-        expire_timestamp=new_expire_ms,
-        is_active=1,
-        starts_on_first_use=0,
-    )
-    await clear_config_alerts(cid)
+    server = result["server"]
+    link = result.get("link")
+    sub = result.get("sub")
     await update_order(
         order["id"],
         status="approved",
-        server_id=cfg["server_id"],
+        server_id=server["id"],
         config_email=cfg["email"],
-        inbound_id=cfg["inbound_id"],
+        inbound_id=result.get("inbound_id") or cfg["inbound_id"],
         approved_at=datetime.now().isoformat(),
     )
 
@@ -482,6 +465,7 @@ async def _do_renew(cb: CallbackQuery, order: dict) -> bool:
         text = (
             "✅ سرویس شما تمدید شد.\n\n"
             f"کانفیگ: {cfg['email']}\n"
+            f"سرور: {server['name']}\n"
             f"حجم جدید: {traffic_gb} GB\n"
             f"مدت تمدید: {duration} روز\n"
         )
@@ -489,7 +473,7 @@ async def _do_renew(cb: CallbackQuery, order: dict) -> bool:
             text += f"\nلینک اتصال:\n{link}\n"
         if sub:
             text += f"\nلینک سابسکریپشن:\n{sub}\n"
-        await cb.bot.send_message(order["telegram_id"], text, parse_mode=None)
+        await cb.bot.send_message(order["telegram_id"], text, parse_mode=None, reply_markup=config_links_kb(link or "", sub or ""))
         if link:
             try:
                 ch = await get_setting("channel_username", "AtlasChannel")
@@ -652,7 +636,12 @@ async def _do_approve(cb: CallbackQuery, oid: int, sid: int):
                 txt += f"🔗 `{item['link']}`\n"
             if item['sub']:
                 txt += f"📡 سابسکریپشن:\n`{item['sub']}`\n"
-            await cb.bot.send_message(order["telegram_id"], txt, parse_mode=None)
+            await cb.bot.send_message(
+                order["telegram_id"],
+                txt,
+                parse_mode=None,
+                reply_markup=config_links_kb(item.get("link") or "", item.get("sub") or ""),
+            )
             if item['link']:
                 try:
                     ch = await get_setting("channel_username", "AtlasChannel")
@@ -1116,7 +1105,7 @@ async def single_server(cb: CallbackQuery, state: FSMContext):
     )
     if link:
         text += f"\n\n🔗 *لینک:*\n`{link}`"
-    await cb.message.edit_text(text, parse_mode="Markdown")
+    await cb.message.edit_text(text, parse_mode="Markdown", reply_markup=config_links_kb(link or "", ""))
     if link:
         try:
             ch = await get_setting("channel_username", "AtlasChannel")

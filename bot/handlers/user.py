@@ -54,6 +54,7 @@ from bot.keyboards import (
     packages_kb,
     payment_kb,
     config_detail_kb,
+    config_links_kb,
     configs_kb,
     servers_kb,
     wholesale_request_kb,
@@ -494,7 +495,7 @@ async def send_config_link(cb: CallbackQuery):
             "[🍎 Streisand (iOS)](https://apps.apple.com/us/app/streisand/id6450534064) | "
             "[🪟 v2rayN (ویندوز)](https://github.com/2dust/v2rayN/releases/latest)"
         )
-        await cb.message.answer(body, parse_mode="Markdown")
+        await cb.message.answer(body, parse_mode="Markdown", reply_markup=config_links_kb(link, sub or ""))
         try:
             ch = await get_setting("channel_username", "AtlasChannel")
             await cb.message.answer_photo(_qr_input_file(link, ch), caption="QR Code کانفیگ شما", parse_mode=None)
@@ -529,7 +530,7 @@ async def cfg_sub(cb: CallbackQuery):
     await cli.close()
 
     if sub:
-        await cb.message.answer(f" *لینک سابسکریپشن:*\n`{sub}`", parse_mode="Markdown")
+        await cb.message.answer(f" *لینک سابسکریپشن:*\n`{sub}`", parse_mode="Markdown", reply_markup=config_links_kb("", sub))
         await cb.answer()
     else:
         await cb.answer("لینک ساب پیدا نشد", show_alert=True)
@@ -1288,7 +1289,7 @@ async def mig_confirm(cb: CallbackQuery):
     )
     if new_link:
         text += f"\n\n *لینک جدید:*\n`{new_link}`"
-    await cb.message.edit_text(text, parse_mode="Markdown")
+    await cb.message.edit_text(text, parse_mode="Markdown", reply_markup=config_links_kb(new_link or "", ""))
     if new_link:
         try:
             ch = await get_setting("channel_username", "AtlasChannel")

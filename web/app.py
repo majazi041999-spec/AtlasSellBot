@@ -88,7 +88,9 @@ from core.panel_content import (
     UI_DEFAULTS,
 )
 from core.xui_api import XUIClient, expiry_ms_from_days
+from core.renewal import find_and_renew_config
 from core.qr import build_qr_image
+from bot.keyboards import config_links_kb
 
 logger = logging.getLogger(__name__)
 
@@ -543,55 +545,32 @@ async def order_approve_web(request: Request, oid: int):
 
         duration = int(order.get("duration_days") or cfg.get("duration_days") or 0)
         traffic_gb = float(order.get("traffic_gb") or cfg.get("traffic_gb") or 0)
-        now_ms = int(time.time() * 1000)
-        base_expire = int(cfg.get("expire_timestamp") or 0)
-        if base_expire < now_ms:
-            base_expire = now_ms
-        new_expire_ms = base_expire + duration * 86400000 if duration > 0 else 0
-
-        cli = XUIClient(cfg["server_url"], cfg["srv_user"], cfg["srv_pass"], cfg["sub_path"], cfg.get("srv_api_token", ""))
-        try:
-            ok = await cli.update_client(cfg["inbound_id"], cfg["uuid"], cfg["email"], traffic_gb, new_expire_ms, True)
-            if ok:
-                await cli.reset_client_traffic(cfg["inbound_id"], cfg["email"])
-                link = await cli.get_client_link(cfg["inbound_id"], cfg["email"])
-                sub = await cli.get_subscription_link(cfg["inbound_id"], cfg["email"])
-            else:
-                link = sub = None
-        finally:
-            await cli.close()
-
-        if not ok:
+        result = await find_and_renew_config(cfg, traffic_gb, duration)
+        if not result.get("ok"):
             await update_order(oid, status="receipt_submitted")
             return RedirectResponse(f"/{S}/orders", status_code=302)
 
-        await update_config(
-            cfg["id"],
-            traffic_gb=traffic_gb,
-            duration_days=duration,
-            expire_timestamp=new_expire_ms,
-            is_active=1,
-            starts_on_first_use=0,
-        )
-        await clear_config_alerts(cfg["id"])
+        server = result["server"]
+        link = result.get("link")
+        sub = result.get("sub")
         await update_order(
             oid,
             status="approved",
-            server_id=cfg["server_id"],
+            server_id=server["id"],
             config_email=cfg["email"],
-            inbound_id=cfg["inbound_id"],
+            inbound_id=result.get("inbound_id") or cfg["inbound_id"],
             approved_at=datetime.now().isoformat(),
         )
         await _clear_review_buttons("order", oid)
         if BOT_TOKEN and len(BOT_TOKEN) > 20:
             bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.MARKDOWN))
             try:
-                text = f"✅ سرویس شما تمدید شد.\n\nکانفیگ: {cfg['email']}\nحجم: {traffic_gb} GB\nمدت تمدید: {duration} روز\n"
+                text = f"✅ سرویس شما تمدید شد.\n\nکانفیگ: {cfg['email']}\nسرور: {server['name']}\nحجم: {traffic_gb} GB\nمدت تمدید: {duration} روز\n"
                 if link:
                     text += f"\nلینک اتصال:\n{link}\n"
                 if sub:
                     text += f"\nلینک سابسکریپشن:\n{sub}\n"
-                await bot.send_message(order["telegram_id"], text, parse_mode=None)
+                await bot.send_message(order["telegram_id"], text, parse_mode=None, reply_markup=config_links_kb(link or "", sub or ""))
                 if link:
                     try:
                         qr = build_qr_image(link, footer_text=await get_setting("channel_username", "AtlasChannel"))
@@ -682,7 +661,12 @@ async def order_approve_web(request: Request, oid: int):
                         txt += f"🔗 `{link}`\n"
                     if sub:
                         txt += f"📡 Subscription:\n`{sub}`\n"
-                    await bot.send_message(order["telegram_id"], txt, parse_mode=None)
+                    await bot.send_message(
+                        order["telegram_id"],
+                        txt,
+                        parse_mode=None,
+                        reply_markup=config_links_kb(link or "", sub or ""),
+                    )
                     if link:
                         try:
                             qr = build_qr_image(link, footer_text=await get_setting("channel_username", "AtlasChannel"))
