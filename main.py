@@ -9,14 +9,28 @@ import sys
 import subprocess
 from datetime import datetime, timedelta
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | %(name)s | %(levelname)s | %(message)s",
-    handlers=[
-        logging.StreamHandler(sys.stdout),
-        logging.FileHandler("atlas.log", encoding="utf-8")
+
+def _setup_logging():
+    fmt = "%(asctime)s | %(name)s | %(levelname)s | %(message)s"
+    handlers = [logging.StreamHandler(sys.stdout)]
+    log_candidates = [
+        os.getenv("ATLAS_LOG_PATH", "").strip(),
+        os.path.join(os.getcwd(), "atlas.log"),
+        "/tmp/atlas-bot.log",
     ]
-)
+    for path in log_candidates:
+        if not path:
+            continue
+        try:
+            os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+            handlers.append(logging.FileHandler(path, encoding="utf-8"))
+            break
+        except OSError:
+            continue
+    logging.basicConfig(level=logging.INFO, format=fmt, handlers=handlers)
+
+
+_setup_logging()
 logger = logging.getLogger("atlas")
 
 # Reduce noise from libraries
