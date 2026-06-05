@@ -39,6 +39,8 @@ from core.database import (
     get_legacy_claim_by_identity,
     update_legacy_claim,
     create_legacy_claim,
+    get_config_by_email,
+    get_config_by_uuid,
     get_user_balance,
     create_topup_request,
     add_user_balance,
@@ -1215,7 +1217,29 @@ async def legacy_sync_submit(msg: Message, state: FSMContext):
     if dup:
         status = dup.get("status", "pending")
         if status == "approved":
-            await msg.answer("⚠️ این کانفیگ قبلاً تایید و ثبت شده است و درخواست تکراری پذیرفته نمی‌شود.")
+            existing = await get_config_by_email(email) if email else None
+            if not existing and raw_uuid:
+                existing = await get_config_by_uuid(raw_uuid)
+            if existing:
+                await msg.answer("⚠️ این کانفیگ قبلاً تایید و ثبت شده است و درخواست تکراری پذیرفته نمی‌شود.")
+            else:
+                user = await get_or_create_user(msg.from_user.id, msg.from_user.username, msg.from_user.full_name)
+                await update_legacy_claim(
+                    dup["id"],
+                    user_id=user["id"],
+                    telegram_id=msg.from_user.id,
+                    config_link=link,
+                    config_key=key,
+                    email=email,
+                    uuid=raw_uuid,
+                    status="pending",
+                    admin_note="retry_after_missing_config",
+                    reviewed_at=None,
+                    reviewer_id=0,
+                )
+                await _notify_legacy_claim_admins(msg.bot, dup["id"], msg.from_user, email)
+                await state.clear()
+                await msg.answer("✅ درخواست قبلی دوباره برای بررسی ادمین ارسال شد.")
         elif status == "pending":
             await msg.answer("⏳ برای این کانفیگ قبلاً درخواست ثبت شده و در حال بررسی است.")
         else:

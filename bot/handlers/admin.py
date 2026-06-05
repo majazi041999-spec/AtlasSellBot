@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import uuid
 import time
 import json
@@ -40,6 +41,7 @@ from bot.keyboards import (
 from bot.states import AddPackage, CreateConfig, BulkConfig, EditConfig, Broadcast, PrivateMessage
 
 router = Router()
+logger = logging.getLogger(__name__)
 
 
 def _qr_input_file(link: str, footer_text: str) -> BufferedInputFile:
@@ -1409,71 +1411,105 @@ def _format_remote_config_status(info: dict) -> str:
     )
 
 
+def _remaining_duration_days(expire_ms: int) -> int:
+    if int(expire_ms or 0) <= 0:
+        return 0
+    remaining = int(expire_ms) - int(time.time() * 1000)
+    if remaining <= 0:
+        return 0
+    day_ms = 86400000
+    return max(1, (remaining + day_ms - 1) // day_ms)
+
+
 async def _find_remote_legacy_client(email: str, client_uuid: str) -> dict | None:
-    """Search all active servers/inbounds and return matching client meta for legacy claim import."""
+    """Search every registered 3x-ui server/inbound and return matching client meta for import."""
     email = (email or "").strip()
     client_uuid = (client_uuid or "").strip()
-    servers = await get_servers(active_only=True)
-    for srv in servers:
+    if not email and not client_uuid:
+        return None
+
+    for srv in await get_servers(active_only=False):
         xui = XUIClient(srv["url"], srv["username"], srv["password"], srv.get("sub_path") or "", srv.get("api_token", ""))
         try:
-            if email:
-                api_client = await xui.get_client(email)
-                if isinstance(api_client, dict):
-                    inbound_ids = api_client.get("inboundIds") or []
-                    inbound_id = int((inbound_ids[0] if inbound_ids else 0) or srv.get("inbound_id") or 1)
-                    api_uuid = (api_client.get("id") or api_client.get("password") or api_client.get("auth") or client_uuid or "").strip()
-                    if api_uuid or not client_uuid:
-                        total_bytes = int(api_client.get("totalGB") or 0)
-                        expire_ms = int(api_client.get("expiryTime") or 0)
-                        duration_days = max(1, int((expire_ms - int(time.time() * 1000)) / 86400000)) if expire_ms > 0 else 0
-                        return {
-                            "server_id": srv["id"],
-                            "inbound_id": inbound_id,
-                            "uuid": api_uuid or client_uuid or email,
-                            "email": (api_client.get("email") or email).strip(),
-                            "traffic_gb": round(total_bytes / (1024 ** 3), 2) if total_bytes > 0 else 0,
-                            "duration_days": duration_days,
-                            "expire_ms": expire_ms,
-                            "is_active": 1 if api_client.get("enable", True) else 0,
-                        }
+            found = await xui.find_client(email=email, client_uuid=client_uuid)
+            if not found:
+                continue
 
-            inbounds = await xui.get_inbounds()
-            for inbound in inbounds:
-                settings = _json_obj(inbound.get("settings"), {})
-                clients = settings.get("clients") or []
-                for c in clients:
-                    c_email = (c.get("email") or "").strip()
-                    c_uuid = (c.get("id") or c.get("password") or c.get("auth") or "").strip()
-                    if not email and not client_uuid:
-                        continue
-                    matched_email = bool(email and c_email == email)
-                    matched_uuid = bool(client_uuid and c_uuid == client_uuid)
-                    if not (matched_email or matched_uuid):
-                        continue
+            client = found.get("client") or {}
+            inbound = found.get("inbound") or {}
+            remote_email = (client.get("email") or email).strip()
+            remote_uuid = (
+                client.get("id")
+                or client.get("password")
+                or client.get("auth")
+                or client_uuid
+                or remote_email
+            )
+            remote_uuid = str(remote_uuid).strip()
+            if email and remote_email and remote_email != email and not client_uuid:
+                continue
 
-                    total_bytes = int(c.get("totalGB") or 0)
-                    traffic_gb = round(total_bytes / (1024 ** 3), 2) if total_bytes > 0 else 0
-                    expire_ms = int(c.get("expiryTime") or 0)
-                    if expire_ms > 0:
-                        duration_days = max(1, int((expire_ms - int(time.time() * 1000)) / 86400000))
-                    else:
-                        duration_days = 0
+            inbound_id = int(found.get("inbound_id") or inbound.get("id") or srv.get("inbound_id") or 1)
+            traffic = await xui.get_client_traffic(remote_email) if remote_email else None
+            traffic = traffic if isinstance(traffic, dict) else {}
+            total_bytes = int(traffic.get("total") or client.get("totalGB") or client.get("total") or 0)
+            up = int(traffic.get("up") or client.get("up") or 0)
+            down = int(traffic.get("down") or client.get("down") or 0)
+            expire_ms = int(traffic.get("expiryTime") or client.get("expiryTime") or 0)
+            enabled = bool(traffic.get("enable", client.get("enable", True)))
+            link = await xui.get_client_link(inbound_id, remote_email) if remote_email else None
+            sub = await xui.get_subscription_link(inbound_id, remote_email) if remote_email else None
 
-                    return {
-                        "server_id": srv["id"],
-                        "inbound_id": int(inbound.get("id") or srv.get("inbound_id") or 1),
-                        "uuid": c_uuid or client_uuid or c_email,
-                        "email": c_email or email,
-                        "traffic_gb": traffic_gb,
-                        "duration_days": duration_days,
-                        "expire_ms": expire_ms,
-                        "is_active": 1 if c.get("enable", True) else 0,
-                    }
+            return {
+                "server_id": srv["id"],
+                "server_name": srv.get("name") or srv.get("url"),
+                "inbound_id": inbound_id,
+                "protocol": inbound.get("protocol") or "-",
+                "uuid": remote_uuid,
+                "email": remote_email or email,
+                "traffic_gb": round(total_bytes / (1024 ** 3), 2) if total_bytes > 0 else 0,
+                "duration_days": _remaining_duration_days(expire_ms),
+                "expire_ms": expire_ms,
+                "used": up + down,
+                "is_active": 1 if enabled else 0,
+                "link": link,
+                "sub": sub,
+            }
+        except Exception as e:
+            logger.exception("legacy sync search failed on server %s: %s", srv.get("name") or srv.get("id"), e)
+            continue
         finally:
             await xui.close()
 
     return None
+
+
+async def _send_synced_config_to_user(cb: CallbackQuery, claim: dict, cfg: dict, remote: dict | None = None):
+    text = (
+        "✅ کانفیگ قبلی شما به حساب ربات متصل شد.\n\n"
+        f"ایمیل: `{cfg.get('email') or claim.get('email') or '-'}`\n"
+        f"سرور: `{cfg.get('server_name') or (remote or {}).get('server_name') or cfg.get('server_id') or '-'}`\n"
+        f"حجم ثبت‌شده: `{cfg.get('traffic_gb') or 0} GB`\n"
+        f"مدت باقی‌مانده: `{cfg.get('duration_days') or 0} روز`"
+    )
+    link = (remote or {}).get("link") or ""
+    sub = (remote or {}).get("sub") or ""
+    if link:
+        text += f"\n\nلینک اتصال:\n`{link}`"
+    if sub:
+        text += f"\n\nلینک سابسکریپشن:\n`{sub}`"
+    await cb.bot.send_message(
+        claim["telegram_id"],
+        text,
+        parse_mode="Markdown",
+        reply_markup=config_links_kb(link, sub) if (link or sub) else None,
+    )
+    if link:
+        try:
+            ch = await get_setting("channel_username", "AtlasChannel")
+            await cb.bot.send_photo(claim["telegram_id"], _qr_input_file(link, ch), caption=f"QR: {cfg.get('email') or claim.get('email') or ''}", parse_mode=None)
+        except Exception:
+            pass
 
 
 @router.callback_query(F.data.startswith("lg_appr:"))
@@ -1481,12 +1517,36 @@ async def legacy_claim_approve(cb: CallbackQuery):
     if not is_admin(cb.from_user.id):
         return
     cid = int(cb.data.split(":")[1])
+    try:
+        await cb.answer("⏳ در حال جستجو و اتصال کانفیگ...")
+    except Exception:
+        pass
+    try:
+        await _legacy_claim_approve_impl(cb, cid)
+    except Exception as e:
+        logger.exception("legacy claim approve failed cid=%s: %s", cid, e)
+        try:
+            await update_legacy_claim(
+                cid,
+                admin_note=f"approve_error:{type(e).__name__}",
+                reviewer_id=cb.from_user.id,
+                reviewed_at=datetime.now().isoformat(),
+            )
+        except Exception:
+            pass
+        try:
+            await cb.message.answer(
+                "⚠️ تایید سینک خطا خورد، اما درخواست pending مانده و نسوخت.\n"
+                "بعد از بررسی اتصال سرورها دوباره همین دکمه تایید را بزنید."
+            )
+        except Exception:
+            pass
+
+
+async def _legacy_claim_approve_impl(cb: CallbackQuery, cid: int):
     claim = await get_legacy_claim(cid)
     if not claim:
         await cb.answer("درخواست پیدا نشد.", show_alert=True)
-        return
-    if claim.get("status") == "approved":
-        await cb.answer("این درخواست قبلاً تایید شده است.", show_alert=True)
         return
 
     email = (claim.get("email") or "").strip()
@@ -1496,11 +1556,34 @@ async def legacy_claim_approve(cb: CallbackQuery):
         await cb.message.edit_text("❌ ایمیل یا UUID کانفیگ در لینک پیدا نشد؛ درخواست رد شد.")
         return
 
+    claim_status = claim.get("status") or "pending"
+    if claim_status != "pending":
+        existing = None
+        if claim_status == "approved":
+            existing = await get_config_by_email(email) if email else None
+            if not existing and claim_uuid:
+                existing = await get_config_by_uuid(claim_uuid)
+        if existing:
+            await cb.answer("این درخواست قبلاً تایید و ثبت شده است.", show_alert=True)
+            return
+        if claim_status == "approved":
+            await update_legacy_claim(
+                cid,
+                status="pending",
+                admin_note="retry_after_missing_config_by_admin",
+                reviewer_id=0,
+                reviewed_at=None,
+            )
+        else:
+            await cb.answer("این درخواست قبلاً بررسی شده است. کاربر باید دوباره درخواست سینک بفرستد.", show_alert=True)
+            return
+
     cfg = await get_config_by_email(email) if email else None
     if not cfg and claim_uuid:
         cfg = await get_config_by_uuid(claim_uuid)
 
     # اگر داخل DB نبود، مستقیم از همه سرورها/اینباندها جستجو و ایمپورت می‌کنیم.
+    remote = None
     if not cfg:
         remote = await _find_remote_legacy_client(email, claim_uuid)
         if remote and remote.get("email") and remote.get("uuid"):
@@ -1516,21 +1599,58 @@ async def legacy_claim_approve(cb: CallbackQuery):
                     remote["expire_ms"],
                 )
                 cfg = await get_config(cfg_id)
-            except Exception:
+            except sqlite3.IntegrityError:
                 cfg = await get_config_by_email(remote["email"])
+                if not cfg and remote.get("uuid"):
+                    cfg = await get_config_by_uuid(remote["uuid"])
+        elif remote is None:
+            await update_legacy_claim(
+                cid,
+                admin_note=f"not_found:{datetime.now().isoformat()}",
+                reviewer_id=cb.from_user.id,
+                reviewed_at=datetime.now().isoformat(),
+            )
+            await cb.answer("کانفیگ پیدا نشد؛ درخواست pending ماند تا دوباره قابل بررسی باشد.", show_alert=True)
+            await cb.message.answer(
+                "❌ کانفیگ با این ایمیل/UUID روی دیتابیس یا سرورهای ثبت‌شده پیدا نشد.\n"
+                "درخواست رد نشد و هنوز pending است؛ بعد از اصلاح اطلاعات سرور می‌توانید دوباره تایید بزنید."
+            )
+            return
 
     if cfg:
-        await update_config(cfg["id"], user_id=claim["user_id"], is_active=1)
+        if not remote:
+            try:
+                remote = await _find_remote_legacy_client(email or cfg.get("email", ""), claim_uuid or cfg.get("uuid", ""))
+            except Exception:
+                remote = None
+        update_fields = {"user_id": claim["user_id"], "is_active": int((remote or {}).get("is_active", 1))}
+        if remote:
+            update_fields.update(
+                server_id=remote["server_id"],
+                inbound_id=remote["inbound_id"],
+                uuid=remote["uuid"],
+                traffic_gb=remote["traffic_gb"],
+                duration_days=remote["duration_days"],
+                expire_timestamp=remote["expire_ms"],
+            )
+        await update_config(cfg["id"], **update_fields)
+        cfg = await get_config(cfg["id"]) or cfg
         await update_legacy_claim(cid, status="approved", reviewer_id=cb.from_user.id, reviewed_at=datetime.now().isoformat())
         try:
-            await cb.bot.send_message(claim["telegram_id"], f"✅ کانفیگ `{cfg.get('email') or email}` به حساب شما متصل شد.", parse_mode="Markdown")
+            await _send_synced_config_to_user(cb, claim, cfg, remote)
         except Exception:
             pass
         await cb.message.edit_text(f"✅ کانفیگ {cfg.get('email') or email} به کاربر تخصیص یافت.")
         return
 
-    await update_legacy_claim(cid, status="rejected", reviewer_id=cb.from_user.id, reviewed_at=datetime.now().isoformat(), admin_note="email_not_found")
-    await cb.message.edit_text("❌ کانفیگ با این ایمیل/UUID پیدا نشد. بررسی شد روی دیتابیس و همه سرورها.")
+    await update_legacy_claim(
+        cid,
+        admin_note=f"not_found:{datetime.now().isoformat()}",
+        reviewer_id=cb.from_user.id,
+        reviewed_at=datetime.now().isoformat(),
+    )
+    await cb.answer("کانفیگ پیدا نشد؛ درخواست pending ماند.", show_alert=True)
+    await cb.message.answer("❌ کانفیگ با این ایمیل/UUID پیدا نشد. درخواست هنوز pending است و می‌توانید دوباره بررسی کنید.")
 
 
 @router.callback_query(F.data.startswith("lg_rej:"))

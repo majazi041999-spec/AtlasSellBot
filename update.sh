@@ -19,7 +19,17 @@ need_cmd systemctl
 need_cmd python3
 
 cd "$REPO_DIR"
-git rev-parse --is-inside-work-tree >/dev/null 2>&1 || { echo "❌ Current directory is not a git repository"; exit 1; }
+if ! git rev-parse --is-inside-work-tree >/dev/null 2>/tmp/atlas_git_check.err; then
+  if grep -qi "dubious ownership" /tmp/atlas_git_check.err; then
+    echo "⚠️ Git safe.directory issue detected; trusting $REPO_DIR for this user."
+    git config --global --add safe.directory "$REPO_DIR"
+  fi
+fi
+if ! git rev-parse --is-inside-work-tree >/dev/null 2>/tmp/atlas_git_check.err; then
+  echo "❌ Current directory is not a git repository or Git cannot access it:"
+  cat /tmp/atlas_git_check.err
+  exit 1
+fi
 
 SERVICE_STOPPED=0
 STASHED=0
