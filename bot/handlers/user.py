@@ -44,6 +44,8 @@ from core.database import (
     add_user_balance,
     get_all_admin_telegram_ids,
     add_review_message,
+    get_user_test_account,
+    add_user_test_account,
 )
 from core.xui_api import XUIClient, fmt_bytes, days_left, expiry_ms_from_days
 from core.texts import get_text
@@ -155,6 +157,56 @@ async def _calc_package_price_for_user(user_id: int, pkg: dict) -> tuple[int, in
     discount = max(0.0, min(100.0, float(pricing.get("discount_percent") or 0)))
     final_price = int(base_price * (100 - discount) / 100)
     return max(0, final_price), max(0, base_price), discount, price_per_gb
+
+
+async def _migration_limit() -> int:
+    raw = await get_setting("max_daily_migrations", str(MAX_DAILY_MIGRATIONS))
+    try:
+        return max(0, int(raw or MAX_DAILY_MIGRATIONS))
+    except (TypeError, ValueError):
+        return MAX_DAILY_MIGRATIONS
+
+
+async def _test_account_settings() -> dict:
+    def as_float(value: str, default: float) -> float:
+        try:
+            return max(0.1, float(value or default))
+        except (TypeError, ValueError):
+            return default
+
+    def as_int(value: str, default: int) -> int:
+        try:
+            return max(1, int(value or default))
+        except (TypeError, ValueError):
+            return default
+
+    return {
+        "enabled": await get_setting("test_account_enabled", "1") == "1",
+        "traffic_gb": as_float(await get_setting("test_account_traffic_gb", "1"), 1.0),
+        "duration_days": as_int(await get_setting("test_account_duration_days", "1"), 1),
+        "server_id": as_int(await get_setting("test_account_server_id", "0"), 0),
+        "prefix": (await get_setting("test_account_prefix", "test") or "test").strip()[:16],
+    }
+
+
+async def _pick_test_server(preferred_id: int) -> dict | None:
+    servers = await get_available_servers()
+    if not servers:
+        return None
+    if preferred_id:
+        preferred = next((s for s in servers if int(s["id"]) == int(preferred_id)), None)
+        if preferred:
+            return preferred
+    default_raw = await get_setting("default_server_id", "0")
+    try:
+        default_id = int(default_raw or 0)
+    except (TypeError, ValueError):
+        default_id = 0
+    if default_id:
+        default = next((s for s in servers if int(s["id"]) == default_id), None)
+        if default:
+            return default
+    return servers[0]
 
 
 async def _payment_text(oid: int, title: str, traffic_gb: float, duration_days: int, price: int) -> str:
@@ -562,6 +614,102 @@ async def cfg_qr(cb: CallbackQuery):
         await cb.answer()
     except Exception:
         await cb.answer("❌ ارسال QR Code ناموفق بود.", show_alert=True)
+
+
+@router.message(F.text == "🧪 دریافت اکانت تست")
+async def test_account(msg: Message):
+    if not await _ensure_channel_membership(msg):
+        return
+    if await _blocked(msg.from_user.id):
+        await msg.answer(await get_text("blocked_message"))
+        return
+
+    settings = await _test_account_settings()
+    if not settings["enabled"]:
+        await msg.answer("⛔ اکانت تست فعلاً غیرفعال است.")
+        return
+
+    user = await get_or_create_user(msg.from_user.id, msg.from_user.username, msg.from_user.full_name)
+    existing = await get_user_test_account(user["id"])
+    if existing:
+        cfg = await get_config(int(existing["config_id"]))
+        if cfg:
+            cli = XUIClient(cfg["server_url"], cfg["srv_user"], cfg["srv_pass"], cfg["sub_path"], cfg.get("srv_api_token", ""))
+            link = await cli.get_client_link(cfg["inbound_id"], cfg["email"])
+            sub = await cli.get_subscription_link(cfg["inbound_id"], cfg["email"])
+            await cli.close()
+            text = (
+                "🧪 اکانت تست شما قبلاً ساخته شده است.\n\n"
+                f"کانفیگ: `{cfg['email']}`\n"
+                f"حجم: `{cfg['traffic_gb']} GB`\n"
+                f"مدت: `{cfg['duration_days']} روز`\n"
+            )
+            if link:
+                text += f"\nلینک اتصال:\n`{link}`\n"
+            if sub:
+                text += f"\nلینک سابسکریپشن:\n`{sub}`\n"
+            await msg.answer(text, parse_mode="Markdown", reply_markup=config_links_kb(link or "", sub or ""))
+            if link:
+                try:
+                    ch = await get_setting("channel_username", "AtlasChannel")
+                    await msg.answer_photo(_qr_input_file(link, ch), caption=f"QR تست: {cfg['email']}", parse_mode=None)
+                except Exception:
+                    pass
+            return
+
+    server = await _pick_test_server(int(settings["server_id"]))
+    if not server:
+        await msg.answer("⛔ فعلاً سرور دارای ظرفیت برای اکانت تست وجود ندارد.")
+        return
+
+    inbound_id = int(server.get("inbound_id") or 1)
+    prefix = "".join(ch for ch in settings["prefix"] if ch.isalnum() or ch in ("_", "-")) or "test"
+    email = f"{prefix}_{msg.from_user.id}_{_uuid.uuid4().hex[:6]}"
+    cuuid = str(_uuid.uuid4())
+
+    cli = XUIClient(server["url"], server["username"], server["password"], server["sub_path"], server.get("api_token", ""))
+    try:
+        ok = await cli.add_client(inbound_id, cuuid, email, settings["traffic_gb"], settings["duration_days"], starts_on_first_use=False)
+        if not ok:
+            await msg.answer("❌ ساخت اکانت تست روی سرور ناموفق بود. لطفاً کمی بعد دوباره تلاش کنید.")
+            return
+        link = await cli.get_client_link(inbound_id, email)
+        sub = await cli.get_subscription_link(inbound_id, email)
+    finally:
+        await cli.close()
+
+    expire_ms = expiry_ms_from_days(settings["duration_days"])
+    cfg_id = await save_config(
+        user["id"],
+        int(server["id"]),
+        cuuid,
+        email,
+        inbound_id,
+        settings["traffic_gb"],
+        settings["duration_days"],
+        expire_ms,
+        starts_on_first_use=0,
+    )
+    await add_user_test_account(user["id"], cfg_id)
+
+    text = (
+        "✅ اکانت تست شما ساخته شد.\n\n"
+        f"کانفیگ: `{email}`\n"
+        f"حجم: `{settings['traffic_gb']} GB`\n"
+        f"مدت: `{settings['duration_days']} روز`\n"
+        f"سرور: `{server['name']}`\n"
+    )
+    if link:
+        text += f"\nلینک اتصال:\n`{link}`\n"
+    if sub:
+        text += f"\nلینک سابسکریپشن:\n`{sub}`\n"
+    await msg.answer(text, parse_mode="Markdown", reply_markup=config_links_kb(link or "", sub or ""))
+    if link:
+        try:
+            ch = await get_setting("channel_username", "AtlasChannel")
+            await msg.answer_photo(_qr_input_file(link, ch), caption=f"QR تست: {email}", parse_mode=None)
+        except Exception:
+            pass
 
 
 @router.message(F.text == "🛒 خرید سرویس")
@@ -1139,6 +1287,7 @@ async def migrate_menu(msg: Message):
     if not configs:
         await msg.answer(" سرویس فعالی برای انتقال ندارید.")
         return
+    limit = await _migration_limit()
 
     from aiogram.utils.keyboard import InlineKeyboardBuilder
 
@@ -1150,7 +1299,7 @@ async def migrate_menu(msg: Message):
     await msg.answer(
         f" *انتقال سرور*\n\n"
         f"کدام سرویس را می‌خواهید منتقل کنید؟\n"
-        f"⚠️ محدودیت: {MAX_DAILY_MIGRATIONS} بار در روز",
+        f"⚠️ محدودیت: {limit} بار در روز",
         reply_markup=b.as_markup(),
         parse_mode="Markdown",
     )
@@ -1166,10 +1315,11 @@ async def mig_start(cb: CallbackQuery):
         await cb.answer("❌ این سرویس متعلق به شما نیست!", show_alert=True)
         return
 
+    limit = await _migration_limit()
     today_cnt = await get_user_migration_count_today(user["id"])
-    if today_cnt >= MAX_DAILY_MIGRATIONS:
+    if today_cnt >= limit:
         await cb.answer(
-            f"⛔ امروز {MAX_DAILY_MIGRATIONS} بار انتقال انجام دادید!\nفردا دوباره امتحان کنید.",
+            f"⛔ امروز {limit} بار انتقال انجام دادید!\nفردا دوباره امتحان کنید.",
             show_alert=True,
         )
         return
@@ -1193,7 +1343,7 @@ async def mig_start(cb: CallbackQuery):
         kb.button(text=label, callback_data=f"mig_confirm:{s['id']}:{cid}")
     kb.adjust(1)
 
-    remaining = MAX_DAILY_MIGRATIONS - today_cnt
+    remaining = limit - today_cnt
     await cb.message.edit_text(
         f" *انتقال سرویس*\n\n"
         f" سرویس: `{cfg['email']}`\n"
@@ -1217,8 +1367,9 @@ async def mig_confirm(cb: CallbackQuery):
         await cb.answer("❌ دسترسی مجاز نیست!", show_alert=True)
         return
 
+    limit = await _migration_limit()
     today_cnt = await get_user_migration_count_today(user["id"])
-    if today_cnt >= MAX_DAILY_MIGRATIONS:
+    if today_cnt >= limit:
         await cb.answer("⛔ محدودیت روزانه پر شده!", show_alert=True)
         return
 

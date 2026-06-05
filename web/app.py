@@ -75,6 +75,7 @@ from core.database import (
     update_user,
     reset_legacy_claims,
     claim_order_for_approval,
+    release_order_processing,
     clear_config_alerts,
     get_review_messages,
     snapshot_daily_report,
@@ -525,6 +526,15 @@ async def order_reject_web(request: Request, oid: int):
 
 @app.post(f"/{S}/orders/{{oid}}/approve")
 async def order_approve_web(request: Request, oid: int):
+    try:
+        return await _order_approve_web_impl(request, oid)
+    except Exception as e:
+        logger.exception("order approve failed oid=%s: %s", oid, e)
+        await release_order_processing(oid)
+        return RedirectResponse(f"/{S}/orders", status_code=302)
+
+
+async def _order_approve_web_impl(request: Request, oid: int):
     if not _auth(request):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     order = await get_order(oid)
@@ -532,7 +542,7 @@ async def order_approve_web(request: Request, oid: int):
         return RedirectResponse(f"/{S}/orders", status_code=302)
     if order.get("status") == "approved":
         return RedirectResponse(f"/{S}/orders", status_code=302)
-    if order.get("status") != "receipt_submitted":
+    if order.get("status") not in ("receipt_submitted", "processing"):
         return RedirectResponse(f"/{S}/orders", status_code=302)
     if not await claim_order_for_approval(oid):
         return RedirectResponse(f"/{S}/orders", status_code=302)
@@ -984,6 +994,12 @@ async def settings_page(request: Request):
         "channel_username": await get_setting("channel_username", SETTINGS_DEFAULTS["channel_username"]),
         "default_server_id": await get_setting("default_server_id", "0"),
         "legacy_sync_enabled": await get_setting("legacy_sync_enabled", SETTINGS_DEFAULTS["legacy_sync_enabled"]),
+        "max_daily_migrations": await get_setting("max_daily_migrations", SETTINGS_DEFAULTS["max_daily_migrations"]),
+        "test_account_enabled": await get_setting("test_account_enabled", SETTINGS_DEFAULTS["test_account_enabled"]),
+        "test_account_traffic_gb": await get_setting("test_account_traffic_gb", SETTINGS_DEFAULTS["test_account_traffic_gb"]),
+        "test_account_duration_days": await get_setting("test_account_duration_days", SETTINGS_DEFAULTS["test_account_duration_days"]),
+        "test_account_server_id": await get_setting("test_account_server_id", SETTINGS_DEFAULTS["test_account_server_id"]),
+        "test_account_prefix": await get_setting("test_account_prefix", SETTINGS_DEFAULTS["test_account_prefix"]),
         "panel_domain": await get_setting("panel_domain", ""),
         "cert_email": await get_setting("cert_email", ""),
         "cert_status": await get_setting("cert_status", ""),
@@ -1031,6 +1047,12 @@ async def settings_save(
     channel_username: str = Form(""),
     default_server_id: str = Form("0"),
     legacy_sync_enabled: str = Form("1"),
+    max_daily_migrations: int = Form(5),
+    test_account_enabled: str = Form("0"),
+    test_account_traffic_gb: float = Form(1),
+    test_account_duration_days: int = Form(1),
+    test_account_server_id: str = Form("0"),
+    test_account_prefix: str = Form("test"),
     # ✅ کارت بانکی از پنل ذخیره می‌شود
     card_number: str = Form(""),
     card_holder: str = Form(""),
@@ -1069,6 +1091,13 @@ async def settings_save(
     valid_server_ids = {str(sv["id"]) for sv in await get_servers(active_only=False)}
     await set_setting("default_server_id", default_server_id if default_server_id in valid_server_ids else "0")
     await set_setting("legacy_sync_enabled", "1" if legacy_sync_enabled == "1" else "0")
+    await set_setting("max_daily_migrations", str(max(0, int(max_daily_migrations or 0))))
+    await set_setting("test_account_enabled", "1" if test_account_enabled == "1" else "0")
+    await set_setting("test_account_traffic_gb", str(max(0.1, float(test_account_traffic_gb or 1))))
+    await set_setting("test_account_duration_days", str(max(1, int(test_account_duration_days or 1))))
+    await set_setting("test_account_server_id", test_account_server_id if test_account_server_id in valid_server_ids else "0")
+    clean_test_prefix = "".join(ch for ch in (test_account_prefix or "test").strip() if ch.isalnum() or ch in ("_", "-"))[:16] or "test"
+    await set_setting("test_account_prefix", clean_test_prefix)
 
     # ✅ ذخیره کارت
     await set_setting("card_number", card_number.strip())

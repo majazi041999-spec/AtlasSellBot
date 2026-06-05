@@ -158,6 +158,15 @@ CREATE TABLE IF NOT EXISTS review_messages (
     UNIQUE(tx_type, tx_id, chat_id, message_id)
 );
 
+CREATE TABLE IF NOT EXISTS test_accounts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL UNIQUE,
+    config_id INTEGER NOT NULL,
+    created_at TEXT DEFAULT (datetime('now','localtime')),
+    FOREIGN KEY(user_id) REFERENCES users(id),
+    FOREIGN KEY(config_id) REFERENCES configs(id)
+);
+
 CREATE TABLE IF NOT EXISTS daily_reports (
     jalali_date TEXT PRIMARY KEY,
     gregorian_date TEXT NOT NULL,
@@ -196,7 +205,7 @@ async def init_db():
             if s:
                 await db.execute(s)
         await _ensure_columns(db)
-        await db.execute("UPDATE orders SET status='receipt_submitted' WHERE status='processing'")
+        await db.execute("UPDATE orders SET status='receipt_submitted', approved_at=NULL WHERE status='processing'")
         await db.commit()
 
 
@@ -680,11 +689,31 @@ async def update_order(oid: int, **kw):
 async def claim_order_for_approval(oid: int) -> bool:
     async with aiosqlite.connect(DB_PATH) as db:
         c = await db.execute(
-            "UPDATE orders SET status='processing' WHERE id=? AND status='receipt_submitted'",
+            """UPDATE orders SET status='processing', approved_at=datetime('now','localtime')
+               WHERE id=?
+                 AND (
+                    status='receipt_submitted'
+                    OR (
+                        status='processing'
+                        AND (
+                            approved_at IS NULL
+                            OR datetime(approved_at) < datetime('now','localtime','-15 minutes')
+                        )
+                    )
+                 )""",
             (oid,),
         )
         await db.commit()
         return (c.rowcount or 0) > 0
+
+
+async def release_order_processing(oid: int):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE orders SET status='receipt_submitted', approved_at=NULL WHERE id=? AND status='processing'",
+            (oid,),
+        )
+        await db.commit()
 
 async def get_pending_orders() -> List[Dict]:
     async with aiosqlite.connect(DB_PATH) as db:
@@ -699,7 +728,7 @@ async def get_pending_orders() -> List[Dict]:
             FROM orders o
             JOIN users u ON o.user_id=u.id
             JOIN packages p ON o.package_id=p.id
-            WHERE o.status IN ('receipt_submitted')
+            WHERE o.status IN ('receipt_submitted','processing')
             ORDER BY o.created_at DESC
         """) as c:
             return [dict(r) for r in await c.fetchall()]
@@ -751,6 +780,32 @@ async def save_config(user_id, server_id, uuid, email, inbound_id, traffic_gb, d
         """, (user_id, server_id, uuid, email, inbound_id, traffic_gb, duration_days, expire_ts, starts_on_first_use))
         await db.commit()
         return c.lastrowid
+
+
+async def get_user_test_account(user_id: int) -> Optional[Dict]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            """SELECT ta.*, c.email, c.uuid, c.server_id, c.inbound_id, c.traffic_gb,
+                      c.duration_days, c.expire_timestamp, c.is_active
+               FROM test_accounts ta
+               JOIN configs c ON c.id=ta.config_id
+               WHERE ta.user_id=? LIMIT 1""",
+            (user_id,),
+        ) as c:
+            r = await c.fetchone()
+            return dict(r) if r else None
+
+
+async def add_user_test_account(user_id: int, config_id: int) -> int:
+    async with aiosqlite.connect(DB_PATH) as db:
+        c = await db.execute(
+            """INSERT INTO test_accounts(user_id,config_id) VALUES(?,?)
+               ON CONFLICT(user_id) DO UPDATE SET config_id=excluded.config_id, created_at=datetime('now','localtime')""",
+            (int(user_id), int(config_id)),
+        )
+        await db.commit()
+        return c.lastrowid or 0
 
 async def get_config(cid: int) -> Optional[Dict]:
     async with aiosqlite.connect(DB_PATH) as db:

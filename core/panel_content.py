@@ -28,6 +28,12 @@ SETTINGS_DEFAULTS: Dict[str, str] = {
     "force_channel": "0",
     "channel_username": "",
     "legacy_sync_enabled": "1",
+    "max_daily_migrations": "5",
+    "test_account_enabled": "1",
+    "test_account_traffic_gb": "1",
+    "test_account_duration_days": "1",
+    "test_account_server_id": "0",
+    "test_account_prefix": "test",
 }
 
 

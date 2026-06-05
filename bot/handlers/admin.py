@@ -22,6 +22,7 @@ from core.database import (
     get_legacy_claim, update_legacy_claim, get_config_by_email, get_config_by_uuid,
     get_topup_request, get_pending_topup_requests, update_topup_request, add_user_balance,
     claim_order_for_approval,
+    release_order_processing,
     clear_config_alerts,
     add_review_message,
     snapshot_daily_report,
@@ -496,6 +497,18 @@ async def _do_renew(cb: CallbackQuery, order: dict) -> bool:
 
 
 async def _do_approve(cb: CallbackQuery, oid: int, sid: int):
+    try:
+        return await _do_approve_impl(cb, oid, sid)
+    except Exception as e:
+        await release_order_processing(oid)
+        try:
+            await cb.message.answer(f"❌ تایید سفارش کامل نشد و سفارش دوباره به صف بررسی برگشت.\nجزئیات: {e}", parse_mode=None)
+        except Exception:
+            pass
+        return False
+
+
+async def _do_approve_impl(cb: CallbackQuery, oid: int, sid: int):
     order = await get_order(oid)
     if not order:
         return False
