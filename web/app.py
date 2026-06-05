@@ -117,6 +117,20 @@ _templates = Jinja2Templates(directory=os.path.join(_dir, "templates"))
 S = WEB_SECRET_PATH  # short alias
 
 
+@app.get("/")
+@app.get("/panel")
+@app.get("/panel/")
+@app.get("/admin")
+@app.get("/admin/")
+async def easy_panel_entry():
+    return RedirectResponse(f"/{S}/login", status_code=302)
+
+
+@app.get("/health")
+async def health_check():
+    return JSONResponse({"ok": True, "panel": f"/{S}/login"})
+
+
 @app.get("/sub/{token}")
 async def public_subscription(token: str):
     rendered = await render_subscription(token)

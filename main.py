@@ -355,7 +355,7 @@ async def run_bot():
 
 async def run_web():
     import uvicorn
-    from core.config import WEB_PORT, WEB_SECRET_PATH
+    from core.config import WEB_HOST, WEB_PORT, WEB_SECRET_PATH
     from core.database import init_db
     from web.app import app
 
@@ -363,13 +363,17 @@ async def run_web():
 
     config = uvicorn.Config(
         app,
-        host="0.0.0.0",
+        host=WEB_HOST,
         port=WEB_PORT,
         log_level="warning",
         access_log=False,
     )
     server = uvicorn.Server(config)
-    logger.info(f"🌐 پنل وب روی پورت {WEB_PORT} | مسیر: /{WEB_SECRET_PATH}/")
+    logger.info(
+        f"🌐 پنل وب: http://SERVER_IP:{WEB_PORT}/panel "
+        f"| مسیر مستقیم: http://SERVER_IP:{WEB_PORT}/{WEB_SECRET_PATH}/ "
+        f"| bind={WEB_HOST}:{WEB_PORT}"
+    )
     await server.serve()
 
 
