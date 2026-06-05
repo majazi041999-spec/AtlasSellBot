@@ -71,6 +71,7 @@ from core.database import (
     get_stats,
     get_subscription_node_config,
     get_subscription_node_configs,
+    subscription_node_config_status,
     count_active_subscription_nodes_by_target,
     init_db,
     set_setting,
@@ -482,6 +483,10 @@ async def subscriptions_page(request: Request):
     nodes = await get_subscription_node_configs(active_only=False)
     for node in nodes:
         node["active_profiles"] = await count_active_subscription_nodes_by_target(node["server_id"], node["inbound_id"])
+        status = await subscription_node_config_status(node)
+        node["usable"] = status["usable"]
+        node["usable_label"] = status["label"]
+        node["usable_reason"] = status["reason"]
     settings = {
         "multi_sub_enabled": await get_setting("multi_sub_enabled", SETTINGS_DEFAULTS["multi_sub_enabled"]),
         "multi_sub_node_count": await get_setting("multi_sub_node_count", SETTINGS_DEFAULTS["multi_sub_node_count"]),

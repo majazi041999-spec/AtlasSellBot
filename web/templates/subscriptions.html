@@ -117,6 +117,7 @@
         <div class="node-title">{{ node.label or node.server_name }} <span style="color:var(--txt3);font-weight:600">#{{ node.inbound_id }}</span></div>
         <div class="node-meta">
           <span class="badge {{ 'b-green' if node.is_active and node.server_active else 'b-red' }}">{{ 'فعال' if node.is_active and node.server_active else 'غیرفعال' }}</span>
+          <span class="badge {{ 'b-green' if node.usable else 'b-yellow' }}">{{ node.usable_label }}</span>
           <span>سرور: {{ node.server_name }}</span>
           <span>اولویت: {{ node.priority }}</span>
           <span>مصرف ظرفیت: {{ node.active_profiles }}/{{ node.max_active_profiles or '∞' }}</span>

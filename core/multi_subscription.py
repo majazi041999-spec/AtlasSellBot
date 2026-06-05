@@ -59,9 +59,9 @@ def subscription_error_message(error: str) -> str:
     if raw == "public_base_url_not_configured":
         return "آدرس عمومی ساب تنظیم نشده است. در پنل سابسکریپشن، public_base_url را تنظیم کنید."
     if raw == "no_subscription_nodes_configured":
-        return "هیچ نود فعالی برای سابسکریپشن تعریف نشده است."
+        return "هیچ نود قابل استفاده‌ای برای سابسکریپشن تعریف نشده است."
     if raw.startswith("not_enough_subscription_nodes:"):
-        return f"تعداد نودهای فعال سابسکریپشن کافی نیست ({raw.split(':', 1)[1]})."
+        return f"تعداد نودهای قابل استفاده سابسکریپشن کافی نیست ({raw.split(':', 1)[1]})."
     if raw.startswith("created_nodes_below_minimum:"):
         return f"تعداد نودهای ساخته‌شده به حداقل لازم نرسید: {raw}"
     return raw or "خطای نامشخص در ساخت سابسکریپشن"

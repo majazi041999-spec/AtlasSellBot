@@ -490,8 +490,6 @@ async def delete_subscription_node_config(node_id: int):
 async def subscription_node_config_has_capacity(node: Dict) -> bool:
     if not node or not int(node.get("is_active") or 0) or not int(node.get("server_active") or 0):
         return False
-    if not await server_has_capacity(int(node["server_id"])):
-        return False
     cap = int(node.get("max_active_profiles") or 0)
     if cap <= 0:
         return True
@@ -499,10 +497,26 @@ async def subscription_node_config_has_capacity(node: Dict) -> bool:
     return used < cap
 
 
+async def subscription_node_config_status(node: Dict) -> Dict:
+    if not node:
+        return {"usable": False, "reason": "not_found", "label": "نود پیدا نشد"}
+    if not int(node.get("is_active") or 0):
+        return {"usable": False, "reason": "node_disabled", "label": "خود نود غیرفعال است"}
+    if not int(node.get("server_active") or 0):
+        return {"usable": False, "reason": "server_disabled", "label": "سرور این نود غیرفعال است"}
+
+    used = await count_active_subscription_nodes_by_target(int(node["server_id"]), int(node["inbound_id"]))
+    cap = int(node.get("max_active_profiles") or 0)
+    if cap > 0 and used >= cap:
+        return {"usable": False, "reason": "node_capacity_full", "label": f"ظرفیت نود پر است ({used}/{cap})"}
+    return {"usable": True, "reason": "ok", "label": "قابل استفاده"}
+
+
 async def get_available_subscription_node_configs() -> List[Dict]:
     out = []
     for node in await get_subscription_node_configs(active_only=True):
-        if await subscription_node_config_has_capacity(node):
+        status = await subscription_node_config_status(node)
+        if status["usable"]:
             out.append(node)
     return out
 
