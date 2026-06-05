@@ -48,6 +48,7 @@ from core.database import (
     add_review_message,
     get_user_test_account,
     add_user_test_account,
+    get_least_loaded_server,
 )
 from core.xui_api import XUIClient, fmt_bytes, days_left, expiry_ms_from_days
 from core.texts import get_text
@@ -58,6 +59,7 @@ from bot.keyboards import (
     packages_kb,
     payment_kb,
     config_detail_kb,
+    renew_options_kb,
     config_links_kb,
     configs_kb,
     servers_kb,
@@ -67,9 +69,10 @@ from bot.keyboards import (
     wallet_kb,
     flow_cancel_kb,
 )
-from bot.states import BuyService, WholesaleBuy, LegacySync, WalletTopup
+from bot.states import BuyService, RenewService, WholesaleBuy, LegacySync, WalletTopup
 
 router = Router()
+RENEWAL_MIN_DAYS = 30
 
 
 async def _blocked(uid: int) -> bool:
@@ -146,8 +149,18 @@ async def _calc_renew_price(user_id: int, traffic_gb: float, duration_days: int)
     base = int(float(traffic_gb or 0) * int(pricing.get("price_per_gb") or 0))
     if base <= 0:
         base = int(float(traffic_gb or 0) * 10000)
+    if int(duration_days or 0) > RENEWAL_MIN_DAYS:
+        base = int(base * (int(duration_days) / RENEWAL_MIN_DAYS))
     discount = float(pricing.get("discount_percent") or 0)
     return int(base * (100 - discount) / 100)
+
+
+async def _renewal_min_traffic() -> float:
+    raw = await get_setting("renewal_min_traffic_gb", "1")
+    try:
+        return max(0.1, float(raw or 1))
+    except (TypeError, ValueError):
+        return 1.0
 
 
 async def _calc_package_price_for_user(user_id: int, pkg: dict) -> tuple[int, int, float, int]:
@@ -199,6 +212,10 @@ async def _pick_test_server(preferred_id: int) -> dict | None:
         preferred = next((s for s in servers if int(s["id"]) == int(preferred_id)), None)
         if preferred:
             return preferred
+    if await get_setting("auto_least_loaded_server", "0") == "1":
+        suggested = await get_least_loaded_server()
+        if suggested:
+            return suggested
     default_raw = await get_setting("default_server_id", "0")
     try:
         default_id = int(default_raw or 0)
@@ -359,6 +376,22 @@ async def flow_back_user(cb: CallbackQuery, state: FSMContext):
             reply_markup=packages_kb(pkgs),
             parse_mode="Markdown",
         )
+    elif cur.endswith("RenewService:duration"):
+        min_traffic = await _renewal_min_traffic()
+        await state.set_state(RenewService.traffic)
+        await cb.message.edit_text(
+            f"📊 حجم جدید تمدید را به GB وارد کنید.\nحداقل: `{min_traffic:g} GB`\nمثال: `20`",
+            reply_markup=flow_cancel_kb(),
+            parse_mode="Markdown",
+        )
+    elif cur.endswith("RenewService:traffic"):
+        data = await state.get_data()
+        cid = int(data.get("config_id") or 0)
+        await state.clear()
+        if cid:
+            await cb.message.edit_text("♻️ نوع تمدید را انتخاب کنید:", reply_markup=renew_options_kb(cid), parse_mode="Markdown")
+        else:
+            await cb.message.edit_text("⬅️ برگشتید.")
     elif cur.endswith("LegacySync:waiting_link"):
         await state.clear()
         user = await get_or_create_user(cb.from_user.id, cb.from_user.username, cb.from_user.full_name)
@@ -501,10 +534,31 @@ async def renew_config_start(cb: CallbackQuery):
         await cb.answer("این سرویس برای شما پیدا نشد.", show_alert=True)
         return
 
-    traffic_gb = float(cfg.get("traffic_gb") or 0)
-    duration_days = int(cfg.get("duration_days") or 0)
-    if traffic_gb <= 0 or duration_days <= 0:
-        await cb.answer("این سرویس برای تمدید خودکار قابل محاسبه نیست. با پشتیبانی هماهنگ کنید.", show_alert=True)
+    await cb.message.answer(
+        "♻️ *تمدید سرویس*\n\n"
+        f"کانفیگ: `{cfg['email']}`\n"
+        f"حجم فعلی: `{cfg.get('traffic_gb') or 0} GB`\n"
+        f"مدت فعلی: `{cfg.get('duration_days') or 0} روز`\n\n"
+        "می‌توانید با همین مشخصات تمدید کنید یا حجم و مدت جدید انتخاب کنید.",
+        reply_markup=renew_options_kb(cid),
+        parse_mode="Markdown",
+    )
+    await cb.answer()
+
+
+async def _create_renew_order(cb_or_msg, user: dict, cfg: dict, traffic_gb: float, duration_days: int):
+    min_traffic = await _renewal_min_traffic()
+    if traffic_gb < min_traffic:
+        if isinstance(cb_or_msg, CallbackQuery):
+            await cb_or_msg.answer(f"حداقل حجم تمدید {min_traffic:g} GB است.", show_alert=True)
+        else:
+            await cb_or_msg.answer(f"❌ حداقل حجم تمدید `{min_traffic:g} GB` است.", parse_mode="Markdown")
+        return
+    if int(duration_days or 0) < RENEWAL_MIN_DAYS:
+        if isinstance(cb_or_msg, CallbackQuery):
+            await cb_or_msg.answer(f"حداقل مدت تمدید {RENEWAL_MIN_DAYS} روز است.", show_alert=True)
+        else:
+            await cb_or_msg.answer(f"❌ حداقل مدت تمدید `{RENEWAL_MIN_DAYS}` روز است.", parse_mode="Markdown")
         return
 
     price = await _calc_renew_price(user["id"], traffic_gb, duration_days)
@@ -512,15 +566,98 @@ async def renew_config_start(cb: CallbackQuery):
         user["id"],
         f"تمدید {cfg['email']}",
         traffic_gb,
-        duration_days,
+        int(duration_days),
         price,
-        notes=f"renew_config:{cid}",
+        notes=f"renew_config:{cfg['id']};renew_traffic:{traffic_gb:g};renew_days:{int(duration_days)}",
     )
-    await update_order(oid, renew_config_id=cid)
-    text = await _payment_text(oid, f"تمدید سرویس {cfg['email']}", traffic_gb, duration_days, price)
-    text += "\n\nبعد از تأیید، همین کانفیگ تمدید می‌شود و حجم مصرفی آن ریست می‌شود."
-    await cb.message.answer(text, reply_markup=payment_kb(oid), parse_mode="Markdown")
+    await update_order(oid, renew_config_id=cfg["id"])
+    text = await _payment_text(oid, f"تمدید سرویس {cfg['email']}", traffic_gb, int(duration_days), price)
+    text += "\n\nبعد از تأیید، همین کانفیگ با حجم و مدت انتخابی تمدید می‌شود و مصرف آن ریست می‌شود."
+    if isinstance(cb_or_msg, CallbackQuery):
+        await cb_or_msg.message.answer(text, reply_markup=payment_kb(oid), parse_mode="Markdown")
+        await cb_or_msg.answer()
+    else:
+        await cb_or_msg.answer(text, reply_markup=payment_kb(oid), parse_mode="Markdown")
+
+
+@router.callback_query(F.data.startswith("renew_same:"))
+async def renew_same_config(cb: CallbackQuery):
+    if not await _ensure_channel_membership(cb):
+        return
+    cid = int(cb.data.split(":")[1])
+    user = await get_or_create_user(cb.from_user.id, cb.from_user.username, cb.from_user.full_name)
+    cfg = await get_config(cid)
+    if not cfg or int(cfg.get("user_id") or 0) != int(user["id"]):
+        await cb.answer("این سرویس برای شما پیدا نشد.", show_alert=True)
+        return
+
+    traffic_gb = float(cfg.get("traffic_gb") or 0)
+    duration_days = int(cfg.get("duration_days") or 0)
+    if traffic_gb <= 0 or duration_days <= 0:
+        await cb.answer("این سرویس برای تمدید خودکار قابل محاسبه نیست. با پشتیبانی هماهنگ کنید.", show_alert=True)
+        return
+    await _create_renew_order(cb, user, cfg, traffic_gb, max(duration_days, RENEWAL_MIN_DAYS))
+
+
+@router.callback_query(F.data.startswith("renew_custom:"))
+async def renew_custom_start(cb: CallbackQuery, state: FSMContext):
+    if not await _ensure_channel_membership(cb):
+        return
+    cid = int(cb.data.split(":")[1])
+    user = await get_or_create_user(cb.from_user.id, cb.from_user.username, cb.from_user.full_name)
+    cfg = await get_config(cid)
+    if not cfg or int(cfg.get("user_id") or 0) != int(user["id"]):
+        await cb.answer("این سرویس برای شما پیدا نشد.", show_alert=True)
+        return
+    min_traffic = await _renewal_min_traffic()
+    await state.set_state(RenewService.traffic)
+    await state.update_data(config_id=cid)
+    await cb.message.answer(
+        f"📊 حجم جدید تمدید را به GB وارد کنید.\nحداقل: `{min_traffic:g} GB`\nمثال: `20`",
+        reply_markup=flow_cancel_kb(),
+        parse_mode="Markdown",
+    )
     await cb.answer()
+
+
+@router.message(RenewService.traffic)
+async def renew_custom_traffic(msg: Message, state: FSMContext):
+    try:
+        traffic_gb = float((msg.text or "").strip().replace(",", "."))
+    except ValueError:
+        await msg.answer("❌ حجم را به عدد وارد کنید. مثال: `20`", reply_markup=flow_cancel_kb(), parse_mode="Markdown")
+        return
+    min_traffic = await _renewal_min_traffic()
+    if traffic_gb < min_traffic:
+        await msg.answer(f"❌ حداقل حجم تمدید `{min_traffic:g} GB` است.", reply_markup=flow_cancel_kb(), parse_mode="Markdown")
+        return
+    await state.update_data(traffic_gb=traffic_gb)
+    await state.set_state(RenewService.duration)
+    await msg.answer(
+        f"📅 مدت تمدید را به روز وارد کنید.\nحداقل: `{RENEWAL_MIN_DAYS}` روز\nمثال: `30`",
+        reply_markup=flow_cancel_kb(),
+        parse_mode="Markdown",
+    )
+
+
+@router.message(RenewService.duration)
+async def renew_custom_duration(msg: Message, state: FSMContext):
+    try:
+        duration_days = int((msg.text or "").strip())
+    except ValueError:
+        await msg.answer("❌ مدت را به عدد روز وارد کنید. مثال: `30`", reply_markup=flow_cancel_kb(), parse_mode="Markdown")
+        return
+    if duration_days < RENEWAL_MIN_DAYS:
+        await msg.answer(f"❌ حداقل مدت تمدید `{RENEWAL_MIN_DAYS}` روز است.", reply_markup=flow_cancel_kb(), parse_mode="Markdown")
+        return
+    data = await state.get_data()
+    await state.clear()
+    user = await get_or_create_user(msg.from_user.id, msg.from_user.username, msg.from_user.full_name)
+    cfg = await get_config(int(data.get("config_id") or 0))
+    if not cfg or int(cfg.get("user_id") or 0) != int(user["id"]):
+        await msg.answer("❌ سرویس برای تمدید پیدا نشد.")
+        return
+    await _create_renew_order(msg, user, cfg, float(data.get("traffic_gb") or 0), duration_days)
 
 
 @router.callback_query(F.data.startswith("cfg_link:"))
@@ -852,12 +989,16 @@ async def pay_with_wallet(cb: CallbackQuery):
             await cb.message.answer("پرداخت انجام شد، اما سرور فعالی برای ساخت کانفیگ پیدا نشد. سفارش برای بررسی ادمین ارسال شد.")
             return
 
-        default_sid_raw = await get_setting("default_server_id", "0")
-        try:
-            default_sid = int(default_sid_raw or 0)
-        except (TypeError, ValueError):
-            default_sid = 0
-        server = next((sv for sv in servers if sv["id"] == default_sid), servers[0])
+        server = None
+        if await get_setting("auto_least_loaded_server", "0") == "1":
+            server = await get_least_loaded_server()
+        if not server:
+            default_sid_raw = await get_setting("default_server_id", "0")
+            try:
+                default_sid = int(default_sid_raw or 0)
+            except (TypeError, ValueError):
+                default_sid = 0
+            server = next((sv for sv in servers if sv["id"] == default_sid), servers[0])
         server_id = int(server["id"])
 
     from bot.handlers.admin import _do_approve
@@ -1356,10 +1497,17 @@ async def mig_start(cb: CallbackQuery):
 
     from aiogram.utils.keyboard import InlineKeyboardBuilder
     from core.database import count_active_configs_by_server
+    suggested = None
+    if await get_setting("auto_least_loaded_server", "0") == "1":
+        suggested = await get_least_loaded_server(exclude_ids=[int(cfg["server_id"])])
+        if suggested:
+            others = sorted(others, key=lambda s: 0 if int(s["id"]) == int(suggested["id"]) else 1)
     kb = InlineKeyboardBuilder()
     for s in others:
         cap = int(s.get("max_active_configs") or 0)
         label = f"🖥️ {s['name']}"
+        if suggested and int(s["id"]) == int(suggested["id"]):
+            label += " — ⭐ سرور پیشنهادی"
         if cap > 0:
             used = await count_active_configs_by_server(s["id"])
             if used >= cap:

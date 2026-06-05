@@ -130,6 +130,15 @@ def config_detail_kb(cid: int) -> InlineKeyboardMarkup:
     return b.as_markup()
 
 
+def renew_options_kb(cid: int) -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    _button(b, text="♻️ تمدید با همین حجم و مدت", callback_data=f"renew_same:{cid}", style="success")
+    _button(b, text="✏️ انتخاب حجم و مدت جدید", callback_data=f"renew_custom:{cid}", style="primary")
+    _button(b, text="🔙 بازگشت", callback_data=f"cfg:{cid}", style="primary")
+    b.adjust(1)
+    return b.as_markup()
+
+
 def servers_kb(servers: List[Dict], cb_prefix: str, extra_data: str = "") -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
     for s in servers:

@@ -19,7 +19,7 @@ from core.database import (
     get_pending_orders, get_order, update_order,
     get_all_users, count_users, get_server, get_servers,
     save_config, get_user_by_telegram, get_setting, set_setting,
-    get_user_by_id, server_has_capacity, count_active_configs_by_server, update_user,
+    get_user_by_id, server_has_capacity, count_active_configs_by_server, get_least_loaded_server, update_user,
     get_legacy_claim, update_legacy_claim, get_config_by_email, get_config_by_uuid,
     get_topup_request, get_pending_topup_requests, update_topup_request, add_user_balance,
     claim_order_for_approval,
@@ -349,6 +349,12 @@ async def approve_order_start(cb: CallbackQuery):
     if not servers:
         await cb.answer("❌ هیچ سروری فعال نیست!", show_alert=True)
         return
+
+    if await get_setting("auto_least_loaded_server", "0") == "1":
+        suggested = await get_least_loaded_server()
+        if suggested:
+            await _do_approve(cb, oid, int(suggested["id"]))
+            return
 
     # اگر سرور پیش‌فرض تنظیم شده باشد، اولویت با همان است.
     default_sid_raw = await get_setting("default_server_id", "0")

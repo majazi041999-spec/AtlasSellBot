@@ -79,12 +79,14 @@
           {% endfor %}
         </select>
       </div>
+      <div class="form-group"><label>انتخاب خودکار خلوت‌ترین سرور</label><select class="form-control" name="auto_least_loaded_server"><option value="0" {% if settings.auto_least_loaded_server != "1" %}selected{% endif %}>غیرفعال</option><option value="1" {% if settings.auto_least_loaded_server == "1" %}selected{% endif %}>فعال</option></select></div>
     </section>
 
     <section class="settings-card">
       <h3>🔄 انتقال سرور + اکانت تست</h3>
       <p class="hint">این تنظیمات بلافاصله در ربات اعمال می‌شوند.</p>
       <div class="form-group"><label>محدودیت انتقال سرور در روز</label><input class="form-control" type="number" name="max_daily_migrations" value="{{ settings.max_daily_migrations }}" min="0" max="100" /></div>
+      <div class="form-group"><label>حداقل حجم تمدید سرویس (GB)</label><input class="form-control" type="number" name="renewal_min_traffic_gb" value="{{ settings.renewal_min_traffic_gb }}" min="0.1" step="0.1" /></div>
       <div class="form-group"><label>اکانت تست</label><select class="form-control" name="test_account_enabled"><option value="1" {% if settings.test_account_enabled == "1" %}selected{% endif %}>فعال</option><option value="0" {% if settings.test_account_enabled != "1" %}selected{% endif %}>غیرفعال</option></select></div>
       <div class="form-group"><label>حجم اکانت تست (GB)</label><input class="form-control" type="number" name="test_account_traffic_gb" value="{{ settings.test_account_traffic_gb }}" min="0.1" step="0.1" /></div>
       <div class="form-group"><label>مدت اکانت تست (روز)</label><input class="form-control" type="number" name="test_account_duration_days" value="{{ settings.test_account_duration_days }}" min="1" max="365" /></div>

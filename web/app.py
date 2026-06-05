@@ -56,6 +56,7 @@ from core.database import (
     get_packages,
     get_pending_orders,
     get_available_servers,
+    get_least_loaded_server,
     server_has_capacity,
     get_user_by_id,
     get_wholesale_users,
@@ -600,7 +601,8 @@ async def _order_approve_web_impl(request: Request, oid: int):
     if not servers:
         await update_order(oid, status="receipt_submitted")
         return RedirectResponse(f"/{S}/orders", status_code=302)
-    sid = servers[0]["id"]
+    suggested = await get_least_loaded_server() if await get_setting("auto_least_loaded_server", "0") == "1" else None
+    sid = int((suggested or servers[0])["id"])
     server = await get_server(sid)
 
     user = await get_user_by_telegram(order["telegram_id"])
@@ -993,8 +995,10 @@ async def settings_page(request: Request):
         "force_channel": await get_setting("force_channel", SETTINGS_DEFAULTS["force_channel"]),
         "channel_username": await get_setting("channel_username", SETTINGS_DEFAULTS["channel_username"]),
         "default_server_id": await get_setting("default_server_id", "0"),
+        "auto_least_loaded_server": await get_setting("auto_least_loaded_server", SETTINGS_DEFAULTS["auto_least_loaded_server"]),
         "legacy_sync_enabled": await get_setting("legacy_sync_enabled", SETTINGS_DEFAULTS["legacy_sync_enabled"]),
         "max_daily_migrations": await get_setting("max_daily_migrations", SETTINGS_DEFAULTS["max_daily_migrations"]),
+        "renewal_min_traffic_gb": await get_setting("renewal_min_traffic_gb", SETTINGS_DEFAULTS["renewal_min_traffic_gb"]),
         "test_account_enabled": await get_setting("test_account_enabled", SETTINGS_DEFAULTS["test_account_enabled"]),
         "test_account_traffic_gb": await get_setting("test_account_traffic_gb", SETTINGS_DEFAULTS["test_account_traffic_gb"]),
         "test_account_duration_days": await get_setting("test_account_duration_days", SETTINGS_DEFAULTS["test_account_duration_days"]),
@@ -1046,8 +1050,10 @@ async def settings_save(
     force_channel: str = Form("0"),
     channel_username: str = Form(""),
     default_server_id: str = Form("0"),
+    auto_least_loaded_server: str = Form("0"),
     legacy_sync_enabled: str = Form("1"),
     max_daily_migrations: int = Form(5),
+    renewal_min_traffic_gb: float = Form(1),
     test_account_enabled: str = Form("0"),
     test_account_traffic_gb: float = Form(1),
     test_account_duration_days: int = Form(1),
@@ -1090,8 +1096,10 @@ async def settings_save(
 
     valid_server_ids = {str(sv["id"]) for sv in await get_servers(active_only=False)}
     await set_setting("default_server_id", default_server_id if default_server_id in valid_server_ids else "0")
+    await set_setting("auto_least_loaded_server", "1" if auto_least_loaded_server == "1" else "0")
     await set_setting("legacy_sync_enabled", "1" if legacy_sync_enabled == "1" else "0")
     await set_setting("max_daily_migrations", str(max(0, int(max_daily_migrations or 0))))
+    await set_setting("renewal_min_traffic_gb", str(max(0.1, float(renewal_min_traffic_gb or 1))))
     await set_setting("test_account_enabled", "1" if test_account_enabled == "1" else "0")
     await set_setting("test_account_traffic_gb", str(max(0.1, float(test_account_traffic_gb or 1))))
     await set_setting("test_account_duration_days", str(max(1, int(test_account_duration_days or 1))))

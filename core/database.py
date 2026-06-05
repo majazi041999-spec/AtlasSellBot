@@ -327,6 +327,25 @@ async def get_available_servers() -> List[Dict]:
         if await server_has_capacity(s["id"]):
             out.append(s)
     return out
+
+
+async def get_least_loaded_server(exclude_ids: Optional[List[int]] = None) -> Optional[Dict]:
+    excluded = {int(x) for x in (exclude_ids or [])}
+    candidates = []
+    for server in await get_available_servers():
+        sid = int(server["id"])
+        if sid in excluded:
+            continue
+        used = await count_active_configs_by_server(sid)
+        cap = int(server.get("max_active_configs") or 0)
+        ratio = (used / cap) if cap > 0 else 0
+        item = dict(server)
+        item["active_configs"] = used
+        item["load_ratio"] = ratio
+        candidates.append(item)
+    if not candidates:
+        return None
+    return sorted(candidates, key=lambda s: (int(s.get("active_configs") or 0), float(s.get("load_ratio") or 0), int(s["id"])))[0]
 # ══════════════════ USERS ══════════════════
 
 async def get_or_create_user(telegram_id: int, username=None, full_name=None) -> Dict:

@@ -34,6 +34,11 @@ class BuyService(StatesGroup):
     waiting_receipt = State()
 
 
+class RenewService(StatesGroup):
+    traffic = State()
+    duration = State()
+
+
 class Broadcast(StatesGroup):
     target = State()
     text = State()
