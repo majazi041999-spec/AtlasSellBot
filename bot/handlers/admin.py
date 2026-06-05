@@ -32,7 +32,7 @@ from core.database import (
 )
 from core.xui_api import XUIClient, fmt_bytes, days_left, expiry_ms_from_days
 from core.qr import build_qr_image
-from core.multi_subscription import create_profile_for_order, multi_sub_enabled_for_single_purchase
+from core.multi_subscription import create_profile_for_order, multi_sub_enabled_for_single_purchase, subscription_error_message
 from bot.keyboards import (
     admin_menu, order_review_kb, order_server_select_kb,
     admin_configs_kb, adm_config_detail_kb, confirm_kb, packages_kb, servers_kb,
@@ -543,13 +543,8 @@ async def _do_approve_impl(cb: CallbackQuery, oid: int, sid: int):
     if int(order.get("renew_config_id") or 0) > 0:
         await cb.answer("⏳ در حال تمدید سرویس...")
         return await _do_renew(cb, order)
-    if not await server_has_capacity(sid):
-        await update_order(oid, status="receipt_submitted")
-        await cb.message.answer("⛔ ظرفیت این سرور تکمیل شده است. سرور دیگری انتخاب کنید.")
-        return False
 
-    await cb.answer("⏳ در حال ساخت کانفیگ...")
-    server = await get_server(sid)
+    await cb.answer("⏳ در حال ساخت سرویس...")
 
     bulk_count = int(order.get("bulk_count") or 1)
     each_gb = float(order.get("bulk_each_gb") or order["traffic_gb"])
@@ -602,6 +597,22 @@ async def _do_approve_impl(cb: CallbackQuery, oid: int, sid: int):
                 pass
             await cb.message.answer("✅ ساب چندسروره آزمایشی ساخته و برای کاربر ارسال شد.", parse_mode=None)
             return True
+        err_text = subscription_error_message(sub_result.get("error", ""))
+        notes = ((order.get("notes") or "") + f"\nmulti_sub_error={sub_result.get('error', '')}").strip()
+        await update_order(oid, status="receipt_submitted", notes=notes)
+        await cb.message.answer(
+            "❌ ساخت ساب چندسروره ناموفق بود و سفارش به کانفیگ معمولی تبدیل نشد.\n\n"
+            f"علت: {err_text}",
+            parse_mode=None,
+        )
+        return False
+
+    if not await server_has_capacity(sid):
+        await update_order(oid, status="receipt_submitted")
+        await cb.message.answer("⛔ ظرفیت این سرور تکمیل شده است. سرور دیگری انتخاب کنید.")
+        return False
+
+    server = await get_server(sid)
 
     created = []
     bonus_pending = 0.0

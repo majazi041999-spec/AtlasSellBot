@@ -221,6 +221,19 @@ CREATE TABLE IF NOT EXISTS subscription_nodes (
     FOREIGN KEY(server_id) REFERENCES servers(id)
 );
 
+CREATE TABLE IF NOT EXISTS subscription_node_configs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    server_id INTEGER NOT NULL,
+    inbound_id INTEGER NOT NULL,
+    label TEXT DEFAULT '',
+    priority INTEGER DEFAULT 100,
+    max_active_profiles INTEGER DEFAULT 0,
+    is_active INTEGER DEFAULT 1,
+    created_at TEXT DEFAULT (datetime('now','localtime')),
+    UNIQUE(server_id, inbound_id),
+    FOREIGN KEY(server_id) REFERENCES servers(id)
+);
+
 INSERT OR IGNORE INTO settings VALUES
     ('welcome_message','به Atlas Account خوش آمدید! 🌐\nبهترین سرویس VPN با سرعت بالا.'),
     ('support_username',''),
@@ -287,6 +300,12 @@ async def _ensure_columns(db):
             ("order_id", "INTEGER DEFAULT 0"),
             ("used_bytes", "INTEGER DEFAULT 0"),
             ("updated_at", "TEXT DEFAULT ''"),
+        ],
+        "subscription_node_configs": [
+            ("label", "TEXT DEFAULT ''"),
+            ("priority", "INTEGER DEFAULT 100"),
+            ("max_active_profiles", "INTEGER DEFAULT 0"),
+            ("is_active", "INTEGER DEFAULT 1"),
         ],
     }
     for table, cols in migrations.items():
@@ -358,6 +377,18 @@ async def count_active_subscription_nodes_by_server(server_id: int) -> int:
             return int((await c.fetchone())[0] or 0)
 
 
+async def count_active_subscription_nodes_by_target(server_id: int, inbound_id: int) -> int:
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            """SELECT COUNT(*)
+               FROM subscription_nodes n
+               JOIN subscription_profiles p ON p.id=n.profile_id
+               WHERE n.server_id=? AND n.inbound_id=? AND n.is_active=1 AND p.is_active=1""",
+            (int(server_id), int(inbound_id)),
+        ) as c:
+            return int((await c.fetchone())[0] or 0)
+
+
 async def count_active_server_load(server_id: int) -> int:
     return await count_active_configs_by_server(server_id) + await count_active_subscription_nodes_by_server(server_id)
 
@@ -378,6 +409,101 @@ async def get_available_servers() -> List[Dict]:
     for s in servers:
         if await server_has_capacity(s["id"]):
             out.append(s)
+    return out
+
+
+async def get_subscription_node_configs(active_only: bool = True) -> List[Dict]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        where = ""
+        if active_only:
+            where = "WHERE nc.is_active=1 AND s.is_active=1"
+        async with db.execute(
+            f"""SELECT nc.*, s.name AS server_name, s.url AS server_url, s.username AS srv_user,
+                       s.password AS srv_pass, s.api_token AS srv_api_token, s.sub_path,
+                       s.is_active AS server_active, s.max_active_configs
+                FROM subscription_node_configs nc
+                JOIN servers s ON s.id=nc.server_id
+                {where}
+                ORDER BY nc.priority ASC, nc.id ASC"""
+        ) as c:
+            return [dict(r) for r in await c.fetchall()]
+
+
+async def get_subscription_node_config(node_id: int) -> Optional[Dict]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            """SELECT nc.*, s.name AS server_name, s.url AS server_url, s.username AS srv_user,
+                      s.password AS srv_pass, s.api_token AS srv_api_token, s.sub_path,
+                      s.is_active AS server_active, s.max_active_configs
+               FROM subscription_node_configs nc
+               JOIN servers s ON s.id=nc.server_id
+               WHERE nc.id=?""",
+            (int(node_id),),
+        ) as c:
+            r = await c.fetchone()
+            return dict(r) if r else None
+
+
+async def add_subscription_node_config(server_id: int, inbound_id: int, label: str = "",
+                                       priority: int = 100, max_active_profiles: int = 0) -> int:
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT id FROM subscription_node_configs WHERE server_id=? AND inbound_id=?",
+            (int(server_id), int(inbound_id)),
+        ) as c:
+            existing = await c.fetchone()
+        if existing:
+            await db.execute(
+                """UPDATE subscription_node_configs
+                   SET label=?, priority=?, max_active_profiles=?, is_active=1
+                   WHERE id=?""",
+                (label or "", int(priority or 100), int(max_active_profiles or 0), int(existing[0])),
+            )
+            await db.commit()
+            return int(existing[0])
+        cur = await db.execute(
+            """INSERT INTO subscription_node_configs(server_id,inbound_id,label,priority,max_active_profiles)
+               VALUES(?,?,?,?,?)""",
+            (int(server_id), int(inbound_id), label or "", int(priority or 100), int(max_active_profiles or 0)),
+        )
+        await db.commit()
+        return int(cur.lastrowid)
+
+
+async def update_subscription_node_config(node_id: int, **kw):
+    if not kw:
+        return
+    fields = ",".join(f"{k}=?" for k in kw)
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(f"UPDATE subscription_node_configs SET {fields} WHERE id=?", (*kw.values(), int(node_id)))
+        await db.commit()
+
+
+async def delete_subscription_node_config(node_id: int):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("DELETE FROM subscription_node_configs WHERE id=?", (int(node_id),))
+        await db.commit()
+
+
+async def subscription_node_config_has_capacity(node: Dict) -> bool:
+    if not node or not int(node.get("is_active") or 0) or not int(node.get("server_active") or 0):
+        return False
+    if not await server_has_capacity(int(node["server_id"])):
+        return False
+    cap = int(node.get("max_active_profiles") or 0)
+    if cap <= 0:
+        return True
+    used = await count_active_subscription_nodes_by_target(int(node["server_id"]), int(node["inbound_id"]))
+    return used < cap
+
+
+async def get_available_subscription_node_configs() -> List[Dict]:
+    out = []
+    for node in await get_subscription_node_configs(active_only=True):
+        if await subscription_node_config_has_capacity(node):
+            out.append(node)
     return out
 
 

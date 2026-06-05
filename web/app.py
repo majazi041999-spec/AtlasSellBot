@@ -39,6 +39,8 @@ from core.database import (
     count_users,
     delete_package,
     delete_server,
+    add_subscription_node_config,
+    delete_subscription_node_config,
     get_all_configs,
     get_configs_by_base_email,
     delete_configs_by_base_email,
@@ -67,8 +69,12 @@ from core.database import (
     get_servers,
     get_setting,
     get_stats,
+    get_subscription_node_config,
+    get_subscription_node_configs,
+    count_active_subscription_nodes_by_target,
     init_db,
     set_setting,
+    update_subscription_node_config,
     update_config,
     update_order,  # noqa: F401
     update_package,
@@ -95,7 +101,11 @@ from core.qr import build_qr_image
 from bot.keyboards import config_links_kb
 from core.update_notes import DEFAULT_UPDATE_BROADCAST_TEXT, get_update_broadcast_text
 from core.multi_subscription import render_subscription
-from core.multi_subscription import create_profile_for_order, multi_sub_enabled_for_single_purchase
+from core.multi_subscription import (
+    create_profile_for_order,
+    multi_sub_enabled_for_single_purchase,
+    subscription_error_message,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -450,6 +460,124 @@ async def server_test(request: Request, sid: int):
     return JSONResponse({"success": ok})
 
 
+# ═════════════════════════════ SUBSCRIPTIONS ═══════════════════════
+@app.get(f"/{S}/subs", response_class=HTMLResponse)
+async def subscriptions_page(request: Request):
+    if not _auth(request):
+        return _redir_login()
+    nodes = await get_subscription_node_configs(active_only=False)
+    for node in nodes:
+        node["active_profiles"] = await count_active_subscription_nodes_by_target(node["server_id"], node["inbound_id"])
+    settings = {
+        "multi_sub_enabled": await get_setting("multi_sub_enabled", SETTINGS_DEFAULTS["multi_sub_enabled"]),
+        "multi_sub_node_count": await get_setting("multi_sub_node_count", SETTINGS_DEFAULTS["multi_sub_node_count"]),
+        "multi_sub_min_nodes": await get_setting("multi_sub_min_nodes", SETTINGS_DEFAULTS["multi_sub_min_nodes"]),
+        "public_base_url": await get_setting("public_base_url", ""),
+    }
+    return _templates.TemplateResponse(
+        "subscriptions.html",
+        await _ctx_ui(
+            request,
+            active="subs",
+            nodes=nodes,
+            servers=await get_servers(active_only=False),
+            settings=settings,
+            saved=request.query_params.get("saved", "") == "1",
+        ),
+    )
+
+
+@app.post(f"/{S}/subs/settings")
+async def subscriptions_settings_save(
+    request: Request,
+    multi_sub_enabled: str = Form("0"),
+    multi_sub_node_count: int = Form(4),
+    multi_sub_min_nodes: int = Form(2),
+    public_base_url: str = Form(""),
+):
+    if not _auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    node_count = max(2, min(8, int(multi_sub_node_count or 4)))
+    min_nodes = max(2, min(node_count, int(multi_sub_min_nodes or 2)))
+    await set_setting("multi_sub_enabled", "1" if multi_sub_enabled == "1" else "0")
+    await set_setting("multi_sub_node_count", str(node_count))
+    await set_setting("multi_sub_min_nodes", str(min_nodes))
+    await set_setting("public_base_url", public_base_url.strip().rstrip("/"))
+    return RedirectResponse(f"/{S}/subs?saved=1", status_code=302)
+
+
+@app.post(f"/{S}/subs/nodes/add")
+async def subscription_node_add(
+    request: Request,
+    server_id: int = Form(...),
+    inbound_id: int = Form(...),
+    label: str = Form(""),
+    priority: int = Form(100),
+    max_active_profiles: int = Form(0),
+):
+    if not _auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    await add_subscription_node_config(server_id, inbound_id, label.strip(), priority, max_active_profiles)
+    return RedirectResponse(f"/{S}/subs?saved=1", status_code=302)
+
+
+@app.post(f"/{S}/subs/nodes/{{node_id}}/edit")
+async def subscription_node_edit(
+    request: Request,
+    node_id: int,
+    server_id: int = Form(...),
+    inbound_id: int = Form(...),
+    label: str = Form(""),
+    priority: int = Form(100),
+    max_active_profiles: int = Form(0),
+):
+    if not _auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    await update_subscription_node_config(
+        node_id,
+        server_id=int(server_id),
+        inbound_id=int(inbound_id),
+        label=label.strip(),
+        priority=int(priority or 100),
+        max_active_profiles=int(max_active_profiles or 0),
+    )
+    return RedirectResponse(f"/{S}/subs?saved=1", status_code=302)
+
+
+@app.post(f"/{S}/subs/nodes/{{node_id}}/toggle")
+async def subscription_node_toggle(request: Request, node_id: int):
+    if not _auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    node = await get_subscription_node_config(node_id)
+    if not node:
+        return JSONResponse({"success": False, "error": "not found"}, status_code=404)
+    await update_subscription_node_config(node_id, is_active=0 if int(node.get("is_active") or 0) else 1)
+    return JSONResponse({"success": True})
+
+
+@app.post(f"/{S}/subs/nodes/{{node_id}}/delete")
+async def subscription_node_delete(request: Request, node_id: int):
+    if not _auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    await delete_subscription_node_config(node_id)
+    return JSONResponse({"success": True})
+
+
+@app.post(f"/{S}/subs/nodes/{{node_id}}/test")
+async def subscription_node_test(request: Request, node_id: int):
+    if not _auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    node = await get_subscription_node_config(node_id)
+    if not node:
+        return JSONResponse({"success": False, "msg": "not found"})
+    cli = XUIClient(node["server_url"], node["srv_user"], node["srv_pass"], node.get("sub_path") or "", node.get("srv_api_token", ""))
+    try:
+        inbound = await cli.get_inbound(int(node["inbound_id"]))
+        return JSONResponse({"success": bool(inbound), "msg": "ok" if inbound else "inbound not found"})
+    finally:
+        await cli.close()
+
+
 # ═══════════════════════════════ PACKAGES ═══════════════════════════
 @app.get(f"/{S}/packages", response_class=HTMLResponse)
 async def packages_page(request: Request):
@@ -632,14 +760,6 @@ async def _order_approve_web_impl(request: Request, oid: int):
                 await bot.session.close()
         return RedirectResponse(f"/{S}/orders", status_code=302)
 
-    servers = [sv for sv in await get_servers() if await server_has_capacity(sv["id"])]
-    if not servers:
-        await update_order(oid, status="receipt_submitted")
-        return RedirectResponse(f"/{S}/orders", status_code=302)
-    suggested = await get_least_loaded_server() if await get_setting("auto_least_loaded_server", "0") == "1" else None
-    sid = int((suggested or servers[0])["id"])
-    server = await get_server(sid)
-
     user = await get_user_by_telegram(order["telegram_id"])
     if not user:
         await update_order(oid, status="receipt_submitted")
@@ -686,6 +806,18 @@ async def _order_approve_web_impl(request: Request, oid: int):
                 finally:
                     await bot.session.close()
             return RedirectResponse(f"/{S}/orders", status_code=302)
+        notes = ((order.get("notes") or "") + f"\nmulti_sub_error={sub_result.get('error', '')}").strip()
+        await update_order(oid, status="receipt_submitted", notes=notes)
+        logger.warning("Multi-sub creation failed for order %s: %s", oid, subscription_error_message(sub_result.get("error", "")))
+        return RedirectResponse(f"/{S}/orders", status_code=302)
+
+    servers = [sv for sv in await get_servers() if await server_has_capacity(sv["id"])]
+    if not servers:
+        await update_order(oid, status="receipt_submitted")
+        return RedirectResponse(f"/{S}/orders", status_code=302)
+    suggested = await get_least_loaded_server() if await get_setting("auto_least_loaded_server", "0") == "1" else None
+    sid = int((suggested or servers[0])["id"])
+    server = await get_server(sid)
 
     created = []
     bonus_pending = 0.0

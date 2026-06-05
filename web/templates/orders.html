@@ -31,6 +31,7 @@
     'pending_payment': ('⏳','b-gray','انتظار پرداخت'),
     'pending_receipt': ('⏳','b-gray','انتظار فیش'),
     'receipt_submitted': ('📤','b-yellow','فیش ارسال شده'),
+    'processing': ('⏳','b-blue','در حال پردازش'),
     'approved': ('✅','b-green','تأیید شده'),
     'rejected': ('❌','b-red','رد شده'),
     'cancelled': ('🚫','b-gray','لغو شده'),
@@ -39,7 +40,12 @@
   <tr>
     <td>#{{ o.id }}</td>
     <td>{{ o.full_name or '—' }}<br><small style="color:var(--txt3)">{{ ('@' + o.username) if o.username else '—' }}</small></td>
-    <td>{{ o.pkg_name }}</td>
+    <td>
+      {{ o.pkg_name }}
+      {% if o.notes %}
+      <br><small style="color:var(--txt3);direction:ltr;display:block;text-align:left;max-width:260px;white-space:normal">{{ o.notes }}</small>
+      {% endif %}
+    </td>
     <td>{{ "{:,}".format(o.price) }} تومان</td>
     <td><span class="badge {{ si[1] }}">{{ si[0] }} {{ si[2] }}</span></td>
     <td style="color:var(--txt2);font-size:.75rem">{{ o.created_at[:16] }}</td>

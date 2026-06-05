@@ -1,0 +1,225 @@
+{% extends "base.html" %}
+{% block title %}سابسکریپشن{% endblock %}
+{% block topbar_title %}🧬 مدیریت سابسکریپشن چندسروره{% endblock %}
+
+{% block content %}
+<style>
+.subs-grid{display:grid;grid-template-columns:minmax(280px,.9fr) minmax(320px,1.1fr);gap:14px;align-items:start}
+.sub-card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:16px}
+.sub-card h3{font-size:.92rem;margin-bottom:10px}
+.sub-hint{font-size:.76rem;color:var(--txt3);line-height:1.9;margin-bottom:12px}
+.node-list{display:grid;gap:10px}
+.node-row{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius2);padding:12px}
+.node-head{display:flex;align-items:flex-start;justify-content:space-between;gap:10px;flex-wrap:wrap}
+.node-title{font-weight:800;font-size:.9rem}
+.node-meta{margin-top:7px;display:flex;gap:6px;flex-wrap:wrap;font-size:.72rem;color:var(--txt2)}
+.node-actions{display:flex;gap:6px;flex-wrap:wrap}
+.inline-form{display:grid;gap:10px}
+.mono{direction:ltr;text-align:left;font-family:ui-monospace,Consolas,monospace}
+@media(max-width:900px){.subs-grid{grid-template-columns:1fr}.node-head{display:block}.node-actions{margin-top:10px}.node-actions .btn{flex:1}}
+</style>
+
+{% if saved %}
+<div class="alert alert-success" style="margin-bottom:14px">✅ تغییرات سابسکریپشن ذخیره شد.</div>
+{% endif %}
+
+<div class="card" style="margin-bottom:14px;background:linear-gradient(135deg,rgba(124,111,255,.14),rgba(61,217,255,.08));border:1px solid rgba(124,111,255,.35)">
+  <div style="font-weight:800;font-size:1.03rem">ساب آزمایشی برای خریدهای جدید تکی</div>
+  <div style="color:var(--txt2);margin-top:4px">وقتی فعال باشد، خریدهای جدید تکی به جای کانفیگ معمولی، یک لینک سابسکریپشن با چند نود فعال دریافت می‌کنند. تمدید و خرید عمده وارد این مسیر نمی‌شوند.</div>
+</div>
+
+<div class="subs-grid">
+  <section class="sub-card">
+    <h3>⚙️ تنظیمات اصلی</h3>
+    <p class="sub-hint">برای اینکه لینک ساب درست ساخته شود، آدرس عمومی باید همان آدرسی باشد که کاربر بتواند به مسیر <code>/sub/token</code> روی همین ربات برسد.</p>
+    <form action="/{{ S }}/subs/settings" method="POST" class="inline-form">
+      <div class="form-group">
+        <label>وضعیت ساب برای خریدهای جدید تکی</label>
+        <select class="form-control" name="multi_sub_enabled">
+          <option value="0" {% if settings.multi_sub_enabled != "1" %}selected{% endif %}>غیرفعال امن</option>
+          <option value="1" {% if settings.multi_sub_enabled == "1" %}selected{% endif %}>فعال آزمایشی</option>
+        </select>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>تعداد نود داخل هر ساب</label>
+          <input class="form-control" type="number" name="multi_sub_node_count" value="{{ settings.multi_sub_node_count }}" min="2" max="8">
+        </div>
+        <div class="form-group">
+          <label>حداقل نود موفق</label>
+          <input class="form-control" type="number" name="multi_sub_min_nodes" value="{{ settings.multi_sub_min_nodes }}" min="2" max="8">
+        </div>
+      </div>
+      <div class="form-group">
+        <label>آدرس عمومی لینک ساب</label>
+        <input class="form-control mono" type="url" name="public_base_url" value="{{ settings.public_base_url }}" placeholder="https://bot.example.com یا http://IP:8443">
+      </div>
+      <button class="btn btn-primary" type="submit">💾 ذخیره تنظیمات</button>
+    </form>
+  </section>
+
+  <section class="sub-card">
+    <h3>➕ افزودن نود ساب</h3>
+    <p class="sub-hint">هر نود از یک سرور ثبت‌شده و یک Inbound ID مشخص ساخته می‌شود. اگر یک سرور چند اینباند دارد، برای هر اینباند یک نود جدا اضافه کن.</p>
+    {% if not servers %}
+    <div class="alert alert-warn">اول باید از بخش سرورها حداقل یک سرور اضافه کنی.</div>
+    {% else %}
+    <form action="/{{ S }}/subs/nodes/add" method="POST" class="inline-form">
+      <div class="form-row">
+        <div class="form-group">
+          <label>سرور</label>
+          <select class="form-control" name="server_id" required>
+            {% for srv in servers %}
+            <option value="{{ srv.id }}">{{ srv.name }}{% if not srv.is_active %} (غیرفعال){% endif %}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Inbound ID</label>
+          <input class="form-control" type="number" name="inbound_id" value="1" min="1" required>
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>نام نمایشی نود</label>
+          <input class="form-control" type="text" name="label" placeholder="مثال: Germany VLESS 1">
+        </div>
+        <div class="form-group">
+          <label>اولویت</label>
+          <input class="form-control" type="number" name="priority" value="100" min="1">
+        </div>
+      </div>
+      <div class="form-group">
+        <label>ظرفیت این نود (0 = نامحدود)</label>
+        <input class="form-control" type="number" name="max_active_profiles" value="0" min="0">
+      </div>
+      <button class="btn btn-success" type="submit">➕ افزودن/فعال‌سازی نود</button>
+    </form>
+    {% endif %}
+  </section>
+</div>
+
+<div class="sec-hd" style="margin-top:18px">
+  <span class="sec-title">نودهای سابسکریپشن ({{ nodes|length }})</span>
+</div>
+
+{% if not nodes %}
+<div style="text-align:center;padding:50px 16px;color:var(--txt3)">
+  <div style="font-size:2.6rem">🧬</div>
+  <p style="margin-top:10px">هنوز نودی برای ساب تعریف نشده است.</p>
+</div>
+{% else %}
+<div class="node-list">
+{% for node in nodes %}
+  <div class="node-row">
+    <div class="node-head">
+      <div>
+        <div class="node-title">{{ node.label or node.server_name }} <span style="color:var(--txt3);font-weight:600">#{{ node.inbound_id }}</span></div>
+        <div class="node-meta">
+          <span class="badge {{ 'b-green' if node.is_active and node.server_active else 'b-red' }}">{{ 'فعال' if node.is_active and node.server_active else 'غیرفعال' }}</span>
+          <span>سرور: {{ node.server_name }}</span>
+          <span>اولویت: {{ node.priority }}</span>
+          <span>مصرف ظرفیت: {{ node.active_profiles }}/{{ node.max_active_profiles or '∞' }}</span>
+          <span class="mono">{{ node.server_url }}</span>
+        </div>
+      </div>
+      <div class="node-actions">
+        <button class="btn btn-outline btn-sm" onclick="testNode({{ node.id }}, this)">🔗 تست اینباند</button>
+        <button class="btn btn-outline btn-sm" onclick="openEditNode({{ node.id }}, {{ node.server_id }}, {{ node.inbound_id }}, '{{ (node.label or '')|replace("'","&#39;") }}', {{ node.priority }}, {{ node.max_active_profiles or 0 }})">✏️ ویرایش</button>
+        <button class="btn btn-outline btn-sm" onclick="toggleNode({{ node.id }})">{{ '🔴 غیرفعال' if node.is_active else '🟢 فعال' }}</button>
+        <button class="btn btn-danger btn-sm" onclick="deleteNode({{ node.id }})">🗑️ حذف</button>
+      </div>
+    </div>
+  </div>
+{% endfor %}
+</div>
+{% endif %}
+
+<div class="overlay" id="editNodeModal">
+<div class="modal">
+  <div class="modal-hd">
+    <h3>✏️ ویرایش نود ساب</h3>
+    <button class="modal-close" onclick="closeModal('editNodeModal')">✕</button>
+  </div>
+  <form id="editNodeForm" method="POST" class="inline-form">
+    <div class="form-row">
+      <div class="form-group">
+        <label>سرور</label>
+        <select class="form-control" name="server_id" id="edit_server_id" required>
+          {% for srv in servers %}
+          <option value="{{ srv.id }}">{{ srv.name }}{% if not srv.is_active %} (غیرفعال){% endif %}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="form-group">
+        <label>Inbound ID</label>
+        <input class="form-control" type="number" name="inbound_id" id="edit_inbound_id" min="1" required>
+      </div>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label>نام نمایشی</label>
+        <input class="form-control" type="text" name="label" id="edit_label">
+      </div>
+      <div class="form-group">
+        <label>اولویت</label>
+        <input class="form-control" type="number" name="priority" id="edit_priority" min="1">
+      </div>
+    </div>
+    <div class="form-group">
+      <label>ظرفیت این نود (0 = نامحدود)</label>
+      <input class="form-control" type="number" name="max_active_profiles" id="edit_max_active_profiles" min="0">
+    </div>
+    <div style="display:flex;gap:8px;justify-content:flex-end">
+      <button class="btn btn-outline" type="button" onclick="closeModal('editNodeModal')">انصراف</button>
+      <button class="btn btn-primary" type="submit">💾 ذخیره</button>
+    </div>
+  </form>
+</div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function openEditNode(id, serverId, inboundId, label, priority, maxCap){
+  document.getElementById('editNodeForm').action = `/${S}/subs/nodes/${id}/edit`;
+  document.getElementById('edit_server_id').value = serverId;
+  document.getElementById('edit_inbound_id').value = inboundId;
+  document.getElementById('edit_label').value = label;
+  document.getElementById('edit_priority').value = priority || 100;
+  document.getElementById('edit_max_active_profiles').value = maxCap || 0;
+  openModal('editNodeModal');
+}
+
+async function toggleNode(id){
+  const r = await api(`/${S}/subs/nodes/${id}/toggle`);
+  if(r.success){ toast('وضعیت نود تغییر کرد','success'); setTimeout(()=>location.reload(),600); }
+  else toast('خطا در تغییر وضعیت نود','error');
+}
+
+async function deleteNode(id){
+  if(!confirm('این نود از لیست ساخت ساب حذف شود؟')) return;
+  const r = await api(`/${S}/subs/nodes/${id}/delete`);
+  if(r.success){ toast('نود حذف شد','success'); setTimeout(()=>location.reload(),600); }
+  else toast('خطا در حذف نود','error');
+}
+
+async function testNode(id, btn){
+  const old = btn.innerHTML;
+  btn.innerHTML = '<span class="spin"></span>';
+  btn.disabled = true;
+  const r = await api(`/${S}/subs/nodes/${id}/test`);
+  btn.disabled = false;
+  if(r.success){
+    btn.innerHTML = '✅ اینباند پیدا شد';
+    btn.classList.remove('btn-outline'); btn.classList.add('btn-success');
+    toast('اینباند نود در 3x-ui پیدا شد','success');
+  } else {
+    btn.innerHTML = '❌ خطا';
+    btn.classList.add('btn-danger');
+    toast(r.msg || 'اینباند پیدا نشد','error');
+  }
+  setTimeout(()=>{ btn.innerHTML=old; btn.className='btn btn-outline btn-sm'; },3500);
+}
+</script>
+{% endblock %}

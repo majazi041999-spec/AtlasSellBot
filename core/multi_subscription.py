@@ -10,8 +10,9 @@ from core.database import (
     create_subscription_profile,
     delete_subscription_profile,
     get_active_subscription_profiles,
-    get_available_servers,
     count_active_server_load,
+    count_active_subscription_nodes_by_target,
+    get_available_subscription_node_configs,
     get_setting,
     get_subscription_nodes,
     get_subscription_profile_by_token,
@@ -53,24 +54,40 @@ async def multi_sub_enabled_for_single_purchase(bulk_count: int = 1, is_renewal:
     return True
 
 
-async def pick_subscription_servers(count: int) -> List[Dict]:
-    servers = await get_available_servers()
+def subscription_error_message(error: str) -> str:
+    raw = str(error or "").strip()
+    if raw == "public_base_url_not_configured":
+        return "آدرس عمومی ساب تنظیم نشده است. در پنل سابسکریپشن، public_base_url را تنظیم کنید."
+    if raw == "no_subscription_nodes_configured":
+        return "هیچ نود فعالی برای سابسکریپشن تعریف نشده است."
+    if raw.startswith("not_enough_subscription_nodes:"):
+        return f"تعداد نودهای فعال سابسکریپشن کافی نیست ({raw.split(':', 1)[1]})."
+    if raw.startswith("created_nodes_below_minimum:"):
+        return f"تعداد نودهای ساخته‌شده به حداقل لازم نرسید: {raw}"
+    return raw or "خطای نامشخص در ساخت سابسکریپشن"
+
+
+async def pick_subscription_nodes(count: int) -> List[Dict]:
+    nodes = await get_available_subscription_node_configs()
     ranked = []
-    for server in servers:
-        used = await count_active_server_load(server["id"])
-        cap = int(server.get("max_active_configs") or 0)
-        ratio = (used / cap) if cap > 0 else 0
-        ranked.append((used, ratio, int(server["id"]), server))
-    ranked.sort(key=lambda x: (x[0], x[1], x[2]))
-    return [item[3] for item in ranked[: max(1, int(count or 1))]]
+    for node in nodes:
+        server_used = await count_active_server_load(node["server_id"])
+        node_used = await count_active_subscription_nodes_by_target(node["server_id"], node["inbound_id"])
+        node_cap = int(node.get("max_active_profiles") or 0)
+        ratio = (node_used / node_cap) if node_cap > 0 else 0
+        ranked.append((int(node.get("priority") or 100), node_used, ratio, server_used, int(node["id"]), node))
+    ranked.sort(key=lambda x: (x[0], x[1], x[2], x[3], x[4]))
+    return [item[5] for item in ranked[: max(1, int(count or 1))]]
 
 
 async def create_profile_for_order(user: Dict, order: Dict, traffic_gb: float, duration_days: int) -> Dict:
     node_count = max(2, min(8, int(await get_setting("multi_sub_node_count", "4") or 4)))
-    servers = await pick_subscription_servers(node_count)
+    nodes = await pick_subscription_nodes(node_count)
     min_nodes = max(2, min(node_count, int(await get_setting("multi_sub_min_nodes", "2") or 2)))
-    if len(servers) < min_nodes:
-        return {"ok": False, "error": "not_enough_servers"}
+    if not nodes:
+        return {"ok": False, "error": "no_subscription_nodes_configured"}
+    if len(nodes) < min_nodes:
+        return {"ok": False, "error": f"not_enough_subscription_nodes:{len(nodes)}/{min_nodes}"}
 
     token = secrets.token_urlsafe(24)
     sub_url = await subscription_url(token)
@@ -80,25 +97,30 @@ async def create_profile_for_order(user: Dict, order: Dict, traffic_gb: float, d
     expire_ms = expiry_ms_from_days(duration_days)
     profile_id = await create_subscription_profile(user["id"], order["id"], token, email, traffic_gb, duration_days, expire_ms)
     created_remote: list[tuple[Dict, int, str, str]] = []
+    failures: list[str] = []
 
     try:
-        for server in servers:
-            inbound_id = int(server.get("inbound_id") or 1)
+        for node in nodes:
+            inbound_id = int(node.get("inbound_id") or 1)
             client_uuid = str(uuid.uuid4())
-            node_email = f"{email}_s{server['id']}"
-            cli = XUIClient(server["url"], server["username"], server["password"], server.get("sub_path") or "", server.get("api_token", ""))
+            node_email = f"{email}_n{node['id']}"
+            cli = XUIClient(node["server_url"], node["srv_user"], node["srv_pass"], node.get("sub_path") or "", node.get("srv_api_token", ""))
             try:
                 ok = await cli.add_client(inbound_id, client_uuid, node_email, traffic_gb, duration_days, starts_on_first_use=False)
                 if not ok:
+                    failures.append(f"{node.get('server_name') or node['server_id']}#{inbound_id}:add_failed")
                     continue
                 link = await cli.get_client_link(inbound_id, node_email) or ""
-                await add_subscription_node(profile_id, server["id"], inbound_id, client_uuid, node_email, link)
-                created_remote.append((server, inbound_id, client_uuid, node_email))
+                await add_subscription_node(profile_id, node["server_id"], inbound_id, client_uuid, node_email, link)
+                created_remote.append((node, inbound_id, client_uuid, node_email))
+            except Exception as e:
+                failures.append(f"{node.get('server_name') or node['server_id']}#{inbound_id}:{e}")
             finally:
                 await cli.close()
 
         if len(created_remote) < min_nodes:
-            raise RuntimeError("created_nodes_below_minimum")
+            detail = ",".join(failures[:6])
+            raise RuntimeError(f"created_nodes_below_minimum:{len(created_remote)}/{min_nodes}" + (f";{detail}" if detail else ""))
 
         return {
             "ok": True,
@@ -110,8 +132,8 @@ async def create_profile_for_order(user: Dict, order: Dict, traffic_gb: float, d
             "expire_ms": expire_ms,
         }
     except Exception as e:
-        for server, inbound_id, client_uuid, node_email in created_remote:
-            cli = XUIClient(server["url"], server["username"], server["password"], server.get("sub_path") or "", server.get("api_token", ""))
+        for node, inbound_id, client_uuid, node_email in created_remote:
+            cli = XUIClient(node["server_url"], node["srv_user"], node["srv_pass"], node.get("sub_path") or "", node.get("srv_api_token", ""))
             try:
                 await cli.delete_client(inbound_id, client_uuid, node_email)
             except Exception:
