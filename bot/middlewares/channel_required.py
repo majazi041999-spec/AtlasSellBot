@@ -1,23 +1,42 @@
+import time
 from typing import Any, Awaitable, Callable, Dict
 
 from aiogram import BaseMiddleware
+from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramNetworkError, TelegramRetryAfter
 from aiogram.types import CallbackQuery, Message
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from core.config import ADMIN_IDS
 from core.database import get_or_create_user, get_setting
 
+_POSITIVE_TTL = 900
+_STALE_TTL = 3600
+_MEMBERSHIP_CACHE: dict[tuple[str, int], float] = {}
+
 
 class ChannelRequiredMiddleware(BaseMiddleware):
     @staticmethod
+    def _clean_channel(raw: str) -> str:
+        raw = (raw or "").strip()
+        if not raw:
+            return ""
+        # Accept values like "@channel | https://t.me/channel" and use the first
+        # verifiable token as chat reference.
+        for sep in ("|", ",", "\n"):
+            if sep in raw:
+                raw = raw.split(sep, 1)[0].strip()
+        return raw
+
+    @staticmethod
     def _channel_ref(raw: str) -> str:
+        raw = ChannelRequiredMiddleware._clean_channel(raw)
         raw = (raw or "").strip()
         if raw.startswith("https://t.me/") or raw.startswith("http://t.me/"):
             tail = raw.rstrip("/").rsplit("/", 1)[-1].strip()
-            return f"@{tail}" if tail and not tail.startswith("+") else raw
+            return f"@{tail}" if tail and not tail.startswith("+") else ""
         if raw.startswith("t.me/"):
             tail = raw.rstrip("/").rsplit("/", 1)[-1].strip()
-            return f"@{tail}" if tail and not tail.startswith("+") else f"https://{raw}"
+            return f"@{tail}" if tail and not tail.startswith("+") else ""
         if raw.startswith("-100") or raw.startswith("@"):
             return raw
         return f"@{raw}"
@@ -27,23 +46,100 @@ class ChannelRequiredMiddleware(BaseMiddleware):
         raw = (raw or "").strip()
         if raw.startswith("http://") or raw.startswith("https://"):
             return raw
+        if "|" in raw:
+            for part in [p.strip() for p in raw.split("|")]:
+                if part.startswith("http://") or part.startswith("https://"):
+                    return part
+        if raw.startswith("-100"):
+            return ""
         return f"https://t.me/{raw.lstrip('@')}"
 
     @staticmethod
-    async def is_member(bot, uid: int, channel_username: str) -> bool:
+    def _status_value(status) -> str:
+        return str(getattr(status, "value", status) or "").lower()
+
+    @staticmethod
+    async def is_exempt(uid: int) -> bool:
+        if uid in ADMIN_IDS:
+            return True
+        owner_id = int(await get_setting("owner_admin_id", "0") or 0)
+        if owner_id and uid == owner_id:
+            return True
+        user = await get_or_create_user(uid)
+        return bool(user.get("is_admin", 0))
+
+    @staticmethod
+    async def is_member(bot, uid: int, channel_username: str, *, use_cache: bool = True) -> bool:
         if not uid:
             return False
         ch = ChannelRequiredMiddleware._channel_ref(channel_username)
+        if not ch:
+            # The setting is an invite link or otherwise unverifiable by Telegram.
+            # Do not falsely block real members because verification is impossible.
+            return True
+        key = (ch.lower(), int(uid))
+        now = time.time()
+        if use_cache and _MEMBERSHIP_CACHE.get(key, 0) > now:
+            return True
         try:
             member = await bot.get_chat_member(ch, uid)
-            return member.status in ("member", "administrator", "creator")
+            status = ChannelRequiredMiddleware._status_value(member.status)
+            ok = status in {"member", "administrator", "creator"} or (status == "restricted" and bool(getattr(member, "is_member", False)))
+            if ok:
+                _MEMBERSHIP_CACHE[key] = now + _POSITIVE_TTL
+            else:
+                _MEMBERSHIP_CACHE.pop(key, None)
+            return ok
+        except (TelegramNetworkError, TelegramRetryAfter):
+            # Temporary Telegram/API trouble: trust a recent positive check.
+            return _MEMBERSHIP_CACHE.get(key, 0) > now - _STALE_TTL
+        except (TelegramForbiddenError, TelegramBadRequest) as e:
+            text = str(e).lower()
+            if any(mark in text for mark in ("user not found", "participant_id_invalid")):
+                _MEMBERSHIP_CACHE.pop(key, None)
+                return False
+            if any(mark in text for mark in ("chat_admin_required", "chat not found", "bot was kicked", "not enough rights")):
+                return True
+            return _MEMBERSHIP_CACHE.get(key, 0) > now - _STALE_TTL
         except Exception:
+            return _MEMBERSHIP_CACHE.get(key, 0) > now - _STALE_TTL
+
+    @staticmethod
+    async def can_access(bot, uid: int, channel_username: str) -> bool:
+        if await ChannelRequiredMiddleware.is_exempt(uid):
+            return True
+        return await ChannelRequiredMiddleware.is_member(bot, uid, channel_username)
+
+    @staticmethod
+    async def is_required() -> tuple[bool, str]:
+        force = await get_setting("force_channel", "0")
+        channel_username = (await get_setting("channel_username", "")).strip()
+        return force == "1" and bool(channel_username), channel_username
+
+    @staticmethod
+    def is_join_check(event: Message | CallbackQuery) -> bool:
+        return isinstance(event, CallbackQuery) and event.data == "check_channel_join"
+
+    @staticmethod
+    async def verify_join_callback(event: CallbackQuery, user: dict, channel_username: str) -> bool:
+        uid = event.from_user.id if event.from_user else 0
+        if not await ChannelRequiredMiddleware.is_member(event.bot, uid, channel_username, use_cache=False):
             return False
+        await event.answer("عضویت تایید شد.")
+        if event.message:
+            from bot.keyboards import admin_menu, user_menu
+
+            role = "full" if user.get("is_admin", 0) else "none"
+            kb = admin_menu() if role != "none" else user_menu(include_wholesale=bool(user.get("is_wholesale", 0)))
+            await event.message.answer("عضویت شما تایید شد. منوی ربات فعال است.", reply_markup=kb)
+        return True
 
     @staticmethod
     def join_kb(channel_username: str):
         b = InlineKeyboardBuilder()
-        b.button(text="عضویت در کانال", url=ChannelRequiredMiddleware._channel_url(channel_username))
+        url = ChannelRequiredMiddleware._channel_url(channel_username)
+        if url:
+            b.button(text="عضویت در کانال", url=url)
         b.button(text="بررسی عضویت", callback_data="check_channel_join")
         b.adjust(1)
         return b.as_markup()
@@ -51,7 +147,7 @@ class ChannelRequiredMiddleware(BaseMiddleware):
     @staticmethod
     def join_text(channel_username: str) -> str:
         ch = ChannelRequiredMiddleware._channel_ref(channel_username)
-        channel_label = ch if not ch.startswith("http") else "لینک عضویت"
+        channel_label = ch or "لینک عضویت"
         return (
             "برای استفاده از امکانات ربات، ابتدا باید عضو کانال شوید.\n\n"
             f"کانال: {channel_label}\n\n"
@@ -64,29 +160,18 @@ class ChannelRequiredMiddleware(BaseMiddleware):
         event: Message | CallbackQuery,
         data: Dict[str, Any],
     ) -> Any:
-        force = await get_setting("force_channel", "0")
-        channel_username = (await get_setting("channel_username", "")).strip()
-        if force != "1" or not channel_username:
+        required, channel_username = await self.is_required()
+        if not required:
             return await handler(event, data)
 
         uid = event.from_user.id if event.from_user else 0
-        if uid in ADMIN_IDS:
-            return await handler(event, data)
-
         user = await get_or_create_user(uid)
-        owner_id = int(await get_setting("owner_admin_id", "0") or 0)
-        if user.get("is_admin", 0) or (owner_id and uid == owner_id):
+        if await self.is_exempt(uid):
             return await handler(event, data)
 
         if await self.is_member(event.bot, uid, channel_username):
-            if isinstance(event, CallbackQuery) and event.data == "check_channel_join":
-                await event.answer("عضویت تایید شد.")
-                if event.message:
-                    from bot.keyboards import admin_menu, user_menu
-
-                    role = "full" if user.get("is_admin", 0) else "none"
-                    kb = admin_menu() if role != "none" else user_menu(include_wholesale=bool(user.get("is_wholesale", 0)))
-                    await event.message.answer("عضویت شما تایید شد. منوی ربات فعال است.", reply_markup=kb)
+            if self.is_join_check(event):
+                await self.verify_join_callback(event, user, channel_username)
                 return None
             return await handler(event, data)
 

@@ -2,11 +2,11 @@ from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery
 from aiogram.filters import CommandStart
 from aiogram.fsm.context import FSMContext
-from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from core.config import ADMIN_IDS, WEB_SECRET_PATH, WEB_PORT, REFERRAL_BONUS_GB
 from core.database import get_or_create_user, get_user_by_referral_code, update_user, get_setting
 from core.texts import get_text
+from bot.middlewares.channel_required import ChannelRequiredMiddleware
 
 router = Router()
 
@@ -28,10 +28,7 @@ async def _menus(msg: Message):
 
 
 def _channel_join_kb(channel_username: str):
-    ch = channel_username.strip().lstrip("@")
-    b = InlineKeyboardBuilder()
-    b.button(text="📢 عضویت در کانال", url=f"https://t.me/{ch}")
-    return b.as_markup()
+    return ChannelRequiredMiddleware.join_kb(channel_username)
 
 
 @router.message(CommandStart())
@@ -94,19 +91,14 @@ async def block_non_member_commands(msg: Message):
     cmd = msg.text.strip().split()[0].split("@", 1)[0].lower()
     if cmd.startswith("/start"):
         return
-    force = await get_setting("force_channel", "0")
-    channel_username = await get_setting("channel_username", "")
-    if force != "1" or not channel_username:
+    required, channel_username = await ChannelRequiredMiddleware.is_required()
+    if not required:
         return
 
-    ch = channel_username if channel_username.startswith("@") else f"@{channel_username}"
-    try:
-        member = await msg.bot.get_chat_member(ch, msg.from_user.id)
-        if member.status in ("member", "administrator", "creator"):
-            return
-    except Exception:
-        pass
+    if await ChannelRequiredMiddleware.can_access(msg.bot, msg.from_user.id, channel_username):
+        return
 
+    ch = ChannelRequiredMiddleware._channel_ref(channel_username) or "لینک عضویت"
     await msg.answer(
         f"❌ برای استفاده از ربات باید حتما عضو کانال باشید.\n\nکانال: {ch}",
         reply_markup=_channel_join_kb(channel_username),
@@ -116,15 +108,27 @@ async def block_non_member_commands(msg: Message):
 @router.callback_query(F.data == "cancel")
 async def cancel_cb(cb: CallbackQuery, state: FSMContext):
     await state.clear()
-    await cb.message.edit_text("❌ عملیات لغو شد.")
+    try:
+        await cb.message.edit_text("❌ عملیات لغو شد.")
+    except Exception:
+        await cb.message.answer("❌ عملیات لغو شد.")
     await cb.answer()
 
 
 @router.callback_query(F.data == "back_to_menu")
 async def back_menu_cb(cb: CallbackQuery, state: FSMContext):
     await state.clear()
+    from bot.keyboards import admin_menu, user_menu
+
+    user = await get_or_create_user(cb.from_user.id, cb.from_user.username, cb.from_user.full_name)
+    role = await _admin_role(cb.from_user.id, user)
+    kb = admin_menu(finance_only=(role == "finance")) if role != "none" else user_menu(include_wholesale=bool(user.get("is_wholesale", 0)))
+    try:
+        await cb.message.edit_text("🏠 برگشت به منوی اصلی")
+    except Exception:
+        pass
+    await cb.message.answer("منوی اصلی", reply_markup=kb)
     await cb.answer()
-    await cb.message.delete()
 
 
 

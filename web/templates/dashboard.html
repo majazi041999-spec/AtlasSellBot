@@ -46,7 +46,14 @@
       تا وقتی تایید نکنید هیچ پیامی برای کاربران ارسال نمی‌شود.
     </p>
     <form method="post" action="/{{ S }}/updates/approve_send">
+      <div class="form-group">
+        <label>متن پیام آپدیت برای کاربران</label>
+        <textarea class="form-control" name="update_text" rows="11">{{ pending_update_text }}</textarea>
+      </div>
       <button class="btn btn-primary" type="submit">✅ تایید و ارسال پیام آپدیت به همه کاربران</button>
+    </form>
+    <form method="post" action="/{{ S }}/updates/reject" style="margin-top:10px">
+      <button class="btn btn-outline" type="submit">رد کردن و ارسال نکردن این آپدیت</button>
     </form>
   {% else %}
     <p style="margin:0;color:var(--txt3)">

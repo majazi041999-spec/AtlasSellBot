@@ -8,6 +8,7 @@ from urllib.parse import urlparse, parse_qs, unquote
 from datetime import datetime, timedelta, date
 
 from aiogram import Router, F, Bot
+from aiogram.filters import StateFilter
 from aiogram.types import Message, CallbackQuery, BufferedInputFile
 from aiogram.fsm.context import FSMContext
 
@@ -49,16 +50,19 @@ from core.database import (
     get_user_test_account,
     add_user_test_account,
     get_least_loaded_server,
+    delete_config_by_id,
 )
 from core.xui_api import XUIClient, fmt_bytes, days_left, expiry_ms_from_days
 from core.texts import get_text
 from core.qr import build_qr_image
+from bot.middlewares.channel_required import ChannelRequiredMiddleware
 
 from bot.keyboards import (
     user_menu,
     packages_kb,
     payment_kb,
     config_detail_kb,
+    config_delete_confirm_kb,
     renew_options_kb,
     config_links_kb,
     configs_kb,
@@ -69,7 +73,7 @@ from bot.keyboards import (
     wallet_kb,
     flow_cancel_kb,
 )
-from bot.states import BuyService, RenewService, WholesaleBuy, LegacySync, WalletTopup
+from bot.states import AnonymousFeedback, BuyService, RenewService, WholesaleBuy, LegacySync, WalletTopup
 
 router = Router()
 RENEWAL_MIN_DAYS = 30
@@ -81,41 +85,31 @@ async def _blocked(uid: int) -> bool:
 
 
 def _channel_join_kb(channel_username: str):
-    from aiogram.utils.keyboard import InlineKeyboardBuilder
-    ch = channel_username.strip().lstrip("@")
-    b = InlineKeyboardBuilder()
-    b.button(text="📢 عضویت در کانال", url=f"https://t.me/{ch}")
-    return b.as_markup()
+    return ChannelRequiredMiddleware.join_kb(channel_username)
 
 
 async def _is_channel_member(msg_or_cb) -> bool:
-    force = await get_setting("force_channel", "0")
-    channel_username = await get_setting("channel_username", "")
-    if force != "1" or not channel_username:
+    required, channel_username = await ChannelRequiredMiddleware.is_required()
+    if not required:
         return True
 
-    bot = msg_or_cb.bot
-    uid = msg_or_cb.from_user.id
-    ch = channel_username if channel_username.startswith("@") else f"@{channel_username}"
-    try:
-        m = await bot.get_chat_member(ch, uid)
-        return m.status in ("member", "administrator", "creator")
-    except Exception:
-        return False
+    uid = msg_or_cb.from_user.id if msg_or_cb.from_user else 0
+    return await ChannelRequiredMiddleware.can_access(msg_or_cb.bot, uid, channel_username)
 
 
 async def _ensure_channel_membership(msg_or_cb) -> bool:
     if await _is_channel_member(msg_or_cb):
         return True
 
-    channel_username = await get_setting("channel_username", "")
-    ch = channel_username if channel_username.startswith("@") else f"@{channel_username}"
+    _, channel_username = await ChannelRequiredMiddleware.is_required()
+    ch = ChannelRequiredMiddleware._channel_ref(channel_username) or "لینک عضویت"
     text = f"❌ قبل از استفاده از امکانات ربات باید عضو کانال شوید.\n\nکانال: {ch}\n\nبعد از عضویت دوباره تلاش کنید."
     if isinstance(msg_or_cb, Message):
         await msg_or_cb.answer(text, reply_markup=_channel_join_kb(channel_username))
     else:
         await msg_or_cb.answer("❌ ابتدا باید در کانال عضو شوید.", show_alert=True)
-        await msg_or_cb.message.answer(text, reply_markup=_channel_join_kb(channel_username))
+        if msg_or_cb.message:
+            await msg_or_cb.message.answer(text, reply_markup=_channel_join_kb(channel_username))
     return False
 
 
@@ -398,8 +392,10 @@ async def flow_back_user(cb: CallbackQuery, state: FSMContext):
         await cb.message.edit_text("⬅️ برگشتید به منو.")
         await cb.message.answer("منوی اصلی", reply_markup=user_menu(include_wholesale=bool(user.get("is_wholesale", 0))))
     else:
-        await cb.answer("برای این مرحله برگشت مستقیم تعریف نشده است.", show_alert=True)
-        return
+        await state.clear()
+        user = await get_or_create_user(cb.from_user.id, cb.from_user.username, cb.from_user.full_name)
+        await cb.message.edit_text("⬅️ عملیات قبلی بسته شد.")
+        await cb.message.answer("منوی اصلی", reply_markup=user_menu(include_wholesale=bool(user.get("is_wholesale", 0))))
     await cb.answer()
 
 
@@ -429,7 +425,13 @@ async def user_status(msg: Message):
 
 @router.callback_query(F.data.startswith("cfg:"))
 async def cfg_selected(cb: CallbackQuery):
+    if not await _ensure_channel_membership(cb):
+        return
     cid = int(cb.data.split(":")[1])
+    user = await get_or_create_user(cb.from_user.id, cb.from_user.username, cb.from_user.full_name)
+    if not await _owned_config_for_user(user["id"], cid):
+        await cb.answer("این سرویس برای شما پیدا نشد.", show_alert=True)
+        return
     await _send_config_status(cb, cid)
 
 
@@ -441,6 +443,13 @@ async def back_configs(cb: CallbackQuery):
         await cb.message.edit_text(" سرویسی ندارید.")
         return
     await cb.message.edit_text(" *سرویس‌های شما:*", reply_markup=configs_kb(configs), parse_mode="Markdown")
+
+
+async def _owned_config_for_user(user_id: int, config_id: int) -> dict | None:
+    cfg = await get_config(config_id)
+    if not cfg or int(cfg.get("user_id") or 0) != int(user_id):
+        return None
+    return cfg
 
 
 async def _send_config_status(target, config_id: int):
@@ -521,6 +530,52 @@ async def _send_config_status(target, config_id: int):
         await target.answer(text, reply_markup=kb, parse_mode="Markdown")
     else:
         await target.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
+
+
+@router.callback_query(F.data.startswith("cfg_del:"))
+async def cfg_delete_confirm(cb: CallbackQuery):
+    if not await _ensure_channel_membership(cb):
+        return
+    cid = int(cb.data.split(":")[1])
+    user = await get_or_create_user(cb.from_user.id, cb.from_user.username, cb.from_user.full_name)
+    cfg = await _owned_config_for_user(user["id"], cid)
+    if not cfg:
+        await cb.answer("این سرویس برای شما پیدا نشد.", show_alert=True)
+        return
+    await cb.message.edit_text(
+        "🗑️ *حذف سرویس*\n\n"
+        f"کانفیگ: `{cfg['email']}`\n\n"
+        "با تایید، سرویس از سرور و از حساب شما حذف می‌شود. این کار قابل برگشت نیست.",
+        reply_markup=config_delete_confirm_kb(cid),
+        parse_mode="Markdown",
+    )
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("cfg_del_do:"))
+async def cfg_delete_do(cb: CallbackQuery):
+    if not await _ensure_channel_membership(cb):
+        return
+    cid = int(cb.data.split(":")[1])
+    user = await get_or_create_user(cb.from_user.id, cb.from_user.username, cb.from_user.full_name)
+    cfg = await _owned_config_for_user(user["id"], cid)
+    if not cfg:
+        await cb.answer("این سرویس برای شما پیدا نشد.", show_alert=True)
+        return
+
+    cli = XUIClient(cfg["server_url"], cfg["srv_user"], cfg["srv_pass"], cfg["sub_path"], cfg.get("srv_api_token", ""))
+    try:
+        ok = await cli.delete_client(cfg["inbound_id"], cfg["uuid"], cfg.get("email", ""))
+    finally:
+        await cli.close()
+
+    if not ok:
+        await cb.answer("حذف روی سرور ناموفق بود. لطفاً با پشتیبانی هماهنگ کنید.", show_alert=True)
+        return
+
+    await delete_config_by_id(cid)
+    await cb.message.edit_text("✅ سرویس از سرور و حساب شما حذف شد.", parse_mode=None)
+    await cb.answer()
 
 
 @router.callback_query(F.data.startswith("cfg_renew:"))
@@ -665,6 +720,10 @@ async def send_config_link(cb: CallbackQuery):
     if not await _ensure_channel_membership(cb):
         return
     cid = int(cb.data.split(":")[1])
+    user = await get_or_create_user(cb.from_user.id, cb.from_user.username, cb.from_user.full_name)
+    if not await _owned_config_for_user(user["id"], cid):
+        await cb.answer("این سرویس برای شما پیدا نشد.", show_alert=True)
+        return
     cfg = await get_config(cid)
     if not cfg:
         await cb.answer("سرویس یافت نشد", show_alert=True)
@@ -702,6 +761,10 @@ async def cfg_refresh(cb: CallbackQuery):
     if not await _ensure_channel_membership(cb):
         return
     cid = int(cb.data.split(":")[1])
+    user = await get_or_create_user(cb.from_user.id, cb.from_user.username, cb.from_user.full_name)
+    if not await _owned_config_for_user(user["id"], cid):
+        await cb.answer("این سرویس برای شما پیدا نشد.", show_alert=True)
+        return
     await _send_config_status(cb, cid)
     await cb.answer("بروزرسانی شد")
 
@@ -711,6 +774,10 @@ async def cfg_sub(cb: CallbackQuery):
     if not await _ensure_channel_membership(cb):
         return
     cid = int(cb.data.split(":")[1])
+    user = await get_or_create_user(cb.from_user.id, cb.from_user.username, cb.from_user.full_name)
+    if not await _owned_config_for_user(user["id"], cid):
+        await cb.answer("این سرویس برای شما پیدا نشد.", show_alert=True)
+        return
     cfg = await get_config(cid)
     if not cfg:
         await cb.answer("یافت نشد", show_alert=True)
@@ -735,6 +802,10 @@ async def cfg_qr(cb: CallbackQuery):
     if not await _ensure_channel_membership(cb):
         return
     cid = int(cb.data.split(":")[1])
+    user = await get_or_create_user(cb.from_user.id, cb.from_user.username, cb.from_user.full_name)
+    if not await _owned_config_for_user(user["id"], cid):
+        await cb.answer("این سرویس برای شما پیدا نشد.", show_alert=True)
+        return
     cfg = await get_config(cid)
     if not cfg:
         await cb.answer("یافت نشد", show_alert=True)
@@ -1289,6 +1360,40 @@ def _extract_config_identity(link: str):
         return None, None, None
 
 
+@router.message(StateFilter(None), lambda msg: bool(msg.text and _extract_config_identity(msg.text or "")[0]))
+async def user_config_link_lookup(msg: Message):
+    if not await _ensure_channel_membership(msg):
+        return
+    if await _blocked(msg.from_user.id):
+        await msg.answer(await get_text("blocked_message"))
+        return
+
+    _, email, raw_uuid = _extract_config_identity(msg.text or "")
+    user = await get_or_create_user(msg.from_user.id, msg.from_user.username, msg.from_user.full_name)
+    cfg = await get_config_by_email(email) if email else None
+    if not cfg and raw_uuid:
+        cfg = await get_config_by_uuid(raw_uuid)
+
+    if cfg and int(cfg.get("user_id") or 0) == int(user["id"]):
+        await msg.answer("🔎 کانفیگ شما پیدا شد. وضعیت سرویس:")
+        await _send_config_status(msg, int(cfg["id"]))
+        return
+
+    if cfg:
+        await msg.answer(
+            "❌ این کانفیگ داخل حساب شما ثبت نشده است.\n"
+            "اگر فکر می‌کنید اشتباه شده، با پشتیبانی پیام دهید.",
+            parse_mode=None,
+        )
+        return
+
+    await msg.answer(
+        "❌ این کانفیگ داخل حساب شما پیدا نشد.\n\n"
+        "اگر این سرویس را قبلاً خارج از ربات گرفته‌اید، از گزینه «🔗 سینک کانفیگ قبلی» استفاده کنید.",
+        parse_mode=None,
+    )
+
+
 async def _notify_legacy_claim_admins(bot: Bot, claim_id: int, from_user, email: str):
     targets = list(dict.fromkeys([*ADMIN_IDS, *(await get_all_admin_telegram_ids())]))
     for aid in targets:
@@ -1439,6 +1544,51 @@ async def my_orders(msg: Message):
         text += f" {o['price']:,} تومن | {o['created_at'][:10]}\n\n"
 
     await msg.answer(text.strip(), parse_mode="Markdown")
+
+
+@router.message(F.text == "🕊️ پیام ناشناس")
+async def anonymous_feedback_start(msg: Message, state: FSMContext):
+    if not await _ensure_channel_membership(msg):
+        return
+    if await _blocked(msg.from_user.id):
+        await msg.answer(await get_text("blocked_message"))
+        return
+    await state.set_state(AnonymousFeedback.text)
+    await msg.answer(
+        "🕊️ متن پیشنهاد یا انتقاد خودتان را بنویسید.\n\n"
+        "پیام بدون نام، یوزرنیم و آیدی شما برای مدیریت ارسال می‌شود.",
+        reply_markup=flow_cancel_kb(show_back=False),
+        parse_mode=None,
+    )
+
+
+@router.message(AnonymousFeedback.text)
+async def anonymous_feedback_submit(msg: Message, state: FSMContext):
+    text = (msg.text or msg.caption or "").strip()
+    if not text:
+        await msg.answer("❌ لطفاً متن پیام را ارسال کنید.", reply_markup=flow_cancel_kb(show_back=False))
+        return
+    if len(text) > 3500:
+        await msg.answer("❌ متن خیلی طولانی است. لطفاً کوتاه‌تر ارسال کنید.", reply_markup=flow_cancel_kb(show_back=False))
+        return
+
+    await state.clear()
+    sent = 0
+    for aid in await _admin_targets():
+        try:
+            await msg.bot.send_message(
+                aid,
+                "🕊️ پیام ناشناس جدید\n\n"
+                f"{text}",
+                parse_mode=None,
+            )
+            sent += 1
+        except Exception:
+            pass
+    if sent:
+        await msg.answer("✅ پیام ناشناس شما برای مدیریت ارسال شد. ممنون از بازخوردتان.", parse_mode=None)
+    else:
+        await msg.answer("⚠️ ارسال پیام به مدیریت ناموفق بود. لطفاً کمی بعد دوباره تلاش کنید.", parse_mode=None)
 
 
 # ─── MIGRATE ─────────────────────────────────────────────────────

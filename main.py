@@ -47,23 +47,19 @@ def _current_build() -> str:
 
 
 def _update_text() -> str:
-    return (
-        "🔔 *ربات آپدیت شد!*\n\n"
-        "لطفاً یک بار ربات را استارت کنید: /start\n\n"
-        "اپ‌های پیشنهادی:\n"
-        "[📱 V2rayNG (اندروید)](https://github.com/2dust/v2rayNG/releases/latest)\n"
-        "[🍎 Streisand (iOS)](https://apps.apple.com/us/app/streisand/id6450534064)\n"
-        "[🪟 v2rayN (ویندوز)](https://github.com/2dust/v2rayN/releases/latest)"
-    )
+    from core.update_notes import DEFAULT_UPDATE_BROADCAST_TEXT
+
+    return DEFAULT_UPDATE_BROADCAST_TEXT
 
 
 async def _broadcast_update(bot, build: str) -> int:
     from core.database import count_users, get_all_users, set_setting
+    from core.update_notes import get_update_broadcast_text
 
     total = await count_users()
     page = 0
     sent = 0
-    text = _update_text()
+    text = await get_update_broadcast_text()
     while page * 200 < total:
         users = await get_all_users(page * 200, 200)
         if not users:
@@ -78,7 +74,10 @@ async def _broadcast_update(bot, build: str) -> int:
 
     await set_setting("last_update_broadcast", build)
     await set_setting("pending_update_build", "")
+    await set_setting("pending_update_text", "")
+    await set_setting("pending_update_text_build", "")
     await set_setting("update_broadcast_approved_build", "")
+    await set_setting("skipped_update_build", "")
     logger.info(f"📣 update broadcast sent to {sent} users | build={build}")
     return sent
 
@@ -88,7 +87,8 @@ async def _notify_update(bot):
 
     build = _current_build()
     last = await get_setting("last_update_broadcast", "")
-    if not build or build == "unknown" or build == last:
+    skipped = await get_setting("skipped_update_build", "")
+    if not build or build == "unknown" or build == last or build == skipped:
         return
 
     approved_build = await get_setting("update_broadcast_approved_build", "")
@@ -97,6 +97,9 @@ async def _notify_update(bot):
         return
 
     await set_setting("pending_update_build", build)
+    if await get_setting("pending_update_text_build", "") != build:
+        await set_setting("pending_update_text", _update_text())
+        await set_setting("pending_update_text_build", build)
     logger.info(f"⏸ update broadcast pending admin approval | build={build}")
 
 

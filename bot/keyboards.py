@@ -63,7 +63,7 @@ def user_menu(include_wholesale: bool = True) -> ReplyKeyboardMarkup:
     b.row(KeyboardButton(text="🔄 انتقال سرور"), KeyboardButton(text="📋 سفارش‌های من"))
     b.row(KeyboardButton(text="🔄 شروع مجدد"))
     b.row(KeyboardButton(text="💳 کیف پول"), KeyboardButton(text="🎁 دعوت دوستان"))
-    b.row(KeyboardButton(text="📞 پشتیبانی"))
+    b.row(KeyboardButton(text="📞 پشتیبانی"), KeyboardButton(text="🕊️ پیام ناشناس"))
     if include_wholesale:
         b.row(KeyboardButton(text="🏷️ خرید عمده"))
     b.row(KeyboardButton(text="🔗 سینک کانفیگ قبلی"))
@@ -125,7 +125,16 @@ def config_detail_kb(cid: int) -> InlineKeyboardMarkup:
     _button(b, text="🔄 بروزرسانی سرویس", callback_data=f"cfg_refresh:{cid}", style="primary")
     _button(b, text="📡 لینک سابسکریپشن", callback_data=f"cfg_sub:{cid}", style="primary")
     _button(b, text="🧾 QR Code", callback_data=f"cfg_qr:{cid}", style="primary")
+    _button(b, text="🗑️ حذف سرویس", callback_data=f"cfg_del:{cid}", style="danger")
     _button(b, text="🔙 بازگشت", callback_data="back_configs", style="primary")
+    b.adjust(1)
+    return b.as_markup()
+
+
+def config_delete_confirm_kb(cid: int) -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    _button(b, text="✅ بله، حذف شود", callback_data=f"cfg_del_do:{cid}", style="danger")
+    _button(b, text="❌ منصرف شدم", callback_data=f"cfg:{cid}", style="primary")
     b.adjust(1)
     return b.as_markup()
 

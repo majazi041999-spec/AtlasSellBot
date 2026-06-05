@@ -173,8 +173,10 @@ async def flow_back_admin(cb: CallbackQuery, state: FSMContext):
         await state.set_state(PrivateMessage.user_id)
         await cb.message.edit_text("🆔 آیدی عددی کاربر را ارسال کنید:", reply_markup=flow_cancel_kb())
     else:
-        await cb.answer("برای این مرحله برگشت مستقیم تعریف نشده.", show_alert=True)
-        return
+        await state.clear()
+        role = _db_admin_role(cb.from_user.id)
+        await cb.message.edit_text("⬅️ عملیات قبلی بسته شد.")
+        await cb.message.answer("منوی مدیریت", reply_markup=admin_menu(finance_only=(role == "finance")))
     await cb.answer()
 
 
@@ -453,7 +455,7 @@ async def _do_renew(cb: CallbackQuery, order: dict) -> bool:
     if not result.get("ok"):
         await update_order(order["id"], status="receipt_submitted")
         await cb.message.answer(
-            "❌ تمدید انجام نشد. کانفیگ روی هیچ‌کدام از سرورهای فعال پیدا نشد یا آپدیت نشد.\n"
+            "❌ تمدید انجام نشد. کانفیگ روی هیچ‌کدام از سرورهای ثبت‌شده پیدا نشد یا آپدیت نشد.\n"
             f"جزئیات: {result.get('error') or '-'}",
             parse_mode=None,
         )

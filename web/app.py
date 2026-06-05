@@ -93,6 +93,7 @@ from core.xui_api import XUIClient, expiry_ms_from_days
 from core.renewal import find_and_renew_config
 from core.qr import build_qr_image
 from bot.keyboards import config_links_kb
+from core.update_notes import DEFAULT_UPDATE_BROADCAST_TEXT, get_update_broadcast_text
 
 logger = logging.getLogger(__name__)
 
@@ -185,14 +186,7 @@ async def _ctx_ui(request: Request, **kw) -> dict:
 
 
 async def _update_broadcast_text() -> str:
-    return (
-        "🔔 *ربات آپدیت شد!*\n\n"
-        "لطفاً یک بار ربات را استارت کنید: /start\n\n"
-        "اپ‌های پیشنهادی:\n"
-        "[📱 V2rayNG (اندروید)](https://github.com/2dust/v2rayNG/releases/latest)\n"
-        "[🍎 Streisand (iOS)](https://apps.apple.com/us/app/streisand/id6450534064)\n"
-        "[🪟 v2rayN (ویندوز)](https://github.com/2dust/v2rayN/releases/latest)"
-    )
+    return await get_update_broadcast_text()
 
 
 async def _send_update_broadcast(build: str) -> int:
@@ -222,7 +216,10 @@ async def _send_update_broadcast(build: str) -> int:
 
     await set_setting("last_update_broadcast", build)
     await set_setting("pending_update_build", "")
+    await set_setting("pending_update_text", "")
+    await set_setting("pending_update_text_build", "")
     await set_setting("update_broadcast_approved_build", "")
+    await set_setting("skipped_update_build", "")
     return sent
 
 
@@ -268,6 +265,7 @@ async def dashboard(request: Request):
     pending = await get_pending_orders()
     pending_update_build = await get_setting("pending_update_build", "")
     last_update_broadcast = await get_setting("last_update_broadcast", "")
+    pending_update_text = await get_setting("pending_update_text", DEFAULT_UPDATE_BROADCAST_TEXT)
     return _templates.TemplateResponse(
         "dashboard.html",
         await _ctx_ui(
@@ -277,12 +275,13 @@ async def dashboard(request: Request):
             active="dashboard",
             pending_update_build=pending_update_build,
             last_update_broadcast=last_update_broadcast,
+            pending_update_text=pending_update_text,
         ),
     )
 
 
 @app.post(f"/{S}/updates/approve_send")
-async def approve_and_send_update(request: Request):
+async def approve_and_send_update(request: Request, update_text: str = Form("")):
     if not _auth(request):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
 
@@ -290,6 +289,9 @@ async def approve_and_send_update(request: Request):
     if not build:
         return RedirectResponse(f"/{S}/dashboard", status_code=302)
 
+    if update_text.strip():
+        await set_setting("pending_update_text", update_text.strip())
+        await set_setting("pending_update_text_build", build)
     await set_setting("update_broadcast_approved_build", build)
     try:
         sent = await _send_update_broadcast(build)
@@ -297,6 +299,21 @@ async def approve_and_send_update(request: Request):
     except Exception as e:
         logger.exception("failed to send approved update broadcast: %s", e)
 
+    return RedirectResponse(f"/{S}/dashboard", status_code=302)
+
+
+@app.post(f"/{S}/updates/reject")
+async def reject_update_broadcast(request: Request):
+    if not _auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+
+    build = (await get_setting("pending_update_build", "")).strip()
+    if build:
+        await set_setting("skipped_update_build", build)
+    await set_setting("pending_update_build", "")
+    await set_setting("pending_update_text", "")
+    await set_setting("pending_update_text_build", "")
+    await set_setting("update_broadcast_approved_build", "")
     return RedirectResponse(f"/{S}/dashboard", status_code=302)
 
 

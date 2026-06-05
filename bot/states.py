@@ -69,3 +69,7 @@ class PrivateMessage(StatesGroup):
 class WalletTopup(StatesGroup):
     waiting_amount = State()
     waiting_receipt = State()
+
+
+class AnonymousFeedback(StatesGroup):
+    text = State()
