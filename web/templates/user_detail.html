@@ -1,0 +1,109 @@
+{% extends "base.html" %}
+{% block title %}کاربر {{ user.id }}{% endblock %}
+{% block topbar_title %}👤 پرونده کاربر{% endblock %}
+
+{% block content %}
+<style>
+.profile-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:10px;margin-bottom:14px}
+.profile-stat{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:14px}
+.profile-stat span{display:block;color:var(--txt3);font-size:.76rem}.profile-stat b{font-size:1.08rem}
+.detail-section{margin-top:16px}
+.link-code{direction:ltr;text-align:left;display:block;max-width:360px;white-space:normal;font-size:.72rem}
+@media(max-width:760px){.table-wrap table{min-width:900px}}
+</style>
+
+<div class="card" style="margin-bottom:14px">
+  <div style="display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;align-items:flex-start">
+    <div>
+      <h3 style="margin-bottom:4px">{{ user.full_name or '—' }}</h3>
+      <div style="color:var(--txt2)">@{{ user.username or '—' }} | Telegram ID: <code>{{ user.telegram_id }}</code> | User #{{ user.id }}</div>
+    </div>
+    <a class="btn btn-outline btn-sm" href="/{{ S }}/users">بازگشت به کاربران</a>
+  </div>
+</div>
+
+<div class="profile-grid">
+  <div class="profile-stat"><span>کیف پول</span><b>{{ "{:,}".format(user.balance_toman or 0) }} تومان</b></div>
+  <div class="profile-stat"><span>سفارش تایید</span><b>{{ business.approved_orders }}</b></div>
+  <div class="profile-stat"><span>کانفیگ فعال/کل</span><b>{{ business.active_configs }} / {{ business.total_configs }}</b></div>
+  <div class="profile-stat"><span>وضعیت</span><b>{{ 'بلاک' if user.is_blocked else 'فعال' }}</b></div>
+</div>
+
+<div class="detail-section">
+  <div class="sec-hd"><span class="sec-title">🧬 سابسکریپشن‌ها ({{ profiles|length }})</span></div>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>#</th><th>لینک</th><th>حجم/مصرف</th><th>تاریخ</th><th>نودها</th><th>وضعیت</th></tr></thead>
+      <tbody>
+      {% for p in profiles %}
+      {% set total_bytes = (p.traffic_gb|float * 1073741824)|int %}
+      {% set pct = ((p.used_bytes or 0) * 100 // total_bytes) if total_bytes > 0 else 0 %}
+      {% set dl = (((p.expire_timestamp or 0) - now_ts * 1000) // 86400000) if (p.expire_timestamp or 0) > 0 else -1 %}
+      <tr>
+        <td>#{{ p.id }}<br><small>Order #{{ p.order_id or '—' }}</small></td>
+        <td><code class="link-code">{{ p.url or ('/sub/' ~ p.token) }}</code></td>
+        <td>{{ p.traffic_gb }} GB<br><small style="color:var(--txt3)">مصرف: {{ pct }}%</small></td>
+        <td>{{ p.created_at[:16] }}<br><small style="color:var(--txt3)">{{ dl }} روز باقی</small></td>
+        <td>
+          {% for n in p.nodes %}
+          <span class="badge {{ 'b-green' if n.is_active else 'b-red' }}">{{ n.node_label or n.server_name }} #{{ n.inbound_id }}</span>
+          {% endfor %}
+        </td>
+        <td>{% if p.is_active %}<span class="badge b-green">فعال</span>{% else %}<span class="badge b-red">غیرفعال</span>{% endif %}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="6" style="text-align:center;color:var(--txt3)">سابی برای این کاربر ثبت نشده است.</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="detail-section">
+  <div class="sec-hd"><span class="sec-title">🔑 کانفیگ‌های عادی ({{ configs|length }})</span></div>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>ایمیل</th><th>سرور</th><th>حجم</th><th>تاریخ</th><th>UUID</th><th>وضعیت</th></tr></thead>
+      <tbody>
+      {% for c in configs %}
+      {% set dl = (((c.expire_timestamp or 0) - now_ts * 1000) // 86400000) if (c.expire_timestamp or 0) > 0 else -1 %}
+      <tr>
+        <td><code>{{ c.email }}</code></td>
+        <td>{{ c.server_name }}</td>
+        <td>{{ c.traffic_gb }} GB</td>
+        <td>{{ c.created_at[:16] }}<br><small style="color:var(--txt3)">{{ dl }} روز باقی</small></td>
+        <td><code class="link-code">{{ c.uuid }}</code></td>
+        <td>{% if c.is_active %}<span class="badge b-green">فعال</span>{% else %}<span class="badge b-red">غیرفعال</span>{% endif %}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="6" style="text-align:center;color:var(--txt3)">کانفیگ عادی ندارد.</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="detail-section">
+  <div class="sec-hd"><span class="sec-title">💳 سفارش‌ها ({{ orders|length }})</span></div>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>#</th><th>عنوان</th><th>مبلغ</th><th>حجم/مدت</th><th>نوع</th><th>وضعیت</th><th>تاریخ</th></tr></thead>
+      <tbody>
+      {% for o in orders %}
+      <tr>
+        <td>#{{ o.id }}</td>
+        <td>{{ o.pkg_name }}</td>
+        <td>{{ "{:,}".format(o.price or 0) }} تومان</td>
+        <td>{{ o.traffic_gb }} GB / {{ o.duration_days }} روز</td>
+        <td>{% if o.renew_sub_profile_id %}تمدید ساب{% elif o.renew_config_id %}تمدید کانفیگ{% elif o.server_id == 0 and o.config_email %}ساب{% else %}کانفیگ{% endif %}</td>
+        <td>{{ o.status }}</td>
+        <td>{{ o.created_at[:16] }}{% if o.approved_at %}<br><small style="color:var(--txt3)">تایید: {{ o.approved_at[:16] }}</small>{% endif %}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="7" style="text-align:center;color:var(--txt3)">سفارشی ثبت نشده است.</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

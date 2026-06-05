@@ -21,7 +21,7 @@
   {% set dl = ((exp - now_ts * 1000) // 86400000) if exp > 0 else -1 %}
   <tr id="cfg-row-{{ c.id }}">
     <td><code style="font-size:.75rem;color:var(--txt2)">{{ c.email }}</code></td>
-    <td style="font-size:.82rem">{{ c.full_name or '—' }}</td>
+    <td style="font-size:.82rem"><a href="/{{ S }}/users/{{ c.user_id }}">{{ c.full_name or '—' }}</a></td>
     <td style="font-size:.8rem">{{ c.server_name }}</td>
     <td style="font-size:.78rem;color:var(--txt2)">{{ c.history_count }} مسیر | {{ c.history_servers|join("، ") }}</td>
     <td>{{ c.traffic_gb }} GB</td>

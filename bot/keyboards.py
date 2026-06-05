@@ -148,6 +148,25 @@ def renew_options_kb(cid: int) -> InlineKeyboardMarkup:
     return b.as_markup()
 
 
+def subscription_detail_kb(profile_id: int, sub_url: str = "") -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    copy_btn = _copy_text_button("📋 کپی لینک ساب", sub_url, style="primary")
+    if copy_btn:
+        b.row(copy_btn)
+    _button(b, text="♻️ تمدید ساب", callback_data=f"sub_renew:{profile_id}", style="success")
+    _button(b, text="🗑️ حذف ساب", callback_data=f"sub_del:{profile_id}", style="danger")
+    b.adjust(1)
+    return b.as_markup()
+
+
+def subscription_delete_confirm_kb(profile_id: int) -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    _button(b, text="✅ بله، حذف شود", callback_data=f"sub_del_do:{profile_id}", style="danger")
+    _button(b, text="❌ منصرف شدم", callback_data=f"sub_show:{profile_id}", style="primary")
+    b.adjust(1)
+    return b.as_markup()
+
+
 def servers_kb(servers: List[Dict], cb_prefix: str, extra_data: str = "") -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
     for s in servers:

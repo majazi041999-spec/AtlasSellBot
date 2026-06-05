@@ -353,6 +353,55 @@ async def set_nodes_enabled(profile_id: int, enabled: bool):
             await cli.close()
 
 
+async def renew_subscription_profile(profile: Dict, traffic_gb: float, duration_days: int) -> Dict:
+    nodes = await get_subscription_nodes(profile["id"])
+    now_ms = int(time.time() * 1000)
+    base_expire = max(int(profile.get("expire_timestamp") or 0), now_ms)
+    new_expire_ms = base_expire + int(duration_days) * 86400000 if int(duration_days) > 0 else 0
+    ok_count = 0
+    failures = []
+    for node in nodes:
+        cli = XUIClient(node["server_url"], node["srv_user"], node["srv_pass"], node.get("sub_path") or "", node.get("srv_api_token", ""))
+        try:
+            ok = await cli.update_client(node["inbound_id"], node["uuid"], node["email"], traffic_gb, new_expire_ms, True)
+            if ok:
+                await cli.reset_client_traffic(node["inbound_id"], node["email"])
+                await update_subscription_node(node["id"], is_active=1, last_used_bytes=0)
+                ok_count += 1
+            else:
+                failures.append(f"{node.get('server_name') or node.get('server_id')}#{node.get('inbound_id')}")
+        finally:
+            await cli.close()
+    if ok_count <= 0:
+        return {"ok": False, "error": "no_nodes_updated:" + ",".join(failures[:6])}
+    await update_subscription_profile(
+        profile["id"],
+        traffic_gb=float(traffic_gb),
+        duration_days=int(duration_days),
+        expire_timestamp=new_expire_ms,
+        used_bytes=0,
+        is_active=1,
+    )
+    return {"ok": True, "nodes": ok_count, "expire_ms": new_expire_ms}
+
+
+async def delete_subscription_profile_remote(profile_id: int) -> Dict:
+    nodes = await get_subscription_nodes(profile_id)
+    deleted = failed = 0
+    for node in nodes:
+        cli = XUIClient(node["server_url"], node["srv_user"], node["srv_pass"], node.get("sub_path") or "", node.get("srv_api_token", ""))
+        try:
+            ok = await cli.delete_client(node["inbound_id"], node["uuid"], node.get("email", ""))
+            deleted += 1 if ok else 0
+            failed += 0 if ok else 1
+        except Exception:
+            failed += 1
+        finally:
+            await cli.close()
+    await delete_subscription_profile(profile_id)
+    return {"ok": True, "deleted": deleted, "failed": failed}
+
+
 async def sync_active_profiles(limit: int = 100) -> int:
     checked = 0
     for profile in await get_active_subscription_profiles(limit):

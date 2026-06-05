@@ -1,0 +1,75 @@
+{% extends "base.html" %}
+{% block title %}ساب‌ها{% endblock %}
+{% block topbar_title %}🧬 مدیریت سابسکریپشن‌ها{% endblock %}
+
+{% block content %}
+<div class="sec-hd">
+  <span class="sec-title">کل سابسکریپشن‌ها: {{ total }}</span>
+  <div style="display:flex;gap:8px;flex-wrap:wrap">
+    <a class="btn btn-outline btn-sm" href="/{{ S }}/subs">⚙️ تنظیمات و نودها</a>
+    <div class="search-box"><input type="text" id="subSearch" class="form-control" placeholder="جستجو..." oninput="filterTable('subSearch','subTable')"></div>
+  </div>
+</div>
+
+<div class="table-wrap">
+<table id="subTable">
+  <thead>
+    <tr><th>#</th><th>کاربر</th><th>سرویس</th><th>مصرف</th><th>تاریخ</th><th>نود</th><th>لینک</th><th>وضعیت</th><th>عملیات</th></tr>
+  </thead>
+  <tbody>
+  {% for p in profiles %}
+  {% set total_bytes = (p.traffic_gb|float * 1073741824)|int %}
+  {% set pct = ((p.used_bytes or 0) * 100 // total_bytes) if total_bytes > 0 else 0 %}
+  {% set dl = (((p.expire_timestamp or 0) - now_ts * 1000) // 86400000) if (p.expire_timestamp or 0) > 0 else -1 %}
+  <tr id="sub-row-{{ p.id }}">
+    <td>#{{ p.id }}<br><small style="color:var(--txt3)">Order #{{ p.order_id or '—' }}</small></td>
+    <td>
+      <a href="/{{ S }}/users/{{ p.user_id }}" style="font-weight:800">{{ p.full_name or '—' }}</a><br>
+      <small style="color:var(--txt3)">@{{ p.username or '—' }} | {{ p.telegram_id }}</small>
+    </td>
+    <td><code style="font-size:.72rem">{{ p.email }}</code><br><small style="color:var(--txt3)">{{ p.order_name or '—' }}</small></td>
+    <td>{{ p.traffic_gb }} GB<br><small style="color:var(--txt3)">مصرف: {{ pct }}%</small></td>
+    <td>
+      {% if dl < 0 %}<span class="badge b-blue">نامحدود</span>
+      {% elif dl == 0 %}<span class="badge b-red">منقضی</span>
+      {% elif dl <= 3 %}<span class="badge b-yellow">{{ dl }} روز</span>
+      {% else %}<span class="badge b-green">{{ dl }} روز</span>{% endif %}
+      <br><small style="color:var(--txt3)">{{ p.created_at[:16] }}</small>
+    </td>
+    <td>{{ p.active_node_count or 0 }}/{{ p.node_count or 0 }}</td>
+    <td><code style="font-size:.7rem;direction:ltr;display:block;max-width:260px;white-space:normal">{{ p.url }}</code></td>
+    <td>{% if p.is_active %}<span class="badge b-green">فعال</span>{% else %}<span class="badge b-red">غیرفعال</span>{% endif %}</td>
+    <td style="display:flex;gap:6px;flex-wrap:wrap">
+      <button class="btn btn-xs btn-outline" onclick="toggleSub({{ p.id }})">{{ 'غیرفعال' if p.is_active else 'فعال' }}</button>
+      <button class="btn btn-xs btn-danger" onclick="deleteSub({{ p.id }})">حذف</button>
+    </td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+
+<div class="card pagination-wrap" style="margin-top:12px;display:flex;justify-content:space-between;align-items:center">
+  <span style="color:var(--txt3)">صفحه {{ page }} از {{ total_pages }}</span>
+  <div style="display:flex;gap:8px">
+    {% if page > 1 %}<a class="btn btn-outline btn-sm" href="/{{ S }}/subs/profiles?page={{ page-1 }}">◀️ قبلی</a>{% endif %}
+    {% if page < total_pages %}<a class="btn btn-outline btn-sm" href="/{{ S }}/subs/profiles?page={{ page+1 }}">بعدی ▶️</a>{% endif %}
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+async function toggleSub(id){
+  const r = await api(`/${S}/subs/profiles/${id}/toggle`);
+  if(r.success){ toast('وضعیت ساب تغییر کرد','success'); setTimeout(()=>location.reload(),700); }
+  else toast('خطا در تغییر وضعیت','error');
+}
+async function deleteSub(id){
+  if(!confirm('ساب از همه نودها و دیتابیس حذف شود؟')) return;
+  const r = await api(`/${S}/subs/profiles/${id}/delete`);
+  if(r.success){ toast(`حذف شد | نود موفق: ${r.deleted || 0} | خطا: ${r.failed || 0}`,'success'); setTimeout(()=>location.reload(),900); }
+  else toast('خطا در حذف ساب','error');
+}
+</script>
+{% endblock %}

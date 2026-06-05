@@ -29,10 +29,17 @@ from core.database import (
     snapshot_daily_report,
     get_recent_daily_reports,
     format_daily_report,
+    get_subscription_profile,
 )
 from core.xui_api import XUIClient, fmt_bytes, days_left, expiry_ms_from_days
 from core.qr import build_qr_image
-from core.multi_subscription import create_profile_for_order, multi_sub_enabled_for_single_purchase, subscription_error_message
+from core.multi_subscription import (
+    create_profile_for_order,
+    multi_sub_enabled_for_single_purchase,
+    subscription_error_message,
+    renew_subscription_profile,
+    subscription_url,
+)
 from bot.keyboards import (
     admin_menu, order_review_kb, order_server_select_kb,
     admin_configs_kb, adm_config_detail_kb, confirm_kb, packages_kb, servers_kb,
@@ -347,6 +354,9 @@ async def approve_order_start(cb: CallbackQuery):
             return
         await _do_approve(cb, oid, int(cfg["server_id"]))
         return
+    if int(order.get("renew_sub_profile_id") or 0) > 0:
+        await _do_approve(cb, oid, 0)
+        return
 
     servers = [sv for sv in await get_servers() if await server_has_capacity(sv["id"])]
     if not servers:
@@ -507,6 +517,52 @@ async def _do_renew(cb: CallbackQuery, order: dict) -> bool:
     return True
 
 
+async def _do_renew_subscription(cb: CallbackQuery, order: dict) -> bool:
+    profile_id = int(order.get("renew_sub_profile_id") or 0)
+    profile = await get_subscription_profile(profile_id)
+    if not profile:
+        await update_order(order["id"], status="receipt_submitted")
+        await cb.message.answer("❌ سابسکریپشن برای تمدید پیدا نشد.", parse_mode=None)
+        return False
+
+    duration = int(order.get("duration_days") or profile.get("duration_days") or 0)
+    traffic_gb = float(order.get("traffic_gb") or profile.get("traffic_gb") or 0)
+    result = await renew_subscription_profile(profile, traffic_gb, duration)
+    if not result.get("ok"):
+        await update_order(order["id"], status="receipt_submitted")
+        await cb.message.answer(f"❌ تمدید ساب انجام نشد.\nجزئیات: {result.get('error') or '-'}", parse_mode=None)
+        return False
+
+    sub_url = await subscription_url(profile["token"])
+    await update_order(
+        order["id"],
+        status="approved",
+        server_id=0,
+        config_email=profile.get("email") or f"sub:{profile_id}",
+        inbound_id=0,
+        approved_at=datetime.now().isoformat(),
+    )
+    try:
+        await cb.bot.send_message(
+            order["telegram_id"],
+            "✅ سابسکریپشن شما تمدید شد.\n\n"
+            f"حجم جدید: {traffic_gb} GB\n"
+            f"مدت تمدید: {duration} روز\n"
+            f"نودهای تمدیدشده: {result.get('nodes', 0)}\n\n"
+            f"لینک ساب:\n{sub_url}",
+            parse_mode=None,
+            reply_markup=config_links_kb("", sub_url),
+        )
+    except Exception:
+        pass
+    try:
+        await cb.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+    await cb.message.answer("✅ سابسکریپشن تمدید شد و به کاربر اطلاع داده شد.", parse_mode=None)
+    return True
+
+
 async def _do_approve(cb: CallbackQuery, oid: int, sid: int):
     try:
         return await _do_approve_impl(cb, oid, sid)
@@ -543,6 +599,9 @@ async def _do_approve_impl(cb: CallbackQuery, oid: int, sid: int):
     if int(order.get("renew_config_id") or 0) > 0:
         await cb.answer("⏳ در حال تمدید سرویس...")
         return await _do_renew(cb, order)
+    if int(order.get("renew_sub_profile_id") or 0) > 0:
+        await cb.answer("⏳ در حال تمدید سابسکریپشن...")
+        return await _do_renew_subscription(cb, order)
 
     await cb.answer("⏳ در حال ساخت سرویس...")
 

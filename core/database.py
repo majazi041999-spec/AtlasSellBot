@@ -67,6 +67,7 @@ CREATE TABLE IF NOT EXISTS orders (
     notes TEXT,
     custom_config_name TEXT DEFAULT '',
     renew_config_id INTEGER DEFAULT 0,
+    renew_sub_profile_id INTEGER DEFAULT 0,
     FOREIGN KEY(user_id) REFERENCES users(id),
     FOREIGN KEY(package_id) REFERENCES packages(id)
 );
@@ -286,6 +287,7 @@ async def _ensure_columns(db):
             ("bulk_each_gb", "REAL DEFAULT 0"),
             ("custom_config_name", "TEXT DEFAULT ''"),
             ("renew_config_id", "INTEGER DEFAULT 0"),
+            ("renew_sub_profile_id", "INTEGER DEFAULT 0"),
             ("referral_bonus_applied", "INTEGER DEFAULT 0"),
         ],
         "daily_reports": [
@@ -573,6 +575,24 @@ async def get_user_by_id(uid: int) -> Optional[Dict]:
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         async with db.execute("SELECT * FROM users WHERE id=?", (uid,)) as c:
+            r = await c.fetchone()
+            return dict(r) if r else None
+
+
+async def find_user(query: str) -> Optional[Dict]:
+    q = (query or "").strip().lstrip("@")
+    if not q:
+        return None
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        if q.isdigit():
+            async with db.execute("SELECT * FROM users WHERE id=? OR telegram_id=? LIMIT 1", (int(q), int(q))) as c:
+                r = await c.fetchone()
+                return dict(r) if r else None
+        async with db.execute(
+            "SELECT * FROM users WHERE lower(username)=lower(?) OR full_name LIKE ? ORDER BY id DESC LIMIT 1",
+            (q, f"%{q}%"),
+        ) as c:
             r = await c.fetchone()
             return dict(r) if r else None
 
@@ -973,6 +993,25 @@ async def get_user_orders(user_id: int) -> List[Dict]:
         """, (user_id,)) as c:
             return [dict(r) for r in await c.fetchall()]
 
+
+async def get_user_orders_full(user_id: int, limit: int = 200) -> List[Dict]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute("""
+            SELECT o.*, COALESCE(NULLIF(o.custom_name,''), p.name) as pkg_name,
+                   COALESCE(NULLIF(o.custom_traffic_gb,0), p.traffic_gb) as traffic_gb,
+                   COALESCE(NULLIF(o.custom_duration_days,0), p.duration_days) as duration_days,
+                   COALESCE(NULLIF(o.custom_price,0), p.price) as price,
+                   s.name AS server_name
+            FROM orders o
+            JOIN packages p ON p.id=o.package_id
+            LEFT JOIN servers s ON s.id=o.server_id
+            WHERE o.user_id=?
+            ORDER BY o.created_at DESC
+            LIMIT ?
+        """, (int(user_id), max(1, int(limit or 200)))) as c:
+            return [dict(r) for r in await c.fetchall()]
+
 async def has_previous_purchase(user_id: int) -> bool:
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute(
@@ -1230,6 +1269,48 @@ async def get_user_subscription_profiles(user_id: int) -> List[Dict]:
             return [dict(r) for r in await c.fetchall()]
 
 
+async def get_user_configs_full(user_id: int) -> List[Dict]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute("""
+            SELECT c.*, s.name AS server_name, s.url AS server_url
+            FROM configs c
+            JOIN servers s ON s.id=c.server_id
+            WHERE c.user_id=?
+            ORDER BY c.is_active DESC, c.id DESC
+        """, (int(user_id),)) as c:
+            return [dict(r) for r in await c.fetchall()]
+
+
+async def get_subscription_profiles_full(user_id: int | None = None, limit: int = 300) -> List[Dict]:
+    where = ""
+    params: list = []
+    if user_id is not None:
+        where = "WHERE sp.user_id=?"
+        params.append(int(user_id))
+    params.append(max(1, int(limit or 300)))
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            f"""SELECT sp.*, u.telegram_id, u.username, u.full_name,
+                       COALESCE(NULLIF(o.custom_name,''), p.name) AS order_name,
+                       COALESCE(NULLIF(o.custom_price,0), p.price, 0) AS order_price,
+                       COUNT(n.id) AS node_count,
+                       SUM(CASE WHEN n.is_active=1 THEN 1 ELSE 0 END) AS active_node_count
+                FROM subscription_profiles sp
+                JOIN users u ON u.id=sp.user_id
+                LEFT JOIN orders o ON o.id=sp.order_id
+                LEFT JOIN packages p ON p.id=o.package_id
+                LEFT JOIN subscription_nodes n ON n.profile_id=sp.id
+                {where}
+                GROUP BY sp.id
+                ORDER BY sp.is_active DESC, sp.id DESC
+                LIMIT ?""",
+            tuple(params),
+        ) as c:
+            return [dict(r) for r in await c.fetchall()]
+
+
 async def get_subscription_profile(pid: int) -> Optional[Dict]:
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
@@ -1331,7 +1412,7 @@ async def build_daily_report(gregorian_date: str | None = None) -> Dict:
             "jalali_display": jdisplay,
             "sales_amount": int(sales_amount or 0),
             "orders_approved": int(await q("SELECT COUNT(*) FROM orders WHERE status='approved' AND date(approved_at)=?", gdate) or 0),
-            "renewals": int(await q("SELECT COUNT(*) FROM orders WHERE status='approved' AND COALESCE(renew_config_id,0)>0 AND date(approved_at)=?", gdate) or 0),
+            "renewals": int(await q("SELECT COUNT(*) FROM orders WHERE status='approved' AND (COALESCE(renew_config_id,0)>0 OR COALESCE(renew_sub_profile_id,0)>0) AND date(approved_at)=?", gdate) or 0),
             "new_configs": int(await q("SELECT COUNT(*) FROM configs WHERE date(created_at)=?", gdate) or 0),
             "active_configs": int(await q("SELECT COUNT(*) FROM configs WHERE is_active=1") or 0),
             "expired_configs": int(await q("SELECT COUNT(*) FROM configs WHERE COALESCE(expire_timestamp,0)>0 AND expire_timestamp<=?", now_ms) or 0),

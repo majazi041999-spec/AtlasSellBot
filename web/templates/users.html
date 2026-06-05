@@ -10,13 +10,19 @@
     <button class="btn btn-sm btn-outline" type="submit">👑 انتقال ادمین اصلی</button>
   </form>
 </div>
-<div class="search-box" style="margin:8px 0 12px">
-  <input type="text" id="usrSearch" class="form-control" placeholder="جستجو..." oninput="filterTable('usrSearch','usrTable')">
+<div style="display:flex;gap:8px;flex-wrap:wrap;margin:8px 0 12px">
+  <div class="search-box" style="flex:1;min-width:220px">
+    <input type="text" id="usrSearch" class="form-control" placeholder="جستجو در همین صفحه..." oninput="filterTable('usrSearch','usrTable')">
+  </div>
+  <form action="/{{ S }}/users/find" method="GET" style="display:flex;gap:6px;min-width:280px;flex:1">
+    <input type="text" name="q" class="form-control" placeholder="جستجوی مستقیم با ID، username یا نام">
+    <button class="btn btn-outline" type="submit">🔎 باز کردن کاربر</button>
+  </form>
 </div>
 
 <style>
 .wholesale-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin:12px 0}
-.wholesale-stat{background:var(--bg2);border:1px solid var(--line);border-radius:8px;padding:12px}
+.wholesale-stat{background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:12px}
 .wholesale-stat b{display:block;font-size:1.35rem;margin-top:4px}
 .wholesale-panel{margin:12px 0 14px}
 .wholesale-actions{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
@@ -45,7 +51,7 @@
       <tbody>
       {% for u in wholesale_users %}
       <tr>
-        <td><strong>{{ u.full_name or '—' }}</strong><br><span style="color:var(--txt3);font-size:.74rem">@{{ u.username or '—' }}</span><br><code>{{ u.telegram_id }}</code></td>
+        <td><a href="/{{ S }}/users/{{ u.id }}"><strong>{{ u.full_name or '—' }}</strong></a><br><span style="color:var(--txt3);font-size:.74rem">@{{ u.username or '—' }}</span><br><code>{{ u.telegram_id }}</code></td>
         <td>{% if u.is_wholesale %}<span class="badge b-green">فعال</span>{% else %}<span class="badge b-blue">در انتظار بررسی</span>{% endif %}</td>
         <td style="font-size:.78rem;color:var(--txt2)">سفارش: {{ u.business.approved_orders }}<br>فعال: {{ u.business.active_configs }} / {{ u.business.total_configs }}<br>کیف پول: {{ "{:,}".format(u.balance_toman or 0) }}</td>
         <td>
@@ -74,7 +80,7 @@
   {% for u in users %}
   <tr id="usr-row-{{ u.id }}">
     <td>{{ u.id }}</td>
-    <td><strong>{{ u.full_name or '—' }}</strong><br><span style='color:var(--txt3);font-size:.74rem'>@{{ u.username or '—' }}</span><br><code style='font-size:.72rem'>{{ u.telegram_id }}</code></td>
+    <td><a href="/{{ S }}/users/{{ u.id }}"><strong>{{ u.full_name or '—' }}</strong></a><br><span style='color:var(--txt3);font-size:.74rem'>@{{ u.username or '—' }}</span><br><code style='font-size:.72rem'>{{ u.telegram_id }}</code></td>
     <td>
       {% if u.is_wholesale %}<span class="badge b-green">✅ عمده‌فروش</span>{% else %}<span class="badge b-yellow">— عادی</span>{% endif %}
       {% if u.wholesale_request_pending %}<br><span class="badge b-blue">درخواست در انتظار</span>{% endif %}
@@ -118,7 +124,7 @@
     </td>
     <td>{% if u.is_blocked %}<span class="badge b-red">🔴 بلاک</span>{% else %}<span class="badge b-green">🟢 فعال</span>{% endif %}</td>
     <td style="color:var(--txt3);font-size:.75rem">{{ u.created_at[:10] }}</td>
-    <td><button class="btn btn-outline btn-xs" onclick="toggleBlock({{ u.id }}, this)">{{ '🔓 آنبلاک' if u.is_blocked else '🔒 بلاک' }}</button></td>
+    <td style="display:flex;gap:6px;flex-wrap:wrap"><a class="btn btn-outline btn-xs" href="/{{ S }}/users/{{ u.id }}">پرونده</a><button class="btn btn-outline btn-xs" onclick="toggleBlock({{ u.id }}, this)">{{ '🔓 آنبلاک' if u.is_blocked else '🔒 بلاک' }}</button></td>
   </tr>
   {% endfor %}
   </tbody>

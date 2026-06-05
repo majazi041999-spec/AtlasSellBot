@@ -54,11 +54,12 @@ from core.database import (
     get_user_subscription_profiles,
     get_subscription_profile_by_token,
     get_subscription_nodes,
+    get_subscription_profile,
 )
 from core.xui_api import XUIClient, fmt_bytes, days_left, expiry_ms_from_days
 from core.texts import get_text
 from core.qr import build_qr_image
-from core.multi_subscription import subscription_url, sync_profile_usage
+from core.multi_subscription import subscription_url, sync_profile_usage, delete_subscription_profile_remote
 from bot.middlewares.channel_required import ChannelRequiredMiddleware
 
 from bot.keyboards import (
@@ -70,6 +71,8 @@ from bot.keyboards import (
     renew_options_kb,
     config_links_kb,
     configs_kb,
+    subscription_detail_kb,
+    subscription_delete_confirm_kb,
     servers_kb,
     custom_name_kb,
     wholesale_request_kb,
@@ -148,14 +151,14 @@ async def _send_subscription_status(target, profile: dict):
     )
 
     if isinstance(target, Message):
-        await target.answer(text, parse_mode=None, reply_markup=config_links_kb("", sub_url))
+        await target.answer(text, parse_mode=None, reply_markup=subscription_detail_kb(int(profile["id"]), sub_url))
         try:
             ch = await get_setting("channel_username", "AtlasChannel")
             await target.answer_photo(_qr_input_file(sub_url, ch), caption="QR سابسکریپشن چندسروره", parse_mode=None)
         except Exception:
             pass
     else:
-        await target.message.answer(text, parse_mode=None, reply_markup=config_links_kb("", sub_url))
+        await target.message.answer(text, parse_mode=None, reply_markup=subscription_detail_kb(int(profile["id"]), sub_url))
 
 
 async def _is_channel_member(msg_or_cb) -> bool:
@@ -649,6 +652,85 @@ async def cfg_delete_do(cb: CallbackQuery):
 
     await delete_config_by_id(cid)
     await cb.message.edit_text("✅ سرویس از سرور و حساب شما حذف شد.", parse_mode=None)
+    await cb.answer()
+
+
+async def _owned_subscription_for_user(user_id: int, profile_id: int) -> dict | None:
+    profile = await get_subscription_profile(profile_id)
+    if not profile or int(profile.get("user_id") or 0) != int(user_id):
+        return None
+    return profile
+
+
+@router.callback_query(F.data.startswith("sub_show:"))
+async def sub_show(cb: CallbackQuery):
+    user = await get_or_create_user(cb.from_user.id, cb.from_user.username, cb.from_user.full_name)
+    pid = int(cb.data.split(":")[1])
+    profile = await _owned_subscription_for_user(user["id"], pid)
+    if not profile:
+        await cb.answer("این ساب برای شما پیدا نشد.", show_alert=True)
+        return
+    await _send_subscription_status(cb, profile)
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("sub_del:"))
+async def sub_delete_confirm(cb: CallbackQuery):
+    user = await get_or_create_user(cb.from_user.id, cb.from_user.username, cb.from_user.full_name)
+    pid = int(cb.data.split(":")[1])
+    profile = await _owned_subscription_for_user(user["id"], pid)
+    if not profile:
+        await cb.answer("این ساب برای شما پیدا نشد.", show_alert=True)
+        return
+    await cb.message.answer(
+        "🗑️ حذف سابسکریپشن\n\n"
+        f"شناسه سرویس: {profile.get('email') or profile.get('token')}\n\n"
+        "با تایید، همه نودهای این ساب از سرورها و از حساب شما حذف می‌شود.",
+        reply_markup=subscription_delete_confirm_kb(pid),
+        parse_mode=None,
+    )
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("sub_del_do:"))
+async def sub_delete_do(cb: CallbackQuery):
+    user = await get_or_create_user(cb.from_user.id, cb.from_user.username, cb.from_user.full_name)
+    pid = int(cb.data.split(":")[1])
+    profile = await _owned_subscription_for_user(user["id"], pid)
+    if not profile:
+        await cb.answer("این ساب برای شما پیدا نشد.", show_alert=True)
+        return
+    result = await delete_subscription_profile_remote(pid)
+    await cb.message.edit_text(
+        f"✅ سابسکریپشن حذف شد.\nنودهای حذف‌شده: {result.get('deleted', 0)} | خطا: {result.get('failed', 0)}",
+        parse_mode=None,
+    )
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("sub_renew:"))
+async def sub_renew_same(cb: CallbackQuery):
+    user = await get_or_create_user(cb.from_user.id, cb.from_user.username, cb.from_user.full_name)
+    pid = int(cb.data.split(":")[1])
+    profile = await _owned_subscription_for_user(user["id"], pid)
+    if not profile:
+        await cb.answer("این ساب برای شما پیدا نشد.", show_alert=True)
+        return
+    traffic_gb = float(profile.get("traffic_gb") or 0)
+    duration_days = max(int(profile.get("duration_days") or 0), RENEWAL_MIN_DAYS)
+    price = await _calc_renew_price(user["id"], traffic_gb, duration_days)
+    oid = await create_custom_order(
+        user["id"],
+        f"تمدید ساب {profile.get('email') or pid}",
+        traffic_gb,
+        duration_days,
+        price,
+        notes=f"renew_sub:{pid};renew_traffic:{traffic_gb:g};renew_days:{duration_days}",
+    )
+    await update_order(oid, renew_sub_profile_id=pid)
+    text = await _payment_text(oid, "تمدید سابسکریپشن چندسروره", traffic_gb, duration_days, price)
+    text += "\n\nبعد از تایید، همین لینک ساب با حجم و مدت جدید تمدید می‌شود و مصرف آن ریست می‌شود."
+    await cb.message.answer(text, reply_markup=payment_kb(oid), parse_mode="Markdown")
     await cb.answer()
 
 
@@ -1148,6 +1230,14 @@ async def pay_with_wallet(cb: CallbackQuery):
             await cb.message.answer("سرویس برای تمدید پیدا نشد و مبلغ به کیف پول شما برگشت داده شد.")
             return
         server_id = int(cfg["server_id"])
+    elif int(order.get("renew_sub_profile_id") or 0) > 0:
+        profile = await get_subscription_profile(int(order["renew_sub_profile_id"]))
+        if not profile:
+            await add_user_balance(user["id"], price, kind="refund", note=f"sub_renew_failed:{oid}", actor_telegram_id=0)
+            await update_order(oid, status="pending_payment")
+            await cb.message.answer("سابسکریپشن برای تمدید پیدا نشد و مبلغ به کیف پول شما برگشت داده شد.")
+            return
+        server_id = 0
     else:
         servers = [sv for sv in await get_available_servers()]
         if not servers:

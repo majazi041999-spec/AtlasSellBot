@@ -49,6 +49,9 @@ from core.database import (
     delete_configs_by_base_email,
     get_all_orders,
     get_all_users,
+    find_user,
+    get_user_orders_full,
+    get_user_configs_full,
     get_user_business_stats,
     get_recent_receipt_transactions,
     add_user_balance,
@@ -74,6 +77,9 @@ from core.database import (
     get_stats,
     get_subscription_node_config,
     get_subscription_node_configs,
+    get_subscription_profile,
+    get_subscription_profiles_full,
+    get_subscription_nodes,
     subscription_node_config_status,
     count_active_subscription_nodes_by_target,
     init_db,
@@ -109,6 +115,9 @@ from core.multi_subscription import (
     create_profile_for_order,
     multi_sub_enabled_for_single_purchase,
     subscription_error_message,
+    renew_subscription_profile,
+    subscription_url,
+    delete_subscription_profile_remote,
 )
 
 logger = logging.getLogger(__name__)
@@ -630,6 +639,52 @@ async def subscriptions_page(request: Request):
     )
 
 
+@app.get(f"/{S}/subs/profiles", response_class=HTMLResponse)
+async def subscription_profiles_page(request: Request):
+    if not _auth(request):
+        return _redir_login()
+    page = max(1, int(request.query_params.get("page", "1") or 1))
+    per_page = 40
+    profiles_all = await get_subscription_profiles_full(limit=1000)
+    for profile in profiles_all:
+        try:
+            profile["url"] = await subscription_url(profile["token"])
+        except Exception:
+            profile["url"] = f"/sub/{profile['token']}"
+    total = len(profiles_all)
+    total_pages = max(1, (total + per_page - 1) // per_page)
+    page = min(page, total_pages)
+    profiles = profiles_all[(page - 1) * per_page: page * per_page]
+    return _templates.TemplateResponse(
+        "subscription_profiles.html",
+        await _ctx_ui(request, profiles=profiles, total=total, page=page, total_pages=total_pages, active="subs"),
+    )
+
+
+@app.post(f"/{S}/subs/profiles/{{profile_id}}/toggle")
+async def subscription_profile_toggle(request: Request, profile_id: int):
+    if not _auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    profile = await get_subscription_profile(profile_id)
+    if not profile:
+        return JSONResponse({"success": False, "error": "not found"}, status_code=404)
+    from core.database import update_subscription_profile
+    next_active = 0 if int(profile.get("is_active") or 0) else 1
+    await update_subscription_profile(profile_id, is_active=next_active)
+    return JSONResponse({"success": True, "is_active": bool(next_active)})
+
+
+@app.post(f"/{S}/subs/profiles/{{profile_id}}/delete")
+async def subscription_profile_delete(request: Request, profile_id: int):
+    if not _auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    profile = await get_subscription_profile(profile_id)
+    if not profile:
+        return JSONResponse({"success": False, "error": "not found"}, status_code=404)
+    result = await delete_subscription_profile_remote(profile_id)
+    return JSONResponse({"success": True, **result})
+
+
 @app.post(f"/{S}/subs/settings")
 async def subscriptions_settings_save(
     request: Request,
@@ -911,6 +966,44 @@ async def _order_approve_web_impl(request: Request, oid: int):
                 await bot.session.close()
         return RedirectResponse(f"/{S}/orders", status_code=302)
 
+    if int(order.get("renew_sub_profile_id") or 0) > 0:
+        profile = await get_subscription_profile(int(order["renew_sub_profile_id"]))
+        if not profile:
+            await update_order(oid, status="receipt_submitted")
+            return RedirectResponse(f"/{S}/orders", status_code=302)
+        duration = int(order.get("duration_days") or profile.get("duration_days") or 0)
+        traffic_gb = float(order.get("traffic_gb") or profile.get("traffic_gb") or 0)
+        result = await renew_subscription_profile(profile, traffic_gb, duration)
+        if not result.get("ok"):
+            await update_order(oid, status="receipt_submitted", notes=((order.get("notes") or "") + f"\nsub_renew_error={result.get('error') or ''}").strip())
+            return RedirectResponse(f"/{S}/orders", status_code=302)
+        sub_url = await subscription_url(profile["token"])
+        await update_order(
+            oid,
+            status="approved",
+            server_id=0,
+            config_email=profile.get("email") or f"sub:{profile['id']}",
+            inbound_id=0,
+            approved_at=datetime.now().isoformat(),
+        )
+        await _clear_review_buttons("order", oid)
+        if BOT_TOKEN and len(BOT_TOKEN) > 20:
+            bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.MARKDOWN))
+            try:
+                await bot.send_message(
+                    order["telegram_id"],
+                    "✅ سابسکریپشن شما تمدید شد.\n\n"
+                    f"حجم جدید: {traffic_gb} GB\n"
+                    f"مدت تمدید: {duration} روز\n"
+                    f"نودهای تمدیدشده: {result.get('nodes', 0)}\n\n"
+                    f"لینک ساب:\n{sub_url}",
+                    parse_mode=None,
+                    reply_markup=config_links_kb("", sub_url),
+                )
+            finally:
+                await bot.session.close()
+        return RedirectResponse(f"/{S}/orders", status_code=302)
+
     user = await get_user_by_telegram(order["telegram_id"])
     if not user:
         await update_order(oid, status="receipt_submitted")
@@ -1171,6 +1264,47 @@ async def users_page(request: Request):
             total=total,
             page=page,
             total_pages=total_pages,
+            active="users",
+        ),
+    )
+
+
+@app.get(f"/{S}/users/find")
+async def user_find_page(request: Request, q: str = ""):
+    if not _auth(request):
+        return _redir_login()
+    user = await find_user(q)
+    if user:
+        return RedirectResponse(f"/{S}/users/{user['id']}", status_code=302)
+    return RedirectResponse(f"/{S}/users?not_found=1", status_code=302)
+
+
+@app.get(f"/{S}/users/{{uid}}", response_class=HTMLResponse)
+async def user_detail_page(request: Request, uid: int):
+    if not _auth(request):
+        return _redir_login()
+    user = await get_user_by_id(uid)
+    if not user:
+        return RedirectResponse(f"/{S}/users?not_found=1", status_code=302)
+    orders = await get_user_orders_full(uid, 300)
+    configs = await get_user_configs_full(uid)
+    profiles = await get_subscription_profiles_full(uid, 300)
+    for profile in profiles:
+        profile["nodes"] = await get_subscription_nodes(profile["id"])
+        try:
+            profile["url"] = await subscription_url(profile["token"])
+        except Exception:
+            profile["url"] = ""
+    business = await get_user_business_stats(uid)
+    return _templates.TemplateResponse(
+        "user_detail.html",
+        await _ctx_ui(
+            request,
+            user=user,
+            orders=orders,
+            configs=configs,
+            profiles=profiles,
+            business=business,
             active="users",
         ),
     )
