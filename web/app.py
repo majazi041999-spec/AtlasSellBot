@@ -5,6 +5,8 @@ All CSS/JS is embedded directly in HTML templates.
 
 import logging
 import os
+import re
+import shlex
 import time
 import subprocess
 import uuid
@@ -31,6 +33,7 @@ from core.config import (
     BOT_TOKEN,
     WEB_ADMIN_PASSWORD,
     WEB_ADMIN_USERNAME,
+    WEB_PORT,
     WEB_SECRET_PATH,
 )
 from core.database import (
@@ -264,6 +267,123 @@ async def _send_update_broadcast(build: str) -> int:
     await set_setting("update_broadcast_approved_build", "")
     await set_setting("skipped_update_build", "")
     return sent
+
+
+def _clean_domain(value: str) -> str:
+    domain = (value or "").strip().lower()
+    domain = re.sub(r"^https?://", "", domain)
+    domain = domain.split("/", 1)[0].split(":", 1)[0].strip(".")
+    if not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+", domain):
+        return ""
+    return domain
+
+
+def _atlas_tls_proxy_script(domain: str, email: str, app_port: int, https_port: int) -> str:
+    q_domain = shlex.quote(domain)
+    q_email = shlex.quote(email)
+    q_port = shlex.quote(str(app_port))
+    q_https_port = shlex.quote(str(https_port))
+    q_conf = shlex.quote(f"/etc/nginx/conf.d/atlas-{domain}.conf")
+    q_cert_dir = shlex.quote(f"/etc/ssl/atlas/{domain}")
+    q_fullchain = shlex.quote(f"/etc/ssl/atlas/{domain}/fullchain.cer")
+    q_keyfile = shlex.quote(f"/etc/ssl/atlas/{domain}/{domain}.key")
+    email_arg = f" --accountemail {q_email}" if email else ""
+    return f"""set -e
+DOMAIN={q_domain}
+APP_PORT={q_port}
+HTTPS_PORT={q_https_port}
+WEBROOT=/var/www/atlas-acme
+CONF={q_conf}
+CERT_DIR={q_cert_dir}
+FULLCHAIN={q_fullchain}
+KEYFILE={q_keyfile}
+
+if ! command -v nginx >/dev/null 2>&1; then
+  if command -v apt-get >/dev/null 2>&1; then
+    apt-get update -y
+    DEBIAN_FRONTEND=noninteractive apt-get install -y nginx curl socat ca-certificates
+  else
+    echo "nginx is not installed and apt-get is unavailable" >&2
+    exit 20
+  fi
+fi
+
+mkdir -p "$WEBROOT/.well-known/acme-challenge" "$CERT_DIR"
+cat > "$CONF" <<NGINX_HTTP
+server {{
+    listen 80;
+    server_name $DOMAIN;
+
+    location ^~ /.well-known/acme-challenge/ {{
+        root $WEBROOT;
+        default_type text/plain;
+    }}
+
+    location / {{
+        proxy_pass http://127.0.0.1:$APP_PORT;
+        proxy_http_version 1.1;
+        proxy_set_header Host \\$host;
+        proxy_set_header X-Real-IP \\$remote_addr;
+        proxy_set_header X-Forwarded-For \\$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \\$scheme;
+    }}
+}}
+NGINX_HTTP
+
+nginx -t
+systemctl enable --now nginx >/dev/null 2>&1 || service nginx start >/dev/null 2>&1 || true
+nginx -s reload >/dev/null 2>&1 || systemctl reload nginx >/dev/null 2>&1 || service nginx reload >/dev/null 2>&1 || true
+
+if [ ! -d "$HOME/.acme.sh" ]; then
+  curl https://get.acme.sh | sh
+fi
+ACME="$HOME/.acme.sh/acme.sh"
+if [ ! -x "$ACME" ] && [ -x "/root/.acme.sh/acme.sh" ]; then
+  ACME="/root/.acme.sh/acme.sh"
+fi
+"$ACME" --set-default-ca --server letsencrypt
+"$ACME" --issue -d "$DOMAIN" -w "$WEBROOT" --force{email_arg}
+"$ACME" --install-cert -d "$DOMAIN" --fullchain-file "$FULLCHAIN" --key-file "$KEYFILE" --force
+
+cat > "$CONF" <<NGINX_HTTPS
+server {{
+    listen 80;
+    server_name $DOMAIN;
+
+    location ^~ /.well-known/acme-challenge/ {{
+        root $WEBROOT;
+        default_type text/plain;
+    }}
+
+    location / {{
+        return 301 https://\\$host{"" if https_port == 443 else f":{https_port}"}\\$request_uri;
+    }}
+}}
+
+server {{
+    listen $HTTPS_PORT ssl http2;
+    server_name $DOMAIN;
+
+    ssl_certificate $FULLCHAIN;
+    ssl_certificate_key $KEYFILE;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_session_cache shared:SSL:10m;
+    client_max_body_size 32m;
+
+    location / {{
+        proxy_pass http://127.0.0.1:$APP_PORT;
+        proxy_http_version 1.1;
+        proxy_set_header Host \\$host;
+        proxy_set_header X-Real-IP \\$remote_addr;
+        proxy_set_header X-Forwarded-For \\$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+    }}
+}}
+NGINX_HTTPS
+
+nginx -t
+nginx -s reload >/dev/null 2>&1 || systemctl reload nginx >/dev/null 2>&1 || service nginx reload >/dev/null 2>&1
+"""
 
 
 # ═══════════════════════════════ AUTH ROUTES ════════════════════════
@@ -1235,6 +1355,7 @@ async def settings_page(request: Request):
         "test_account_prefix": await get_setting("test_account_prefix", SETTINGS_DEFAULTS["test_account_prefix"]),
         "panel_domain": await get_setting("panel_domain", ""),
         "cert_email": await get_setting("cert_email", ""),
+        "atlas_tls_https_port": await get_setting("atlas_tls_https_port", "443"),
         "cert_status": await get_setting("cert_status", ""),
     }
 
@@ -1359,49 +1480,55 @@ async def settings_apply_certificate(request: Request):
     if not _auth(request):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
 
-    domain = (await get_setting("panel_domain", "")).strip().lower()
-    email = (await get_setting("cert_email", "")).strip().lower()
+    form = await request.form()
+    raw_domain = str(form.get("panel_domain") or form.get("public_base_url") or await get_setting("panel_domain", ""))
+    domain = _clean_domain(raw_domain)
+    email = str(form.get("cert_email") or await get_setting("cert_email", "")).strip().lower()
+    try:
+        https_port = int(form.get("atlas_tls_https_port") or await get_setting("atlas_tls_https_port", "443") or 443)
+    except (TypeError, ValueError):
+        https_port = 443
+    https_port = max(1, min(65535, https_port))
+    if https_port in {80, WEB_PORT}:
+        await set_setting("cert_status", f"❌ پورت HTTPS انتخابی ({https_port}) مناسب نیست؛ با پورت 80 یا پورت داخلی ربات تداخل دارد.")
+        return RedirectResponse(f"/{S}/settings?cert=error", status_code=302)
     if not domain:
-        await set_setting("cert_status", "❌ دامنه تنظیم نشده است")
+        await set_setting("cert_status", "❌ دامنه معتبر نیست. مثال درست: sm.example.com")
         return RedirectResponse(f"/{S}/settings?cert=error", status_code=302)
 
-    cert_dir = f"/etc/ssl/atlas/{domain}"
-    fullchain = f"{cert_dir}/fullchain.cer"
-    keyfile = f"{cert_dir}/{domain}.key"
-    email_arg = f" --accountemail {email}" if email else ""
-
-    script = (
-        "set -e\n"
-        f"mkdir -p {cert_dir}\n"
-        "if [ ! -d \"$HOME/.acme.sh\" ]; then curl https://get.acme.sh | sh; fi\n"
-        "$HOME/.acme.sh/acme.sh --set-default-ca --server letsencrypt\n"
-        f"$HOME/.acme.sh/acme.sh --issue -d {domain} --standalone --force{email_arg}\n"
-        f"$HOME/.acme.sh/acme.sh --install-cert -d {domain} --fullchain-file {fullchain} --key-file {keyfile} --force\n"
-    )
-
     try:
-        subprocess.run(["bash", "-lc", script], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=420)
-
-        applied = False
-        apply_cmds = [
-            f"x-ui setting -webCertFile {fullchain} -webKeyFile {keyfile}",
-            f"/usr/local/x-ui/x-ui setting -webCertFile {fullchain} -webKeyFile {keyfile}",
-        ]
-        for cmd in apply_cmds:
-            r = subprocess.run(["bash", "-lc", cmd], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-            if r.returncode == 0:
-                applied = True
-                subprocess.run(["bash", "-lc", "x-ui restart || /usr/local/x-ui/x-ui restart || true"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-                break
-
-        if applied:
-            await set_setting("cert_status", f"✅ گواهی صادر و روی پنل اعمال شد | دامنه: {domain}")
-        else:
-            await set_setting("cert_status", f"⚠️ گواهی صادر شد اما اعمال خودکار روی پنل انجام نشد. مسیر crt: {fullchain} | مسیر key: {keyfile}")
-
+        script = _atlas_tls_proxy_script(domain, email, WEB_PORT, https_port)
+        cmd = ["bash", "-lc", script]
+        if hasattr(os, "geteuid") and os.geteuid() != 0:
+            cmd = ["sudo", "-n", "bash", "-lc", script]
+        subprocess.run(
+            cmd,
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=600,
+        )
+        await set_setting("panel_domain", domain)
+        await set_setting("cert_email", email)
+        await set_setting("atlas_tls_https_port", str(https_port))
+        public_url = f"https://{domain}" if https_port == 443 else f"https://{domain}:{https_port}"
+        await set_setting("public_base_url", public_url)
+        await set_setting(
+            "cert_status",
+            f"✅ SSL و Nginx برای Atlas فعال شد | لینک عمومی ساب: {public_url} | پورت داخلی ربات: {WEB_PORT}",
+        )
         return RedirectResponse(f"/{S}/settings?cert=ok", status_code=302)
+    except subprocess.CalledProcessError as e:
+        detail = (e.stderr or e.stdout or str(e)).strip()[-900:]
+        await set_setting(
+            "cert_status",
+            "❌ خطا در نصب SSL/Nginx. مطمئن شوید DNS روی IP همین سرور و حالت DNS Only است، پورت‌های 80 و 443 بازند، "
+            f"و سرویس با دسترسی root اجرا می‌شود. جزئیات: {detail}",
+        )
+        return RedirectResponse(f"/{S}/settings?cert=error", status_code=302)
     except Exception as e:
-        await set_setting("cert_status", f"❌ خطا در دریافت/اعمال گواهی: {e}")
+        await set_setting("cert_status", f"❌ خطا در دریافت/اعمال گواهی Atlas: {e}")
         return RedirectResponse(f"/{S}/settings?cert=error", status_code=302)
 
 

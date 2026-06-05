@@ -118,13 +118,14 @@
 
 
     <section class="settings-card">
-      <h3>🔐 SSL دامنه و سرتیفیکیت</h3>
-      <p class="hint">برای صدور گواهی رایگان (Let's Encrypt) دامنه را وارد کنید. سیستم با acme.sh گواهی می‌گیرد و تلاش می‌کند روی 3x-ui اعمال کند.</p>
-      <div class="form-group"><label>دامنه پنل (مثال: panel.example.com)</label><input class="form-control" type="text" name="panel_domain" value="{{ settings.panel_domain }}" /></div>
+      <h3>🔐 SSL دامنه ربات و لینک ساب</h3>
+      <p class="hint">دامنه را در Cloudflare روی DNS Only بگذارید و به IP همین سرور وصل کنید. سیستم Nginx را برای چالش گواهی روی پورت 80 و برای HTTPS روی پورت انتخابی شما تنظیم می‌کند.</p>
+      <div class="form-group"><label>دامنه عمومی ربات/ساب (مثال: sm.example.com)</label><input class="form-control" type="text" name="panel_domain" value="{{ settings.panel_domain }}" /></div>
+      <div class="form-group"><label>پورت HTTPS لینک ساب</label><input class="form-control" type="number" name="atlas_tls_https_port" value="{{ settings.atlas_tls_https_port or 443 }}" min="1" max="65535" /><small style="color:var(--txt3)">اگر 443 آزاد نیست، یک پورت آزاد مثل 9443 بگذارید. لینک ساب با همین پورت ذخیره می‌شود.</small></div>
       <div class="form-group"><label>ایمیل (اختیاری برای اعلان‌های گواهی)</label><input class="form-control" type="email" name="cert_email" value="{{ settings.cert_email }}" /></div>
       <div class="settings-note" style="margin-top:8px">{{ settings.cert_status or 'هنوز عملیاتی انجام نشده است.' }}</div>
       <div class="form-group" style="margin-top:10px">
-        <button class="btn btn-outline" formaction="/{{ S }}/settings/certificate/apply" formmethod="post" type="submit">🚀 دریافت و اعمال خودکار سرتیفیکیت</button>
+        <button class="btn btn-outline" formaction="/{{ S }}/settings/certificate/apply" formmethod="post" type="submit">🚀 نصب SSL و تنظیم لینک ساب</button>
       </div>
     </section>
 
