@@ -1,8 +1,12 @@
 import base64
+import binascii
+import json
 import secrets
 import time
 import uuid
+from datetime import datetime
 from typing import Dict, List
+from urllib.parse import quote, unquote, urlsplit, urlunsplit
 
 from core.config import WEB_PORT
 from core.database import (
@@ -65,6 +69,137 @@ def subscription_error_message(error: str) -> str:
     if raw.startswith("created_nodes_below_minimum:"):
         return f"تعداد نودهای ساخته‌شده به حداقل لازم نرسید: {raw}"
     return raw or "خطای نامشخص در ساخت سابسکریپشن"
+
+
+def _label_subscription_link(link: str, label: str) -> str:
+    link = (link or "").strip()
+    label = (label or "").strip()
+    if not link or not label:
+        return link
+    if link.lower().startswith("vmess://"):
+        payload = link[8:].split("#", 1)[0].split("?", 1)[0]
+        payload += "=" * (-len(payload) % 4)
+        try:
+            decoded = base64.urlsafe_b64decode(payload.encode()).decode("utf-8", "ignore")
+        except (binascii.Error, UnicodeDecodeError, ValueError):
+            try:
+                decoded = base64.b64decode(payload.encode()).decode("utf-8", "ignore")
+            except (binascii.Error, UnicodeDecodeError, ValueError):
+                return link
+        try:
+            obj = json.loads(decoded)
+        except Exception:
+            return link
+        obj["ps"] = label
+        encoded = base64.urlsafe_b64encode(json.dumps(obj, ensure_ascii=False, separators=(",", ":")).encode()).decode().rstrip("=")
+        return f"vmess://{encoded}"
+
+    try:
+        parts = urlsplit(link)
+        if not parts.scheme:
+            return link
+        return urlunsplit((parts.scheme, parts.netloc, parts.path, parts.query, quote(label, safe="")))
+    except Exception:
+        return link
+
+
+def _fake_vmess_info_link(label: str, index: int = 1) -> str:
+    label = (label or "").strip()
+    if not label:
+        return ""
+    suffix = max(1, min(9999, int(index or 1)))
+    cfg = {
+        "v": "2",
+        "ps": label[:180],
+        "add": "127.0.0.1",
+        "port": "1",
+        "id": f"00000000-0000-0000-0000-{suffix:012d}",
+        "aid": "0",
+        "scy": "auto",
+        "net": "tcp",
+        "type": "none",
+        "host": "",
+        "path": "",
+        "tls": "",
+    }
+    encoded = base64.b64encode(json.dumps(cfg, ensure_ascii=False, separators=(",", ":")).encode()).decode()
+    return f"vmess://{encoded}"
+
+
+def _parse_db_datetime(value: str) -> datetime | None:
+    raw = (value or "").strip()
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S.%f", "%Y-%m-%dT%H:%M:%S"):
+        try:
+            return datetime.strptime(raw[:26], fmt)
+        except Exception:
+            pass
+    return None
+
+
+def _format_info_template(template: str, values: Dict[str, str]) -> list[str]:
+    lines = []
+    for raw_line in (template or "").splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        try:
+            line = line.format(**values)
+        except Exception:
+            pass
+        if line:
+            lines.append(line)
+    return lines
+
+
+async def _subscription_info_links(profile: Dict, used: int, total: int, active_node_count: int) -> list[str]:
+    if await get_setting("sub_info_enabled", "1") != "1":
+        return []
+
+    now_ms = int(time.time() * 1000)
+    expire_ms = int(profile.get("expire_timestamp") or 0)
+    days_left = max(0, int((expire_ms - now_ms) / 86400000)) if expire_ms > 0 else 0
+    created = _parse_db_datetime(profile.get("created_at") or "")
+    days_elapsed = max(0, (datetime.now() - created).days) if created else 0
+    expire_date = datetime.fromtimestamp(expire_ms / 1000).strftime("%Y-%m-%d") if expire_ms > 0 else "نامحدود"
+    remaining = max(0, total - used) if total > 0 else 0
+    percent = min(100, int(used / total * 100)) if total > 0 else 0
+    brand = await get_setting("ui.brand_name", "Atlas Account")
+
+    values = {
+        "brand": brand,
+        "traffic_gb": f"{float(profile.get('traffic_gb') or 0):g}",
+        "duration_days": str(int(profile.get("duration_days") or 0)),
+        "used": _fmt_bytes_short(used),
+        "remaining": _fmt_bytes_short(remaining),
+        "total": _fmt_bytes_short(total),
+        "percent": str(percent),
+        "days_left": str(days_left),
+        "days_elapsed": str(days_elapsed),
+        "expire_date": expire_date,
+        "nodes": str(active_node_count),
+        "status": "فعال" if int(profile.get("is_active") or 0) else "غیرفعال",
+    }
+
+    template = await get_setting(
+        "sub_info_template",
+        "📊 حجم کل: {traffic_gb}GB | مصرف: {used} | باقی: {remaining}\n📅 باقی‌مانده: {days_left} روز | سپری‌شده: {days_elapsed} روز",
+    )
+    brand_template = await get_setting("sub_brand_template", "📣 {brand}")
+    labels = _format_info_template(template, values) + _format_info_template(brand_template, values)
+    return [_fake_vmess_info_link(label, i + 1) for i, label in enumerate(labels) if label]
+
+
+def _fmt_bytes_short(value: int) -> str:
+    value = int(value or 0)
+    units = ("B", "KB", "MB", "GB", "TB")
+    size = float(value)
+    idx = 0
+    while size >= 1024 and idx < len(units) - 1:
+        size /= 1024
+        idx += 1
+    if idx == 0:
+        return f"{int(size)}{units[idx]}"
+    return f"{size:.1f}{units[idx]}"
 
 
 async def pick_subscription_nodes(count: int) -> List[Dict]:
@@ -148,11 +283,26 @@ async def render_subscription(token: str) -> tuple[str, Dict[str, int]] | None:
     profile = await get_subscription_profile_by_token(token)
     if not profile or not int(profile.get("is_active") or 0):
         return None
+    if await get_setting("sub_info_sync_on_render", "1") == "1":
+        try:
+            await sync_profile_usage(profile)
+            profile = await get_subscription_profile_by_token(token) or profile
+        except Exception:
+            pass
     nodes = await get_subscription_nodes(profile["id"])
-    links = [n.get("link") or "" for n in nodes if int(n.get("is_active") or 0) and n.get("link")]
+    links = []
+    active_count = 0
+    for n in nodes:
+        if not int(n.get("is_active") or 0) or not n.get("link"):
+            continue
+        active_count += 1
+        label = n.get("node_label") or f"{n.get('server_name') or 'Node'} #{n.get('inbound_id') or ''}"
+        links.append(_label_subscription_link(n.get("link") or "", label))
     used = int(profile.get("used_bytes") or 0)
     total = total_bytes(profile.get("traffic_gb") or 0)
     expire = int(int(profile.get("expire_timestamp") or 0) / 1000) if int(profile.get("expire_timestamp") or 0) > 0 else 0
+    info_links = await _subscription_info_links(profile, used, total, active_count)
+    links = info_links + links
     body = base64.b64encode("\n".join(links).encode()).decode()
     return body, {"upload": 0, "download": used, "total": total, "expire": expire}
 

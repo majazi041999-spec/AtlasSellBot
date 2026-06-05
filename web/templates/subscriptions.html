@@ -54,6 +54,31 @@
         <label>آدرس عمومی لینک ساب</label>
         <input class="form-control mono" type="url" name="public_base_url" value="{{ settings.public_base_url }}" placeholder="https://bot.example.com یا http://IP:8443">
       </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>نمایش آیتم‌های اطلاعاتی داخل ساب</label>
+          <select class="form-control" name="sub_info_enabled">
+            <option value="1" {% if settings.sub_info_enabled == "1" %}selected{% endif %}>فعال</option>
+            <option value="0" {% if settings.sub_info_enabled != "1" %}selected{% endif %}>غیرفعال</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Sync مصرف هنگام آپدیت لینک</label>
+          <select class="form-control" name="sub_info_sync_on_render">
+            <option value="1" {% if settings.sub_info_sync_on_render == "1" %}selected{% endif %}>فعال دقیق‌تر</option>
+            <option value="0" {% if settings.sub_info_sync_on_render != "1" %}selected{% endif %}>غیرفعال سبک‌تر</option>
+          </select>
+        </div>
+      </div>
+      <div class="form-group">
+        <label>متن آیتم‌های اطلاعاتی داخل ساب</label>
+        <textarea class="form-control" name="sub_info_template" rows="3">{{ settings.sub_info_template }}</textarea>
+        <small style="color:var(--txt3)">هر خط یک کانفیگ نمایشی می‌شود. متغیرها: {traffic_gb} {used} {remaining} {total} {percent} {days_left} {days_elapsed} {expire_date} {nodes} {status} {brand}</small>
+      </div>
+      <div class="form-group">
+        <label>متن تبلیغ/برند داخل ساب</label>
+        <input class="form-control" type="text" name="sub_brand_template" value="{{ settings.sub_brand_template }}">
+      </div>
       <button class="btn btn-primary" type="submit">💾 ذخیره تنظیمات</button>
     </form>
   </section>

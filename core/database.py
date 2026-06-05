@@ -1243,9 +1243,12 @@ async def get_subscription_nodes(profile_id: int) -> List[Dict]:
         db.row_factory = aiosqlite.Row
         async with db.execute(
             """SELECT n.*, s.name AS server_name, s.url AS server_url, s.username AS srv_user,
-                      s.password AS srv_pass, s.api_token AS srv_api_token, s.sub_path
+                      s.password AS srv_pass, s.api_token AS srv_api_token, s.sub_path,
+                      nc.label AS node_label, nc.priority AS node_priority
                FROM subscription_nodes n
                JOIN servers s ON s.id=n.server_id
+               LEFT JOIN subscription_node_configs nc
+                    ON nc.server_id=n.server_id AND nc.inbound_id=n.inbound_id
                WHERE n.profile_id=?
                ORDER BY n.id""",
             (int(profile_id),),

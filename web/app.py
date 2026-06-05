@@ -612,6 +612,10 @@ async def subscriptions_page(request: Request):
         "multi_sub_node_count": await get_setting("multi_sub_node_count", SETTINGS_DEFAULTS["multi_sub_node_count"]),
         "multi_sub_min_nodes": await get_setting("multi_sub_min_nodes", SETTINGS_DEFAULTS["multi_sub_min_nodes"]),
         "public_base_url": await get_setting("public_base_url", ""),
+        "sub_info_enabled": await get_setting("sub_info_enabled", SETTINGS_DEFAULTS["sub_info_enabled"]),
+        "sub_info_sync_on_render": await get_setting("sub_info_sync_on_render", SETTINGS_DEFAULTS["sub_info_sync_on_render"]),
+        "sub_info_template": await get_setting("sub_info_template", SETTINGS_DEFAULTS["sub_info_template"]),
+        "sub_brand_template": await get_setting("sub_brand_template", SETTINGS_DEFAULTS["sub_brand_template"]),
     }
     return _templates.TemplateResponse(
         "subscriptions.html",
@@ -633,6 +637,10 @@ async def subscriptions_settings_save(
     multi_sub_node_count: int = Form(4),
     multi_sub_min_nodes: int = Form(2),
     public_base_url: str = Form(""),
+    sub_info_enabled: str = Form("0"),
+    sub_info_sync_on_render: str = Form("0"),
+    sub_info_template: str = Form(""),
+    sub_brand_template: str = Form(""),
 ):
     if not _auth(request):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
@@ -642,6 +650,10 @@ async def subscriptions_settings_save(
     await set_setting("multi_sub_node_count", str(node_count))
     await set_setting("multi_sub_min_nodes", str(min_nodes))
     await set_setting("public_base_url", public_base_url.strip().rstrip("/"))
+    await set_setting("sub_info_enabled", "1" if sub_info_enabled == "1" else "0")
+    await set_setting("sub_info_sync_on_render", "1" if sub_info_sync_on_render == "1" else "0")
+    await set_setting("sub_info_template", sub_info_template.strip() or SETTINGS_DEFAULTS["sub_info_template"])
+    await set_setting("sub_brand_template", sub_brand_template.strip() or SETTINGS_DEFAULTS["sub_brand_template"])
     return RedirectResponse(f"/{S}/subs?saved=1", status_code=302)
 
 

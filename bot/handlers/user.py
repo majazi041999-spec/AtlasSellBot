@@ -52,11 +52,13 @@ from core.database import (
     get_least_loaded_server,
     delete_config_by_id,
     get_user_subscription_profiles,
+    get_subscription_profile_by_token,
+    get_subscription_nodes,
 )
 from core.xui_api import XUIClient, fmt_bytes, days_left, expiry_ms_from_days
 from core.texts import get_text
 from core.qr import build_qr_image
-from core.multi_subscription import subscription_url
+from core.multi_subscription import subscription_url, sync_profile_usage
 from bot.middlewares.channel_required import ChannelRequiredMiddleware
 
 from bot.keyboards import (
@@ -89,6 +91,71 @@ async def _blocked(uid: int) -> bool:
 
 def _channel_join_kb(channel_username: str):
     return ChannelRequiredMiddleware.join_kb(channel_username)
+
+
+def _extract_subscription_token(text: str) -> str:
+    raw = (text or "").strip()
+    if not raw:
+        return ""
+    try:
+        p = urlparse(raw)
+    except Exception:
+        return ""
+    if p.scheme not in ("http", "https") or not p.netloc:
+        return ""
+    parts = [part for part in (p.path or "").split("/") if part]
+    if len(parts) >= 2 and parts[-2].lower() == "sub":
+        token = parts[-1].strip()
+        if token and all(ch.isalnum() or ch in "-_" for ch in token):
+            return token
+    return ""
+
+
+async def _send_subscription_status(target, profile: dict):
+    if not profile:
+        return
+    try:
+        await sync_profile_usage(profile)
+        profile = await get_subscription_profile_by_token(profile["token"]) or profile
+    except Exception:
+        pass
+
+    sub_url = await subscription_url(profile["token"])
+    nodes = await get_subscription_nodes(profile["id"])
+    used = int(profile.get("used_bytes") or 0)
+    total = int(float(profile.get("traffic_gb") or 0) * 1024 ** 3)
+    remaining = max(0, total - used) if total > 0 else 0
+    pct = min(100, int(used / total * 100)) if total > 0 else 0
+    dl = days_left(int(profile.get("expire_timestamp") or 0))
+    dl_text = f"{dl} روز" if dl > 0 else ("نامحدود" if dl < 0 else "منقضی شده")
+    active_nodes = [n for n in nodes if int(n.get("is_active") or 0)]
+    node_names = [
+        str(n.get("node_label") or n.get("server_name") or f"Node #{n.get('id')}")
+        for n in active_nodes[:8]
+    ]
+    nodes_text = "، ".join(node_names) if node_names else "-"
+
+    text = (
+        "📡 سرویس سابسکریپشن چندسروره شما\n\n"
+        f"حجم کل: {profile['traffic_gb']} GB\n"
+        f"مصرف ثبت‌شده: {fmt_bytes(used)} از {fmt_bytes(total)} ({pct}%)\n"
+        f"باقی‌مانده: {fmt_bytes(remaining)}\n"
+        f"روز باقی‌مانده: {dl_text}\n"
+        f"نودهای فعال: {len(active_nodes)}\n"
+        f"Remark نودها: {nodes_text}\n"
+        f"وضعیت: {'فعال' if int(profile.get('is_active') or 0) else 'غیرفعال'}\n\n"
+        f"لینک ساب:\n{sub_url}"
+    )
+
+    if isinstance(target, Message):
+        await target.answer(text, parse_mode=None, reply_markup=config_links_kb("", sub_url))
+        try:
+            ch = await get_setting("channel_username", "AtlasChannel")
+            await target.answer_photo(_qr_input_file(sub_url, ch), caption="QR سابسکریپشن چندسروره", parse_mode=None)
+        except Exception:
+            pass
+    else:
+        await target.message.answer(text, parse_mode=None, reply_markup=config_links_kb("", sub_url))
 
 
 async def _is_channel_member(msg_or_cb) -> bool:
@@ -415,26 +482,7 @@ async def user_status(msg: Message):
     if not configs:
         profiles = await get_user_subscription_profiles(user["id"])
         if profiles:
-            profile = profiles[0]
-            sub_url = await subscription_url(profile["token"])
-            used = int(profile.get("used_bytes") or 0)
-            total = int(float(profile.get("traffic_gb") or 0) * 1024 ** 3)
-            pct = min(100, int(used / total * 100)) if total > 0 else 0
-            await msg.answer(
-                "📡 *سرویس سابسکریپشن چندسروره شما*\n\n"
-                f"حجم کل: `{profile['traffic_gb']} GB`\n"
-                f"مصرف ثبت‌شده: `{fmt_bytes(used)}` ({pct}%)\n"
-                f"مدت: `{profile['duration_days']} روز`\n"
-                f"وضعیت: {'فعال' if profile.get('is_active') else 'غیرفعال'}\n\n"
-                f"لینک ساب:\n`{sub_url}`",
-                parse_mode="Markdown",
-                reply_markup=config_links_kb("", sub_url),
-            )
-            try:
-                ch = await get_setting("channel_username", "AtlasChannel")
-                await msg.answer_photo(_qr_input_file(sub_url, ch), caption="QR سابسکریپشن چندسروره", parse_mode=None)
-            except Exception:
-                pass
+            await _send_subscription_status(msg, profiles[0])
             return
         await msg.answer(await get_text("no_active_service"), parse_mode="Markdown")
         return
@@ -1404,6 +1452,33 @@ def _extract_config_identity(link: str):
         return key, email, raw_uuid
     except Exception:
         return None, None, None
+
+
+@router.message(StateFilter(None), lambda msg: bool(msg.text and _extract_subscription_token(msg.text or "")))
+async def user_subscription_link_lookup(msg: Message):
+    if not await _ensure_channel_membership(msg):
+        return
+    if await _blocked(msg.from_user.id):
+        await msg.answer(await get_text("blocked_message"))
+        return
+
+    token = _extract_subscription_token(msg.text or "")
+    profile = await get_subscription_profile_by_token(token) if token else None
+    user = await get_or_create_user(msg.from_user.id, msg.from_user.username, msg.from_user.full_name)
+    if profile and int(profile.get("user_id") or 0) == int(user["id"]):
+        await msg.answer("🔎 لینک ساب شما پیدا شد. وضعیت سرویس:")
+        await _send_subscription_status(msg, profile)
+        return
+
+    if profile:
+        await msg.answer(
+            "❌ این لینک سابسکریپشن داخل حساب شما ثبت نشده است.\n"
+            "اگر فکر می‌کنید اشتباه شده، با پشتیبانی پیام دهید.",
+            parse_mode=None,
+        )
+        return
+
+    await msg.answer("❌ این لینک سابسکریپشن داخل ربات پیدا نشد.", parse_mode=None)
 
 
 @router.message(StateFilter(None), lambda msg: bool(msg.text and _extract_config_identity(msg.text or "")[0]))
