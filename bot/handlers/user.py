@@ -69,6 +69,7 @@ from bot.keyboards import (
     config_links_kb,
     configs_kb,
     servers_kb,
+    custom_name_kb,
     wholesale_request_kb,
     wholesale_request_admin_kb,
     legacy_claim_admin_kb,
@@ -986,34 +987,20 @@ async def buy_pkg_selected(cb: CallbackQuery, state: FSMContext):
         "اگر نمی‌خواهید، `-` را بفرستید.\n\n"
         "اسم اصلی ربات حفظ می‌شود و نام دلخواه شما بعد از آن می‌آید.",
         parse_mode="Markdown",
-        reply_markup=flow_cancel_kb(),
+        reply_markup=custom_name_kb(),
     )
     await cb.answer()
 
 
-@router.message(BuyService.custom_name)
-async def buy_custom_name(msg: Message, state: FSMContext):
+async def _create_buy_payment_from_state(from_user, state: FSMContext, custom_name: str):
     data = await state.get_data()
     pid = int(data.get("package_id") or 0)
     pkg = await get_package(pid)
     if not pkg or not pkg["is_active"]:
         await state.clear()
-        await msg.answer("❌ این پکیج دیگر در دسترس نیست.")
-        return
+        return None, "❌ این پکیج دیگر در دسترس نیست."
 
-    raw_name = (msg.text or "").strip()
-    cmd = raw_name.split()[0].split("@", 1)[0].lower() if raw_name else ""
-    if cmd == "/cancel":
-        await state.clear()
-        user = await get_or_create_user(msg.from_user.id, msg.from_user.username, msg.from_user.full_name)
-        await msg.answer("❌ عملیات لغو شد.", reply_markup=user_menu(include_wholesale=bool(user.get("is_wholesale", 0))))
-        return
-    custom_name = "" if raw_name == "-" else _safe_user_config_name(raw_name)
-    if raw_name != "-" and not custom_name:
-        await msg.answer("❌ نام فقط می‌تواند شامل حرف، عدد، خط تیره و آندرلاین باشد. دوباره بفرستید یا `-` را بفرستید.", parse_mode="Markdown")
-        return
-
-    user = await get_or_create_user(msg.from_user.id, msg.from_user.username, msg.from_user.full_name)
+    user = await get_or_create_user(from_user.id, from_user.username, from_user.full_name)
     final_price, base_price, discount, price_per_gb = await _calc_package_price_for_user(user["id"], pkg)
     oid = await create_order(user["id"], pid, custom_config_name=custom_name, custom_price=final_price)
 
@@ -1027,6 +1014,40 @@ async def buy_custom_name(msg: Message, state: FSMContext):
     if custom_name:
         text += f"\n\nنام دلخواه انتهای کانفیگ: `{custom_name}`"
     await state.clear()
+    return (oid, text), None
+
+
+@router.callback_query(StateFilter(BuyService.custom_name), F.data == "buy_name_default")
+async def buy_default_name(cb: CallbackQuery, state: FSMContext):
+    result, error = await _create_buy_payment_from_state(cb.from_user, state, "")
+    if error:
+        await cb.message.edit_text(error)
+        await cb.answer()
+        return
+    oid, text = result
+    await cb.message.edit_text(text, reply_markup=payment_kb(oid), parse_mode="Markdown")
+    await cb.answer("با نام پیش‌فرض ادامه داده شد.")
+
+
+@router.message(BuyService.custom_name)
+async def buy_custom_name(msg: Message, state: FSMContext):
+    raw_name = (msg.text or "").strip()
+    cmd = raw_name.split()[0].split("@", 1)[0].lower() if raw_name else ""
+    if cmd == "/cancel":
+        await state.clear()
+        user = await get_or_create_user(msg.from_user.id, msg.from_user.username, msg.from_user.full_name)
+        await msg.answer("❌ عملیات لغو شد.", reply_markup=user_menu(include_wholesale=bool(user.get("is_wholesale", 0))))
+        return
+    custom_name = "" if raw_name == "-" else _safe_user_config_name(raw_name)
+    if raw_name != "-" and not custom_name:
+        await msg.answer("❌ نام فقط می‌تواند شامل حرف، عدد، خط تیره و آندرلاین باشد. دوباره بفرستید یا `-` را بفرستید.", parse_mode="Markdown")
+        return
+
+    result, error = await _create_buy_payment_from_state(msg.from_user, state, custom_name)
+    if error:
+        await msg.answer(error)
+        return
+    oid, text = result
     await msg.answer(text, reply_markup=payment_kb(oid), parse_mode="Markdown")
 
 

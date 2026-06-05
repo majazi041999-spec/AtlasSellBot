@@ -168,6 +168,15 @@ def payment_kb(order_id: int, allow_wallet: bool = True) -> InlineKeyboardMarkup
     return b.as_markup()
 
 
+def custom_name_kb() -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    _button(b, text="✅ ادامه با نام پیش‌فرض", callback_data="buy_name_default", style="success")
+    _button(b, text="⬅️ برگشت", callback_data="flow_back", style="primary")
+    _button(b, text="❌ کنسل", callback_data="cancel", style="danger")
+    b.adjust(1)
+    return b.as_markup()
+
+
 def order_review_kb(order_id: int) -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
     _button(b, text="✅ تأیید و ارسال کانفیگ", callback_data=f"approve:{order_id}", style="success")

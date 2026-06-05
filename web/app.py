@@ -95,7 +95,7 @@ from core.qr import build_qr_image
 from bot.keyboards import config_links_kb
 from core.update_notes import DEFAULT_UPDATE_BROADCAST_TEXT, get_update_broadcast_text
 from core.multi_subscription import render_subscription
-from core.multi_subscription import create_profile_for_order, multi_sub_enabled_for_new_users
+from core.multi_subscription import create_profile_for_order, multi_sub_enabled_for_single_purchase
 
 logger = logging.getLogger(__name__)
 
@@ -648,7 +648,7 @@ async def _order_approve_web_impl(request: Request, oid: int):
     bulk_count = int(order.get("bulk_count") or 1)
     each_gb = float(order.get("bulk_each_gb") or order["traffic_gb"])
     duration = int(order["duration_days"])
-    if await multi_sub_enabled_for_new_users(user["id"], bulk_count=bulk_count, is_renewal=False):
+    if await multi_sub_enabled_for_single_purchase(bulk_count=bulk_count, is_renewal=False):
         sub_result = await create_profile_for_order(user, order, each_gb, duration)
         if sub_result.get("ok"):
             await update_order(

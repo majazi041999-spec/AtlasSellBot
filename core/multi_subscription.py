@@ -12,11 +12,9 @@ from core.database import (
     get_active_subscription_profiles,
     get_available_servers,
     count_active_server_load,
-    get_user_configs,
     get_setting,
     get_subscription_nodes,
     get_subscription_profile_by_token,
-    has_previous_purchase,
     update_subscription_node,
     update_subscription_profile,
 )
@@ -47,14 +45,10 @@ async def subscription_url(token: str) -> str:
     return f"{await public_base_url_async()}/sub/{token}"
 
 
-async def multi_sub_enabled_for_new_users(user_id: int, bulk_count: int = 1, is_renewal: bool = False) -> bool:
+async def multi_sub_enabled_for_single_purchase(bulk_count: int = 1, is_renewal: bool = False) -> bool:
     if await get_setting("multi_sub_enabled", "0") != "1":
         return False
     if is_renewal or int(bulk_count or 1) != 1:
-        return False
-    if await has_previous_purchase(user_id):
-        return False
-    if await get_user_configs(user_id):
         return False
     return True
 

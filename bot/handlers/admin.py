@@ -32,7 +32,7 @@ from core.database import (
 )
 from core.xui_api import XUIClient, fmt_bytes, days_left, expiry_ms_from_days
 from core.qr import build_qr_image
-from core.multi_subscription import create_profile_for_order, multi_sub_enabled_for_new_users
+from core.multi_subscription import create_profile_for_order, multi_sub_enabled_for_single_purchase
 from bot.keyboards import (
     admin_menu, order_review_kb, order_server_select_kb,
     admin_configs_kb, adm_config_detail_kb, confirm_kb, packages_kb, servers_kb,
@@ -561,7 +561,7 @@ async def _do_approve_impl(cb: CallbackQuery, oid: int, sid: int):
         await update_order(oid, status="receipt_submitted")
         return False
 
-    if await multi_sub_enabled_for_new_users(user["id"], bulk_count=bulk_count, is_renewal=False):
+    if await multi_sub_enabled_for_single_purchase(bulk_count=bulk_count, is_renewal=False):
         sub_result = await create_profile_for_order(user, order, each_gb, duration)
         if sub_result.get("ok"):
             await update_order(

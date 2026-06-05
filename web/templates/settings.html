@@ -87,7 +87,7 @@
       <p class="hint">این تنظیمات بلافاصله در ربات اعمال می‌شوند.</p>
       <div class="form-group"><label>محدودیت انتقال سرور در روز</label><input class="form-control" type="number" name="max_daily_migrations" value="{{ settings.max_daily_migrations }}" min="0" max="100" /></div>
       <div class="form-group"><label>حداقل حجم تمدید سرویس (GB)</label><input class="form-control" type="number" name="renewal_min_traffic_gb" value="{{ settings.renewal_min_traffic_gb }}" min="0.1" step="0.1" /></div>
-      <div class="form-group"><label>ساب چندسروره آزمایشی برای کاربران جدید</label><select class="form-control" name="multi_sub_enabled"><option value="0" {% if settings.multi_sub_enabled != "1" %}selected{% endif %}>غیرفعال امن</option><option value="1" {% if settings.multi_sub_enabled == "1" %}selected{% endif %}>فعال آزمایشی</option></select></div>
+      <div class="form-group"><label>ساب چندسروره آزمایشی برای خریدهای جدید تکی</label><select class="form-control" name="multi_sub_enabled"><option value="0" {% if settings.multi_sub_enabled != "1" %}selected{% endif %}>غیرفعال امن</option><option value="1" {% if settings.multi_sub_enabled == "1" %}selected{% endif %}>فعال آزمایشی</option></select></div>
       <div class="form-row">
         <div class="form-group"><label>تعداد سرورهای داخل ساب</label><input class="form-control" type="number" name="multi_sub_node_count" value="{{ settings.multi_sub_node_count }}" min="2" max="8" /></div>
         <div class="form-group"><label>حداقل node موفق برای ساخت</label><input class="form-control" type="number" name="multi_sub_min_nodes" value="{{ settings.multi_sub_min_nodes }}" min="2" max="8" /></div>
