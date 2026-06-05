@@ -190,6 +190,37 @@ CREATE TABLE IF NOT EXISTS daily_reports (
     updated_at TEXT DEFAULT (datetime('now','localtime'))
 );
 
+CREATE TABLE IF NOT EXISTS subscription_profiles (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    order_id INTEGER DEFAULT 0,
+    token TEXT UNIQUE NOT NULL,
+    email TEXT NOT NULL,
+    traffic_gb REAL NOT NULL,
+    duration_days INTEGER NOT NULL,
+    expire_timestamp INTEGER DEFAULT 0,
+    is_active INTEGER DEFAULT 1,
+    used_bytes INTEGER DEFAULT 0,
+    created_at TEXT DEFAULT (datetime('now','localtime')),
+    updated_at TEXT DEFAULT (datetime('now','localtime')),
+    FOREIGN KEY(user_id) REFERENCES users(id)
+);
+
+CREATE TABLE IF NOT EXISTS subscription_nodes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    profile_id INTEGER NOT NULL,
+    server_id INTEGER NOT NULL,
+    inbound_id INTEGER NOT NULL,
+    uuid TEXT NOT NULL,
+    email TEXT NOT NULL,
+    link TEXT DEFAULT '',
+    last_used_bytes INTEGER DEFAULT 0,
+    is_active INTEGER DEFAULT 1,
+    created_at TEXT DEFAULT (datetime('now','localtime')),
+    FOREIGN KEY(profile_id) REFERENCES subscription_profiles(id),
+    FOREIGN KEY(server_id) REFERENCES servers(id)
+);
+
 INSERT OR IGNORE INTO settings VALUES
     ('welcome_message','به Atlas Account خوش آمدید! 🌐\nبهترین سرویس VPN با سرعت بالا.'),
     ('support_username',''),
@@ -252,6 +283,11 @@ async def _ensure_columns(db):
             ("total_users", "INTEGER DEFAULT 0"),
             ("total_configs", "INTEGER DEFAULT 0"),
         ],
+        "subscription_profiles": [
+            ("order_id", "INTEGER DEFAULT 0"),
+            ("used_bytes", "INTEGER DEFAULT 0"),
+            ("updated_at", "TEXT DEFAULT ''"),
+        ],
     }
     for table, cols in migrations.items():
         async with db.execute(f"PRAGMA table_info({table})") as c:
@@ -310,6 +346,22 @@ async def count_active_configs_by_server(server_id: int) -> int:
             return (await c.fetchone())[0]
 
 
+async def count_active_subscription_nodes_by_server(server_id: int) -> int:
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            """SELECT COUNT(*)
+               FROM subscription_nodes n
+               JOIN subscription_profiles p ON p.id=n.profile_id
+               WHERE n.server_id=? AND n.is_active=1 AND p.is_active=1""",
+            (int(server_id),),
+        ) as c:
+            return int((await c.fetchone())[0] or 0)
+
+
+async def count_active_server_load(server_id: int) -> int:
+    return await count_active_configs_by_server(server_id) + await count_active_subscription_nodes_by_server(server_id)
+
+
 async def server_has_capacity(server_id: int) -> bool:
     srv = await get_server(server_id)
     if not srv:
@@ -317,7 +369,7 @@ async def server_has_capacity(server_id: int) -> bool:
     cap = int(srv.get("max_active_configs") or 0)
     if cap <= 0:
         return True
-    return (await count_active_configs_by_server(server_id)) < cap
+    return (await count_active_server_load(server_id)) < cap
 
 
 async def get_available_servers() -> List[Dict]:
@@ -992,6 +1044,103 @@ async def get_setting(key: str, default='') -> str:
 async def set_setting(key: str, value: str):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("INSERT OR REPLACE INTO settings(key,value) VALUES(?,?)", (key, value))
+        await db.commit()
+
+
+# ══════════════════ MULTI-SERVER SUBSCRIPTIONS (EXPERIMENTAL) ══════════════════
+
+async def create_subscription_profile(user_id: int, order_id: int, token: str, email: str,
+                                      traffic_gb: float, duration_days: int, expire_timestamp: int) -> int:
+    async with aiosqlite.connect(DB_PATH) as db:
+        c = await db.execute(
+            """INSERT INTO subscription_profiles(user_id,order_id,token,email,traffic_gb,duration_days,expire_timestamp)
+               VALUES(?,?,?,?,?,?,?)""",
+            (int(user_id), int(order_id or 0), token, email, float(traffic_gb), int(duration_days), int(expire_timestamp or 0)),
+        )
+        await db.commit()
+        return c.lastrowid
+
+
+async def add_subscription_node(profile_id: int, server_id: int, inbound_id: int, uuid: str, email: str, link: str = "") -> int:
+    async with aiosqlite.connect(DB_PATH) as db:
+        c = await db.execute(
+            """INSERT INTO subscription_nodes(profile_id,server_id,inbound_id,uuid,email,link)
+               VALUES(?,?,?,?,?,?)""",
+            (int(profile_id), int(server_id), int(inbound_id), uuid, email, link or ""),
+        )
+        await db.commit()
+        return c.lastrowid
+
+
+async def get_subscription_profile_by_token(token: str) -> Optional[Dict]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute("SELECT * FROM subscription_profiles WHERE token=? LIMIT 1", ((token or "").strip(),)) as c:
+            r = await c.fetchone()
+            return dict(r) if r else None
+
+
+async def get_user_subscription_profiles(user_id: int) -> List[Dict]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT * FROM subscription_profiles WHERE user_id=? ORDER BY is_active DESC, id DESC",
+            (int(user_id),),
+        ) as c:
+            return [dict(r) for r in await c.fetchall()]
+
+
+async def get_subscription_profile(pid: int) -> Optional[Dict]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute("SELECT * FROM subscription_profiles WHERE id=?", (int(pid),)) as c:
+            r = await c.fetchone()
+            return dict(r) if r else None
+
+
+async def get_subscription_nodes(profile_id: int) -> List[Dict]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            """SELECT n.*, s.name AS server_name, s.url AS server_url, s.username AS srv_user,
+                      s.password AS srv_pass, s.api_token AS srv_api_token, s.sub_path
+               FROM subscription_nodes n
+               JOIN servers s ON s.id=n.server_id
+               WHERE n.profile_id=?
+               ORDER BY n.id""",
+            (int(profile_id),),
+        ) as c:
+            return [dict(r) for r in await c.fetchall()]
+
+
+async def get_active_subscription_profiles(limit: int = 200) -> List[Dict]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT * FROM subscription_profiles WHERE is_active=1 ORDER BY id LIMIT ?",
+            (max(1, int(limit or 200)),),
+        ) as c:
+            return [dict(r) for r in await c.fetchall()]
+
+
+async def update_subscription_profile(pid: int, **kw):
+    fields = ','.join(f"{k}=?" for k in kw)
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(f"UPDATE subscription_profiles SET {fields}, updated_at=datetime('now','localtime') WHERE id=?", (*kw.values(), int(pid)))
+        await db.commit()
+
+
+async def update_subscription_node(nid: int, **kw):
+    fields = ','.join(f"{k}=?" for k in kw)
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(f"UPDATE subscription_nodes SET {fields} WHERE id=?", (*kw.values(), int(nid)))
+        await db.commit()
+
+
+async def delete_subscription_profile(pid: int):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("DELETE FROM subscription_nodes WHERE profile_id=?", (int(pid),))
+        await db.execute("DELETE FROM subscription_profiles WHERE id=?", (int(pid),))
         await db.commit()
 
 

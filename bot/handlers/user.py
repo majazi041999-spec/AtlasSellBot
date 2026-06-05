@@ -51,10 +51,12 @@ from core.database import (
     add_user_test_account,
     get_least_loaded_server,
     delete_config_by_id,
+    get_user_subscription_profiles,
 )
 from core.xui_api import XUIClient, fmt_bytes, days_left, expiry_ms_from_days
 from core.texts import get_text
 from core.qr import build_qr_image
+from core.multi_subscription import subscription_url
 from bot.middlewares.channel_required import ChannelRequiredMiddleware
 
 from bot.keyboards import (
@@ -410,6 +412,29 @@ async def user_status(msg: Message):
     user = await get_or_create_user(msg.from_user.id)
     configs = await get_user_configs(user["id"])
     if not configs:
+        profiles = await get_user_subscription_profiles(user["id"])
+        if profiles:
+            profile = profiles[0]
+            sub_url = await subscription_url(profile["token"])
+            used = int(profile.get("used_bytes") or 0)
+            total = int(float(profile.get("traffic_gb") or 0) * 1024 ** 3)
+            pct = min(100, int(used / total * 100)) if total > 0 else 0
+            await msg.answer(
+                "📡 *سرویس سابسکریپشن چندسروره شما*\n\n"
+                f"حجم کل: `{profile['traffic_gb']} GB`\n"
+                f"مصرف ثبت‌شده: `{fmt_bytes(used)}` ({pct}%)\n"
+                f"مدت: `{profile['duration_days']} روز`\n"
+                f"وضعیت: {'فعال' if profile.get('is_active') else 'غیرفعال'}\n\n"
+                f"لینک ساب:\n`{sub_url}`",
+                parse_mode="Markdown",
+                reply_markup=config_links_kb("", sub_url),
+            )
+            try:
+                ch = await get_setting("channel_username", "AtlasChannel")
+                await msg.answer_photo(_qr_input_file(sub_url, ch), caption="QR سابسکریپشن چندسروره", parse_mode=None)
+            except Exception:
+                pass
+            return
         await msg.answer(await get_text("no_active_service"), parse_mode="Markdown")
         return
 

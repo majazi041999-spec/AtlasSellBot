@@ -94,6 +94,8 @@ from core.renewal import find_and_renew_config
 from core.qr import build_qr_image
 from bot.keyboards import config_links_kb
 from core.update_notes import DEFAULT_UPDATE_BROADCAST_TEXT, get_update_broadcast_text
+from core.multi_subscription import render_subscription
+from core.multi_subscription import create_profile_for_order, multi_sub_enabled_for_new_users
 
 logger = logging.getLogger(__name__)
 
@@ -103,6 +105,22 @@ _dir = os.path.dirname(os.path.abspath(__file__))
 _templates = Jinja2Templates(directory=os.path.join(_dir, "templates"))
 
 S = WEB_SECRET_PATH  # short alias
+
+
+@app.get("/sub/{token}")
+async def public_subscription(token: str):
+    rendered = await render_subscription(token)
+    if not rendered:
+        return StreamingResponse(iter([b""]), media_type="text/plain", status_code=404)
+    body, info = rendered
+    headers = {
+        "Subscription-Userinfo": (
+            f"upload={info['upload']}; download={info['download']}; "
+            f"total={info['total']}; expire={info['expire']}"
+        ),
+        "Cache-Control": "no-store",
+    }
+    return StreamingResponse(iter([body.encode()]), media_type="text/plain; charset=utf-8", headers=headers)
 
 
 async def _clear_review_buttons(tx_type: str, tx_id: int, status_text: str = ""):
@@ -630,6 +648,45 @@ async def _order_approve_web_impl(request: Request, oid: int):
     bulk_count = int(order.get("bulk_count") or 1)
     each_gb = float(order.get("bulk_each_gb") or order["traffic_gb"])
     duration = int(order["duration_days"])
+    if await multi_sub_enabled_for_new_users(user["id"], bulk_count=bulk_count, is_renewal=False):
+        sub_result = await create_profile_for_order(user, order, each_gb, duration)
+        if sub_result.get("ok"):
+            await update_order(
+                oid,
+                status="approved",
+                server_id=0,
+                config_email=sub_result["email"],
+                inbound_id=0,
+                approved_at=datetime.now().isoformat(),
+            )
+            if order.get("referred_by"):
+                referrer = await get_user_by_id(order["referred_by"])
+                if referrer:
+                    await update_user(
+                        referrer["id"],
+                        referral_bonus_gb=float(referrer.get("referral_bonus_gb") or 0) + REFERRAL_BONUS_GB,
+                    )
+            await _clear_review_buttons("order", oid)
+            if BOT_TOKEN and len(BOT_TOKEN) > 20:
+                bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.MARKDOWN))
+                try:
+                    sub_url = sub_result["url"]
+                    await bot.send_message(
+                        order["telegram_id"],
+                        "🎉 سرویس آزمایشی چندسروره شما فعال شد.\n\n"
+                        f"تعداد سرورها: {sub_result['nodes']}\n"
+                        f"حجم کل مشترک: {each_gb} GB\n"
+                        f"مدت: {duration} روز\n\n"
+                        f"لینک سابسکریپشن:\n{sub_url}",
+                        parse_mode=None,
+                        reply_markup=config_links_kb("", sub_url),
+                    )
+                    qr = build_qr_image(sub_url, footer_text=await get_setting("channel_username", "AtlasChannel"))
+                    await bot.send_photo(order["telegram_id"], BufferedInputFile(qr.getvalue(), filename="atlas-sub.png"), caption="QR سابسکریپشن چندسروره", parse_mode=None)
+                finally:
+                    await bot.session.close()
+            return RedirectResponse(f"/{S}/orders", status_code=302)
+
     created = []
     bonus_pending = 0.0
     bonus_applied = 0.0
@@ -1016,6 +1073,10 @@ async def settings_page(request: Request):
         "legacy_sync_enabled": await get_setting("legacy_sync_enabled", SETTINGS_DEFAULTS["legacy_sync_enabled"]),
         "max_daily_migrations": await get_setting("max_daily_migrations", SETTINGS_DEFAULTS["max_daily_migrations"]),
         "renewal_min_traffic_gb": await get_setting("renewal_min_traffic_gb", SETTINGS_DEFAULTS["renewal_min_traffic_gb"]),
+        "multi_sub_enabled": await get_setting("multi_sub_enabled", SETTINGS_DEFAULTS["multi_sub_enabled"]),
+        "multi_sub_node_count": await get_setting("multi_sub_node_count", SETTINGS_DEFAULTS["multi_sub_node_count"]),
+        "multi_sub_min_nodes": await get_setting("multi_sub_min_nodes", SETTINGS_DEFAULTS["multi_sub_min_nodes"]),
+        "public_base_url": await get_setting("public_base_url", SETTINGS_DEFAULTS["public_base_url"]),
         "test_account_enabled": await get_setting("test_account_enabled", SETTINGS_DEFAULTS["test_account_enabled"]),
         "test_account_traffic_gb": await get_setting("test_account_traffic_gb", SETTINGS_DEFAULTS["test_account_traffic_gb"]),
         "test_account_duration_days": await get_setting("test_account_duration_days", SETTINGS_DEFAULTS["test_account_duration_days"]),
@@ -1071,6 +1132,10 @@ async def settings_save(
     legacy_sync_enabled: str = Form("1"),
     max_daily_migrations: int = Form(5),
     renewal_min_traffic_gb: float = Form(1),
+    multi_sub_enabled: str = Form("0"),
+    multi_sub_node_count: int = Form(4),
+    multi_sub_min_nodes: int = Form(2),
+    public_base_url: str = Form(""),
     test_account_enabled: str = Form("0"),
     test_account_traffic_gb: float = Form(1),
     test_account_duration_days: int = Form(1),
@@ -1117,6 +1182,10 @@ async def settings_save(
     await set_setting("legacy_sync_enabled", "1" if legacy_sync_enabled == "1" else "0")
     await set_setting("max_daily_migrations", str(max(0, int(max_daily_migrations or 0))))
     await set_setting("renewal_min_traffic_gb", str(max(0.1, float(renewal_min_traffic_gb or 1))))
+    await set_setting("multi_sub_enabled", "1" if multi_sub_enabled == "1" else "0")
+    await set_setting("multi_sub_node_count", str(max(2, min(8, int(multi_sub_node_count or 4)))))
+    await set_setting("multi_sub_min_nodes", str(max(2, min(8, int(multi_sub_min_nodes or 2)))))
+    await set_setting("public_base_url", public_base_url.strip().rstrip("/"))
     await set_setting("test_account_enabled", "1" if test_account_enabled == "1" else "0")
     await set_setting("test_account_traffic_gb", str(max(0.1, float(test_account_traffic_gb or 1))))
     await set_setting("test_account_duration_days", str(max(1, int(test_account_duration_days or 1))))

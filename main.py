@@ -293,6 +293,20 @@ async def _daily_report_worker(bot):
         await asyncio.sleep(1800)
 
 
+async def _multi_subscription_worker():
+    from core.multi_subscription import sync_active_profiles
+
+    await asyncio.sleep(30)
+    while True:
+        try:
+            checked = await sync_active_profiles(100)
+            if checked:
+                logger.info(f"multi-sub profiles checked={checked}")
+        except Exception as e:
+            logger.exception("multi-sub worker failed: %s", e)
+        await asyncio.sleep(180)
+
+
 
 async def run_bot():
     from aiogram import Bot, Dispatcher
@@ -334,6 +348,7 @@ async def run_bot():
     await _notify_update(bot)
     asyncio.create_task(_config_alert_worker(bot))
     asyncio.create_task(_daily_report_worker(bot))
+    asyncio.create_task(_multi_subscription_worker())
     await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
 

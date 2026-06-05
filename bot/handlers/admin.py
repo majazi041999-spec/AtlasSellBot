@@ -32,6 +32,7 @@ from core.database import (
 )
 from core.xui_api import XUIClient, fmt_bytes, days_left, expiry_ms_from_days
 from core.qr import build_qr_image
+from core.multi_subscription import create_profile_for_order, multi_sub_enabled_for_new_users
 from bot.keyboards import (
     admin_menu, order_review_kb, order_server_select_kb,
     admin_configs_kb, adm_config_detail_kb, confirm_kb, packages_kb, servers_kb,
@@ -549,7 +550,6 @@ async def _do_approve_impl(cb: CallbackQuery, oid: int, sid: int):
 
     await cb.answer("⏳ در حال ساخت کانفیگ...")
     server = await get_server(sid)
-    client = XUIClient(server["url"], server["username"], server["password"], server["sub_path"], server.get("api_token", ""))
 
     bulk_count = int(order.get("bulk_count") or 1)
     each_gb = float(order.get("bulk_each_gb") or order["traffic_gb"])
@@ -559,8 +559,49 @@ async def _do_approve_impl(cb: CallbackQuery, oid: int, sid: int):
     if not user:
         await cb.message.answer("❌ کاربر در دیتابیس یافت نشد!")
         await update_order(oid, status="receipt_submitted")
-        await client.close()
         return False
+
+    if await multi_sub_enabled_for_new_users(user["id"], bulk_count=bulk_count, is_renewal=False):
+        sub_result = await create_profile_for_order(user, order, each_gb, duration)
+        if sub_result.get("ok"):
+            await update_order(
+                oid,
+                status="approved",
+                server_id=0,
+                config_email=sub_result["email"],
+                inbound_id=0,
+                approved_at=datetime.now().isoformat(),
+            )
+            if order.get("referred_by"):
+                from core.config import REFERRAL_BONUS_GB
+                referrer = await get_user_by_id(order["referred_by"])
+                if referrer:
+                    await update_user(
+                        referrer["id"],
+                        referral_bonus_gb=float(referrer.get("referral_bonus_gb") or 0) + REFERRAL_BONUS_GB,
+                    )
+            sub_url = sub_result["url"]
+            try:
+                await cb.bot.send_message(
+                    order["telegram_id"],
+                    "🎉 سرویس آزمایشی چندسروره شما فعال شد.\n\n"
+                    f"تعداد سرورها: {sub_result['nodes']}\n"
+                    f"حجم کل مشترک: {each_gb} GB\n"
+                    f"مدت: {duration} روز\n\n"
+                    f"لینک سابسکریپشن:\n{sub_url}",
+                    parse_mode=None,
+                    reply_markup=config_links_kb("", sub_url),
+                )
+                ch = await get_setting("channel_username", "AtlasChannel")
+                await cb.bot.send_photo(order["telegram_id"], _qr_input_file(sub_url, ch), caption="QR سابسکریپشن چندسروره", parse_mode=None)
+            except Exception:
+                pass
+            try:
+                await cb.message.edit_reply_markup(reply_markup=None)
+            except Exception:
+                pass
+            await cb.message.answer("✅ ساب چندسروره آزمایشی ساخته و برای کاربر ارسال شد.", parse_mode=None)
+            return True
 
     created = []
     bonus_pending = 0.0
@@ -586,6 +627,7 @@ async def _do_approve_impl(cb: CallbackQuery, oid: int, sid: int):
     available_inbounds = _server_inbound_choices(server)
     package_iid = int(order.get("package_inbound_id") or 0)
     target_inbound = package_iid if package_iid in available_inbounds else int(server["inbound_id"])
+    client = XUIClient(server["url"], server["username"], server["password"], server["sub_path"], server.get("api_token", ""))
 
     for i in range(1, max(1, bulk_count) + 1):
         if bulk_count > 1 and custom_prefix:
