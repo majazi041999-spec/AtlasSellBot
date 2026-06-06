@@ -218,13 +218,17 @@ class XUIClient:
         return bool(r and r.get("success"))
 
     async def update_client(self, inbound_id: int, client_uuid: str, email: str,
-                             traffic_gb: float, expire_ms: int, enable: bool = True) -> bool:
+                             traffic_gb: float, expire_ms: int, enable: bool = True,
+                             new_email: Optional[str] = None) -> bool:
         inbound = await self.get_inbound(inbound_id)
         protocol = inbound.get("protocol", "vless") if inbound else "vless"
         traffic_bytes = int(traffic_gb * 1024 ** 3)
+        payload_email = (new_email or email or "").strip()
 
         existing = await self.get_client(email)
-        client = self._client_payload(protocol, client_uuid, email, traffic_bytes, expire_ms, enable, existing)
+        if not existing and payload_email != email:
+            existing = await self.get_client(payload_email)
+        client = self._client_payload(protocol, client_uuid, payload_email, traffic_bytes, expire_ms, enable, existing)
 
         r = await self._req("POST", f"/panel/api/clients/update/{quote(email, safe='')}", json=client)
         if r and r.get("success"):
@@ -409,7 +413,9 @@ def days_left(expire_ms: int) -> int:
     if expire_ms <= 0:
         return -1
     diff = expire_ms - int(time.time() * 1000)
-    return max(0, int(diff / 86_400_000))
+    if diff <= 0:
+        return 0
+    return max(1, int(math.ceil(diff / 86_400_000)))
 
 def used_pct(total: int, down: int, up: int) -> int:
     if total <= 0:

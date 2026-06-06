@@ -18,7 +18,8 @@
   <tbody>
   {% for c in configs %}
   {% set exp = c.expire_timestamp or 0 %}
-  {% set dl = ((exp - now_ts * 1000) // 86400000) if exp > 0 else -1 %}
+  {% set rem_ms = exp - now_ts * 1000 if exp > 0 else 0 %}
+  {% set dl = ((rem_ms + 86399999) // 86400000) if rem_ms > 0 else (0 if exp > 0 else -1) %}
   <tr id="cfg-row-{{ c.id }}">
     <td><code style="font-size:.75rem;color:var(--txt2)">{{ c.email }}</code></td>
     <td style="font-size:.82rem"><a href="/{{ S }}/users/{{ c.user_id }}">{{ c.full_name or '—' }}</a></td>

@@ -31,6 +31,82 @@ def total_bytes(traffic_gb: float) -> int:
     return int(float(traffic_gb or 0) * 1024 ** 3)
 
 
+def _as_int(value, default: int = 0) -> int:
+    try:
+        return int(float(value or 0))
+    except (TypeError, ValueError):
+        return default
+
+
+def _first_positive_int(*values) -> int:
+    for value in values:
+        parsed = _as_int(value)
+        if parsed > 0:
+            return parsed
+    return 0
+
+
+def _epoch_ms(value) -> int:
+    parsed = _as_int(value)
+    if 0 < parsed < 10_000_000_000:
+        return parsed * 1000
+    return parsed
+
+
+def _parse_datetime_ms(value: str) -> int:
+    raw = str(value or "").strip()
+    if not raw:
+        return 0
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S.%f", "%Y-%m-%dT%H:%M:%S"):
+        try:
+            return int(datetime.strptime(raw[:26], fmt).timestamp() * 1000)
+        except ValueError:
+            pass
+    return 0
+
+
+def _derived_expire_from_duration(obj: Dict, now_ms: int, used_bytes: int = 0) -> int:
+    duration_days = _as_int(obj.get("duration_days"))
+    if duration_days <= 0:
+        return 0
+    if _as_int(obj.get("starts_on_first_use")) and used_bytes <= 0:
+        return now_ms + duration_days * 86400000
+    base_ms = _parse_datetime_ms(obj.get("first_use_at") or obj.get("created_at") or "")
+    if base_ms <= 0:
+        base_ms = now_ms
+    return base_ms + duration_days * 86400000
+
+
+def _resolve_expire_ms(obj: Dict, traffic: Dict | None = None, client: Dict | None = None,
+                       now_ms: int | None = None, used_bytes: int = 0) -> int:
+    traffic = traffic or {}
+    client = client or {}
+    expire_ms = _first_positive_int(
+        traffic.get("expiryTime"),
+        traffic.get("expiry_time"),
+        traffic.get("expire"),
+        traffic.get("expires"),
+        client.get("expiryTime"),
+        client.get("expiry_time"),
+        client.get("expire"),
+        client.get("expires"),
+        obj.get("expire_timestamp"),
+    )
+    if expire_ms > 0:
+        return _epoch_ms(expire_ms)
+    return _derived_expire_from_duration(obj, now_ms or int(time.time() * 1000), used_bytes)
+
+
+def _days_remaining(expire_ms: int, now_ms: int | None = None) -> int:
+    expire_ms = _as_int(expire_ms)
+    if expire_ms <= 0:
+        return 0
+    diff = expire_ms - (now_ms or int(time.time() * 1000))
+    if diff <= 0:
+        return 0
+    return max(1, int((diff + 86399999) // 86400000))
+
+
 def public_base_url() -> str:
     raw = ""
     # This is async in settings, so callers use public_base_url_async when possible.
@@ -69,6 +145,8 @@ def subscription_error_message(error: str) -> str:
         return f"تعداد نودهای قابل استفاده سابسکریپشن کافی نیست ({raw.split(':', 1)[1]})."
     if raw.startswith("created_nodes_below_minimum:"):
         return f"تعداد نودهای ساخته‌شده به حداقل لازم نرسید: {raw}"
+    if raw == "config_expiry_unknown":
+        return "تاریخ انقضای کانفیگ قبلی قابل تشخیص نبود؛ برای جلوگیری از ساخت سرویس نامحدود اشتباه، تبدیل انجام نشد. لطفاً اول تاریخ سرویس قبلی را در پنل اصلاح کنید."
     return raw or "خطای نامشخص در ساخت سابسکریپشن"
 
 
@@ -90,6 +168,8 @@ def subscription_error_message(error: str) -> str:
         return "حجم باقی‌مانده این کانفیگ تمام شده است."
     if raw == "config_expired":
         return "زمان این کانفیگ منقضی شده است."
+    if raw == "config_expiry_unknown":
+        return "تاریخ انقضای کانفیگ قبلی قابل تشخیص نبود؛ برای جلوگیری از ساخت سرویس نامحدود اشتباه، تبدیل انجام نشد. لطفاً اول تاریخ سرویس قبلی را در پنل اصلاح کنید."
     return raw or "خطای نامشخص در ساخت سابسکریپشن"
 
 
@@ -309,10 +389,17 @@ async def create_profile_from_config(user: Dict, cfg: Dict) -> Dict:
     old_cli = XUIClient(cfg["server_url"], cfg["srv_user"], cfg["srv_pass"], cfg.get("sub_path") or "", cfg.get("srv_api_token", ""))
     try:
         traffic = await old_cli.get_client_traffic(cfg["email"])
+        found = await old_cli.find_client(cfg.get("email", ""), cfg.get("uuid", ""))
+        remote_client = (found or {}).get("client") or {}
     finally:
         await old_cli.close()
 
-    total = int((traffic or {}).get("total") or int(float(cfg.get("traffic_gb") or 0) * 1024 ** 3))
+    total = _first_positive_int(
+        (traffic or {}).get("total"),
+        (traffic or {}).get("totalGB"),
+        remote_client.get("totalGB"),
+        int(float(cfg.get("traffic_gb") or 0) * 1024 ** 3),
+    )
     used = int((traffic or {}).get("down") or 0) + int((traffic or {}).get("up") or 0)
     remaining_bytes = max(0, total - used)
     remaining_gb = remaining_bytes / (1024 ** 3)
@@ -320,10 +407,12 @@ async def create_profile_from_config(user: Dict, cfg: Dict) -> Dict:
         return {"ok": False, "error": "no_remaining_traffic"}
 
     now_ms = int(time.time() * 1000)
-    expire_ms = int((traffic or {}).get("expiryTime") or cfg.get("expire_timestamp") or 0)
+    expire_ms = _resolve_expire_ms(cfg, traffic, remote_client, now_ms, used)
     if expire_ms > 0 and expire_ms <= now_ms:
         return {"ok": False, "error": "config_expired"}
-    remaining_days = max(1, int((expire_ms - now_ms + 86399999) // 86400000)) if expire_ms > 0 else int(cfg.get("duration_days") or 0)
+    if expire_ms <= 0:
+        return {"ok": False, "error": "config_expiry_unknown"}
+    remaining_days = _days_remaining(expire_ms, now_ms)
 
     node_count = max(2, min(8, int(await get_setting("multi_sub_node_count", "4") or 4)))
     nodes = await pick_subscription_nodes(node_count)
@@ -417,6 +506,8 @@ async def render_subscription(token: str) -> tuple[str, Dict[str, int]] | None:
         try:
             await sync_profile_usage(profile)
             profile = await get_subscription_profile_by_token(token) or profile
+            if not int(profile.get("is_active") or 0):
+                return None
         except Exception:
             pass
     nodes = await get_subscription_nodes(profile["id"])
@@ -437,24 +528,58 @@ async def render_subscription(token: str) -> tuple[str, Dict[str, int]] | None:
     return body, {"upload": 0, "download": used, "total": total, "expire": expire}
 
 
+async def repair_subscription_profile_expiry(profile: Dict) -> Dict:
+    if int(profile.get("expire_timestamp") or 0) > 0 or _as_int(profile.get("duration_days")) <= 0:
+        return profile
+
+    now_ms = int(time.time() * 1000)
+    expire_ms = _resolve_expire_ms(profile, now_ms=now_ms, used_bytes=int(profile.get("used_bytes") or 0))
+    if expire_ms <= 0:
+        return profile
+
+    fixed = dict(profile)
+    fixed["expire_timestamp"] = expire_ms
+    fixed["is_active"] = 0 if expire_ms <= now_ms else int(profile.get("is_active") or 0)
+    await update_subscription_profile(
+        profile["id"],
+        expire_timestamp=expire_ms,
+        is_active=fixed["is_active"],
+    )
+    await set_nodes_enabled(profile["id"], bool(fixed["is_active"]))
+    return fixed
+
+
 async def sync_profile_usage(profile: Dict) -> Dict:
+    profile = await repair_subscription_profile_expiry(profile)
+    if not int(profile.get("is_active") or 0):
+        await set_nodes_enabled(profile["id"], False)
+        return {"used": int(profile.get("used_bytes") or 0), "disabled": True, "inactive": True}
     nodes = await get_subscription_nodes(profile["id"])
     used_total = 0
     total_limit = total_bytes(profile.get("traffic_gb") or 0)
     now_ms = int(time.time() * 1000)
     expired = int(profile.get("expire_timestamp") or 0) > 0 and int(profile.get("expire_timestamp") or 0) <= now_ms
+    if expired:
+        await update_subscription_profile(profile["id"], is_active=0)
+        await set_nodes_enabled(profile["id"], False)
+        return {"used": int(profile.get("used_bytes") or 0), "disabled": True, "expired": True}
 
     for node in nodes:
         cli = XUIClient(node["server_url"], node["srv_user"], node["srv_pass"], node.get("sub_path") or "", node.get("srv_api_token", ""))
         try:
             traffic = await cli.get_client_traffic(node["email"])
-            used = int((traffic or {}).get("down") or 0) + int((traffic or {}).get("up") or 0)
+            if traffic:
+                used = int((traffic or {}).get("down") or 0) + int((traffic or {}).get("up") or 0)
+                await update_subscription_node(node["id"], last_used_bytes=used)
+            else:
+                used = int(node.get("last_used_bytes") or 0)
             used_total += used
-            await update_subscription_node(node["id"], last_used_bytes=used)
+        except Exception:
+            used_total += int(node.get("last_used_bytes") or 0)
         finally:
             await cli.close()
 
-    should_disable = expired or (total_limit > 0 and used_total >= total_limit)
+    should_disable = total_limit > 0 and used_total >= total_limit
     await update_subscription_profile(profile["id"], used_bytes=used_total, is_active=0 if should_disable else 1)
     if should_disable:
         await set_nodes_enabled(profile["id"], False)
@@ -475,8 +600,9 @@ async def set_nodes_enabled(profile_id: int, enabled: bool):
             if profile:
                 traffic_gb = float(profile.get("traffic_gb") or 0)
                 expire_ms = int(profile.get("expire_timestamp") or 0)
-            await cli.update_client(node["inbound_id"], node["uuid"], node["email"], traffic_gb, expire_ms, bool(enabled))
-            await update_subscription_node(node["id"], is_active=1 if enabled else 0)
+            ok = await cli.update_client(node["inbound_id"], node["uuid"], node["email"], traffic_gb, expire_ms, bool(enabled))
+            if ok:
+                await update_subscription_node(node["id"], is_active=1 if enabled else 0)
         except Exception:
             pass
         finally:
@@ -513,6 +639,59 @@ async def renew_subscription_profile(profile: Dict, traffic_gb: float, duration_
         is_active=1,
     )
     return {"ok": True, "nodes": ok_count, "expire_ms": new_expire_ms}
+
+
+async def edit_subscription_profile(profile: Dict, email: str, traffic_gb: float, expire_ms: int, is_active: bool = True) -> Dict:
+    nodes = await get_subscription_nodes(profile["id"])
+    ok_count = 0
+    failures = []
+    old_email = str(profile.get("email") or "")
+    for node in nodes:
+        cli = XUIClient(node["server_url"], node["srv_user"], node["srv_pass"], node.get("sub_path") or "", node.get("srv_api_token", ""))
+        try:
+            node_email = str(node.get("email") or "")
+            suffix = ""
+            if old_email and node_email.startswith(old_email):
+                suffix = node_email[len(old_email):]
+            if not suffix and len(nodes) > 1:
+                suffix = f"_n{node.get('id')}"
+            new_node_email = f"{email}{suffix}"[:120] if suffix else email[:120]
+            ok = await cli.update_client(
+                node["inbound_id"],
+                node["uuid"],
+                node_email,
+                traffic_gb,
+                int(expire_ms or 0),
+                bool(is_active),
+                new_email=new_node_email,
+            )
+            if ok:
+                link = await cli.get_client_link(node["inbound_id"], new_node_email) or node.get("link", "")
+                await update_subscription_node(
+                    node["id"],
+                    email=new_node_email,
+                    link=link,
+                    is_active=1 if is_active else 0,
+                )
+                ok_count += 1
+            else:
+                failures.append(f"{node.get('server_name') or node.get('server_id')}#{node.get('inbound_id')}")
+        finally:
+            await cli.close()
+    if nodes and ok_count <= 0:
+        return {"ok": False, "error": "no_nodes_updated:" + ",".join(failures[:6])}
+
+    now_ms = int(time.time() * 1000)
+    duration_days = int((int(expire_ms or 0) - now_ms + 86399999) // 86400000) if int(expire_ms or 0) > 0 else 0
+    await update_subscription_profile(
+        profile["id"],
+        email=email,
+        traffic_gb=float(traffic_gb),
+        duration_days=max(0, duration_days),
+        expire_timestamp=int(expire_ms or 0),
+        is_active=1 if is_active else 0,
+    )
+    return {"ok": True, "nodes": ok_count, "expire_ms": int(expire_ms or 0)}
 
 
 async def delete_subscription_profile_remote(profile_id: int) -> Dict:

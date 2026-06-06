@@ -130,6 +130,7 @@ from core.multi_subscription import (
     renew_subscription_profile,
     subscription_url,
     delete_subscription_profile_remote,
+    edit_subscription_profile,
 )
 
 logger = logging.getLogger(__name__)
@@ -848,6 +849,36 @@ async def subscription_profile_toggle(request: Request, profile_id: int):
     next_active = 0 if int(profile.get("is_active") or 0) else 1
     await update_subscription_profile(profile_id, is_active=next_active)
     return JSONResponse({"success": True, "is_active": bool(next_active)})
+
+
+@app.post(f"/{S}/subs/profiles/{{profile_id}}/edit")
+async def subscription_profile_edit(
+    request: Request,
+    profile_id: int,
+    email: str = Form(...),
+    traffic_gb: float = Form(...),
+    expire_at: str = Form(""),
+    is_active: str = Form("1"),
+):
+    if not _auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    profile = await get_subscription_profile(profile_id)
+    if not profile:
+        return RedirectResponse(f"/{S}/subs/profiles?saved=not_found", status_code=302)
+
+    clean_email = re.sub(r"[^A-Za-z0-9_.@:-]+", "_", (email or "").strip())[:96] or str(profile.get("email") or f"sub_{profile_id}")
+    traffic_gb = max(0.1, float(traffic_gb or 0.1))
+    expire_ms = 0
+    if (expire_at or "").strip():
+        try:
+            expire_ms = int(datetime.fromisoformat(expire_at.strip()).timestamp() * 1000)
+        except ValueError:
+            expire_ms = int(profile.get("expire_timestamp") or 0)
+
+    result = await edit_subscription_profile(profile, clean_email, traffic_gb, expire_ms, is_active == "1")
+    if not result.get("ok"):
+        return RedirectResponse(f"/{S}/subs/profiles?saved=edit_error", status_code=302)
+    return RedirectResponse(f"/{S}/subs/profiles?saved=edited", status_code=302)
 
 
 @app.post(f"/{S}/subs/profiles/{{profile_id}}/delete")

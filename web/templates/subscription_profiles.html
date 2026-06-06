@@ -3,6 +3,14 @@
 {% block topbar_title %}🧬 مدیریت سابسکریپشن‌ها{% endblock %}
 
 {% block content %}
+{% if request.query_params.get('saved') == 'edited' %}
+<div class="alert alert-success">سابسکریپشن با موفقیت ویرایش شد.</div>
+{% elif request.query_params.get('saved') == 'edit_error' %}
+<div class="alert alert-danger">ویرایش سابسکریپشن روی نودها ناموفق بود.</div>
+{% elif request.query_params.get('saved') == 'not_found' %}
+<div class="alert alert-danger">سابسکریپشن پیدا نشد.</div>
+{% endif %}
+
 <div class="sec-hd">
   <span class="sec-title">کل سابسکریپشن‌ها: {{ total }}</span>
   <div style="display:flex;gap:8px;flex-wrap:wrap">
@@ -20,7 +28,9 @@
   {% for p in profiles %}
   {% set total_bytes = (p.traffic_gb|float * 1073741824)|int %}
   {% set pct = ((p.used_bytes or 0) * 100 // total_bytes) if total_bytes > 0 else 0 %}
-  {% set dl = (((p.expire_timestamp or 0) - now_ts * 1000) // 86400000) if (p.expire_timestamp or 0) > 0 else -1 %}
+  {% set exp = p.expire_timestamp or 0 %}
+  {% set rem_ms = exp - now_ts * 1000 if exp > 0 else 0 %}
+  {% set dl = ((rem_ms + 86399999) // 86400000) if rem_ms > 0 else (0 if exp > 0 else -1) %}
   <tr id="sub-row-{{ p.id }}">
     <td>#{{ p.id }}<br><small style="color:var(--txt3)">Order #{{ p.order_id or '—' }}</small></td>
     <td>
@@ -40,6 +50,13 @@
     <td><code style="font-size:.7rem;direction:ltr;display:block;max-width:260px;white-space:normal">{{ p.url }}</code></td>
     <td>{% if p.is_active %}<span class="badge b-green">فعال</span>{% else %}<span class="badge b-red">غیرفعال</span>{% endif %}</td>
     <td style="display:flex;gap:6px;flex-wrap:wrap">
+      <button class="btn btn-xs btn-outline sub-edit-btn"
+              data-id="{{ p.id }}"
+              data-email="{{ p.email|e }}"
+              data-traffic="{{ p.traffic_gb|float }}"
+              data-expire="{{ p.expire_timestamp or 0 }}"
+              data-active="{{ 1 if p.is_active else 0 }}"
+              onclick="openEditSubFromButton(this)">ویرایش</button>
       <button class="btn btn-xs btn-outline" onclick="toggleSub({{ p.id }})">{{ 'غیرفعال' if p.is_active else 'فعال' }}</button>
       <button class="btn btn-xs btn-danger" onclick="deleteSub({{ p.id }})">حذف</button>
     </td>
@@ -56,10 +73,70 @@
     {% if page < total_pages %}<a class="btn btn-outline btn-sm" href="/{{ S }}/subs/profiles?page={{ page+1 }}">بعدی ▶️</a>{% endif %}
   </div>
 </div>
+
+<div class="overlay" id="editSubModal">
+  <div class="modal">
+    <div class="modal-hd">
+      <h3>ویرایش سابسکریپشن</h3>
+      <button class="modal-close" onclick="closeModal('editSubModal')">×</button>
+    </div>
+    <form id="editSubForm" method="post">
+      <div class="form-group">
+        <label>نام / شناسه ساب</label>
+        <input class="form-control" type="text" name="email" id="edit_sub_email" required>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>حجم کل (GB)</label>
+          <input class="form-control" type="number" name="traffic_gb" id="edit_sub_traffic" min="0.1" step="0.1" required>
+        </div>
+        <div class="form-group">
+          <label>تاریخ انقضا</label>
+          <input class="form-control" type="datetime-local" name="expire_at" id="edit_sub_expire">
+        </div>
+      </div>
+      <div class="form-group">
+        <label>وضعیت</label>
+        <select class="form-control" name="is_active" id="edit_sub_active">
+          <option value="1">فعال</option>
+          <option value="0">غیرفعال</option>
+        </select>
+      </div>
+      <div style="display:flex;gap:8px;justify-content:flex-end">
+        <button class="btn btn-outline" type="button" onclick="closeModal('editSubModal')">انصراف</button>
+        <button class="btn btn-primary" type="submit">ذخیره تغییرات</button>
+      </div>
+    </form>
+  </div>
+</div>
 {% endblock %}
 
 {% block scripts %}
 <script>
+function toDateTimeLocal(ms){
+  ms = Number(ms || 0);
+  if(!ms || ms <= 0) return '';
+  const d = new Date(ms);
+  const pad = n => String(n).padStart(2,'0');
+  return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+function openEditSub(id, email, traffic, expireMs, isActive){
+  document.getElementById('editSubForm').action = `/${S}/subs/profiles/${id}/edit`;
+  document.getElementById('edit_sub_email').value = email || '';
+  document.getElementById('edit_sub_traffic').value = traffic || 1;
+  document.getElementById('edit_sub_expire').value = toDateTimeLocal(expireMs);
+  document.getElementById('edit_sub_active').value = isActive ? '1' : '0';
+  openModal('editSubModal');
+}
+function openEditSubFromButton(btn){
+  openEditSub(
+    Number(btn.dataset.id),
+    btn.dataset.email || '',
+    Number(btn.dataset.traffic || 1),
+    Number(btn.dataset.expire || 0),
+    btn.dataset.active === '1'
+  );
+}
 async function toggleSub(id){
   const r = await api(`/${S}/subs/profiles/${id}/toggle`);
   if(r.success){ toast('وضعیت ساب تغییر کرد','success'); setTimeout(()=>location.reload(),700); }
