@@ -36,6 +36,34 @@ STASHED=0
 STASH_REF=""
 STAMP="$(date +%Y%m%d-%H%M%S)"
 PATCH_FILE="$REPO_DIR/update-local-changes-$STAMP.patch"
+STOP_TIMEOUT="${STOP_TIMEOUT:-20}"
+
+stop_service_fast() {
+  local service="$1"
+  local timeout="$2"
+
+  if ! systemctl is-active --quiet "$service"; then
+    return 0
+  fi
+
+  systemctl stop "$service" --no-block || return 0
+  for ((i=0; i<timeout; i++)); do
+    if ! systemctl is-active --quiet "$service"; then
+      return 0
+    fi
+    sleep 1
+  done
+
+  echo "⚠️ Service $service did not stop after ${timeout}s; forcing it down ..."
+  systemctl kill --kill-who=all --signal=SIGKILL "$service" || true
+  for _ in 1 2 3 4 5; do
+    if ! systemctl is-active --quiet "$service"; then
+      return 0
+    fi
+    sleep 1
+  done
+  return 0
+}
 
 cleanup_on_error() {
   local exit_code=$?
@@ -93,7 +121,7 @@ if [[ "$MODE" == "pull" || "$MODE" == "pull-no-stash" ]]; then
 fi
 
 echo "ℹ️ Stopping service $SERVICE ..."
-systemctl stop "$SERVICE" || true
+stop_service_fast "$SERVICE" "$STOP_TIMEOUT"
 SERVICE_STOPPED=1
 
 case "$MODE" in

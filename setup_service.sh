@@ -42,6 +42,8 @@ ${USER_LINE}
 ExecStart=${PYTHON_BIN} ${DIR}/main.py
 Restart=always
 RestartSec=3
+TimeoutStopSec=15
+KillMode=mixed
 Environment=PYTHONUNBUFFERED=1
 
 [Install]
