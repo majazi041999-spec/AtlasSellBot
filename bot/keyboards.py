@@ -121,12 +121,21 @@ def config_detail_kb(cid: int) -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
     _button(b, text="🔗 دریافت لینک اتصال", callback_data=f"cfg_link:{cid}", style="primary")
     _button(b, text="♻️ تمدید سرویس", callback_data=f"cfg_renew:{cid}", style="success")
+    _button(b, text="🧬 تبدیل به لینک ساب", callback_data=f"cfg_to_sub:{cid}", style="success")
     _button(b, text="🔄 انتقال به سرور دیگر", callback_data=f"mig_start:{cid}", style="primary")
     _button(b, text="🔄 بروزرسانی سرویس", callback_data=f"cfg_refresh:{cid}", style="primary")
     _button(b, text="📡 لینک سابسکریپشن", callback_data=f"cfg_sub:{cid}", style="primary")
     _button(b, text="🧾 QR Code", callback_data=f"cfg_qr:{cid}", style="primary")
     _button(b, text="🗑️ حذف سرویس", callback_data=f"cfg_del:{cid}", style="danger")
     _button(b, text="🔙 بازگشت", callback_data="back_configs", style="primary")
+    b.adjust(1)
+    return b.as_markup()
+
+
+def config_to_sub_confirm_kb(cid: int) -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    _button(b, text="✅ بله، تبدیل شود", callback_data=f"cfg_to_sub_do:{cid}", style="success")
+    _button(b, text="❌ منصرف شدم", callback_data=f"cfg:{cid}", style="primary")
     b.adjust(1)
     return b.as_markup()
 

@@ -59,7 +59,13 @@ from core.database import (
 from core.xui_api import XUIClient, fmt_bytes, days_left, expiry_ms_from_days
 from core.texts import get_text
 from core.qr import build_qr_image
-from core.multi_subscription import subscription_url, sync_profile_usage, delete_subscription_profile_remote
+from core.multi_subscription import (
+    subscription_url,
+    sync_profile_usage,
+    delete_subscription_profile_remote,
+    create_profile_from_config,
+    subscription_error_message,
+)
 from bot.middlewares.channel_required import ChannelRequiredMiddleware
 
 from bot.keyboards import (
@@ -67,6 +73,7 @@ from bot.keyboards import (
     packages_kb,
     payment_kb,
     config_detail_kb,
+    config_to_sub_confirm_kb,
     config_delete_confirm_kb,
     renew_options_kb,
     config_links_kb,
@@ -153,8 +160,8 @@ async def _send_subscription_status(target, profile: dict):
     if isinstance(target, Message):
         await target.answer(text, parse_mode=None, reply_markup=subscription_detail_kb(int(profile["id"]), sub_url))
         try:
-            ch = await get_setting("channel_username", "AtlasChannel")
-            await target.answer_photo(_qr_input_file(sub_url, ch), caption="QR سابسکریپشن چندسروره", parse_mode=None)
+            qr_label = profile.get("email") or "Subscription"
+            await target.answer_photo(_qr_input_file(sub_url, qr_label), caption=f"QR سابسکریپشن: {qr_label}", parse_mode=None)
         except Exception:
             pass
     else:
@@ -481,9 +488,14 @@ async def user_status(msg: Message):
         return
 
     user = await get_or_create_user(msg.from_user.id)
-    configs = await get_user_configs(user["id"])
+    configs = [c for c in await get_user_configs(user["id"]) if int(c.get("is_active") or 0)]
+    profiles = [p for p in await get_user_subscription_profiles(user["id"]) if int(p.get("is_active") or 0)]
+    if profiles:
+        for profile in profiles[:3]:
+            await _send_subscription_status(msg, profile)
+        if not configs:
+            return
     if not configs:
-        profiles = await get_user_subscription_profiles(user["id"])
         if profiles:
             await _send_subscription_status(msg, profiles[0])
             return
@@ -627,6 +639,65 @@ async def cfg_delete_confirm(cb: CallbackQuery):
         parse_mode="Markdown",
     )
     await cb.answer()
+
+
+@router.callback_query(F.data.startswith("cfg_to_sub:"))
+async def cfg_to_sub_confirm(cb: CallbackQuery):
+    if not await _ensure_channel_membership(cb):
+        return
+    cid = int(cb.data.split(":")[1])
+    user = await get_or_create_user(cb.from_user.id, cb.from_user.username, cb.from_user.full_name)
+    cfg = await _owned_config_for_user(user["id"], cid)
+    if not cfg or not int(cfg.get("is_active") or 0):
+        await cb.answer("این سرویس فعال نیست یا برای شما پیدا نشد.", show_alert=True)
+        return
+    await cb.message.answer(
+        "🧬 تبدیل کانفیگ قدیمی به لینک ساب\n\n"
+        f"سرویس: {cfg.get('email') or cid}\n\n"
+        "با تایید، ربات باقی‌مانده حجم و زمان همین سرویس را به لینک سابسکریپشن جدید منتقل می‌کند. "
+        "کانفیگ قبلی روی سرور غیرفعال می‌شود و فقط لینک ساب جدید فعال می‌ماند.",
+        reply_markup=config_to_sub_confirm_kb(cid),
+        parse_mode=None,
+    )
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("cfg_to_sub_do:"))
+async def cfg_to_sub_do(cb: CallbackQuery):
+    if not await _ensure_channel_membership(cb):
+        return
+    cid = int(cb.data.split(":")[1])
+    user = await get_or_create_user(cb.from_user.id, cb.from_user.username, cb.from_user.full_name)
+    cfg = await _owned_config_for_user(user["id"], cid)
+    if not cfg or not int(cfg.get("is_active") or 0):
+        await cb.answer("این سرویس فعال نیست یا قبلاً تبدیل/غیرفعال شده است.", show_alert=True)
+        return
+    await cb.answer("در حال تبدیل سرویس...")
+    result = await create_profile_from_config(user, cfg)
+    if not result.get("ok"):
+        await cb.message.answer(
+            "❌ تبدیل سرویس به لینک ساب ناموفق بود.\n"
+            f"علت: {subscription_error_message(str(result.get('error') or ''))}",
+            parse_mode=None,
+        )
+        return
+
+    sub_url = result["url"]
+    qr_label = result.get("email") or cfg.get("email") or "Subscription"
+    text = (
+        "✅ سرویس شما به لینک سابسکریپشن تبدیل شد.\n\n"
+        f"سرویس قبلی: {cfg.get('email') or '-'}\n"
+        f"حجم باقی‌مانده منتقل‌شده: {fmt_bytes(int(result.get('remaining_bytes') or 0))}\n"
+        f"روز باقی‌مانده: {int(result.get('duration_days') or 0)} روز\n"
+        f"نودهای فعال: {int(result.get('nodes') or 0)}\n\n"
+        f"لینک ساب:\n{sub_url}\n\n"
+        "کانفیگ قبلی غیرفعال شد و از این به بعد فقط همین لینک ساب فعال است."
+    )
+    await cb.message.answer(text, parse_mode=None, reply_markup=subscription_detail_kb(int(result["profile_id"]), sub_url))
+    try:
+        await cb.message.answer_photo(_qr_input_file(sub_url, qr_label), caption=f"QR سابسکریپشن: {qr_label}", parse_mode=None)
+    except Exception:
+        pass
 
 
 @router.callback_query(F.data.startswith("cfg_del_do:"))

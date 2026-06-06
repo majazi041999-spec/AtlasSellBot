@@ -20,6 +20,7 @@ from core.database import (
     get_setting,
     get_subscription_nodes,
     get_subscription_profile_by_token,
+    update_config,
     update_subscription_node,
     update_subscription_profile,
 )
@@ -265,6 +266,109 @@ async def create_profile_for_order(user: Dict, order: Dict, traffic_gb: float, d
             "url": sub_url,
             "nodes": len(created_remote),
             "expire_ms": expire_ms,
+        }
+    except Exception as e:
+        for node, inbound_id, client_uuid, node_email in created_remote:
+            cli = XUIClient(node["server_url"], node["srv_user"], node["srv_pass"], node.get("sub_path") or "", node.get("srv_api_token", ""))
+            try:
+                await cli.delete_client(inbound_id, client_uuid, node_email)
+            except Exception:
+                pass
+            finally:
+                await cli.close()
+        await delete_subscription_profile(profile_id)
+        return {"ok": False, "error": str(e)}
+
+
+async def create_profile_from_config(user: Dict, cfg: Dict) -> Dict:
+    """Convert one active legacy config to a managed subscription profile."""
+    if not cfg or not int(cfg.get("is_active") or 0):
+        return {"ok": False, "error": "config_not_active"}
+
+    old_cli = XUIClient(cfg["server_url"], cfg["srv_user"], cfg["srv_pass"], cfg.get("sub_path") or "", cfg.get("srv_api_token", ""))
+    try:
+        traffic = await old_cli.get_client_traffic(cfg["email"])
+    finally:
+        await old_cli.close()
+
+    total = int((traffic or {}).get("total") or int(float(cfg.get("traffic_gb") or 0) * 1024 ** 3))
+    used = int((traffic or {}).get("down") or 0) + int((traffic or {}).get("up") or 0)
+    remaining_bytes = max(0, total - used)
+    remaining_gb = remaining_bytes / (1024 ** 3)
+    if total > 0 and remaining_bytes <= 0:
+        return {"ok": False, "error": "no_remaining_traffic"}
+
+    now_ms = int(time.time() * 1000)
+    expire_ms = int((traffic or {}).get("expiryTime") or cfg.get("expire_timestamp") or 0)
+    if expire_ms > 0 and expire_ms <= now_ms:
+        return {"ok": False, "error": "config_expired"}
+    remaining_days = max(1, int((expire_ms - now_ms + 86399999) // 86400000)) if expire_ms > 0 else int(cfg.get("duration_days") or 0)
+
+    node_count = max(2, min(8, int(await get_setting("multi_sub_node_count", "4") or 4)))
+    nodes = await pick_subscription_nodes(node_count)
+    min_nodes = max(2, min(node_count, int(await get_setting("multi_sub_min_nodes", "2") or 2)))
+    if not nodes:
+        return {"ok": False, "error": "no_subscription_nodes_configured"}
+    if len(nodes) < min_nodes:
+        return {"ok": False, "error": f"not_enough_subscription_nodes:{len(nodes)}/{min_nodes}"}
+
+    token = secrets.token_urlsafe(24)
+    sub_url = await subscription_url(token)
+    if "YOUR_SERVER_IP" in sub_url:
+        return {"ok": False, "error": "public_base_url_not_configured"}
+
+    base_email = str(cfg.get("email") or f"legacy_{user['telegram_id']}").replace(" ", "_")
+    email = f"sub_{base_email}_{int(time.time())}_{secrets.token_hex(3)}"[:96]
+    profile_id = await create_subscription_profile(user["id"], 0, token, email, remaining_gb, remaining_days, expire_ms)
+    created_remote: list[tuple[Dict, int, str, str]] = []
+    failures: list[str] = []
+
+    try:
+        for node in nodes:
+            inbound_id = int(node.get("inbound_id") or 1)
+            client_uuid = str(uuid.uuid4())
+            node_email = f"{email}_n{node['id']}"[:120]
+            cli = XUIClient(node["server_url"], node["srv_user"], node["srv_pass"], node.get("sub_path") or "", node.get("srv_api_token", ""))
+            try:
+                ok = await cli.add_client(inbound_id, client_uuid, node_email, remaining_gb, remaining_days, starts_on_first_use=False)
+                if ok and expire_ms > 0:
+                    ok = await cli.update_client(inbound_id, client_uuid, node_email, remaining_gb, expire_ms, True)
+                if not ok:
+                    failures.append(f"{node.get('server_name') or node['server_id']}#{inbound_id}:add_failed")
+                    continue
+                link = await cli.get_client_link(inbound_id, node_email) or ""
+                await add_subscription_node(profile_id, node["server_id"], inbound_id, client_uuid, node_email, link)
+                created_remote.append((node, inbound_id, client_uuid, node_email))
+            except Exception as e:
+                failures.append(f"{node.get('server_name') or node['server_id']}#{inbound_id}:{e}")
+            finally:
+                await cli.close()
+
+        if len(created_remote) < min_nodes:
+            detail = ",".join(failures[:6])
+            raise RuntimeError(f"created_nodes_below_minimum:{len(created_remote)}/{min_nodes}" + (f";{detail}" if detail else ""))
+
+        old_cli = XUIClient(cfg["server_url"], cfg["srv_user"], cfg["srv_pass"], cfg.get("sub_path") or "", cfg.get("srv_api_token", ""))
+        try:
+            disabled = await old_cli.update_client(cfg["inbound_id"], cfg["uuid"], cfg["email"], float(cfg.get("traffic_gb") or 0), expire_ms, False)
+        finally:
+            await old_cli.close()
+        if not disabled:
+            raise RuntimeError("old_config_disable_failed")
+
+        await update_config(int(cfg["id"]), is_active=0, expire_timestamp=expire_ms)
+        return {
+            "ok": True,
+            "profile_id": profile_id,
+            "token": token,
+            "email": email,
+            "url": sub_url,
+            "nodes": len(created_remote),
+            "traffic_gb": remaining_gb,
+            "duration_days": remaining_days,
+            "expire_ms": expire_ms,
+            "used_bytes": used,
+            "remaining_bytes": remaining_bytes,
         }
     except Exception as e:
         for node, inbound_id, client_uuid, node_email in created_remote:

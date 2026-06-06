@@ -10,6 +10,7 @@ import shlex
 import time
 import subprocess
 import uuid
+import sqlite3
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -58,6 +59,11 @@ from core.database import (
     get_pending_topup_requests,
     get_topup_request,
     update_topup_request,
+    get_pending_legacy_claims,
+    get_legacy_claim,
+    update_legacy_claim,
+    get_config_by_email,
+    get_config_by_uuid,
     get_config,
     get_order,  # noqa: F401
     get_package,
@@ -1045,8 +1051,9 @@ async def _order_approve_web_impl(request: Request, oid: int):
                         parse_mode=None,
                         reply_markup=config_links_kb("", sub_url),
                     )
-                    qr = build_qr_image(sub_url, footer_text=await get_setting("channel_username", "AtlasChannel"))
-                    await bot.send_photo(order["telegram_id"], BufferedInputFile(qr.getvalue(), filename="atlas-sub.png"), caption="QR سابسکریپشن چندسروره", parse_mode=None)
+                    qr_label = sub_result.get("email") or "Subscription"
+                    qr = build_qr_image(sub_url, footer_text=qr_label)
+                    await bot.send_photo(order["telegram_id"], BufferedInputFile(qr.getvalue(), filename="atlas-sub.png"), caption=f"QR سابسکریپشن: {qr_label}", parse_mode=None)
                 finally:
                     await bot.session.close()
             return RedirectResponse(f"/{S}/orders", status_code=302)
@@ -1418,6 +1425,116 @@ async def user_set_pricing(
 
 
 # ═══════════════════════════════ TRANSACTIONS ═══════════════════════
+# ═════════════════════════════ LEGACY SYNC CLAIMS ═════════════════════════════
+async def _notify_legacy_sync_user(telegram_id: int, text: str):
+    if not BOT_TOKEN or len(BOT_TOKEN) < 20:
+        return
+    bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.MARKDOWN))
+    try:
+        await bot.send_message(int(telegram_id), text, parse_mode=None)
+    except Exception:
+        pass
+    finally:
+        await bot.session.close()
+
+
+@app.get(f"/{S}/legacy-claims", response_class=HTMLResponse)
+async def legacy_claims_page(request: Request):
+    if not _auth(request):
+        return _redir_login()
+    claims = await get_pending_legacy_claims()
+    return _templates.TemplateResponse(
+        "legacy_claims.html",
+        await _ctx_ui(request, claims=claims, active="legacy_claims", result=request.query_params.get("result", "")),
+    )
+
+
+@app.post(f"/{S}/legacy-claims/{{cid}}/approve")
+async def legacy_claim_approve_web(request: Request, cid: int):
+    if not _auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+
+    claim = await get_legacy_claim(cid)
+    if not claim or claim.get("status") != "pending":
+        return RedirectResponse(f"/{S}/legacy-claims?result=missing", status_code=302)
+
+    email = (claim.get("email") or "").strip()
+    claim_uuid = (claim.get("uuid") or "").strip()
+    if not email and not claim_uuid:
+        await update_legacy_claim(cid, status="rejected", reviewed_at=datetime.now().isoformat(), admin_note="missing_identity_web")
+        return RedirectResponse(f"/{S}/legacy-claims?result=bad_identity", status_code=302)
+
+    cfg = await get_config_by_email(email) if email else None
+    if not cfg and claim_uuid:
+        cfg = await get_config_by_uuid(claim_uuid)
+
+    remote = None
+    if not cfg:
+        from bot.handlers.admin import _find_remote_legacy_client
+
+        remote = await _find_remote_legacy_client(email, claim_uuid)
+        if not remote or not remote.get("email") or not remote.get("uuid"):
+            await update_legacy_claim(cid, admin_note=f"not_found_web:{datetime.now().isoformat()}", reviewed_at=datetime.now().isoformat())
+            return RedirectResponse(f"/{S}/legacy-claims?result=not_found", status_code=302)
+        try:
+            cfg_id = await save_config(
+                claim["user_id"],
+                remote["server_id"],
+                remote["uuid"],
+                remote["email"],
+                remote["inbound_id"],
+                remote["traffic_gb"],
+                remote["duration_days"],
+                remote["expire_ms"],
+            )
+            cfg = await get_config(cfg_id)
+        except sqlite3.IntegrityError:
+            cfg = await get_config_by_email(remote["email"])
+            if not cfg and remote.get("uuid"):
+                cfg = await get_config_by_uuid(remote["uuid"])
+
+    if not cfg:
+        await update_legacy_claim(cid, admin_note=f"not_found_web:{datetime.now().isoformat()}", reviewed_at=datetime.now().isoformat())
+        return RedirectResponse(f"/{S}/legacy-claims?result=not_found", status_code=302)
+
+    if not remote:
+        try:
+            from bot.handlers.admin import _find_remote_legacy_client
+
+            remote = await _find_remote_legacy_client(email or cfg.get("email", ""), claim_uuid or cfg.get("uuid", ""))
+        except Exception:
+            remote = None
+
+    updates = {"user_id": claim["user_id"], "is_active": int((remote or {}).get("is_active", 1))}
+    if remote:
+        updates.update(
+            server_id=remote["server_id"],
+            inbound_id=remote["inbound_id"],
+            uuid=remote["uuid"],
+            traffic_gb=remote["traffic_gb"],
+            duration_days=remote["duration_days"],
+            expire_timestamp=remote["expire_ms"],
+        )
+    await update_config(cfg["id"], **updates)
+    await update_legacy_claim(cid, status="approved", reviewed_at=datetime.now().isoformat(), admin_note="approved_web")
+    await _notify_legacy_sync_user(
+        int(claim["telegram_id"]),
+        "✅ کانفیگ قبلی شما تایید و به حساب ربات متصل شد.\n\nاز بخش «📡 وضعیت سرویس» می‌توانید آن را ببینید.",
+    )
+    return RedirectResponse(f"/{S}/legacy-claims?result=approved", status_code=302)
+
+
+@app.post(f"/{S}/legacy-claims/{{cid}}/reject")
+async def legacy_claim_reject_web(request: Request, cid: int):
+    if not _auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    claim = await get_legacy_claim(cid)
+    if claim and claim.get("status") == "pending":
+        await update_legacy_claim(cid, status="rejected", reviewed_at=datetime.now().isoformat(), admin_note="rejected_web")
+        await _notify_legacy_sync_user(int(claim["telegram_id"]), "❌ درخواست سینک کانفیگ شما رد شد. برای بررسی بیشتر با پشتیبانی هماهنگ کنید.")
+    return RedirectResponse(f"/{S}/legacy-claims?result=rejected", status_code=302)
+
+
 @app.get(f"/{S}/transactions", response_class=HTMLResponse)
 async def transactions_page(request: Request):
     if not _auth(request):

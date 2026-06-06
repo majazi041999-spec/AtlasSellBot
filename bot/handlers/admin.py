@@ -646,8 +646,8 @@ async def _do_approve_impl(cb: CallbackQuery, oid: int, sid: int):
                     parse_mode=None,
                     reply_markup=config_links_kb("", sub_url),
                 )
-                ch = await get_setting("channel_username", "AtlasChannel")
-                await cb.bot.send_photo(order["telegram_id"], _qr_input_file(sub_url, ch), caption="QR سابسکریپشن چندسروره", parse_mode=None)
+                qr_label = sub_result.get("email") or "Subscription"
+                await cb.bot.send_photo(order["telegram_id"], _qr_input_file(sub_url, qr_label), caption=f"QR سابسکریپشن: {qr_label}", parse_mode=None)
             except Exception:
                 pass
             try:

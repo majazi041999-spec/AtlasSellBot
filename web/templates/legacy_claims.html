@@ -1,0 +1,71 @@
+{% extends "base.html" %}
+{% block title %}درخواست‌های سینک{% endblock %}
+{% block topbar_title %}🔗 درخواست‌های سینک کانفیگ قدیمی{% endblock %}
+
+{% block content %}
+<div class="settings-header">
+  <div>
+    <h2 style="margin-bottom:6px">درخواست‌های سینک کانفیگ قدیمی</h2>
+    <p>درخواست‌هایی که کاربر از ربات ارسال کرده اینجا برای تایید یا رد نمایش داده می‌شوند.</p>
+  </div>
+</div>
+
+{% if result == "approved" %}
+<div class="alert alert-success">درخواست تایید و کانفیگ به کاربر تخصیص داده شد.</div>
+{% elif result == "rejected" %}
+<div class="alert alert-danger">درخواست رد شد.</div>
+{% elif result == "not_found" %}
+<div class="alert alert-danger">کانفیگ روی دیتابیس یا سرورهای ثبت‌شده پیدا نشد؛ درخواست همچنان قابل بررسی است.</div>
+{% elif result %}
+<div class="alert alert-info">نتیجه عملیات: {{ result }}</div>
+{% endif %}
+
+{% if claims %}
+<div class="table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th>#</th>
+        <th>کاربر</th>
+        <th>شناسه کانفیگ</th>
+        <th>لینک</th>
+        <th>تاریخ</th>
+        <th>عملیات</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for c in claims %}
+      <tr>
+        <td>#{{ c.id }}</td>
+        <td>
+          {{ c.full_name or '-' }}<br>
+          <small style="color:var(--txt3)">@{{ c.username or '-' }} | {{ c.telegram_id }}</small>
+        </td>
+        <td>
+          <div dir="ltr" style="text-align:left">{{ c.email or '-' }}</div>
+          <small dir="ltr" style="display:block;text-align:left;color:var(--txt3)">{{ c.uuid or '-' }}</small>
+        </td>
+        <td>
+          <div dir="ltr" style="max-width:320px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:left">{{ c.config_link }}</div>
+        </td>
+        <td style="color:var(--txt2)">{{ c.created_at[:16] }}</td>
+        <td>
+          <form method="post" action="/{{ S }}/legacy-claims/{{ c.id }}/approve" style="display:inline-flex;margin:0 0 6px 6px">
+            <button class="btn btn-success btn-sm" type="submit">تایید و تخصیص</button>
+          </form>
+          <form method="post" action="/{{ S }}/legacy-claims/{{ c.id }}/reject" style="display:inline-flex;margin:0">
+            <button class="btn btn-danger btn-sm" type="submit">رد</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+<div style="text-align:center;padding:54px 16px;color:var(--txt3)">
+  <div style="font-size:2.4rem">✅</div>
+  <p style="margin-top:10px">درخواست سینک در انتظار تاییدی وجود ندارد.</p>
+</div>
+{% endif %}
+{% endblock %}
