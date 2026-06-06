@@ -1494,6 +1494,10 @@ async def settings_page(request: Request):
         "multi_sub_node_count": await get_setting("multi_sub_node_count", SETTINGS_DEFAULTS["multi_sub_node_count"]),
         "multi_sub_min_nodes": await get_setting("multi_sub_min_nodes", SETTINGS_DEFAULTS["multi_sub_min_nodes"]),
         "public_base_url": await get_setting("public_base_url", SETTINGS_DEFAULTS["public_base_url"]),
+        "sub_info_enabled": await get_setting("sub_info_enabled", SETTINGS_DEFAULTS["sub_info_enabled"]),
+        "sub_info_sync_on_render": await get_setting("sub_info_sync_on_render", SETTINGS_DEFAULTS["sub_info_sync_on_render"]),
+        "sub_info_template": await get_setting("sub_info_template", SETTINGS_DEFAULTS["sub_info_template"]),
+        "sub_brand_template": await get_setting("sub_brand_template", SETTINGS_DEFAULTS["sub_brand_template"]),
         "test_account_enabled": await get_setting("test_account_enabled", SETTINGS_DEFAULTS["test_account_enabled"]),
         "test_account_traffic_gb": await get_setting("test_account_traffic_gb", SETTINGS_DEFAULTS["test_account_traffic_gb"]),
         "test_account_duration_days": await get_setting("test_account_duration_days", SETTINGS_DEFAULTS["test_account_duration_days"]),
@@ -1554,6 +1558,10 @@ async def settings_save(
     multi_sub_node_count: int = Form(4),
     multi_sub_min_nodes: int = Form(2),
     public_base_url: str = Form(""),
+    sub_info_enabled: str = Form("1"),
+    sub_info_sync_on_render: str = Form("1"),
+    sub_info_template: str = Form(""),
+    sub_brand_template: str = Form(""),
     test_account_enabled: str = Form("0"),
     test_account_traffic_gb: float = Form(1),
     test_account_duration_days: int = Form(1),
@@ -1565,6 +1573,7 @@ async def settings_save(
     card_bank: str = Form(""),
     panel_domain: str = Form(""),
     cert_email: str = Form(""),
+    atlas_tls_https_port: int = Form(443),
 ):
     if not _auth(request):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
@@ -1604,6 +1613,10 @@ async def settings_save(
     await set_setting("multi_sub_node_count", str(max(2, min(8, int(multi_sub_node_count or 4)))))
     await set_setting("multi_sub_min_nodes", str(max(2, min(8, int(multi_sub_min_nodes or 2)))))
     await set_setting("public_base_url", public_base_url.strip().rstrip("/"))
+    await set_setting("sub_info_enabled", "1" if sub_info_enabled == "1" else "0")
+    await set_setting("sub_info_sync_on_render", "1" if sub_info_sync_on_render == "1" else "0")
+    await set_setting("sub_info_template", sub_info_template.strip() or SETTINGS_DEFAULTS["sub_info_template"])
+    await set_setting("sub_brand_template", sub_brand_template.strip() or SETTINGS_DEFAULTS["sub_brand_template"])
     await set_setting("test_account_enabled", "1" if test_account_enabled == "1" else "0")
     await set_setting("test_account_traffic_gb", str(max(0.1, float(test_account_traffic_gb or 1))))
     await set_setting("test_account_duration_days", str(max(1, int(test_account_duration_days or 1))))
@@ -1617,6 +1630,7 @@ async def settings_save(
     await set_setting("card_bank", card_bank.strip())
     await set_setting("panel_domain", panel_domain.strip().lower())
     await set_setting("cert_email", cert_email.strip().lower())
+    await set_setting("atlas_tls_https_port", str(max(1, min(65535, int(atlas_tls_https_port or 443)))))
 
     return RedirectResponse(f"/{S}/settings?saved=1", status_code=302)
 
