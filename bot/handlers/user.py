@@ -121,6 +121,36 @@ def _extract_subscription_token(text: str) -> str:
     return ""
 
 
+def _format_subscription_status_card(profile: dict, sub_url: str, used: int, total: int, remaining: int,
+                                     pct: int, days_text: str, active_nodes: list[dict]) -> str:
+    service_name = profile.get("email") or f"ساب #{profile.get('id')}"
+    status_text = "فعال" if int(profile.get("is_active") or 0) else "غیرفعال"
+    filled = max(0, min(10, int(round((pct / 100) * 10))))
+    usage_bar = "█" * filled + "░" * (10 - filled)
+    node_names = [
+        str(n.get("node_label") or n.get("server_name") or f"Node #{n.get('id')}")
+        for n in active_nodes[:6]
+    ]
+    nodes_text = "\n".join(f"• {name}" for name in node_names) if node_names else "• نودی فعال نیست"
+    return (
+        "📡 وضعیت سرویس سابسکریپشن\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        f"نام سرویس: {service_name}\n"
+        f"وضعیت: {status_text}\n\n"
+        "مصرف سرویس\n"
+        f"{usage_bar} {pct}%\n"
+        f"مصرف‌شده: {fmt_bytes(used)}\n"
+        f"باقی‌مانده: {fmt_bytes(remaining)}\n"
+        f"حجم کل: {fmt_bytes(total)}\n\n"
+        "زمان سرویس\n"
+        f"باقی‌مانده: {days_text}\n\n"
+        f"نودهای فعال ({len(active_nodes)})\n"
+        f"{nodes_text}\n\n"
+        "لینک سابسکریپشن\n"
+        f"{sub_url}"
+    )
+
+
 async def _send_subscription_status(target, profile: dict):
     if not profile:
         return
@@ -156,6 +186,9 @@ async def _send_subscription_status(target, profile: dict):
         f"وضعیت: {'فعال' if int(profile.get('is_active') or 0) else 'غیرفعال'}\n\n"
         f"لینک ساب:\n{sub_url}"
     )
+
+    pretty_days = f"{dl} روز" if dl > 0 else ("نامحدود" if dl < 0 else "منقضی شده")
+    text = _format_subscription_status_card(profile, sub_url, used, total, remaining, pct, pretty_days, active_nodes)
 
     if isinstance(target, Message):
         await target.answer(text, parse_mode=None, reply_markup=subscription_detail_kb(int(profile["id"]), sub_url))
@@ -684,6 +717,7 @@ async def cfg_to_sub_do(cb: CallbackQuery):
 
     sub_url = result["url"]
     qr_label = result.get("email") or cfg.get("email") or "Subscription"
+    old_action = "حذف شد" if result.get("old_config_action") == "deleted" else "غیرفعال شد"
     text = (
         "✅ سرویس شما به لینک سابسکریپشن تبدیل شد.\n\n"
         f"سرویس قبلی: {cfg.get('email') or '-'}\n"
@@ -691,7 +725,7 @@ async def cfg_to_sub_do(cb: CallbackQuery):
         f"روز باقی‌مانده: {int(result.get('duration_days') or 0)} روز\n"
         f"نودهای فعال: {int(result.get('nodes') or 0)}\n\n"
         f"لینک ساب:\n{sub_url}\n\n"
-        "کانفیگ قبلی غیرفعال شد و از این به بعد فقط همین لینک ساب فعال است."
+        f"کانفیگ قبلی {old_action} و از این به بعد فقط همین لینک ساب فعال است."
     )
     await cb.message.answer(text, parse_mode=None, reply_markup=subscription_detail_kb(int(result["profile_id"]), sub_url))
     try:

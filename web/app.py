@@ -11,6 +11,11 @@ import time
 import subprocess
 import uuid
 import sqlite3
+import json
+import shutil
+import tempfile
+import zipfile
+from io import BytesIO
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -18,8 +23,8 @@ from aiogram import Bot
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.types import BufferedInputFile
-from fastapi import FastAPI, Form, Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
+from fastapi import FastAPI, File, Form, Request, UploadFile
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 from jose import JWTError, jwt
 
@@ -32,6 +37,7 @@ from core.config import (
     JWT_SECRET,
     REFERRAL_BONUS_GB,
     BOT_TOKEN,
+    DB_PATH,
     WEB_ADMIN_PASSWORD,
     WEB_ADMIN_USERNAME,
     WEB_PORT,
@@ -131,6 +137,10 @@ logger = logging.getLogger(__name__)
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 
 _dir = os.path.dirname(os.path.abspath(__file__))
+_repo_dir = os.path.dirname(_dir)
+_db_path = DB_PATH if os.path.isabs(DB_PATH) else os.path.join(_repo_dir, DB_PATH)
+_env_path = os.path.join(_repo_dir, ".env")
+_backup_dir = os.path.join(_repo_dir, "backups")
 _templates = Jinja2Templates(directory=os.path.join(_dir, "templates"))
 
 S = WEB_SECRET_PATH  # short alias
@@ -282,6 +292,96 @@ async def _send_update_broadcast(build: str) -> int:
     await set_setting("update_broadcast_approved_build", "")
     await set_setting("skipped_update_build", "")
     return sent
+
+
+def _safe_backup_name(prefix: str = "atlas-backup") -> str:
+    return f"{prefix}-{datetime.now().strftime('%Y%m%d-%H%M%S')}.zip"
+
+
+def _sqlite_snapshot_bytes() -> bytes:
+    if not os.path.exists(_db_path):
+        raise FileNotFoundError("atlas.db not found")
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".db")
+    tmp.close()
+    try:
+        src = sqlite3.connect(_db_path)
+        dst = sqlite3.connect(tmp.name)
+        try:
+            src.backup(dst)
+        finally:
+            dst.close()
+            src.close()
+        with open(tmp.name, "rb") as f:
+            return f.read()
+    finally:
+        try:
+            os.unlink(tmp.name)
+        except OSError:
+            pass
+
+
+def _build_backup_zip() -> bytes:
+    meta = {
+        "app": "AtlasSellBot",
+        "created_at": datetime.now().isoformat(),
+        "contains": ["atlas.db"] + ([".env"] if os.path.exists(_env_path) else []),
+    }
+    buf = BytesIO()
+    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as z:
+        z.writestr("metadata.json", json.dumps(meta, ensure_ascii=False, indent=2))
+        z.writestr("atlas.db", _sqlite_snapshot_bytes())
+        if os.path.exists(_env_path):
+            z.write(_env_path, ".env")
+    buf.seek(0)
+    return buf.getvalue()
+
+
+def _save_pre_restore_backup() -> str:
+    os.makedirs(_backup_dir, exist_ok=True)
+    name = _safe_backup_name("before-restore")
+    path = os.path.join(_backup_dir, name)
+    with open(path, "wb") as f:
+        f.write(_build_backup_zip())
+    return name
+
+
+def _validate_sqlite_db(path: str):
+    con = sqlite3.connect(path)
+    try:
+        row = con.execute("PRAGMA integrity_check").fetchone()
+        if not row or str(row[0]).lower() != "ok":
+            raise ValueError("sqlite integrity_check failed")
+        tables = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        required = {"settings", "users", "servers", "packages", "orders", "configs"}
+        if not required.issubset(tables):
+            raise ValueError("uploaded database is not an Atlas panel backup")
+    finally:
+        con.close()
+
+
+def _extract_restore_payload(upload_path: str, workdir: str) -> tuple[str, str | None]:
+    db_out = os.path.join(workdir, "restore-atlas.db")
+    env_out = os.path.join(workdir, "restore.env")
+    env_found: str | None = None
+
+    if zipfile.is_zipfile(upload_path):
+        with zipfile.ZipFile(upload_path) as z:
+            names = z.namelist()
+            db_name = "atlas.db" if "atlas.db" in names else next((n for n in names if n.endswith("/atlas.db") or n.endswith(".db")), "")
+            if not db_name:
+                raise ValueError("backup zip does not contain atlas.db")
+            with z.open(db_name) as src, open(db_out, "wb") as dst:
+                shutil.copyfileobj(src, dst)
+            env_name = ".env" if ".env" in names else next((n for n in names if n.endswith("/.env")), "")
+            if env_name:
+                with z.open(env_name) as src, open(env_out, "wb") as dst:
+                    shutil.copyfileobj(src, dst)
+                env_found = env_out
+    else:
+        shutil.copyfile(upload_path, db_out)
+
+    _validate_sqlite_db(db_out)
+    return db_out, env_found
 
 
 def _clean_domain(value: str) -> str:
@@ -496,6 +596,76 @@ async def reject_update_broadcast(request: Request):
 
 
 # ═══════════════════════════════ SERVERS ════════════════════════════
+# ═════════════════════════════ BACKUP / RESTORE ═════════════════════════════
+@app.get(f"/{S}/backups", response_class=HTMLResponse)
+async def backups_page(request: Request):
+    if not _auth(request):
+        return _redir_login()
+    backups = []
+    if os.path.isdir(_backup_dir):
+        for item in sorted(os.listdir(_backup_dir), reverse=True)[:20]:
+            path = os.path.join(_backup_dir, item)
+            if os.path.isfile(path):
+                backups.append({
+                    "name": item,
+                    "size": os.path.getsize(path),
+                    "created": datetime.fromtimestamp(os.path.getmtime(path)).isoformat(),
+                })
+    return _templates.TemplateResponse(
+        "backups.html",
+        await _ctx_ui(
+            request,
+            active="backups",
+            result=request.query_params.get("result", ""),
+            pre=request.query_params.get("pre", ""),
+            backups=backups,
+        ),
+    )
+
+
+@app.get(f"/{S}/backups/download")
+async def backup_download(request: Request):
+    if not _auth(request):
+        return _redir_login()
+    name = _safe_backup_name()
+    headers = {"Content-Disposition": f'attachment; filename="{name}"'}
+    return StreamingResponse(iter([_build_backup_zip()]), media_type="application/zip", headers=headers)
+
+
+@app.get(f"/{S}/backups/emergency/{{name}}")
+async def backup_emergency_download(request: Request, name: str):
+    if not _auth(request):
+        return _redir_login()
+    clean = os.path.basename(name)
+    path = os.path.join(_backup_dir, clean)
+    if not os.path.isfile(path):
+        return JSONResponse({"error": "not found"}, status_code=404)
+    return FileResponse(path, media_type="application/zip", filename=clean)
+
+
+@app.post(f"/{S}/backups/restore")
+async def backup_restore(request: Request, backup_file: UploadFile = File(...), restore_env: str = Form("0")):
+    if not _auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        upload_path = os.path.join(tmpdir, "uploaded-backup")
+        with open(upload_path, "wb") as f:
+            shutil.copyfileobj(backup_file.file, f)
+
+        try:
+            db_restore, env_restore = _extract_restore_payload(upload_path, tmpdir)
+            pre_name = _save_pre_restore_backup()
+            os.replace(db_restore, _db_path)
+            if restore_env == "1" and env_restore:
+                os.replace(env_restore, _env_path)
+            await init_db()
+            return RedirectResponse(f"/{S}/backups?result=restored&pre={pre_name}", status_code=302)
+        except Exception as e:
+            logger.exception("backup restore failed: %s", e)
+            return RedirectResponse(f"/{S}/backups?result=restore_error", status_code=302)
+
+
 @app.get(f"/{S}/reports", response_class=HTMLResponse)
 async def reports_page(request: Request):
     if not _auth(request):

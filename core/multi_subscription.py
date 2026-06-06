@@ -72,6 +72,27 @@ def subscription_error_message(error: str) -> str:
     return raw or "خطای نامشخص در ساخت سابسکریپشن"
 
 
+def subscription_error_message(error: str) -> str:
+    raw = str(error or "").strip()
+    if raw == "public_base_url_not_configured":
+        return "آدرس عمومی ساب تنظیم نشده است. در پنل سابسکریپشن، public_base_url را تنظیم کنید."
+    if raw == "no_subscription_nodes_configured":
+        return "هیچ نود قابل استفاده‌ای برای سابسکریپشن تعریف نشده است."
+    if raw.startswith("not_enough_subscription_nodes:"):
+        return f"تعداد نودهای قابل استفاده سابسکریپشن کافی نیست ({raw.split(':', 1)[1]})."
+    if raw.startswith("created_nodes_below_minimum:"):
+        return f"تعداد نودهای ساخته‌شده به حداقل لازم نرسید: {raw}"
+    if raw == "old_config_disable_failed":
+        return "ساب جدید ساخته شد، اما خاموش‌کردن یا حذف کانفیگ قبلی روی سرور قدیمی ناموفق بود. لطفاً اتصال سرور قدیمی یا دسترسی API آن را بررسی کنید."
+    if raw == "config_not_active":
+        return "این کانفیگ فعال نیست یا قبلاً تبدیل/غیرفعال شده است."
+    if raw == "no_remaining_traffic":
+        return "حجم باقی‌مانده این کانفیگ تمام شده است."
+    if raw == "config_expired":
+        return "زمان این کانفیگ منقضی شده است."
+    return raw or "خطای نامشخص در ساخت سابسکریپشن"
+
+
 def _label_subscription_link(link: str, label: str) -> str:
     link = (link or "").strip()
     label = (label or "").strip()
@@ -351,6 +372,10 @@ async def create_profile_from_config(user: Dict, cfg: Dict) -> Dict:
         old_cli = XUIClient(cfg["server_url"], cfg["srv_user"], cfg["srv_pass"], cfg.get("sub_path") or "", cfg.get("srv_api_token", ""))
         try:
             disabled = await old_cli.update_client(cfg["inbound_id"], cfg["uuid"], cfg["email"], float(cfg.get("traffic_gb") or 0), expire_ms, False)
+            old_action = "disabled"
+            if not disabled:
+                disabled = await old_cli.delete_client(cfg["inbound_id"], cfg["uuid"], cfg.get("email", ""))
+                old_action = "deleted" if disabled else "failed"
         finally:
             await old_cli.close()
         if not disabled:
@@ -369,6 +394,7 @@ async def create_profile_from_config(user: Dict, cfg: Dict) -> Dict:
             "expire_ms": expire_ms,
             "used_bytes": used,
             "remaining_bytes": remaining_bytes,
+            "old_config_action": old_action,
         }
     except Exception as e:
         for node, inbound_id, client_uuid, node_email in created_remote:
