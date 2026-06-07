@@ -78,7 +78,7 @@ class XUIClient:
         if any(path.startswith(prefix) for prefix in safe_prefixes):
             return True
         if path.startswith("/panel/api/inbounds/"):
-            return "/delClient/" in path or "/resetClientTraffic/" in path
+            return any(part in path for part in ("/delClient/", "/delClientByEmail/", "/resetClientTraffic/"))
         return False
 
     def _headers(self, extra: Optional[Dict[str, str]] = None, unsafe: bool = False,
@@ -392,21 +392,55 @@ class XUIClient:
         return bool(r and r.get("success"))
 
     async def delete_client(self, inbound_id: int, client_uuid: str, email: str = "") -> bool:
-        if not email:
+        inbound_id = int(inbound_id)
+        email = (email or "").strip()
+        client_identity = (client_uuid or "").strip()
+
+        if email:
+            found = await self.find_client(email=email, client_uuid=client_uuid)
+            if found:
+                try:
+                    inbound_id = int(found.get("inbound_id") or inbound_id)
+                except Exception:
+                    pass
+                inbound = found.get("inbound")
+                protocol = (inbound or {}).get("protocol", "vless")
+                client_identity = self._client_identity(protocol, found.get("client")) or client_identity
+        else:
             inbound = await self.get_inbound(inbound_id)
             if inbound:
+                protocol = inbound.get("protocol", "vless")
                 settings = self._json_obj(inbound.get("settings"), {})
                 for c in settings.get("clients", []) or []:
-                    ident = c.get("id") or c.get("password") or c.get("auth") or c.get("email")
+                    ident = self._client_identity(protocol, c) or c.get("email", "")
                     if ident == client_uuid:
                         email = c.get("email", "")
+                        client_identity = ident
                         break
+
+        errors = []
+
+        if client_identity:
+            r = await self._req("POST", f"/panel/api/inbounds/{inbound_id}/delClient/{quote(client_identity, safe='')}")
+            if r and r.get("success"):
+                return True
+            errors.append(f"delClient: {self.last_error or 'failed'}")
+
+        if email:
+            r = await self._req("POST", f"/panel/api/inbounds/{inbound_id}/delClientByEmail/{quote(email, safe='')}")
+            if r and r.get("success"):
+                return True
+            errors.append(f"delClientByEmail: {self.last_error or 'failed'}")
+
         if email:
             r = await self._req("POST", f"/panel/api/clients/del/{quote(email, safe='')}")
             if r and r.get("success"):
                 return True
-        r = await self._req("POST", f"/panel/api/inbounds/{inbound_id}/delClient/{client_uuid}")
-        return bool(r and r.get("success"))
+            errors.append(f"clients/del: {self.last_error or 'failed'}")
+
+        if errors:
+            self.last_error = " | ".join(errors)[-500:]
+        return False
 
     async def get_client_link(self, inbound_id: int, email: str) -> Optional[str]:
         try:

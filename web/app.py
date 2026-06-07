@@ -997,6 +997,13 @@ async def subscription_node_test(request: Request, node_id: int):
         inbound = await cli.get_inbound(int(node["inbound_id"]))
         if not inbound:
             return JSONResponse({"success": False, "msg": f"inbound not found: {cli.last_error or 'unknown'}"})
+        settings = cli._json_obj(inbound.get("settings"), {})
+        protocol = inbound.get("protocol", "vless")
+        for old_client in settings.get("clients", []) or []:
+            old_email = str(old_client.get("email") or "")
+            if old_email.startswith("atlas_sync_probe_") and old_email.rsplit("_", 1)[-1] == str(node_id):
+                old_identity = cli._client_identity(protocol, old_client)
+                await cli.delete_client(int(node["inbound_id"]), old_identity, old_email)
         test_uuid = str(uuid.uuid4())
         test_email = f"atlas_sync_probe_{int(time.time())}_{node_id}"
         add_ok = await cli.add_client(int(node["inbound_id"]), test_uuid, test_email, 0.1, 1)
