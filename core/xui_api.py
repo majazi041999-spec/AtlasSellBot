@@ -71,6 +71,7 @@ class XUIClient:
             "/panel/api/clients/add",
             "/panel/api/clients/update/",
             "/panel/api/clients/del/",
+            "/panel/api/clients/bulkDel",
             "/panel/api/clients/resetTraffic/",
             "/panel/api/inbounds/addClient",
             "/panel/api/inbounds/updateClient/",
@@ -259,6 +260,22 @@ class XUIClient:
                 return client
         return None
 
+    async def _client_missing_from_inbound(self, inbound_id: int, email: str = "", client_identity: str = "") -> bool:
+        inbound = await self.get_inbound(int(inbound_id))
+        if not inbound:
+            return False
+        protocol = inbound.get("protocol", "vless")
+        identity = (client_identity or "").strip()
+        normal_identity = self._normal_uuid(identity)
+        settings = self._json_obj(inbound.get("settings"), {})
+        for client in settings.get("clients", []) or []:
+            if email and client.get("email") == email:
+                return False
+            current_identity = self._client_identity(protocol, client)
+            if identity and (current_identity == identity or (normal_identity and current_identity == normal_identity)):
+                return False
+        return True
+
     def _client_payload(self, protocol: str, client_uuid: str, email: str, traffic_bytes: int,
                         expire_ms: int, enable: bool = True, existing: Optional[Dict] = None) -> Dict:
         existing = dict(existing or {})
@@ -424,17 +441,34 @@ class XUIClient:
             r = await self._req("POST", f"/panel/api/inbounds/{inbound_id}/delClient/{quote(client_identity, safe='')}")
             if r and r.get("success"):
                 return True
+            if await self._client_missing_from_inbound(inbound_id, email, client_identity):
+                self.last_error = ""
+                return True
             errors.append(f"delClient: {self.last_error or 'failed'}")
 
         if email:
             r = await self._req("POST", f"/panel/api/inbounds/{inbound_id}/delClientByEmail/{quote(email, safe='')}")
             if r and r.get("success"):
                 return True
+            if await self._client_missing_from_inbound(inbound_id, email, client_identity):
+                self.last_error = ""
+                return True
             errors.append(f"delClientByEmail: {self.last_error or 'failed'}")
+
+            r = await self._req("POST", "/panel/api/clients/bulkDel", json={"emails": [email], "keepTraffic": False})
+            if r and r.get("success"):
+                return True
+            if await self._client_missing_from_inbound(inbound_id, email, client_identity):
+                self.last_error = ""
+                return True
+            errors.append(f"clients/bulkDel: {self.last_error or 'failed'}")
 
         if email:
             r = await self._req("POST", f"/panel/api/clients/del/{quote(email, safe='')}")
             if r and r.get("success"):
+                return True
+            if await self._client_missing_from_inbound(inbound_id, email, client_identity):
+                self.last_error = ""
                 return True
             errors.append(f"clients/del: {self.last_error or 'failed'}")
 
