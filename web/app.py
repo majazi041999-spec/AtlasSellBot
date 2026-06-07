@@ -1001,8 +1001,10 @@ async def subscription_node_test(request: Request, node_id: int):
         test_email = f"atlas_sync_probe_{int(time.time())}_{node_id}"
         add_ok = await cli.add_client(int(node["inbound_id"]), test_uuid, test_email, 0.1, 1)
         if add_ok:
-            await cli.delete_client(int(node["inbound_id"]), test_uuid, test_email)
-            return JSONResponse({"success": True, "msg": "ok"})
+            del_ok = await cli.delete_client(int(node["inbound_id"]), test_uuid, test_email)
+            if del_ok:
+                return JSONResponse({"success": True, "msg": "write test ok"})
+            return JSONResponse({"success": False, "msg": f"cleanup test client failed: {cli.last_error or 'unknown'}"})
         return JSONResponse({"success": False, "msg": f"add client failed: {cli.last_error or 'unknown'}"})
     finally:
         await cli.close()

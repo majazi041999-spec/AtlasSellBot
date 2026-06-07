@@ -32,11 +32,22 @@ class XUIClient:
                 f"{self.panel_url}/login",
                 data={"username": self.username, "password": self.password}
             )
-            if r.status_code == 200 and r.json().get("success"):
+            if r.status_code != 200:
+                self.last_error = f"login_failed HTTP {r.status_code}: {r.text[:300]}"
+                return False
+            try:
+                data = r.json()
+            except Exception:
+                self.last_error = f"login_failed invalid_response: {r.text[:300]}"
+                return False
+            if data.get("success"):
                 self._cookie = "; ".join(f"{k}={v}" for k, v in r.cookies.items())
                 await self._load_csrf_token()
+                self.last_error = ""
                 return True
+            self.last_error = f"login_failed: {str(data.get('msg') or data.get('error') or data)[:300]}"
         except Exception as e:
+            self.last_error = f"login_failed: {str(e)[:300]}"
             logger.error(f"XUI login error: {e}")
         return False
 
@@ -53,9 +64,27 @@ class XUIClient:
         except Exception:
             self._csrf_token = None
 
-    def _headers(self, extra: Optional[Dict[str, str]] = None, unsafe: bool = False) -> Dict[str, str]:
+    def _allow_token_write(self, path: str) -> bool:
+        if not self.api_token:
+            return False
+        safe_prefixes = (
+            "/panel/api/clients/add",
+            "/panel/api/clients/update/",
+            "/panel/api/clients/del/",
+            "/panel/api/clients/resetTraffic/",
+            "/panel/api/inbounds/addClient",
+            "/panel/api/inbounds/updateClient/",
+        )
+        if any(path.startswith(prefix) for prefix in safe_prefixes):
+            return True
+        if path.startswith("/panel/api/inbounds/"):
+            return "/delClient/" in path or "/resetClientTraffic/" in path
+        return False
+
+    def _headers(self, extra: Optional[Dict[str, str]] = None, unsafe: bool = False,
+                 token_write: bool = False) -> Dict[str, str]:
         headers = dict(extra or {})
-        if self.api_token and not unsafe:
+        if self.api_token and (not unsafe or token_write):
             headers["Authorization"] = f"Bearer {self.api_token}"
         elif self._cookie:
             headers["Cookie"] = self._cookie
@@ -65,21 +94,41 @@ class XUIClient:
 
     async def _req(self, method: str, path: str, **kw) -> Optional[Dict]:
         unsafe = method.upper() not in {"GET", "HEAD", "OPTIONS", "TRACE"}
+        token_write_allowed = unsafe and self._allow_token_write(path)
+        token_write = False
+        login_error = ""
         if (unsafe or not self.api_token) and not self._cookie:
             if not await self._login():
-                return None
+                login_error = self.last_error or "login_failed"
+                if token_write_allowed:
+                    token_write = True
+                else:
+                    if unsafe and self.api_token:
+                        self.last_error = f"{login_error}; unsafe_write_requires_panel_login"
+                    elif not self.last_error:
+                        self.last_error = "login_failed"
+                    return None
         try:
-            headers = self._headers(kw.pop("headers", None), unsafe=unsafe)
+            extra_headers = kw.pop("headers", None)
+            headers = self._headers(extra_headers, unsafe=unsafe, token_write=token_write)
             r = await self._http.request(
                 method, f"{self.panel_url}{path}",
                 headers=headers, **kw
             )
-            if r.status_code in (401, 403) and (unsafe or not self.api_token):
+            if r.status_code in (401, 403) and (unsafe or not self.api_token) and not token_write:
                 self._cookie = None
                 self._csrf_token = None
                 if not await self._login():
-                    return None
-                headers = self._headers(unsafe=unsafe)
+                    login_error = self.last_error or f"HTTP {r.status_code}"
+                    if token_write_allowed:
+                        token_write = True
+                    else:
+                        if unsafe and self.api_token:
+                            self.last_error = f"{login_error}; unsafe_write_requires_panel_login"
+                        elif not self.last_error:
+                            self.last_error = f"auth_failed HTTP {r.status_code}"
+                        return None
+                headers = self._headers(extra_headers, unsafe=unsafe, token_write=token_write)
                 r = await self._http.request(
                     method, f"{self.panel_url}{path}",
                     headers=headers, **kw
@@ -87,9 +136,19 @@ class XUIClient:
             if r.status_code == 200:
                 data = r.json()
                 if isinstance(data, dict) and not data.get("success", True):
-                    self.last_error = str(data.get("msg") or data.get("error") or data)[:500]
+                    msg = str(data.get("msg") or data.get("error") or data)
+                    if msg.strip().lower() in {"", "unknown", "none"}:
+                        msg = f"{msg or 'api_error'} at {path}"
+                    if token_write and login_error:
+                        msg = f"{msg}; panel_login_failed: {login_error}"
+                    self.last_error = msg[:500]
+                else:
+                    self.last_error = ""
                 return data
-            self.last_error = f"HTTP {r.status_code}: {r.text[:300]}"
+            err = f"HTTP {r.status_code}: {r.text[:300]}"
+            if token_write and login_error:
+                err = f"{err}; panel_login_failed: {login_error}"
+            self.last_error = err[:500]
         except Exception as e:
             self.last_error = str(e)[:500]
             logger.error(f"XUI request error {path}: {e}")
