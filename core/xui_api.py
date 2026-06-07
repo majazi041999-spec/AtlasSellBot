@@ -7,7 +7,7 @@ import logging
 import uuid as uuidlib
 from datetime import datetime, timedelta
 from typing import Optional, Dict, List, Any
-from urllib.parse import urlparse, quote
+from urllib.parse import urlparse, quote, urlencode
 import base64
 
 logger = logging.getLogger(__name__)
@@ -535,15 +535,14 @@ class XUIClient:
 
     async def get_client_link(self, inbound_id: int, email: str) -> Optional[str]:
         try:
+            api_link = None
             r = await self._req("GET", f"/panel/api/clients/links/{quote(email, safe='')}")
             if r and r.get("success"):
-                link = self._first_complete_api_link(r.get("obj"))
-                if link:
-                    return link
+                api_link = self._first_complete_api_link(r.get("obj"))
 
             inbound = await self.get_inbound(inbound_id)
             if not inbound:
-                return None
+                return api_link
             protocol = inbound.get("protocol", "vless")
             settings = self._json_obj(inbound.get("settings"), {})
             stream = self._json_obj(inbound.get("streamSettings"), {})
@@ -552,7 +551,7 @@ class XUIClient:
             if not client:
                 client = await self.get_client(email)
             if not client:
-                return None
+                return api_link
 
             parsed = urlparse(self.base_url)
             host = parsed.hostname or "example.com"
@@ -564,35 +563,37 @@ class XUIClient:
                 cid = self._normal_uuid(client.get("id") or client.get("uuid"))
                 if not cid:
                     self.last_error = "invalid_vless_uuid_for_link"
-                    return None
+                    return api_link
                 # برای سازگاری با کلاینت‌ها، encryption را صراحتاً ارسال می‌کنیم.
-                params = [f"type={network}", "encryption=none", f"security={security}"]
+                params = [("type", network), ("encryption", "none"), ("security", security)]
                 if security == "reality":
                     rs = stream.get("realitySettings", {})
                     names = rs.get("serverNames", [""])
                     pk = rs.get("settings", {}).get("publicKey", "")
                     sid_val = (rs.get("shortIds", [""]) or [""])[0]
                     fp = rs.get("settings", {}).get("fingerprint", "chrome")
-                    if names: params.append(f"sni={names[0]}")
-                    if pk: params.append(f"pbk={pk}")
-                    if sid_val: params.append(f"sid={sid_val}")
-                    params.append(f"fp={fp}")
+                    spx = rs.get("settings", {}).get("spiderX", "")
+                    if names: params.append(("sni", names[0]))
+                    if pk: params.append(("pbk", pk))
+                    if sid_val: params.append(("sid", sid_val))
+                    if spx: params.append(("spx", spx))
+                    params.append(("fp", fp))
                 elif security == "tls":
                     tls = stream.get("tlsSettings", {})
                     sni = tls.get("serverName", host)
-                    if sni: params.append(f"sni={sni}")
+                    if sni: params.append(("sni", sni))
                 if network == "ws":
                     ws = stream.get("wsSettings", {})
-                    params.append(f"path={quote(ws.get('path', '/'), safe='')}")
+                    params.append(("path", ws.get("path", "/")))
                     ws_host = ws.get("host", "")
                     if ws_host:
-                        params.append(f"host={ws_host}")
+                        params.append(("host", ws_host))
                 elif network == "tcp":
                     # در TCP اگر header از نوع http باشد، path/host را به لینک اضافه می‌کنیم.
                     tcp = stream.get("tcpSettings", {})
                     header = tcp.get("header", {}) if isinstance(tcp, dict) else {}
                     h_type = header.get("type", "none")
-                    params.append(f"headerType={h_type}")
+                    params.append(("headerType", h_type))
                     if h_type == "http":
                         req = header.get("request", {}) if isinstance(header, dict) else {}
                         path = req.get("path", "/")
@@ -600,23 +601,23 @@ class XUIClient:
                             path = path[0] if path else "/"
                         host_list = req.get("headers", {}).get("Host", [])
                         host_header = host_list[0] if isinstance(host_list, list) and host_list else ""
-                        params.append(f"path={quote(path or '/', safe='')}")
+                        params.append(("path", path or "/"))
                         if host_header:
-                            params.append(f"host={host_header}")
+                            params.append(("host", host_header))
                 elif network == "grpc":
                     grpc = stream.get("grpcSettings", {})
-                    params.append(f"serviceName={grpc.get('serviceName','')}")
-                    params.append("mode=gun")
+                    params.append(("serviceName", grpc.get("serviceName", "")))
+                    params.append(("mode", "gun"))
                 flow = client.get("flow", "")
-                if flow: params.append(f"flow={flow}")
-                link = f"vless://{cid}@{host}:{port}?{'&'.join(params)}#{quote(email, safe='')}"
-                return link if self._link_is_complete(link) else None
+                if flow: params.append(("flow", flow))
+                link = f"vless://{cid}@{host}:{port}?{urlencode(params)}#{quote(email, safe='')}"
+                return link if self._link_is_complete(link) else api_link
 
             elif protocol == "vmess":
                 cid = self._normal_uuid(client.get("id") or client.get("uuid"))
                 if not cid:
                     self.last_error = "invalid_vmess_uuid_for_link"
-                    return None
+                    return api_link
                 cfg = {"v": "2", "ps": email, "add": host, "port": str(port), "id": cid,
                        "aid": str(client.get("alterId", 0)), "scy": "auto", "net": network,
                        "type": "none", "host": "", "path": "", "tls": security if security != "none" else ""}
@@ -625,24 +626,26 @@ class XUIClient:
                     cfg["path"] = ws.get("path", "/")
                 encoded = base64.b64encode(json.dumps(cfg, ensure_ascii=False, separators=(",", ":")).encode()).decode()
                 link = f"vmess://{encoded}"
-                return link if self._link_is_complete(link) else None
+                return link if self._link_is_complete(link) else api_link
 
             elif protocol == "trojan":
                 pw = client.get("password", "")
-                params = [f"type={network}", f"security={security}"]
+                params = [("type", network), ("security", security)]
                 if security in ("tls", "reality"):
                     tls = stream.get("tlsSettings", stream.get("realitySettings", {}))
                     sni = tls.get("serverName", host)
-                    if sni: params.append(f"sni={sni}")
-                link = f"trojan://{pw}@{host}:{port}?{'&'.join(params)}#{quote(email, safe='')}"
-                return link if self._link_is_complete(link) else None
+                    if sni: params.append(("sni", sni))
+                link = f"trojan://{pw}@{host}:{port}?{urlencode(params)}#{quote(email, safe='')}"
+                return link if self._link_is_complete(link) else api_link
 
             elif protocol == "shadowsocks":
                 method = settings.get("method", "chacha20-poly1305")
                 password = settings.get("password", "")
                 userinfo = base64.urlsafe_b64encode(f"{method}:{password}".encode()).decode().rstrip("=")
                 link = f"ss://{userinfo}@{host}:{port}#{quote(email, safe='')}"
-                return link if self._link_is_complete(link) else None
+                return link if self._link_is_complete(link) else api_link
+
+            return api_link
 
         except Exception as e:
             logger.error(f"get_client_link error: {e}")

@@ -353,7 +353,8 @@ def _dedupe_complete_links(links: list[str]) -> list[str]:
 
 async def _ensure_node_link(node: Dict) -> str:
     link = (node.get("link") or "").strip()
-    if _subscription_link_is_complete(link):
+    force_refresh = await get_setting("sub_force_local_links_on_render", "1") == "1"
+    if _subscription_link_is_complete(link) and not force_refresh:
         return link
 
     cli = XUIClient(
@@ -420,7 +421,9 @@ def _format_info_template(template: str, values: Dict[str, str]) -> list[str]:
 
 
 async def _subscription_info_links(profile: Dict, used: int, total: int, active_node_count: int) -> list[str]:
-    if await get_setting("sub_info_enabled", "1") != "1":
+    if await get_setting("sub_info_enabled", "0") != "1":
+        return []
+    if await get_setting("sub_info_render_as_links", "0") != "1":
         return []
 
     now_ms = int(time.time() * 1000)
