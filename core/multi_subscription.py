@@ -552,15 +552,18 @@ async def ensure_subscription_profile_nodes(profile: Dict) -> Dict:
     configured_nodes = await get_subscription_node_configs(active_only=True)
     missing_nodes = []
     refresh_nodes = []
+    move_nodes = []
     for node in configured_nodes:
         node_email = f"{profile['email']}_n{node['id']}"[:120]
         existing = existing_by_email.get(node_email)
         if not existing:
             missing_nodes.append(node)
+        elif int(existing.get("server_id") or 0) != int(node.get("server_id") or 0) or int(existing.get("inbound_id") or 0) != int(node.get("inbound_id") or 0):
+            move_nodes.append((node, existing))
         elif not existing.get("link") or not int(existing.get("is_active") or 0):
             refresh_nodes.append((node, existing))
-    if not missing_nodes and not refresh_nodes:
-        return {"created": 0, "refreshed": 0, "skipped": 0, "failed": 0}
+    if not missing_nodes and not refresh_nodes and not move_nodes:
+        return {"created": 0, "refreshed": 0, "moved": 0, "skipped": 0, "failed": 0}
 
     used = int(profile.get("used_bytes") or 0)
     total = total_bytes(profile.get("traffic_gb") or 0)
@@ -568,17 +571,74 @@ async def ensure_subscription_profile_nodes(profile: Dict) -> Dict:
     if total > 0 and remaining <= 0:
         await update_subscription_profile(profile["id"], is_active=0)
         await set_nodes_enabled(profile["id"], False)
-        return {"created": 0, "refreshed": 0, "skipped": len(missing_nodes) + len(refresh_nodes), "failed": 0}
+        return {"created": 0, "refreshed": 0, "moved": 0, "skipped": len(missing_nodes) + len(refresh_nodes) + len(move_nodes), "failed": 0}
 
     traffic_gb = float(profile.get("traffic_gb") or 0)
     if total > 0:
         traffic_gb = max(0.1, remaining / (1024 ** 3))
     if traffic_gb <= 0:
-        return {"created": 0, "refreshed": 0, "skipped": len(missing_nodes) + len(refresh_nodes), "failed": 0}
+        return {"created": 0, "refreshed": 0, "moved": 0, "skipped": len(missing_nodes) + len(refresh_nodes) + len(move_nodes), "failed": 0}
 
     duration_days = _days_remaining(expire_ms, now_ms)
-    created = refreshed = failed = 0
+    created = refreshed = moved = failed = 0
     errors: list[str] = []
+    for node, existing in move_nodes:
+        inbound_id = int(node.get("inbound_id") or 1)
+        client_uuid = str(existing.get("uuid") or uuid.uuid4())
+        node_email = f"{profile['email']}_n{node['id']}"[:120]
+        cli = XUIClient(node["server_url"], node["srv_user"], node["srv_pass"], node.get("sub_path") or "", node.get("srv_api_token", ""))
+        try:
+            added = await cli.add_client(inbound_id, client_uuid, node_email, traffic_gb, duration_days, starts_on_first_use=False)
+            ok = bool(added)
+            if added and expire_ms > 0:
+                updated = await cli.update_client(inbound_id, client_uuid, node_email, traffic_gb, expire_ms, True)
+                if not updated:
+                    logger.warning("subscription moved node exact-expiry update failed but add succeeded profile=%s node=%s/%s email=%s", profile.get("id"), node.get("server_id"), inbound_id, node_email)
+            if not added:
+                found = await cli.find_client(email=node_email)
+                remote_client = (found or {}).get("client") or {}
+                remote_uuid = _remote_client_uuid(remote_client, client_uuid)
+                remote_inbound = int((found or {}).get("inbound_id") or inbound_id)
+                if remote_client and remote_uuid:
+                    client_uuid = remote_uuid
+                    inbound_id = remote_inbound or inbound_id
+                    ok = await cli.update_client(inbound_id, client_uuid, node_email, traffic_gb, expire_ms, True)
+            if not ok:
+                failed += 1
+                detail = getattr(cli, "last_error", "") or "unknown"
+                errors.append(f"move_failed:p{profile.get('id')}:node{node.get('server_id')}/{inbound_id}:{detail}")
+                continue
+            link = await cli.get_client_link(inbound_id, node_email) or ""
+            if not link:
+                failed += 1
+                detail = getattr(cli, "last_error", "") or "link_not_found"
+                errors.append(f"move_link_empty:p{profile.get('id')}:node{node.get('server_id')}/{inbound_id}:{detail}")
+                continue
+            await update_subscription_node(
+                existing["id"],
+                server_id=int(node["server_id"]),
+                inbound_id=inbound_id,
+                uuid=client_uuid,
+                email=node_email,
+                link=link,
+                last_used_bytes=0,
+                is_active=1,
+            )
+            moved += 1
+            old_cli = XUIClient(existing["server_url"], existing["srv_user"], existing["srv_pass"], existing.get("sub_path") or "", existing.get("srv_api_token", ""))
+            try:
+                await old_cli.delete_client(existing["inbound_id"], existing["uuid"], existing.get("email", ""))
+            except Exception:
+                pass
+            finally:
+                await old_cli.close()
+        except Exception as e:
+            failed += 1
+            errors.append(f"move_error:p{profile.get('id')}:node{node.get('server_id')}/{inbound_id}:{e}")
+            logger.warning("subscription moved node error profile=%s node=%s/%s: %s", profile.get("id"), node.get("server_id"), inbound_id, e)
+        finally:
+            await cli.close()
+
     for node, existing in refresh_nodes:
         cli = XUIClient(node["server_url"], node["srv_user"], node["srv_pass"], node.get("sub_path") or "", node.get("srv_api_token", ""))
         try:
@@ -648,17 +708,19 @@ async def ensure_subscription_profile_nodes(profile: Dict) -> Dict:
             logger.warning("subscription missing node add error profile=%s node=%s/%s: %s", profile.get("id"), node.get("server_id"), inbound_id, e)
         finally:
             await cli.close()
-    if created or refreshed or failed:
+    if created or refreshed or moved or failed:
         logger.info(
-            "subscription node ensure profile=%s created=%s refreshed=%s failed=%s missing=%s refresh=%s",
+            "subscription node ensure profile=%s created=%s refreshed=%s moved=%s failed=%s missing=%s refresh=%s move=%s",
             profile.get("id"),
             created,
             refreshed,
+            moved,
             failed,
             len(missing_nodes),
             len(refresh_nodes),
+            len(move_nodes),
         )
-    return {"created": created, "refreshed": refreshed, "skipped": 0, "failed": failed, "errors": errors[:12]}
+    return {"created": created, "refreshed": refreshed, "moved": moved, "skipped": 0, "failed": failed, "errors": errors[:12]}
 
 
 async def repair_subscription_profile_expiry(profile: Dict) -> Dict:
@@ -856,7 +918,7 @@ async def sync_active_profiles(limit: int = 100) -> int:
 
 
 async def sync_subscription_nodes_for_all(limit: int = 1000) -> Dict:
-    checked = created = refreshed = failed = skipped = disabled = 0
+    checked = created = refreshed = moved = failed = skipped = disabled = 0
     errors: list[str] = []
     for profile in await get_active_subscription_profiles(limit):
         usage = await sync_profile_usage(profile)
@@ -868,6 +930,7 @@ async def sync_subscription_nodes_for_all(limit: int = 1000) -> Dict:
         result = await ensure_subscription_profile_nodes(fresh)
         created += int(result.get("created") or 0)
         refreshed += int(result.get("refreshed") or 0)
+        moved += int(result.get("moved") or 0)
         failed += int(result.get("failed") or 0)
         skipped += int(result.get("skipped") or 0)
         for err in result.get("errors") or []:
@@ -877,6 +940,7 @@ async def sync_subscription_nodes_for_all(limit: int = 1000) -> Dict:
         "checked": checked,
         "created": created,
         "refreshed": refreshed,
+        "moved": moved,
         "failed": failed,
         "skipped": skipped,
         "disabled": disabled,

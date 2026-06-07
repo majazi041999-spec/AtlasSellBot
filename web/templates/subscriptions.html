@@ -261,7 +261,7 @@ async function syncSubNodes(btn){
   btn.innerHTML = old;
   if(r.success){
     const firstErrors = (r.errors || []).slice(0, 3).join(' | ');
-    const msg = `Sync انجام شد | بررسی: ${r.checked || 0} | ساخته: ${r.created || 0} | ترمیم: ${r.refreshed || 0} | خطا: ${r.failed || 0}`;
+    const msg = `Sync انجام شد | بررسی: ${r.checked || 0} | ساخته: ${r.created || 0} | ترمیم: ${r.refreshed || 0} | انتقال: ${r.moved || 0} | خطا: ${r.failed || 0}`;
     toast(firstErrors ? `${msg} | ${firstErrors}` : msg, r.failed ? 'error' : 'success');
     setTimeout(()=>location.reload(),1200);
   } else {
