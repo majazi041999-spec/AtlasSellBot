@@ -22,6 +22,7 @@ class XUIClient:
         self.api_token = (api_token or "").strip()
         self._cookie: Optional[str] = None
         self._csrf_token: Optional[str] = None
+        self.last_error: str = ""
         self._http = httpx.AsyncClient(verify=False, timeout=20.0)
 
     async def _login(self) -> bool:
@@ -83,8 +84,13 @@ class XUIClient:
                     headers=headers, **kw
                 )
             if r.status_code == 200:
-                return r.json()
+                data = r.json()
+                if isinstance(data, dict) and not data.get("success", True):
+                    self.last_error = str(data.get("msg") or data.get("error") or data)[:500]
+                return data
+            self.last_error = f"HTTP {r.status_code}: {r.text[:300]}"
         except Exception as e:
+            self.last_error = str(e)[:500]
             logger.error(f"XUI request error {path}: {e}")
         return None
 

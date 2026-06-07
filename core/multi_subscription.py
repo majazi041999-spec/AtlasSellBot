@@ -578,6 +578,7 @@ async def ensure_subscription_profile_nodes(profile: Dict) -> Dict:
 
     duration_days = _days_remaining(expire_ms, now_ms)
     created = refreshed = failed = 0
+    errors: list[str] = []
     for node, existing in refresh_nodes:
         cli = XUIClient(node["server_url"], node["srv_user"], node["srv_pass"], node.get("sub_path") or "", node.get("srv_api_token", ""))
         try:
@@ -595,9 +596,12 @@ async def ensure_subscription_profile_nodes(profile: Dict) -> Dict:
                 refreshed += 1
             else:
                 failed += 1
+                msg = f"refresh_failed:p{profile.get('id')}:node{node.get('server_id')}/{node.get('inbound_id')}:{existing.get('email')}"
+                errors.append(msg)
                 logger.warning("subscription node refresh failed profile=%s node=%s/%s email=%s", profile.get("id"), node.get("server_id"), node.get("inbound_id"), existing.get("email"))
         except Exception as e:
             failed += 1
+            errors.append(f"refresh_error:p{profile.get('id')}:node{node.get('server_id')}/{node.get('inbound_id')}:{e}")
             logger.warning("subscription node refresh error profile=%s node=%s/%s: %s", profile.get("id"), node.get("server_id"), node.get("inbound_id"), e)
         finally:
             await cli.close()
@@ -608,10 +612,13 @@ async def ensure_subscription_profile_nodes(profile: Dict) -> Dict:
         node_email = f"{profile['email']}_n{node['id']}"[:120]
         cli = XUIClient(node["server_url"], node["srv_user"], node["srv_pass"], node.get("sub_path") or "", node.get("srv_api_token", ""))
         try:
-            ok = await cli.add_client(inbound_id, client_uuid, node_email, traffic_gb, duration_days, starts_on_first_use=False)
-            if ok and expire_ms > 0:
-                ok = await cli.update_client(inbound_id, client_uuid, node_email, traffic_gb, expire_ms, True)
-            if not ok:
+            added = await cli.add_client(inbound_id, client_uuid, node_email, traffic_gb, duration_days, starts_on_first_use=False)
+            ok = bool(added)
+            if added and expire_ms > 0:
+                updated = await cli.update_client(inbound_id, client_uuid, node_email, traffic_gb, expire_ms, True)
+                if not updated:
+                    logger.warning("subscription missing node exact-expiry update failed but add succeeded profile=%s node=%s/%s email=%s", profile.get("id"), node.get("server_id"), inbound_id, node_email)
+            if not added:
                 found = await cli.find_client(email=node_email)
                 remote_client = (found or {}).get("client") or {}
                 remote_uuid = _remote_client_uuid(remote_client, client_uuid)
@@ -622,21 +629,22 @@ async def ensure_subscription_profile_nodes(profile: Dict) -> Dict:
                     ok = await cli.update_client(inbound_id, client_uuid, node_email, traffic_gb, expire_ms, True)
             if not ok:
                 failed += 1
+                detail = getattr(cli, "last_error", "") or "unknown"
+                errors.append(f"add_failed:p{profile.get('id')}:node{node.get('server_id')}/{inbound_id}:{detail}")
                 logger.warning("subscription missing node add failed profile=%s node=%s/%s email=%s", profile.get("id"), node.get("server_id"), inbound_id, node_email)
                 continue
             link = await cli.get_client_link(inbound_id, node_email) or ""
             if not link:
                 failed += 1
+                detail = getattr(cli, "last_error", "") or "link_not_found"
+                errors.append(f"link_empty:p{profile.get('id')}:node{node.get('server_id')}/{inbound_id}:{detail}")
                 logger.warning("subscription missing node link empty profile=%s node=%s/%s email=%s", profile.get("id"), node.get("server_id"), inbound_id, node_email)
-                try:
-                    await cli.delete_client(inbound_id, client_uuid, node_email)
-                except Exception:
-                    pass
                 continue
             await add_subscription_node(profile["id"], node["server_id"], inbound_id, client_uuid, node_email, link)
             created += 1
         except Exception as e:
             failed += 1
+            errors.append(f"add_error:p{profile.get('id')}:node{node.get('server_id')}/{inbound_id}:{e}")
             logger.warning("subscription missing node add error profile=%s node=%s/%s: %s", profile.get("id"), node.get("server_id"), inbound_id, e)
         finally:
             await cli.close()
@@ -650,7 +658,7 @@ async def ensure_subscription_profile_nodes(profile: Dict) -> Dict:
             len(missing_nodes),
             len(refresh_nodes),
         )
-    return {"created": created, "refreshed": refreshed, "skipped": 0, "failed": failed}
+    return {"created": created, "refreshed": refreshed, "skipped": 0, "failed": failed, "errors": errors[:12]}
 
 
 async def repair_subscription_profile_expiry(profile: Dict) -> Dict:
@@ -849,6 +857,7 @@ async def sync_active_profiles(limit: int = 100) -> int:
 
 async def sync_subscription_nodes_for_all(limit: int = 1000) -> Dict:
     checked = created = refreshed = failed = skipped = disabled = 0
+    errors: list[str] = []
     for profile in await get_active_subscription_profiles(limit):
         usage = await sync_profile_usage(profile)
         checked += 1
@@ -861,6 +870,9 @@ async def sync_subscription_nodes_for_all(limit: int = 1000) -> Dict:
         refreshed += int(result.get("refreshed") or 0)
         failed += int(result.get("failed") or 0)
         skipped += int(result.get("skipped") or 0)
+        for err in result.get("errors") or []:
+            if len(errors) < 20:
+                errors.append(str(err))
     return {
         "checked": checked,
         "created": created,
@@ -868,4 +880,5 @@ async def sync_subscription_nodes_for_all(limit: int = 1000) -> Dict:
         "failed": failed,
         "skipped": skipped,
         "disabled": disabled,
+        "errors": errors,
     }
