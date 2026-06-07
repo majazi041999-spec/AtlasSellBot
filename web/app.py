@@ -924,7 +924,7 @@ async def subscriptions_settings_save(
 async def subscription_sync_nodes(request: Request):
     if not _auth(request):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
-    result = await sync_subscription_nodes_for_all(5000)
+    result = await sync_subscription_nodes_for_all(5000, force_refresh=True)
     return JSONResponse({"success": True, **result})
 
 
@@ -995,7 +995,15 @@ async def subscription_node_test(request: Request, node_id: int):
     cli = XUIClient(node["server_url"], node["srv_user"], node["srv_pass"], node.get("sub_path") or "", node.get("srv_api_token", ""))
     try:
         inbound = await cli.get_inbound(int(node["inbound_id"]))
-        return JSONResponse({"success": bool(inbound), "msg": "ok" if inbound else "inbound not found"})
+        if not inbound:
+            return JSONResponse({"success": False, "msg": f"inbound not found: {cli.last_error or 'unknown'}"})
+        test_uuid = str(uuid.uuid4())
+        test_email = f"atlas_sync_probe_{int(time.time())}_{node_id}"
+        add_ok = await cli.add_client(int(node["inbound_id"]), test_uuid, test_email, 0.1, 1)
+        if add_ok:
+            await cli.delete_client(int(node["inbound_id"]), test_uuid, test_email)
+            return JSONResponse({"success": True, "msg": "ok"})
+        return JSONResponse({"success": False, "msg": f"add client failed: {cli.last_error or 'unknown'}"})
     finally:
         await cli.close()
 

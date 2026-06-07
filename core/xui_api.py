@@ -205,64 +205,6 @@ class XUIClient:
                 base["security"] = existing.get("security")
         return base
 
-    def _inbound_update_payload(self, inbound: Dict, settings: Dict) -> Dict:
-        payload = {}
-        for key in (
-            "id", "up", "down", "total", "remark", "enable", "expiryTime",
-            "listen", "port", "protocol", "streamSettings", "tag", "sniffing",
-            "allocate",
-        ):
-            if key in inbound:
-                payload[key] = inbound.get(key)
-        payload["id"] = int(inbound.get("id") or payload.get("id") or 0)
-        payload["settings"] = json.dumps(settings)
-        payload.setdefault("streamSettings", inbound.get("streamSettings") or "{}")
-        payload.setdefault("sniffing", inbound.get("sniffing") or "{}")
-        payload.setdefault("allocate", inbound.get("allocate") or "{}")
-        return payload
-
-    async def _update_inbound_settings(self, inbound: Dict, settings: Dict) -> bool:
-        inbound_id = int(inbound.get("id") or 0)
-        if inbound_id <= 0:
-            self.last_error = "missing_inbound_id"
-            return False
-        payload = self._inbound_update_payload(inbound, settings)
-        paths = (f"/panel/api/inbounds/update/{inbound_id}", "/panel/api/inbounds/update")
-        last = ""
-        for path in paths:
-            r = await self._req("POST", path, json=payload)
-            if r and r.get("success"):
-                return True
-            last = self.last_error
-            r = await self._req("POST", path, data=payload)
-            if r and r.get("success"):
-                return True
-            last = self.last_error or last
-        self.last_error = last or "inbound_update_failed"
-        return False
-
-    async def _upsert_client_via_inbound(self, inbound_id: int, client_uuid: str, email: str,
-                                         client: Dict) -> bool:
-        inbound = await self.get_inbound(inbound_id)
-        if not inbound:
-            self.last_error = "inbound_not_found"
-            return False
-        settings = self._json_obj(inbound.get("settings"), {})
-        clients = list(settings.get("clients", []) or [])
-        replaced = False
-        for idx, old in enumerate(clients):
-            ident = old.get("id") or old.get("password") or old.get("auth") or ""
-            if old.get("email") == email or ident == client_uuid:
-                merged = dict(old)
-                merged.update(client)
-                clients[idx] = merged
-                replaced = True
-                break
-        if not replaced:
-            clients.append(client)
-        settings["clients"] = clients
-        return await self._update_inbound_settings(inbound, settings)
-
     async def add_client(self, inbound_id: int, client_uuid: str, email: str,
                           traffic_gb: float, expire_days: int, starts_on_first_use: bool = False) -> bool:
         inbound = await self.get_inbound(inbound_id)
@@ -281,8 +223,7 @@ class XUIClient:
         r = await self._req("POST", "/panel/api/inbounds/addClient", json=payload)
         if r and r.get("success"):
             return True
-
-        return await self._upsert_client_via_inbound(inbound_id, client_uuid, email, client)
+        return False
 
     async def update_client(self, inbound_id: int, client_uuid: str, email: str,
                              traffic_gb: float, expire_ms: int, enable: bool = True,
@@ -305,7 +246,7 @@ class XUIClient:
         r = await self._req("POST", f"/panel/api/inbounds/updateClient/{client_uuid}", json=payload)
         if r and r.get("success"):
             return True
-        return await self._upsert_client_via_inbound(inbound_id, client_uuid, payload_email, client)
+        return False
 
     async def reset_client_traffic(self, inbound_id: int, email: str) -> bool:
         enc = quote(email, safe="")
