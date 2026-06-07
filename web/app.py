@@ -131,6 +131,7 @@ from core.multi_subscription import (
     subscription_url,
     delete_subscription_profile_remote,
     edit_subscription_profile,
+    sync_subscription_nodes_for_all,
 )
 
 logger = logging.getLogger(__name__)
@@ -917,6 +918,14 @@ async def subscriptions_settings_save(
     await set_setting("sub_info_template", sub_info_template.strip() or SETTINGS_DEFAULTS["sub_info_template"])
     await set_setting("sub_brand_template", sub_brand_template.strip() or SETTINGS_DEFAULTS["sub_brand_template"])
     return RedirectResponse(f"/{S}/subs?saved=1", status_code=302)
+
+
+@app.post(f"/{S}/subs/sync-nodes")
+async def subscription_sync_nodes(request: Request):
+    if not _auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    result = await sync_subscription_nodes_for_all(5000)
+    return JSONResponse({"success": True, **result})
 
 
 @app.post(f"/{S}/subs/nodes/add")

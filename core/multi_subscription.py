@@ -111,6 +111,10 @@ def _days_remaining(expire_ms: int, now_ms: int | None = None) -> int:
     return max(1, int((diff + 86399999) // 86400000))
 
 
+def _remote_client_uuid(client: Dict, fallback: str = "") -> str:
+    return str(client.get("id") or client.get("uuid") or client.get("password") or client.get("auth") or fallback or "")
+
+
 def public_base_url() -> str:
     raw = ""
     # This is async in settings, so callers use public_base_url_async when possible.
@@ -611,6 +615,15 @@ async def ensure_subscription_profile_nodes(profile: Dict) -> Dict:
             if ok and expire_ms > 0:
                 ok = await cli.update_client(inbound_id, client_uuid, node_email, traffic_gb, expire_ms, True)
             if not ok:
+                found = await cli.find_client(email=node_email)
+                remote_client = (found or {}).get("client") or {}
+                remote_uuid = _remote_client_uuid(remote_client, client_uuid)
+                remote_inbound = int((found or {}).get("inbound_id") or inbound_id)
+                if remote_client and remote_uuid:
+                    client_uuid = remote_uuid
+                    inbound_id = remote_inbound or inbound_id
+                    ok = await cli.update_client(inbound_id, client_uuid, node_email, traffic_gb, expire_ms, True)
+            if not ok:
                 failed += 1
                 logger.warning("subscription missing node add failed profile=%s node=%s/%s email=%s", profile.get("id"), node.get("server_id"), inbound_id, node_email)
                 continue
@@ -630,6 +643,16 @@ async def ensure_subscription_profile_nodes(profile: Dict) -> Dict:
             logger.warning("subscription missing node add error profile=%s node=%s/%s: %s", profile.get("id"), node.get("server_id"), inbound_id, e)
         finally:
             await cli.close()
+    if created or refreshed or failed:
+        logger.info(
+            "subscription node ensure profile=%s created=%s refreshed=%s failed=%s missing=%s refresh=%s",
+            profile.get("id"),
+            created,
+            refreshed,
+            failed,
+            len(missing_nodes),
+            len(refresh_nodes),
+        )
     return {"created": created, "refreshed": refreshed, "skipped": 0, "failed": failed}
 
 
@@ -825,3 +848,27 @@ async def sync_active_profiles(limit: int = 100) -> int:
             await ensure_subscription_profile_nodes(fresh)
         checked += 1
     return checked
+
+
+async def sync_subscription_nodes_for_all(limit: int = 1000) -> Dict:
+    checked = created = refreshed = failed = skipped = disabled = 0
+    for profile in await get_active_subscription_profiles(limit):
+        usage = await sync_profile_usage(profile)
+        checked += 1
+        if usage.get("disabled"):
+            disabled += 1
+            continue
+        fresh = await get_subscription_profile_by_token(profile["token"]) or profile
+        result = await ensure_subscription_profile_nodes(fresh)
+        created += int(result.get("created") or 0)
+        refreshed += int(result.get("refreshed") or 0)
+        failed += int(result.get("failed") or 0)
+        skipped += int(result.get("skipped") or 0)
+    return {
+        "checked": checked,
+        "created": created,
+        "refreshed": refreshed,
+        "failed": failed,
+        "skipped": skipped,
+        "disabled": disabled,
+    }
