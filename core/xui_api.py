@@ -7,7 +7,7 @@ import logging
 import uuid as uuidlib
 from datetime import datetime, timedelta
 from typing import Optional, Dict, List, Any
-from urllib.parse import urlparse, quote, urlencode
+from urllib.parse import urlparse, quote, urlencode, parse_qsl
 import base64
 
 logger = logging.getLogger(__name__)
@@ -289,6 +289,30 @@ class XUIClient:
                 logger.warning("3x-ui returned incomplete client link; rebuilding locally")
         return None
 
+    def _api_endpoint(self, api_link: Optional[str], scheme: str, fallback_host: str, fallback_port: Any) -> tuple[str, Any]:
+        raw = (api_link or "").strip()
+        if not raw.lower().startswith(f"{scheme.lower()}://") or not self._link_is_complete(raw):
+            return fallback_host, fallback_port
+        try:
+            parsed = urlparse(raw)
+            return (parsed.hostname or fallback_host).strip(), parsed.port or fallback_port
+        except Exception:
+            return fallback_host, fallback_port
+
+    def _merge_api_query_params(self, params: list[tuple[str, str]], api_link: Optional[str], scheme: str) -> list[tuple[str, str]]:
+        raw = (api_link or "").strip()
+        if not raw.lower().startswith(f"{scheme.lower()}://"):
+            return params
+        existing = {str(k) for k, _ in params}
+        try:
+            for key, value in parse_qsl(urlparse(raw).query, keep_blank_values=True):
+                if key and key not in existing:
+                    params.append((key, value))
+                    existing.add(key)
+        except Exception:
+            pass
+        return params
+
     def _normal_uuid(self, value: Any) -> str:
         raw = str(value or "").strip()
         if not raw:
@@ -564,6 +588,7 @@ class XUIClient:
                 if not cid:
                     self.last_error = "invalid_vless_uuid_for_link"
                     return api_link
+                host, port = self._api_endpoint(api_link, "vless", host, port)
                 # برای سازگاری با کلاینت‌ها، encryption را صراحتاً ارسال می‌کنیم.
                 params = [("type", network), ("encryption", "none"), ("security", security)]
                 if security == "reality":
@@ -582,6 +607,15 @@ class XUIClient:
                     tls = stream.get("tlsSettings", {})
                     sni = tls.get("serverName", host)
                     if sni: params.append(("sni", sni))
+                    alpn = tls.get("alpn")
+                    if isinstance(alpn, list) and alpn:
+                        params.append(("alpn", ",".join(str(x) for x in alpn if x)))
+                    elif isinstance(alpn, str) and alpn:
+                        params.append(("alpn", alpn))
+                    fp = tls.get("settings", {}).get("fingerprint", "") if isinstance(tls.get("settings"), dict) else ""
+                    fp = fp or tls.get("fingerprint", "")
+                    if fp:
+                        params.append(("fp", fp))
                 if network == "ws":
                     ws = stream.get("wsSettings", {})
                     params.append(("path", ws.get("path", "/")))
@@ -610,6 +644,7 @@ class XUIClient:
                     params.append(("mode", "gun"))
                 flow = client.get("flow", "")
                 if flow: params.append(("flow", flow))
+                params = self._merge_api_query_params(params, api_link, "vless")
                 link = f"vless://{cid}@{host}:{port}?{urlencode(params)}#{quote(email, safe='')}"
                 return link if self._link_is_complete(link) else api_link
 

@@ -4,6 +4,7 @@ All CSS/JS is embedded directly in HTML templates.
 """
 
 import logging
+import base64
 import os
 import re
 import shlex
@@ -168,11 +169,14 @@ async def public_subscription(token: str):
     if not rendered:
         return StreamingResponse(iter([b""]), media_type="text/plain", status_code=404)
     body, info = rendered
+    title = await get_setting("ui.brand_name", "Atlas Account")
+    title_b64 = base64.b64encode(str(title or "Atlas Account").encode("utf-8")).decode()
     headers = {
         "Subscription-Userinfo": (
             f"upload={info['upload']}; download={info['download']}; "
             f"total={info['total']}; expire={info['expire']}"
         ),
+        "Profile-Title": f"base64:{title_b64}",
         "Cache-Control": "no-store",
     }
     return StreamingResponse(iter([body.encode()]), media_type="text/plain; charset=utf-8", headers=headers)

@@ -421,9 +421,9 @@ def _format_info_template(template: str, values: Dict[str, str]) -> list[str]:
 
 
 async def _subscription_info_links(profile: Dict, used: int, total: int, active_node_count: int) -> list[str]:
-    if await get_setting("sub_info_enabled", "0") != "1":
+    if await get_setting("sub_info_enabled", "1") != "1":
         return []
-    if await get_setting("sub_info_render_as_links", "0") != "1":
+    if await get_setting("sub_info_render_as_links", "1") != "1":
         return []
 
     now_ms = int(time.time() * 1000)
