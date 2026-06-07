@@ -6,6 +6,12 @@
 <title>{% block title %}Atlas{% endblock %} | Atlas Account</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Vazirmatn:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+<script>
+(function(){
+  const saved = localStorage.getItem('atlas-theme') || 'light';
+  document.documentElement.dataset.theme = saved === 'dark' ? 'dark' : 'light';
+})();
+</script>
 <style>
 :root{
   --bg:#0a0a14;--bg2:#0f0f1e;--bg3:#13132a;--card:#181828;--card2:#1e1e35;
@@ -327,6 +333,173 @@ tbody tr:hover td{background:rgba(255,255,255,.025)}
   #toast-container{right:10px;left:10px;bottom:10px}
   .toast{min-width:0;width:100%}
 }
+
+/* Atlas premium redesign */
+:root{
+  --bg:#f5f7fb;--bg2:#eef2f8;--bg3:#ffffff;--card:#ffffff;--card2:#f9fbff;
+  --border:#e4e9f2;--border2:#cfd8e7;
+  --p:#4f46e5;--p2:#3730a3;--p3:#eef2ff;
+  --acc:#f43f5e;--acc2:#be123c;
+  --g:#10b981;--g2:#047857;
+  --r:#ef4444;--r2:#b91c1c;
+  --y:#f59e0b;--y2:#b45309;
+  --c:#0891b2;--c2:#0e7490;
+  --txt:#172033;--txt2:#667085;--txt3:#98a2b3;
+  --shadow:0 18px 48px rgba(15,23,42,.10);
+  --shadow2:0 8px 24px rgba(15,23,42,.08);
+  --radius:8px;--radius2:8px;
+}
+body{
+  background:
+    linear-gradient(135deg,rgba(79,70,229,.08),transparent 32%),
+    linear-gradient(315deg,rgba(16,185,129,.08),transparent 30%),
+    var(--bg);
+  color:var(--txt);
+}
+body::before{
+  content:"";position:fixed;inset:0;pointer-events:none;z-index:-1;
+  background-image:linear-gradient(rgba(15,23,42,.035) 1px,transparent 1px),linear-gradient(90deg,rgba(15,23,42,.035) 1px,transparent 1px);
+  background-size:34px 34px;
+  mask-image:linear-gradient(to bottom,rgba(0,0,0,.65),transparent 72%);
+}
+.sidebar{
+  width:264px;background:rgba(255,255,255,.86);backdrop-filter:blur(18px);
+  border-left:1px solid rgba(226,232,240,.92);box-shadow:-18px 0 44px rgba(15,23,42,.06);
+}
+.sb-logo{padding:24px 20px 18px;text-align:right;border-bottom:1px solid var(--border)}
+.sb-logo-icon{
+  width:44px;height:44px;border-radius:8px;display:inline-flex;align-items:center;justify-content:center;
+  background:#111827;color:white;font-size:1.45rem;box-shadow:0 12px 30px rgba(17,24,39,.18);
+}
+.sb-logo h2{
+  margin-top:12px;color:var(--txt);background:none;-webkit-text-fill-color:initial;font-size:1.08rem;letter-spacing:0;
+}
+.sb-logo span{color:var(--txt3)}
+.nav{padding:12px 10px}
+.nav-item{
+  margin:3px 0;padding:11px 12px;border:1px solid transparent;border-radius:8px;border-right:1px solid transparent;
+  color:var(--txt2);font-weight:700;
+}
+.nav-item:hover{background:#f8fafc;color:var(--txt);border-color:var(--border)}
+.nav-item.active{background:#111827;color:#fff;border-color:#111827;box-shadow:0 12px 28px rgba(17,24,39,.16)}
+.nav-item .ni{width:26px;height:26px;border-radius:8px;display:inline-flex;align-items:center;justify-content:center;background:rgba(15,23,42,.06);font-size:.95rem}
+.nav-item.active .ni{background:rgba(255,255,255,.16)}
+.sb-footer{border-top:1px solid var(--border);padding:14px 18px}
+.main{margin-right:264px}
+.topbar{
+  margin:16px 18px 0;border:1px solid rgba(226,232,240,.9);border-radius:8px;background:rgba(255,255,255,.78);
+  box-shadow:var(--shadow2);padding:12px 16px;
+}
+.topbar h1{font-size:.98rem;color:var(--txt)}
+.content{max-width:1360px;padding:22px 18px 34px}
+.card,.settings-card,.sub-card,.node-row,.stat-card{
+  background:rgba(255,255,255,.9);border:1px solid rgba(226,232,240,.95);border-radius:8px;box-shadow:var(--shadow2);
+}
+.card:hover,.stat-card:hover{transform:translateY(-1px);border-color:#d7deea}
+.stat-grid{grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:14px}
+.stat-card{padding:16px;min-height:132px}
+.stat-card::before{background:linear-gradient(135deg,rgba(79,70,229,.08),transparent 52%)}
+.stat-icon{width:36px;height:36px;border-radius:8px;background:#f1f5f9;display:flex;align-items:center;justify-content:center;font-size:1.1rem;margin-bottom:14px}
+.stat-val{font-size:1.9rem;color:var(--txt)}
+.stat-lbl{color:var(--txt2);font-weight:700}
+.table-wrap{background:white;border-color:var(--border);box-shadow:var(--shadow2)}
+table{min-width:760px}
+th{background:#f8fafc;color:#475467;border-bottom:1px solid var(--border);font-size:.74rem}
+td{border-bottom:1px solid #eef2f7;color:#344054}
+tbody tr:hover td{background:#fbfcff}
+.badge{border-radius:8px;padding:4px 9px}
+.b-green{background:#ecfdf3;color:#047857}.b-red{background:#fef2f2;color:#b42318}.b-yellow{background:#fffaeb;color:#b54708}.b-blue{background:#ecfeff;color:#0e7490}.b-gray{background:#f2f4f7;color:#667085}.b-purple{background:#eef2ff;color:#4338ca}
+.btn{border-radius:8px;min-height:36px;font-weight:800;box-shadow:none}
+.btn-primary{background:#111827;color:#fff}.btn-primary:hover{background:#020617;box-shadow:0 12px 26px rgba(17,24,39,.18)}
+.btn-success{background:#10b981;color:#fff}.btn-danger{background:#ef4444;color:#fff}.btn-warn{background:#f59e0b;color:#111827}
+.btn-outline{background:#fff;border:1px solid var(--border2);color:#344054}.btn-outline:hover{background:#f8fafc;color:#111827;border-color:#98a2b3}
+.btn-ghost:hover{background:#f2f4f7;color:#111827}
+.form-control{
+  background:#fff;border:1px solid #d0d5dd;border-radius:8px;color:var(--txt);min-height:40px;
+}
+textarea.form-control{min-height:96px;line-height:1.8}
+.form-control:focus{border-color:#4f46e5;box-shadow:0 0 0 4px rgba(79,70,229,.12)}
+.form-group label{color:#344054;font-weight:800}
+.form-row{grid-template-columns:repeat(auto-fit,minmax(210px,1fr))}
+.modal{background:white;color:var(--txt);border-radius:8px;border:1px solid var(--border);box-shadow:var(--shadow)}
+.alert{border-radius:8px;font-weight:700}
+.alert-success{background:#ecfdf3;color:#047857;border-color:#abefc6}.alert-danger{background:#fef3f2;color:#b42318;border-color:#fecdca}.alert-info{background:#ecfeff;color:#0e7490;border-color:#a5f3fc}
+.toast{background:#fff;color:var(--txt);border-color:var(--border);box-shadow:var(--shadow)}
+.settings-header h2{font-size:1.35rem;color:var(--txt)}
+.settings-grid{grid-template-columns:repeat(auto-fit,minmax(330px,1fr));gap:16px}
+.settings-card h3,.sub-card h3{font-size:.98rem}
+.settings-actions{background:linear-gradient(180deg,rgba(245,247,251,0),rgba(245,247,251,.96) 28%);padding:14px 0}
+.settings-note{background:#fff;border-color:var(--border);color:var(--txt2);box-shadow:var(--shadow2)}
+.search-box::before{content:"⌕";color:var(--txt3)}
+#menu-toggle{width:38px}
+@media(max-width:900px){
+  .sidebar{box-shadow:-24px 0 60px rgba(15,23,42,.18)}
+  .main{margin-right:0}
+  .topbar{margin:10px 10px 0}
+  .content{padding:14px 10px 28px;max-width:100vw}
+  .stat-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .settings-grid{grid-template-columns:1fr}
+}
+@media(max-width:560px){
+  body{font-size:13px}
+  .topbar{align-items:center}
+  .topbar-right{display:flex;gap:6px}
+  .topbar-right span{display:none}
+  .stat-grid{grid-template-columns:1fr}
+  .stat-card{min-height:112px}
+  .btn{width:100%}
+  .btn-icon,.topbar .btn{width:auto}
+  .settings-header h2{font-size:1.08rem}
+}
+
+html[data-theme="dark"]{
+  --bg:#090b12;--bg2:#101522;--bg3:#151b2b;--card:#111827;--card2:#182133;
+  --border:#263247;--border2:#3a4861;
+  --p:#8b5cf6;--p2:#7c3aed;--p3:rgba(139,92,246,.16);
+  --acc:#fb7185;--acc2:#f43f5e;
+  --g:#34d399;--g2:#10b981;
+  --r:#fb7185;--r2:#ef4444;
+  --y:#fbbf24;--y2:#f59e0b;
+  --c:#22d3ee;--c2:#06b6d4;
+  --txt:#eef2ff;--txt2:#aab4c8;--txt3:#748095;
+  --shadow:0 22px 60px rgba(0,0,0,.34);
+  --shadow2:0 12px 34px rgba(0,0,0,.24);
+}
+html[data-theme="dark"] body{
+  background:
+    linear-gradient(135deg,rgba(139,92,246,.14),transparent 34%),
+    linear-gradient(315deg,rgba(34,211,238,.10),transparent 30%),
+    var(--bg);
+}
+html[data-theme="dark"] body::before{background-image:linear-gradient(rgba(255,255,255,.035) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.035) 1px,transparent 1px)}
+html[data-theme="dark"] .sidebar,
+html[data-theme="dark"] .topbar,
+html[data-theme="dark"] .card,
+html[data-theme="dark"] .settings-card,
+html[data-theme="dark"] .sub-card,
+html[data-theme="dark"] .node-row,
+html[data-theme="dark"] .stat-card,
+html[data-theme="dark"] .table-wrap,
+html[data-theme="dark"] .settings-note,
+html[data-theme="dark"] .modal,
+html[data-theme="dark"] .toast{background:rgba(17,24,39,.88);border-color:var(--border);color:var(--txt)}
+html[data-theme="dark"] .nav-item:hover{background:rgba(255,255,255,.05);border-color:var(--border2)}
+html[data-theme="dark"] .nav-item.active{background:#eef2ff;color:#111827;border-color:#eef2ff}
+html[data-theme="dark"] .nav-item .ni{background:rgba(255,255,255,.08)}
+html[data-theme="dark"] .nav-item.active .ni{background:rgba(17,24,39,.10)}
+html[data-theme="dark"] th{background:#151b2b;color:#cbd5e1;border-color:var(--border)}
+html[data-theme="dark"] td{color:#d8def0;border-color:#202a3d}
+html[data-theme="dark"] tbody tr:hover td{background:rgba(255,255,255,.035)}
+html[data-theme="dark"] .form-control{background:#0f172a;border-color:#334155;color:var(--txt)}
+html[data-theme="dark"] .form-group label{color:#d8def0}
+html[data-theme="dark"] .btn-outline{background:#111827;color:#d8def0;border-color:#3a4861}
+html[data-theme="dark"] .btn-outline:hover{background:#182133;color:#fff}
+html[data-theme="dark"] .stat-icon{background:#1f2937}
+html[data-theme="dark"] .settings-actions{background:linear-gradient(180deg,rgba(9,11,18,0),rgba(9,11,18,.96) 28%)}
+.theme-toggle{width:40px;height:40px;padding:0;border-radius:8px}
+.theme-toggle .dark-ico{display:none}
+html[data-theme="dark"] .theme-toggle .light-ico{display:none}
+html[data-theme="dark"] .theme-toggle .dark-ico{display:inline}
 </style>
 {% if ui is defined and ui.custom_css %}<style id="custom-ui-css">{{ ui.custom_css|safe }}</style>{% endif %}
 </head>
@@ -366,8 +539,14 @@ tbody tr:hover td{background:rgba(255,255,255,.025)}
     <a class="nav-item {% if active=='transactions' %}active{% endif %}" href="/{{ S }}/transactions">
       <span class="ni">🧾</span> آخرین تراکنش‌ها
     </a>
+    <a class="nav-item {% if active=='legacy_claims' %}active{% endif %}" href="/{{ S }}/legacy-claims">
+      <span class="ni">🔗</span> درخواست‌های سینک
+    </a>
     <a class="nav-item {% if active=='reports' %}active{% endif %}" href="/{{ S }}/reports">
       <span class="ni">📈</span> گزارش‌ها
+    </a>
+    <a class="nav-item {% if active=='backups' %}active{% endif %}" href="/{{ S }}/backups">
+      <span class="ni">💾</span> بکاپ و ریستور
     </a>
     <a class="nav-item {% if active=='settings' %}active{% endif %}" href="/{{ S }}/settings">
       <span class="ni">⚙️</span> تنظیمات
@@ -383,6 +562,9 @@ tbody tr:hover td{background:rgba(255,255,255,.025)}
     <h1><button class="btn btn-ghost btn-sm" id="menu-toggle" style="display:none">☰</button>{% block topbar_title %}📊 داشبورد{% endblock %}</h1>
     <div class="topbar-right">
       <span>{{ ui.topbar_note if ui is defined else "Atlas Account Admin" }}</span>
+      <button class="btn btn-outline btn-icon theme-toggle" id="theme-toggle" type="button" title="تغییر تم">
+        <span class="light-ico">☀️</span><span class="dark-ico">🌙</span>
+      </button>
     </div>
   </div>
   <div class="content">
@@ -434,6 +616,15 @@ function confirmAction(msg, cb){ if(confirm(msg)) cb(); }
 const menuToggle = document.getElementById('menu-toggle');
 if(menuToggle){
   menuToggle.addEventListener('click', ()=> document.getElementById('sidebar').classList.toggle('open'));
+}
+
+const themeToggle = document.getElementById('theme-toggle');
+if(themeToggle){
+  themeToggle.addEventListener('click', ()=>{
+    const next = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
+    document.documentElement.dataset.theme = next;
+    localStorage.setItem('atlas-theme', next);
+  });
 }
 
 </script>

@@ -26,7 +26,10 @@
 <div class="card" style="margin-bottom:14px;background:linear-gradient(135deg,rgba(124,111,255,.14),rgba(61,217,255,.08));border:1px solid rgba(124,111,255,.35)">
   <div style="font-weight:800;font-size:1.03rem">ساب آزمایشی برای خریدهای جدید تکی</div>
   <div style="color:var(--txt2);margin-top:4px">وقتی فعال باشد، خریدهای جدید تکی به جای کانفیگ معمولی، یک لینک سابسکریپشن با چند نود فعال دریافت می‌کنند. تمدید و خرید عمده وارد این مسیر نمی‌شوند.</div>
-  <div style="margin-top:10px"><a class="btn btn-outline btn-sm" href="/{{ S }}/subs/profiles">📋 مدیریت ساب‌های ساخته‌شده</a></div>
+  <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">
+    <a class="btn btn-outline btn-sm" href="/{{ S }}/subs/profiles">📋 مدیریت ساب‌های ساخته‌شده</a>
+    <button class="btn btn-primary btn-sm" type="button" onclick="syncSubNodes(this)">🔄 Sync نودها برای همه ساب‌ها</button>
+  </div>
 </div>
 
 <div class="subs-grid">
@@ -247,6 +250,22 @@ async function testNode(id, btn){
     toast(r.msg || 'اینباند پیدا نشد','error');
   }
   setTimeout(()=>{ btn.innerHTML=old; btn.className='btn btn-outline btn-sm'; },3500);
+}
+
+async function syncSubNodes(btn){
+  const old = btn.innerHTML;
+  btn.innerHTML = '<span class="spin"></span>';
+  btn.disabled = true;
+  const r = await api(`/${S}/subs/sync-nodes`);
+  btn.disabled = false;
+  btn.innerHTML = old;
+  if(r.success){
+    const firstErrors = (r.errors || []).slice(0, 3).join(' | ');
+    const msg = `Sync انجام شد | بررسی: ${r.checked || 0} | ساخته: ${r.created || 0} | ترمیم: ${r.refreshed || 0} | تایید: ${r.verified || 0} | انتقال: ${r.moved || 0} | خطا: ${r.failed || 0}`;
+    toast(firstErrors ? `${msg} | ${firstErrors}` : msg, r.failed ? 'error' : 'success');
+  } else {
+    toast(r.error || 'خطا در Sync نودها','error');
+  }
 }
 </script>
 {% endblock %}

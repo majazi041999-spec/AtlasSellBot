@@ -4,6 +4,7 @@ import math
 import secrets
 import time
 import logging
+import uuid as uuidlib
 from datetime import datetime, timedelta
 from typing import Optional, Dict, List, Any
 from urllib.parse import urlparse, quote
@@ -22,6 +23,7 @@ class XUIClient:
         self.api_token = (api_token or "").strip()
         self._cookie: Optional[str] = None
         self._csrf_token: Optional[str] = None
+        self.last_error: str = ""
         self._http = httpx.AsyncClient(verify=False, timeout=20.0)
 
     async def _login(self) -> bool:
@@ -30,11 +32,22 @@ class XUIClient:
                 f"{self.panel_url}/login",
                 data={"username": self.username, "password": self.password}
             )
-            if r.status_code == 200 and r.json().get("success"):
+            if r.status_code != 200:
+                self.last_error = f"login_failed HTTP {r.status_code}: {r.text[:300]}"
+                return False
+            try:
+                data = r.json()
+            except Exception:
+                self.last_error = f"login_failed invalid_response: {r.text[:300]}"
+                return False
+            if data.get("success"):
                 self._cookie = "; ".join(f"{k}={v}" for k, v in r.cookies.items())
                 await self._load_csrf_token()
+                self.last_error = ""
                 return True
+            self.last_error = f"login_failed: {str(data.get('msg') or data.get('error') or data)[:300]}"
         except Exception as e:
+            self.last_error = f"login_failed: {str(e)[:300]}"
             logger.error(f"XUI login error: {e}")
         return False
 
@@ -51,9 +64,28 @@ class XUIClient:
         except Exception:
             self._csrf_token = None
 
-    def _headers(self, extra: Optional[Dict[str, str]] = None, unsafe: bool = False) -> Dict[str, str]:
+    def _allow_token_write(self, path: str) -> bool:
+        if not self.api_token:
+            return False
+        safe_prefixes = (
+            "/panel/api/clients/add",
+            "/panel/api/clients/update/",
+            "/panel/api/clients/del/",
+            "/panel/api/clients/bulkDel",
+            "/panel/api/clients/resetTraffic/",
+            "/panel/api/inbounds/addClient",
+            "/panel/api/inbounds/updateClient/",
+        )
+        if any(path.startswith(prefix) for prefix in safe_prefixes):
+            return True
+        if path.startswith("/panel/api/inbounds/"):
+            return any(part in path for part in ("/delClient/", "/delClientByEmail/", "/resetClientTraffic/"))
+        return False
+
+    def _headers(self, extra: Optional[Dict[str, str]] = None, unsafe: bool = False,
+                 token_write: bool = False) -> Dict[str, str]:
         headers = dict(extra or {})
-        if self.api_token:
+        if self.api_token and (not unsafe or token_write):
             headers["Authorization"] = f"Bearer {self.api_token}"
         elif self._cookie:
             headers["Cookie"] = self._cookie
@@ -63,28 +95,63 @@ class XUIClient:
 
     async def _req(self, method: str, path: str, **kw) -> Optional[Dict]:
         unsafe = method.upper() not in {"GET", "HEAD", "OPTIONS", "TRACE"}
-        if not self.api_token and not self._cookie:
+        token_write_allowed = unsafe and self._allow_token_write(path)
+        token_write = False
+        login_error = ""
+        if (unsafe or not self.api_token) and not self._cookie:
             if not await self._login():
-                return None
+                login_error = self.last_error or "login_failed"
+                if token_write_allowed:
+                    token_write = True
+                else:
+                    if unsafe and self.api_token:
+                        self.last_error = f"{login_error}; unsafe_write_requires_panel_login"
+                    elif not self.last_error:
+                        self.last_error = "login_failed"
+                    return None
         try:
-            headers = self._headers(kw.pop("headers", None), unsafe=unsafe)
+            extra_headers = kw.pop("headers", None)
+            headers = self._headers(extra_headers, unsafe=unsafe, token_write=token_write)
             r = await self._http.request(
                 method, f"{self.panel_url}{path}",
                 headers=headers, **kw
             )
-            if r.status_code in (401, 403) and not self.api_token:
+            if r.status_code in (401, 403) and (unsafe or not self.api_token) and not token_write:
                 self._cookie = None
                 self._csrf_token = None
                 if not await self._login():
-                    return None
-                headers = self._headers(unsafe=unsafe)
+                    login_error = self.last_error or f"HTTP {r.status_code}"
+                    if token_write_allowed:
+                        token_write = True
+                    else:
+                        if unsafe and self.api_token:
+                            self.last_error = f"{login_error}; unsafe_write_requires_panel_login"
+                        elif not self.last_error:
+                            self.last_error = f"auth_failed HTTP {r.status_code}"
+                        return None
+                headers = self._headers(extra_headers, unsafe=unsafe, token_write=token_write)
                 r = await self._http.request(
                     method, f"{self.panel_url}{path}",
                     headers=headers, **kw
                 )
             if r.status_code == 200:
-                return r.json()
+                data = r.json()
+                if isinstance(data, dict) and not data.get("success", True):
+                    msg = str(data.get("msg") or data.get("error") or data)
+                    if msg.strip().lower() in {"", "unknown", "none"}:
+                        msg = f"{msg or 'api_error'} at {path}"
+                    if token_write and login_error:
+                        msg = f"{msg}; panel_login_failed: {login_error}"
+                    self.last_error = msg[:500]
+                else:
+                    self.last_error = ""
+                return data
+            err = f"HTTP {r.status_code}: {r.text[:300]}"
+            if token_write and login_error:
+                err = f"{err}; panel_login_failed: {login_error}"
+            self.last_error = err[:500]
         except Exception as e:
+            self.last_error = str(e)[:500]
             logger.error(f"XUI request error {path}: {e}")
         return None
 
@@ -129,29 +196,28 @@ class XUIClient:
         api_client = None
         if email:
             api_client = await self.get_client(email)
-            if api_client:
-                inbound_ids = api_client.get("inboundIds") or api_client.get("inbound_ids") or []
-                inbound_id = 0
-                if isinstance(inbound_ids, list) and inbound_ids:
-                    try:
-                        inbound_id = int(inbound_ids[0])
-                    except Exception:
-                        inbound_id = 0
-                if inbound_id:
-                    return {"client": api_client, "inbound_id": inbound_id, "inbound": None}
 
         for inbound in await self.get_inbounds():
-            settings = self._json_obj(inbound.get("settings"), {})
-            for client in settings.get("clients", []) or []:
-                ident = client.get("id") or client.get("password") or client.get("auth") or ""
-                if (email and client.get("email") == email) or (client_uuid and ident == client_uuid):
-                    return {
-                        "client": client,
-                        "inbound_id": int(inbound.get("id") or 0),
-                        "inbound": inbound,
+            protocol = inbound.get("protocol", "vless")
+            client = self._find_inbound_client(inbound, protocol, email, client_uuid)
+            if client:
+                return {
+                    "client": client,
+                    "inbound_id": int(inbound.get("id") or 0),
+                    "inbound": inbound,
                     }
         if api_client:
-            return {"client": api_client, "inbound_id": 0, "inbound": None}
+            protocol = str(api_client.get("protocol") or "vless")
+            if not self._client_identity(protocol, api_client):
+                return None
+            inbound_ids = api_client.get("inboundIds") or api_client.get("inbound_ids") or []
+            inbound_id = 0
+            if isinstance(inbound_ids, list) and inbound_ids:
+                try:
+                    inbound_id = int(inbound_ids[0])
+                except Exception:
+                    inbound_id = 0
+            return {"client": api_client, "inbound_id": inbound_id, "inbound": None}
         return None
 
     def _json_obj(self, value: Any, default: Optional[Any] = None) -> Any:
@@ -189,8 +255,15 @@ class XUIClient:
             obj = self._decode_b64_json(raw[8:])
             if not obj:
                 return False
-            return bool(obj.get("add") and obj.get("port") and obj.get("id"))
-        if scheme in {"vless", "trojan"}:
+            return bool(obj.get("add") and obj.get("port") and self._normal_uuid(obj.get("id")))
+        if scheme == "vless":
+            try:
+                parsed = urlparse(raw)
+                port = parsed.port
+            except Exception:
+                return False
+            return bool(parsed.hostname and port and self._normal_uuid(parsed.username))
+        if scheme == "trojan":
             try:
                 parsed = urlparse(raw)
                 port = parsed.port
@@ -215,6 +288,50 @@ class XUIClient:
             if link:
                 logger.warning("3x-ui returned incomplete client link; rebuilding locally")
         return None
+
+    def _normal_uuid(self, value: Any) -> str:
+        raw = str(value or "").strip()
+        if not raw:
+            return ""
+        try:
+            return str(uuidlib.UUID(raw))
+        except Exception:
+            return ""
+
+    def _client_identity(self, protocol: str, client: Optional[Dict]) -> str:
+        client = client or {}
+        if protocol in ("trojan", "shadowsocks"):
+            return str(client.get("password") or "")
+        if protocol == "hysteria":
+            return str(client.get("auth") or "")
+        return self._normal_uuid(client.get("id") or client.get("uuid"))
+
+    def _find_inbound_client(self, inbound: Optional[Dict], protocol: str, email: str = "", client_uuid: str = "") -> Optional[Dict]:
+        if not inbound:
+            return None
+        settings = self._json_obj(inbound.get("settings"), {})
+        target_uuid = self._normal_uuid(client_uuid)
+        for client in settings.get("clients", []) or []:
+            ident = self._client_identity(protocol, client)
+            if (email and client.get("email") == email) or (target_uuid and ident == target_uuid):
+                return client
+        return None
+
+    async def _client_missing_from_inbound(self, inbound_id: int, email: str = "", client_identity: str = "") -> bool:
+        inbound = await self.get_inbound(int(inbound_id))
+        if not inbound:
+            return False
+        protocol = inbound.get("protocol", "vless")
+        identity = (client_identity or "").strip()
+        normal_identity = self._normal_uuid(identity)
+        settings = self._json_obj(inbound.get("settings"), {})
+        for client in settings.get("clients", []) or []:
+            if email and client.get("email") == email:
+                return False
+            current_identity = self._client_identity(protocol, client)
+            if identity and (current_identity == identity or (normal_identity and current_identity == normal_identity)):
+                return False
+        return True
 
     def _client_payload(self, protocol: str, client_uuid: str, email: str, traffic_bytes: int,
                         expire_ms: int, enable: bool = True, existing: Optional[Dict] = None) -> Dict:
@@ -243,20 +360,53 @@ class XUIClient:
         elif protocol == "hysteria":
             base["auth"] = existing.get("auth") or client_uuid.replace("-", "")
         else:
-            base["id"] = existing.get("id") or existing.get("uuid") or client_uuid
+            cid = self._normal_uuid(existing.get("id") or existing.get("uuid")) or self._normal_uuid(client_uuid)
+            if not cid:
+                raise ValueError("invalid_uuid_for_client_payload")
+            base["id"] = cid
             base["flow"] = existing.get("flow", "") or ""
             if existing.get("security"):
                 base["security"] = existing.get("security")
         return base
 
+    def _link_has_valid_identity(self, link: str) -> bool:
+        raw = str(link or "").strip()
+        lower = raw.lower()
+        if lower.startswith("vless://"):
+            userinfo = raw[8:].split("@", 1)[0].strip()
+            return bool(self._normal_uuid(userinfo))
+        if lower.startswith("vmess://"):
+            payload = raw[8:].split("#", 1)[0].split("?", 1)[0]
+            payload += "=" * (-len(payload) % 4)
+            try:
+                decoded = base64.urlsafe_b64decode(payload.encode()).decode("utf-8", "ignore")
+            except Exception:
+                try:
+                    decoded = base64.b64decode(payload.encode()).decode("utf-8", "ignore")
+                except Exception:
+                    return False
+            try:
+                obj = json.loads(decoded)
+            except Exception:
+                return False
+            return bool(self._normal_uuid(obj.get("id")))
+        return bool(raw)
+
     async def add_client(self, inbound_id: int, client_uuid: str, email: str,
                           traffic_gb: float, expire_days: int, starts_on_first_use: bool = False) -> bool:
         inbound = await self.get_inbound(inbound_id)
-        protocol = inbound.get("protocol", "vless") if inbound else "vless"
+        if not inbound:
+            self.last_error = "inbound_not_found"
+            return False
+        protocol = inbound.get("protocol", "vless")
         traffic_bytes = int(traffic_gb * 1024 ** 3)
         expire_ms = expiry_ms_from_days(expire_days)
 
-        client = self._client_payload(protocol, client_uuid, email, traffic_bytes, expire_ms, True)
+        try:
+            client = self._client_payload(protocol, client_uuid, email, traffic_bytes, expire_ms, True)
+        except ValueError as e:
+            self.last_error = str(e)
+            return False
 
         payload = {"client": client, "inboundIds": [int(inbound_id)]}
         r = await self._req("POST", "/panel/api/clients/add", json=payload)
@@ -265,24 +415,47 @@ class XUIClient:
 
         payload = {"id": inbound_id, "settings": json.dumps({"clients": [client]})}
         r = await self._req("POST", "/panel/api/inbounds/addClient", json=payload)
-        return bool(r and r.get("success"))
+        if r and r.get("success"):
+            return True
+        return False
 
     async def update_client(self, inbound_id: int, client_uuid: str, email: str,
-                             traffic_gb: float, expire_ms: int, enable: bool = True) -> bool:
+                             traffic_gb: float, expire_ms: int, enable: bool = True,
+                             new_email: Optional[str] = None) -> bool:
         inbound = await self.get_inbound(inbound_id)
-        protocol = inbound.get("protocol", "vless") if inbound else "vless"
+        if not inbound:
+            self.last_error = "inbound_not_found"
+            return False
+        protocol = inbound.get("protocol", "vless")
         traffic_bytes = int(traffic_gb * 1024 ** 3)
+        payload_email = (new_email or email or "").strip()
 
-        existing = await self.get_client(email)
-        client = self._client_payload(protocol, client_uuid, email, traffic_bytes, expire_ms, enable, existing)
+        existing = self._find_inbound_client(inbound, protocol, email, client_uuid)
+        api_existing = None
+        if not existing:
+            api_existing = await self.get_client(email)
+        if not existing and payload_email != email:
+            api_existing = await self.get_client(payload_email)
+        if api_existing:
+            safe_identity = self._client_identity(protocol, api_existing)
+            if safe_identity:
+                existing = api_existing
+        try:
+            client = self._client_payload(protocol, client_uuid, payload_email, traffic_bytes, expire_ms, enable, existing)
+        except ValueError as e:
+            self.last_error = str(e)
+            return False
+
+        path_identity = self._client_identity(protocol, existing) or self._client_identity(protocol, client) or client_uuid
+        payload = {"id": inbound_id, "settings": json.dumps({"clients": [client]})}
+        r = await self._req("POST", f"/panel/api/inbounds/updateClient/{quote(path_identity, safe='')}", json=payload)
+        if r and r.get("success"):
+            return True
 
         r = await self._req("POST", f"/panel/api/clients/update/{quote(email, safe='')}", json=client)
         if r and r.get("success"):
             return True
-
-        payload = {"id": inbound_id, "settings": json.dumps({"clients": [client]})}
-        r = await self._req("POST", f"/panel/api/inbounds/updateClient/{client_uuid}", json=payload)
-        return bool(r and r.get("success"))
+        return False
 
     async def reset_client_traffic(self, inbound_id: int, email: str) -> bool:
         enc = quote(email, safe="")
@@ -293,21 +466,72 @@ class XUIClient:
         return bool(r and r.get("success"))
 
     async def delete_client(self, inbound_id: int, client_uuid: str, email: str = "") -> bool:
-        if not email:
+        inbound_id = int(inbound_id)
+        email = (email or "").strip()
+        client_identity = (client_uuid or "").strip()
+
+        if email:
+            found = await self.find_client(email=email, client_uuid=client_uuid)
+            if found:
+                try:
+                    inbound_id = int(found.get("inbound_id") or inbound_id)
+                except Exception:
+                    pass
+                inbound = found.get("inbound")
+                protocol = (inbound or {}).get("protocol", "vless")
+                client_identity = self._client_identity(protocol, found.get("client")) or client_identity
+        else:
             inbound = await self.get_inbound(inbound_id)
             if inbound:
+                protocol = inbound.get("protocol", "vless")
                 settings = self._json_obj(inbound.get("settings"), {})
                 for c in settings.get("clients", []) or []:
-                    ident = c.get("id") or c.get("password") or c.get("auth") or c.get("email")
+                    ident = self._client_identity(protocol, c) or c.get("email", "")
                     if ident == client_uuid:
                         email = c.get("email", "")
+                        client_identity = ident
                         break
+
+        errors = []
+
+        if client_identity:
+            r = await self._req("POST", f"/panel/api/inbounds/{inbound_id}/delClient/{quote(client_identity, safe='')}")
+            if r and r.get("success"):
+                return True
+            if await self._client_missing_from_inbound(inbound_id, email, client_identity):
+                self.last_error = ""
+                return True
+            errors.append(f"delClient: {self.last_error or 'failed'}")
+
+        if email:
+            r = await self._req("POST", f"/panel/api/inbounds/{inbound_id}/delClientByEmail/{quote(email, safe='')}")
+            if r and r.get("success"):
+                return True
+            if await self._client_missing_from_inbound(inbound_id, email, client_identity):
+                self.last_error = ""
+                return True
+            errors.append(f"delClientByEmail: {self.last_error or 'failed'}")
+
+            r = await self._req("POST", "/panel/api/clients/bulkDel", json={"emails": [email], "keepTraffic": False})
+            if r and r.get("success"):
+                return True
+            if await self._client_missing_from_inbound(inbound_id, email, client_identity):
+                self.last_error = ""
+                return True
+            errors.append(f"clients/bulkDel: {self.last_error or 'failed'}")
+
         if email:
             r = await self._req("POST", f"/panel/api/clients/del/{quote(email, safe='')}")
             if r and r.get("success"):
                 return True
-        r = await self._req("POST", f"/panel/api/inbounds/{inbound_id}/delClient/{client_uuid}")
-        return bool(r and r.get("success"))
+            if await self._client_missing_from_inbound(inbound_id, email, client_identity):
+                self.last_error = ""
+                return True
+            errors.append(f"clients/del: {self.last_error or 'failed'}")
+
+        if errors:
+            self.last_error = " | ".join(errors)[-500:]
+        return False
 
     async def get_client_link(self, inbound_id: int, email: str) -> Optional[str]:
         try:
@@ -337,7 +561,10 @@ class XUIClient:
             security = stream.get("security", "none")
 
             if protocol == "vless":
-                cid = client.get("id", "")
+                cid = self._normal_uuid(client.get("id") or client.get("uuid"))
+                if not cid:
+                    self.last_error = "invalid_vless_uuid_for_link"
+                    return None
                 # برای سازگاری با کلاینت‌ها، encryption را صراحتاً ارسال می‌کنیم.
                 params = [f"type={network}", "encryption=none", f"security={security}"]
                 if security == "reality":
@@ -386,7 +613,10 @@ class XUIClient:
                 return link if self._link_is_complete(link) else None
 
             elif protocol == "vmess":
-                cid = client.get("id", "")
+                cid = self._normal_uuid(client.get("id") or client.get("uuid"))
+                if not cid:
+                    self.last_error = "invalid_vmess_uuid_for_link"
+                    return None
                 cfg = {"v": "2", "ps": email, "add": host, "port": str(port), "id": cid,
                        "aid": str(client.get("alterId", 0)), "scy": "auto", "net": network,
                        "type": "none", "host": "", "path": "", "tls": security if security != "none" else ""}
@@ -463,7 +693,9 @@ def days_left(expire_ms: int) -> int:
     if expire_ms <= 0:
         return -1
     diff = expire_ms - int(time.time() * 1000)
-    return max(0, int(diff / 86_400_000))
+    if diff <= 0:
+        return 0
+    return max(1, int(math.ceil(diff / 86_400_000)))
 
 def used_pct(total: int, down: int, up: int) -> int:
     if total <= 0:

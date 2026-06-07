@@ -10,6 +10,12 @@ import shlex
 import time
 import subprocess
 import uuid
+import sqlite3
+import json
+import shutil
+import tempfile
+import zipfile
+from io import BytesIO
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -17,8 +23,8 @@ from aiogram import Bot
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.types import BufferedInputFile
-from fastapi import FastAPI, Form, Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
+from fastapi import FastAPI, File, Form, Request, UploadFile
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 from jose import JWTError, jwt
 
@@ -31,6 +37,7 @@ from core.config import (
     JWT_SECRET,
     REFERRAL_BONUS_GB,
     BOT_TOKEN,
+    DB_PATH,
     WEB_ADMIN_PASSWORD,
     WEB_ADMIN_USERNAME,
     WEB_PORT,
@@ -58,6 +65,11 @@ from core.database import (
     get_pending_topup_requests,
     get_topup_request,
     update_topup_request,
+    get_pending_legacy_claims,
+    get_legacy_claim,
+    update_legacy_claim,
+    get_config_by_email,
+    get_config_by_uuid,
     get_config,
     get_order,  # noqa: F401
     get_package,
@@ -118,6 +130,8 @@ from core.multi_subscription import (
     renew_subscription_profile,
     subscription_url,
     delete_subscription_profile_remote,
+    edit_subscription_profile,
+    sync_subscription_nodes_for_all,
 )
 
 logger = logging.getLogger(__name__)
@@ -125,6 +139,10 @@ logger = logging.getLogger(__name__)
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 
 _dir = os.path.dirname(os.path.abspath(__file__))
+_repo_dir = os.path.dirname(_dir)
+_db_path = DB_PATH if os.path.isabs(DB_PATH) else os.path.join(_repo_dir, DB_PATH)
+_env_path = os.path.join(_repo_dir, ".env")
+_backup_dir = os.path.join(_repo_dir, "backups")
 _templates = Jinja2Templates(directory=os.path.join(_dir, "templates"))
 
 S = WEB_SECRET_PATH  # short alias
@@ -276,6 +294,96 @@ async def _send_update_broadcast(build: str) -> int:
     await set_setting("update_broadcast_approved_build", "")
     await set_setting("skipped_update_build", "")
     return sent
+
+
+def _safe_backup_name(prefix: str = "atlas-backup") -> str:
+    return f"{prefix}-{datetime.now().strftime('%Y%m%d-%H%M%S')}.zip"
+
+
+def _sqlite_snapshot_bytes() -> bytes:
+    if not os.path.exists(_db_path):
+        raise FileNotFoundError("atlas.db not found")
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".db")
+    tmp.close()
+    try:
+        src = sqlite3.connect(_db_path)
+        dst = sqlite3.connect(tmp.name)
+        try:
+            src.backup(dst)
+        finally:
+            dst.close()
+            src.close()
+        with open(tmp.name, "rb") as f:
+            return f.read()
+    finally:
+        try:
+            os.unlink(tmp.name)
+        except OSError:
+            pass
+
+
+def _build_backup_zip() -> bytes:
+    meta = {
+        "app": "AtlasSellBot",
+        "created_at": datetime.now().isoformat(),
+        "contains": ["atlas.db"] + ([".env"] if os.path.exists(_env_path) else []),
+    }
+    buf = BytesIO()
+    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as z:
+        z.writestr("metadata.json", json.dumps(meta, ensure_ascii=False, indent=2))
+        z.writestr("atlas.db", _sqlite_snapshot_bytes())
+        if os.path.exists(_env_path):
+            z.write(_env_path, ".env")
+    buf.seek(0)
+    return buf.getvalue()
+
+
+def _save_pre_restore_backup() -> str:
+    os.makedirs(_backup_dir, exist_ok=True)
+    name = _safe_backup_name("before-restore")
+    path = os.path.join(_backup_dir, name)
+    with open(path, "wb") as f:
+        f.write(_build_backup_zip())
+    return name
+
+
+def _validate_sqlite_db(path: str):
+    con = sqlite3.connect(path)
+    try:
+        row = con.execute("PRAGMA integrity_check").fetchone()
+        if not row or str(row[0]).lower() != "ok":
+            raise ValueError("sqlite integrity_check failed")
+        tables = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        required = {"settings", "users", "servers", "packages", "orders", "configs"}
+        if not required.issubset(tables):
+            raise ValueError("uploaded database is not an Atlas panel backup")
+    finally:
+        con.close()
+
+
+def _extract_restore_payload(upload_path: str, workdir: str) -> tuple[str, str | None]:
+    db_out = os.path.join(workdir, "restore-atlas.db")
+    env_out = os.path.join(workdir, "restore.env")
+    env_found: str | None = None
+
+    if zipfile.is_zipfile(upload_path):
+        with zipfile.ZipFile(upload_path) as z:
+            names = z.namelist()
+            db_name = "atlas.db" if "atlas.db" in names else next((n for n in names if n.endswith("/atlas.db") or n.endswith(".db")), "")
+            if not db_name:
+                raise ValueError("backup zip does not contain atlas.db")
+            with z.open(db_name) as src, open(db_out, "wb") as dst:
+                shutil.copyfileobj(src, dst)
+            env_name = ".env" if ".env" in names else next((n for n in names if n.endswith("/.env")), "")
+            if env_name:
+                with z.open(env_name) as src, open(env_out, "wb") as dst:
+                    shutil.copyfileobj(src, dst)
+                env_found = env_out
+    else:
+        shutil.copyfile(upload_path, db_out)
+
+    _validate_sqlite_db(db_out)
+    return db_out, env_found
 
 
 def _clean_domain(value: str) -> str:
@@ -490,6 +598,76 @@ async def reject_update_broadcast(request: Request):
 
 
 # ═══════════════════════════════ SERVERS ════════════════════════════
+# ═════════════════════════════ BACKUP / RESTORE ═════════════════════════════
+@app.get(f"/{S}/backups", response_class=HTMLResponse)
+async def backups_page(request: Request):
+    if not _auth(request):
+        return _redir_login()
+    backups = []
+    if os.path.isdir(_backup_dir):
+        for item in sorted(os.listdir(_backup_dir), reverse=True)[:20]:
+            path = os.path.join(_backup_dir, item)
+            if os.path.isfile(path):
+                backups.append({
+                    "name": item,
+                    "size": os.path.getsize(path),
+                    "created": datetime.fromtimestamp(os.path.getmtime(path)).isoformat(),
+                })
+    return _templates.TemplateResponse(
+        "backups.html",
+        await _ctx_ui(
+            request,
+            active="backups",
+            result=request.query_params.get("result", ""),
+            pre=request.query_params.get("pre", ""),
+            backups=backups,
+        ),
+    )
+
+
+@app.get(f"/{S}/backups/download")
+async def backup_download(request: Request):
+    if not _auth(request):
+        return _redir_login()
+    name = _safe_backup_name()
+    headers = {"Content-Disposition": f'attachment; filename="{name}"'}
+    return StreamingResponse(iter([_build_backup_zip()]), media_type="application/zip", headers=headers)
+
+
+@app.get(f"/{S}/backups/emergency/{{name}}")
+async def backup_emergency_download(request: Request, name: str):
+    if not _auth(request):
+        return _redir_login()
+    clean = os.path.basename(name)
+    path = os.path.join(_backup_dir, clean)
+    if not os.path.isfile(path):
+        return JSONResponse({"error": "not found"}, status_code=404)
+    return FileResponse(path, media_type="application/zip", filename=clean)
+
+
+@app.post(f"/{S}/backups/restore")
+async def backup_restore(request: Request, backup_file: UploadFile = File(...), restore_env: str = Form("0")):
+    if not _auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        upload_path = os.path.join(tmpdir, "uploaded-backup")
+        with open(upload_path, "wb") as f:
+            shutil.copyfileobj(backup_file.file, f)
+
+        try:
+            db_restore, env_restore = _extract_restore_payload(upload_path, tmpdir)
+            pre_name = _save_pre_restore_backup()
+            os.replace(db_restore, _db_path)
+            if restore_env == "1" and env_restore:
+                os.replace(env_restore, _env_path)
+            await init_db()
+            return RedirectResponse(f"/{S}/backups?result=restored&pre={pre_name}", status_code=302)
+        except Exception as e:
+            logger.exception("backup restore failed: %s", e)
+            return RedirectResponse(f"/{S}/backups?result=restore_error", status_code=302)
+
+
 @app.get(f"/{S}/reports", response_class=HTMLResponse)
 async def reports_page(request: Request):
     if not _auth(request):
@@ -674,6 +852,36 @@ async def subscription_profile_toggle(request: Request, profile_id: int):
     return JSONResponse({"success": True, "is_active": bool(next_active)})
 
 
+@app.post(f"/{S}/subs/profiles/{{profile_id}}/edit")
+async def subscription_profile_edit(
+    request: Request,
+    profile_id: int,
+    email: str = Form(...),
+    traffic_gb: float = Form(...),
+    expire_at: str = Form(""),
+    is_active: str = Form("1"),
+):
+    if not _auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    profile = await get_subscription_profile(profile_id)
+    if not profile:
+        return RedirectResponse(f"/{S}/subs/profiles?saved=not_found", status_code=302)
+
+    clean_email = re.sub(r"[^A-Za-z0-9_.@:-]+", "_", (email or "").strip())[:96] or str(profile.get("email") or f"sub_{profile_id}")
+    traffic_gb = max(0.1, float(traffic_gb or 0.1))
+    expire_ms = 0
+    if (expire_at or "").strip():
+        try:
+            expire_ms = int(datetime.fromisoformat(expire_at.strip()).timestamp() * 1000)
+        except ValueError:
+            expire_ms = int(profile.get("expire_timestamp") or 0)
+
+    result = await edit_subscription_profile(profile, clean_email, traffic_gb, expire_ms, is_active == "1")
+    if not result.get("ok"):
+        return RedirectResponse(f"/{S}/subs/profiles?saved=edit_error", status_code=302)
+    return RedirectResponse(f"/{S}/subs/profiles?saved=edited", status_code=302)
+
+
 @app.post(f"/{S}/subs/profiles/{{profile_id}}/delete")
 async def subscription_profile_delete(request: Request, profile_id: int):
     if not _auth(request):
@@ -710,6 +918,14 @@ async def subscriptions_settings_save(
     await set_setting("sub_info_template", sub_info_template.strip() or SETTINGS_DEFAULTS["sub_info_template"])
     await set_setting("sub_brand_template", sub_brand_template.strip() or SETTINGS_DEFAULTS["sub_brand_template"])
     return RedirectResponse(f"/{S}/subs?saved=1", status_code=302)
+
+
+@app.post(f"/{S}/subs/sync-nodes")
+async def subscription_sync_nodes(request: Request):
+    if not _auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    result = await sync_subscription_nodes_for_all(5000, force_refresh=True)
+    return JSONResponse({"success": True, **result})
 
 
 @app.post(f"/{S}/subs/nodes/add")
@@ -779,7 +995,24 @@ async def subscription_node_test(request: Request, node_id: int):
     cli = XUIClient(node["server_url"], node["srv_user"], node["srv_pass"], node.get("sub_path") or "", node.get("srv_api_token", ""))
     try:
         inbound = await cli.get_inbound(int(node["inbound_id"]))
-        return JSONResponse({"success": bool(inbound), "msg": "ok" if inbound else "inbound not found"})
+        if not inbound:
+            return JSONResponse({"success": False, "msg": f"inbound not found: {cli.last_error or 'unknown'}"})
+        settings = cli._json_obj(inbound.get("settings"), {})
+        protocol = inbound.get("protocol", "vless")
+        for old_client in settings.get("clients", []) or []:
+            old_email = str(old_client.get("email") or "")
+            if old_email.startswith("atlas_sync_probe_") and old_email.rsplit("_", 1)[-1] == str(node_id):
+                old_identity = cli._client_identity(protocol, old_client)
+                await cli.delete_client(int(node["inbound_id"]), old_identity, old_email)
+        test_uuid = str(uuid.uuid4())
+        test_email = f"atlas_sync_probe_{int(time.time())}_{node_id}"
+        add_ok = await cli.add_client(int(node["inbound_id"]), test_uuid, test_email, 0.1, 1)
+        if add_ok:
+            del_ok = await cli.delete_client(int(node["inbound_id"]), test_uuid, test_email)
+            if del_ok:
+                return JSONResponse({"success": True, "msg": "write test ok"})
+            return JSONResponse({"success": False, "msg": f"cleanup test client failed: {cli.last_error or 'unknown'}"})
+        return JSONResponse({"success": False, "msg": f"add client failed: {cli.last_error or 'unknown'}"})
     finally:
         await cli.close()
 
@@ -1045,8 +1278,9 @@ async def _order_approve_web_impl(request: Request, oid: int):
                         parse_mode=None,
                         reply_markup=config_links_kb("", sub_url),
                     )
-                    qr = build_qr_image(sub_url, footer_text=await get_setting("channel_username", "AtlasChannel"))
-                    await bot.send_photo(order["telegram_id"], BufferedInputFile(qr.getvalue(), filename="atlas-sub.png"), caption="QR سابسکریپشن چندسروره", parse_mode=None)
+                    qr_label = sub_result.get("email") or "Subscription"
+                    qr = build_qr_image(sub_url, footer_text=qr_label)
+                    await bot.send_photo(order["telegram_id"], BufferedInputFile(qr.getvalue(), filename="atlas-sub.png"), caption=f"QR سابسکریپشن: {qr_label}", parse_mode=None)
                 finally:
                     await bot.session.close()
             return RedirectResponse(f"/{S}/orders", status_code=302)
@@ -1418,6 +1652,116 @@ async def user_set_pricing(
 
 
 # ═══════════════════════════════ TRANSACTIONS ═══════════════════════
+# ═════════════════════════════ LEGACY SYNC CLAIMS ═════════════════════════════
+async def _notify_legacy_sync_user(telegram_id: int, text: str):
+    if not BOT_TOKEN or len(BOT_TOKEN) < 20:
+        return
+    bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.MARKDOWN))
+    try:
+        await bot.send_message(int(telegram_id), text, parse_mode=None)
+    except Exception:
+        pass
+    finally:
+        await bot.session.close()
+
+
+@app.get(f"/{S}/legacy-claims", response_class=HTMLResponse)
+async def legacy_claims_page(request: Request):
+    if not _auth(request):
+        return _redir_login()
+    claims = await get_pending_legacy_claims()
+    return _templates.TemplateResponse(
+        "legacy_claims.html",
+        await _ctx_ui(request, claims=claims, active="legacy_claims", result=request.query_params.get("result", "")),
+    )
+
+
+@app.post(f"/{S}/legacy-claims/{{cid}}/approve")
+async def legacy_claim_approve_web(request: Request, cid: int):
+    if not _auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+
+    claim = await get_legacy_claim(cid)
+    if not claim or claim.get("status") != "pending":
+        return RedirectResponse(f"/{S}/legacy-claims?result=missing", status_code=302)
+
+    email = (claim.get("email") or "").strip()
+    claim_uuid = (claim.get("uuid") or "").strip()
+    if not email and not claim_uuid:
+        await update_legacy_claim(cid, status="rejected", reviewed_at=datetime.now().isoformat(), admin_note="missing_identity_web")
+        return RedirectResponse(f"/{S}/legacy-claims?result=bad_identity", status_code=302)
+
+    cfg = await get_config_by_email(email) if email else None
+    if not cfg and claim_uuid:
+        cfg = await get_config_by_uuid(claim_uuid)
+
+    remote = None
+    if not cfg:
+        from bot.handlers.admin import _find_remote_legacy_client
+
+        remote = await _find_remote_legacy_client(email, claim_uuid)
+        if not remote or not remote.get("email") or not remote.get("uuid"):
+            await update_legacy_claim(cid, admin_note=f"not_found_web:{datetime.now().isoformat()}", reviewed_at=datetime.now().isoformat())
+            return RedirectResponse(f"/{S}/legacy-claims?result=not_found", status_code=302)
+        try:
+            cfg_id = await save_config(
+                claim["user_id"],
+                remote["server_id"],
+                remote["uuid"],
+                remote["email"],
+                remote["inbound_id"],
+                remote["traffic_gb"],
+                remote["duration_days"],
+                remote["expire_ms"],
+            )
+            cfg = await get_config(cfg_id)
+        except sqlite3.IntegrityError:
+            cfg = await get_config_by_email(remote["email"])
+            if not cfg and remote.get("uuid"):
+                cfg = await get_config_by_uuid(remote["uuid"])
+
+    if not cfg:
+        await update_legacy_claim(cid, admin_note=f"not_found_web:{datetime.now().isoformat()}", reviewed_at=datetime.now().isoformat())
+        return RedirectResponse(f"/{S}/legacy-claims?result=not_found", status_code=302)
+
+    if not remote:
+        try:
+            from bot.handlers.admin import _find_remote_legacy_client
+
+            remote = await _find_remote_legacy_client(email or cfg.get("email", ""), claim_uuid or cfg.get("uuid", ""))
+        except Exception:
+            remote = None
+
+    updates = {"user_id": claim["user_id"], "is_active": int((remote or {}).get("is_active", 1))}
+    if remote:
+        updates.update(
+            server_id=remote["server_id"],
+            inbound_id=remote["inbound_id"],
+            uuid=remote["uuid"],
+            traffic_gb=remote["traffic_gb"],
+            duration_days=remote["duration_days"],
+            expire_timestamp=remote["expire_ms"],
+        )
+    await update_config(cfg["id"], **updates)
+    await update_legacy_claim(cid, status="approved", reviewed_at=datetime.now().isoformat(), admin_note="approved_web")
+    await _notify_legacy_sync_user(
+        int(claim["telegram_id"]),
+        "✅ کانفیگ قبلی شما تایید و به حساب ربات متصل شد.\n\nاز بخش «📡 وضعیت سرویس» می‌توانید آن را ببینید.",
+    )
+    return RedirectResponse(f"/{S}/legacy-claims?result=approved", status_code=302)
+
+
+@app.post(f"/{S}/legacy-claims/{{cid}}/reject")
+async def legacy_claim_reject_web(request: Request, cid: int):
+    if not _auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    claim = await get_legacy_claim(cid)
+    if claim and claim.get("status") == "pending":
+        await update_legacy_claim(cid, status="rejected", reviewed_at=datetime.now().isoformat(), admin_note="rejected_web")
+        await _notify_legacy_sync_user(int(claim["telegram_id"]), "❌ درخواست سینک کانفیگ شما رد شد. برای بررسی بیشتر با پشتیبانی هماهنگ کنید.")
+    return RedirectResponse(f"/{S}/legacy-claims?result=rejected", status_code=302)
+
+
 @app.get(f"/{S}/transactions", response_class=HTMLResponse)
 async def transactions_page(request: Request):
     if not _auth(request):
@@ -1494,6 +1838,10 @@ async def settings_page(request: Request):
         "multi_sub_node_count": await get_setting("multi_sub_node_count", SETTINGS_DEFAULTS["multi_sub_node_count"]),
         "multi_sub_min_nodes": await get_setting("multi_sub_min_nodes", SETTINGS_DEFAULTS["multi_sub_min_nodes"]),
         "public_base_url": await get_setting("public_base_url", SETTINGS_DEFAULTS["public_base_url"]),
+        "sub_info_enabled": await get_setting("sub_info_enabled", SETTINGS_DEFAULTS["sub_info_enabled"]),
+        "sub_info_sync_on_render": await get_setting("sub_info_sync_on_render", SETTINGS_DEFAULTS["sub_info_sync_on_render"]),
+        "sub_info_template": await get_setting("sub_info_template", SETTINGS_DEFAULTS["sub_info_template"]),
+        "sub_brand_template": await get_setting("sub_brand_template", SETTINGS_DEFAULTS["sub_brand_template"]),
         "test_account_enabled": await get_setting("test_account_enabled", SETTINGS_DEFAULTS["test_account_enabled"]),
         "test_account_traffic_gb": await get_setting("test_account_traffic_gb", SETTINGS_DEFAULTS["test_account_traffic_gb"]),
         "test_account_duration_days": await get_setting("test_account_duration_days", SETTINGS_DEFAULTS["test_account_duration_days"]),
@@ -1554,6 +1902,10 @@ async def settings_save(
     multi_sub_node_count: int = Form(4),
     multi_sub_min_nodes: int = Form(2),
     public_base_url: str = Form(""),
+    sub_info_enabled: str = Form("1"),
+    sub_info_sync_on_render: str = Form("1"),
+    sub_info_template: str = Form(""),
+    sub_brand_template: str = Form(""),
     test_account_enabled: str = Form("0"),
     test_account_traffic_gb: float = Form(1),
     test_account_duration_days: int = Form(1),
@@ -1565,6 +1917,7 @@ async def settings_save(
     card_bank: str = Form(""),
     panel_domain: str = Form(""),
     cert_email: str = Form(""),
+    atlas_tls_https_port: int = Form(443),
 ):
     if not _auth(request):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
@@ -1604,6 +1957,10 @@ async def settings_save(
     await set_setting("multi_sub_node_count", str(max(2, min(8, int(multi_sub_node_count or 4)))))
     await set_setting("multi_sub_min_nodes", str(max(2, min(8, int(multi_sub_min_nodes or 2)))))
     await set_setting("public_base_url", public_base_url.strip().rstrip("/"))
+    await set_setting("sub_info_enabled", "1" if sub_info_enabled == "1" else "0")
+    await set_setting("sub_info_sync_on_render", "1" if sub_info_sync_on_render == "1" else "0")
+    await set_setting("sub_info_template", sub_info_template.strip() or SETTINGS_DEFAULTS["sub_info_template"])
+    await set_setting("sub_brand_template", sub_brand_template.strip() or SETTINGS_DEFAULTS["sub_brand_template"])
     await set_setting("test_account_enabled", "1" if test_account_enabled == "1" else "0")
     await set_setting("test_account_traffic_gb", str(max(0.1, float(test_account_traffic_gb or 1))))
     await set_setting("test_account_duration_days", str(max(1, int(test_account_duration_days or 1))))
@@ -1617,6 +1974,7 @@ async def settings_save(
     await set_setting("card_bank", card_bank.strip())
     await set_setting("panel_domain", panel_domain.strip().lower())
     await set_setting("cert_email", cert_email.strip().lower())
+    await set_setting("atlas_tls_https_port", str(max(1, min(65535, int(atlas_tls_https_port or 443)))))
 
     return RedirectResponse(f"/{S}/settings?saved=1", status_code=302)
 

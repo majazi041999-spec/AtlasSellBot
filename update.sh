@@ -36,6 +36,34 @@ STASHED=0
 STASH_REF=""
 STAMP="$(date +%Y%m%d-%H%M%S)"
 PATCH_FILE="$REPO_DIR/update-local-changes-$STAMP.patch"
+STOP_TIMEOUT="${STOP_TIMEOUT:-20}"
+
+stop_service_fast() {
+  local service="$1"
+  local timeout="$2"
+
+  if ! systemctl is-active --quiet "$service"; then
+    return 0
+  fi
+
+  systemctl stop "$service" --no-block || return 0
+  for ((i=0; i<timeout; i++)); do
+    if ! systemctl is-active --quiet "$service"; then
+      return 0
+    fi
+    sleep 1
+  done
+
+  echo "⚠️ Service $service did not stop after ${timeout}s; forcing it down ..."
+  systemctl kill --kill-who=all --signal=SIGKILL "$service" || true
+  for _ in 1 2 3 4 5; do
+    if ! systemctl is-active --quiet "$service"; then
+      return 0
+    fi
+    sleep 1
+  done
+  return 0
+}
 
 cleanup_on_error() {
   local exit_code=$?
@@ -66,6 +94,11 @@ git fetch origin "$BRANCH" --prune
 
 LOCAL="$(git rev-parse HEAD)"
 REMOTE="$(git rev-parse "origin/$BRANCH")"
+REMOTE_SHORT="$(git rev-parse --short "origin/$BRANCH")"
+CHANGELOG_TEXT="$(git log --no-merges --pretty=format:'• %s' "${LOCAL}..origin/${BRANCH}" 2>/dev/null || true)"
+if [[ -z "$CHANGELOG_TEXT" ]]; then
+  CHANGELOG_TEXT="• بهبودهای جدید ربات و پنل مدیریت اعمال شد."
+fi
 
 if [[ "$LOCAL" == "$REMOTE" ]]; then
   echo "✅ Already up to date"
@@ -93,7 +126,7 @@ if [[ "$MODE" == "pull" || "$MODE" == "pull-no-stash" ]]; then
 fi
 
 echo "ℹ️ Stopping service $SERVICE ..."
-systemctl stop "$SERVICE" || true
+stop_service_fast "$SERVICE" "$STOP_TIMEOUT"
 SERVICE_STOPPED=1
 
 case "$MODE" in
@@ -110,6 +143,42 @@ case "$MODE" in
     exit 2
     ;;
 esac
+
+if [[ -f "$REPO_DIR/atlas.db" ]]; then
+  echo "ℹ️ Saving update changelog for panel approval ..."
+  ATLAS_PENDING_BUILD="$REMOTE_SHORT" ATLAS_PENDING_TEXT="$CHANGELOG_TEXT" python3 - <<'PY' || true
+import os
+import sqlite3
+
+build = (os.getenv("ATLAS_PENDING_BUILD") or "").strip()
+items = [line.strip() for line in (os.getenv("ATLAS_PENDING_TEXT") or "").splitlines() if line.strip()]
+if build:
+    body = "\n".join(items[:12]) or "• بهبودهای جدید ربات و پنل مدیریت اعمال شد."
+    text = (
+        "✨ آپدیت جدید ربات آماده اطلاع‌رسانی است\n\n"
+        "تغییرات این نسخه:\n"
+        f"{body}\n\n"
+        "برای دریافت منوی جدید، یک بار /start را بزنید."
+    )
+    db = sqlite3.connect("atlas.db")
+    try:
+        db.execute("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL DEFAULT '')")
+        last = db.execute("SELECT value FROM settings WHERE key='last_update_broadcast'").fetchone()
+        skipped = db.execute("SELECT value FROM settings WHERE key='skipped_update_build'").fetchone()
+        if build not in {((last or [''])[0] or '').strip(), ((skipped or [''])[0] or '').strip()}:
+            db.executemany(
+                "INSERT OR REPLACE INTO settings(key,value) VALUES(?,?)",
+                [
+                    ("pending_update_build", build),
+                    ("pending_update_text", text),
+                    ("pending_update_text_build", build),
+                ],
+            )
+            db.commit()
+    finally:
+        db.close()
+PY
+fi
 
 # ensure venv + update python deps
 if [[ ! -x "$REPO_DIR/.venv/bin/python" ]]; then

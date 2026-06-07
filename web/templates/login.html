@@ -6,116 +6,120 @@
 <title>ورود | Atlas Account</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Vazirmatn:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+<script>
+(function(){
+  const saved = localStorage.getItem('atlas-theme') || 'light';
+  document.documentElement.dataset.theme = saved === 'dark' ? 'dark' : 'light';
+})();
+</script>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
+:root{
+  --bg:#f5f7fb;--panel:rgba(255,255,255,.90);--text:#172033;--muted:#667085;--muted2:#98a2b3;
+  --border:#e4e9f2;--field:#fff;--field-border:#d0d5dd;--primary:#111827;--primaryText:#fff;
+  --danger-bg:#fef3f2;--danger:#b42318;--danger-border:#fecdca;--shadow:0 26px 80px rgba(15,23,42,.16);
+}
+html[data-theme="dark"]{
+  --bg:#090b12;--panel:rgba(17,24,39,.88);--text:#eef2ff;--muted:#aab4c8;--muted2:#748095;
+  --border:#263247;--field:#0f172a;--field-border:#334155;--primary:#eef2ff;--primaryText:#111827;
+  --danger-bg:rgba(251,113,133,.12);--danger:#fecdd3;--danger-border:rgba(251,113,133,.30);--shadow:0 30px 90px rgba(0,0,0,.40);
+}
 body{
-  font-family:'Vazirmatn',sans-serif;
-  background:#0a0a14;color:#dde2ff;
-  min-height:100vh;display:flex;align-items:center;justify-content:center;
-  overflow:hidden;position:relative;
+  font-family:'Vazirmatn',sans-serif;min-height:100vh;color:var(--text);
+  display:grid;place-items:center;padding:20px;overflow:hidden;position:relative;
+  background:
+    linear-gradient(135deg,rgba(79,70,229,.12),transparent 34%),
+    linear-gradient(315deg,rgba(16,185,129,.12),transparent 32%),
+    var(--bg);
 }
-/* animated bg */
-.bg-orb{
-  position:absolute;border-radius:50%;filter:blur(80px);pointer-events:none;
+html[data-theme="dark"] body{
+  background:
+    linear-gradient(135deg,rgba(139,92,246,.18),transparent 35%),
+    linear-gradient(315deg,rgba(34,211,238,.12),transparent 30%),
+    var(--bg);
 }
-.orb1{width:500px;height:500px;background:radial-gradient(circle,rgba(124,111,255,.15),transparent 70%);top:-150px;right:-150px;animation:float1 8s ease-in-out infinite}
-.orb2{width:400px;height:400px;background:radial-gradient(circle,rgba(255,107,157,.1),transparent 70%);bottom:-120px;left:-120px;animation:float2 10s ease-in-out infinite}
-.orb3{width:250px;height:250px;background:radial-gradient(circle,rgba(0,229,160,.07),transparent 70%);top:40%;left:40%;animation:float3 7s ease-in-out infinite}
-@keyframes float1{0%,100%{transform:translate(0,0)}50%{transform:translate(-20px,20px)}}
-@keyframes float2{0%,100%{transform:translate(0,0)}50%{transform:translate(20px,-20px)}}
-@keyframes float3{0%,100%{transform:translate(0,0)}50%{transform:translate(-15px,15px)}}
-
-.login-box{
-  background:rgba(24,24,40,.95);
-  border:1px solid rgba(124,111,255,.2);
-  border-radius:20px;padding:40px 36px;
-  width:340px;position:relative;z-index:1;
-  box-shadow:0 24px 64px rgba(0,0,0,.5);
-  backdrop-filter:blur(10px);
-  animation:slideUp .4s ease;
+body::before{
+  content:"";position:absolute;inset:0;pointer-events:none;
+  background-image:linear-gradient(rgba(15,23,42,.045) 1px,transparent 1px),linear-gradient(90deg,rgba(15,23,42,.045) 1px,transparent 1px);
+  background-size:34px 34px;mask-image:linear-gradient(to bottom,rgba(0,0,0,.72),transparent 76%);
 }
-@keyframes slideUp{from{transform:translateY(30px);opacity:0}to{transform:translateY(0);opacity:1}}
-
-.logo{text-align:center;margin-bottom:32px}
-.logo-icon{
-  width:64px;height:64px;
-  background:linear-gradient(135deg,#7c6fff,#ff6b9d);
-  border-radius:18px;display:inline-flex;align-items:center;justify-content:center;
-  font-size:1.8rem;box-shadow:0 8px 24px rgba(124,111,255,.3);
-}
-.logo h1{
-  margin-top:14px;font-size:1.3rem;font-weight:800;
-  background:linear-gradient(135deg,#7c6fff,#ff6b9d);
-  -webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;
-}
-.logo p{color:#6668a0;font-size:.78rem;margin-top:3px}
-
-.error-msg{
-  background:rgba(255,76,106,.08);border:1px solid rgba(255,76,106,.2);
-  color:#ff6b6b;border-radius:9px;padding:10px 13px;
-  margin-bottom:16px;font-size:.82rem;display:flex;align-items:center;gap:8px;
-}
-
-.form-group{margin-bottom:16px}
-.form-group label{
-  display:block;margin-bottom:5px;
-  font-size:.78rem;font-weight:600;color:#9a9dc4;
-}
-.form-control{
-  width:100%;background:rgba(19,19,42,.8);
-  border:1px solid rgba(48,48,90,.8);border-radius:9px;
-  padding:10px 14px;color:#dde2ff;font-size:.88rem;
-  font-family:inherit;transition:all .18s;
-}
-.form-control:focus{
-  outline:none;border-color:#7c6fff;
-  box-shadow:0 0 0 3px rgba(124,111,255,.15);background:rgba(30,30,53,.8);
-}
-.form-control::placeholder{color:#6668a0}
-
-.btn-login{
-  width:100%;padding:12px;border-radius:9px;
-  background:linear-gradient(135deg,#7c6fff,#6357e8);
-  color:#fff;border:none;font-size:.92rem;font-weight:700;
-  font-family:inherit;cursor:pointer;margin-top:4px;
-  transition:all .18s;letter-spacing:.01em;
-  box-shadow:0 4px 16px rgba(124,111,255,.3);
-}
-.btn-login:hover{transform:translateY(-1px);box-shadow:0 6px 20px rgba(124,111,255,.4)}
-.btn-login:active{transform:translateY(0)}
-.btn-login.loading{opacity:.7;cursor:not-allowed}
+html[data-theme="dark"] body::before{background-image:linear-gradient(rgba(255,255,255,.04) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.04) 1px,transparent 1px)}
+.shell{width:min(980px,100%);display:grid;grid-template-columns:1fr 400px;gap:18px;align-items:stretch;position:relative;z-index:1}
+.brand-panel,.login-box{border:1px solid var(--border);background:var(--panel);backdrop-filter:blur(18px);box-shadow:var(--shadow);border-radius:8px}
+.brand-panel{padding:34px;display:flex;flex-direction:column;justify-content:space-between;min-height:468px;overflow:hidden;position:relative}
+.brand-panel::after{content:"";position:absolute;inset:auto -80px -120px auto;width:280px;height:280px;background:linear-gradient(135deg,rgba(79,70,229,.18),rgba(16,185,129,.18));border-radius:50%;filter:blur(20px)}
+.mark{width:54px;height:54px;border-radius:8px;background:var(--primary);color:var(--primaryText);display:flex;align-items:center;justify-content:center;font-size:1.6rem;font-weight:800}
+.brand-panel h1{font-size:2rem;margin-top:18px;line-height:1.35}
+.brand-panel p{color:var(--muted);margin-top:10px;line-height:1.9;max-width:520px}
+.chips{display:flex;gap:8px;flex-wrap:wrap;margin-top:28px}
+.chip{border:1px solid var(--border);border-radius:8px;padding:8px 10px;color:var(--muted);font-size:.8rem;background:rgba(255,255,255,.34)}
+html[data-theme="dark"] .chip{background:rgba(255,255,255,.04)}
+.login-box{padding:30px;min-height:468px;display:flex;flex-direction:column;justify-content:center}
+.top-actions{position:fixed;top:18px;left:18px;z-index:3}
+.theme-toggle{width:42px;height:42px;border-radius:8px;border:1px solid var(--border);background:var(--panel);color:var(--text);cursor:pointer;font-size:1rem}
+.theme-toggle .dark-ico{display:none}html[data-theme="dark"] .theme-toggle .light-ico{display:none}html[data-theme="dark"] .theme-toggle .dark-ico{display:inline}
+.login-head{margin-bottom:26px}
+.login-head h2{font-size:1.28rem}
+.login-head p{color:var(--muted);font-size:.84rem;margin-top:6px}
+.error-msg{background:var(--danger-bg);border:1px solid var(--danger-border);color:var(--danger);border-radius:8px;padding:10px 12px;margin-bottom:16px;font-size:.84rem}
+.form-group{margin-bottom:15px}.form-group label{display:block;margin-bottom:6px;font-size:.78rem;font-weight:800;color:var(--text)}
+.form-control{width:100%;background:var(--field);border:1px solid var(--field-border);border-radius:8px;padding:11px 13px;color:var(--text);font-size:.92rem;font-family:inherit;transition:.18s}
+.form-control:focus{outline:none;border-color:#6366f1;box-shadow:0 0 0 4px rgba(99,102,241,.14)}
+.form-control::placeholder{color:var(--muted2)}
+.btn-login{width:100%;padding:12px;border-radius:8px;background:var(--primary);color:var(--primaryText);border:none;font-size:.94rem;font-weight:800;font-family:inherit;cursor:pointer;margin-top:6px;transition:.18s;box-shadow:0 12px 28px rgba(17,24,39,.18)}
+.btn-login:hover{transform:translateY(-1px)}.btn-login.loading{opacity:.72;cursor:not-allowed}
+@media(max-width:820px){.shell{grid-template-columns:1fr}.brand-panel{display:none}.login-box{width:min(420px,100%);margin:auto}}
 </style>
 </head>
 <body>
-<div class="bg-orb orb1"></div>
-<div class="bg-orb orb2"></div>
-<div class="bg-orb orb3"></div>
-
-<div class="login-box">
-  <div class="logo">
-    <div class="logo-icon">🌐</div>
-    <h1>Atlas Account</h1>
-    <p>پنل مدیریت</p>
-  </div>
-
-  {% if error %}
-  <div class="error-msg">❌ {{ error }}</div>
-  {% endif %}
-
-  <form method="POST" id="loginForm">
-    <div class="form-group">
-      <label>نام کاربری</label>
-      <input type="text" name="username" class="form-control" placeholder="نام کاربری ادمین" required autofocus>
+<div class="top-actions">
+  <button class="theme-toggle" id="themeToggle" type="button" title="تغییر تم"><span class="light-ico">☀️</span><span class="dark-ico">🌙</span></button>
+</div>
+<div class="shell">
+  <section class="brand-panel">
+    <div>
+      <div class="mark">A</div>
+      <h1>Atlas Account</h1>
+      <p>پنل مدیریت فروش، سرویس‌ها، سابسکریپشن‌ها و کاربران با تمرکز روی کنترل سریع و دقیق.</p>
+      <div class="chips">
+        <span class="chip">مدیریت سفارش‌ها</span>
+        <span class="chip">کنترل سابسکریپشن</span>
+        <span class="chip">گزارش و تنظیمات</span>
+      </div>
     </div>
-    <div class="form-group">
-      <label>رمز عبور</label>
-      <input type="password" name="password" class="form-control" placeholder="رمز عبور" required>
+    <p>ورود امن مدیر</p>
+  </section>
+
+  <section class="login-box">
+    <div class="login-head">
+      <h2>ورود به پنل</h2>
+      <p>اطلاعات مدیر را وارد کنید.</p>
     </div>
-    <button type="submit" class="btn-login" id="loginBtn">ورود به پنل ←</button>
-  </form>
+
+    {% if error %}
+    <div class="error-msg">❌ {{ error }}</div>
+    {% endif %}
+
+    <form method="POST" id="loginForm">
+      <div class="form-group">
+        <label>نام کاربری</label>
+        <input type="text" name="username" class="form-control" placeholder="نام کاربری مدیر" required autofocus>
+      </div>
+      <div class="form-group">
+        <label>رمز عبور</label>
+        <input type="password" name="password" class="form-control" placeholder="رمز عبور" required>
+      </div>
+      <button type="submit" class="btn-login" id="loginBtn">ورود به پنل</button>
+    </form>
+  </section>
 </div>
 
 <script>
+document.getElementById('themeToggle').addEventListener('click',()=>{
+  const next = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
+  document.documentElement.dataset.theme = next;
+  localStorage.setItem('atlas-theme', next);
+});
 document.getElementById('loginForm').addEventListener('submit',()=>{
   const b=document.getElementById('loginBtn');
   b.textContent='در حال ورود...'; b.classList.add('loading');

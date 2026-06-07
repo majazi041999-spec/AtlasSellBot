@@ -1,0 +1,79 @@
+{% extends "base.html" %}
+{% block title %}بکاپ و ریستور{% endblock %}
+{% block topbar_title %}💾 بکاپ و ریستور پنل{% endblock %}
+
+{% block content %}
+<style>
+.backup-layout{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:16px;align-items:start}
+.backup-hero{margin-bottom:16px;padding:18px;border:1px solid var(--border);border-radius:8px;background:var(--card);box-shadow:var(--shadow2)}
+.backup-hero h2{font-size:1.22rem;margin-bottom:6px}.backup-hero p{color:var(--txt2);line-height:1.9}
+.backup-card{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:18px;box-shadow:var(--shadow2)}
+.backup-card h3{font-size:1rem;margin-bottom:8px}.backup-card p{color:var(--txt2);font-size:.84rem;line-height:1.9;margin-bottom:14px}
+.danger-zone{border-color:rgba(239,68,68,.35)}
+.backup-list{display:grid;gap:8px;margin-top:10px}
+.backup-item{display:flex;justify-content:space-between;gap:10px;align-items:center;border:1px solid var(--border);border-radius:8px;padding:10px;background:var(--bg3)}
+.backup-item small{color:var(--txt3);display:block;margin-top:3px}
+.check-row{display:flex;gap:8px;align-items:center;color:var(--txt2);font-size:.84rem;margin:8px 0 14px}
+.check-row input{width:16px;height:16px}
+@media(max-width:560px){.backup-item{display:block}.backup-item .btn{margin-top:8px}}
+</style>
+
+<div class="backup-hero">
+  <h2>بکاپ کامل پنل</h2>
+  <p>بکاپ شامل دیتابیس پنل و در صورت وجود فایل تنظیمات `.env` است. قبل از هر ریستور هم یک بکاپ اضطراری روی سرور ذخیره می‌شود.</p>
+</div>
+
+{% if result == "restored" %}
+<div class="alert alert-success">
+  ریستور با موفقیت انجام شد.
+  {% if pre %} بکاپ قبل از ریستور ذخیره شد: <b>{{ pre }}</b>{% endif %}
+</div>
+{% elif result == "restore_error" %}
+<div class="alert alert-danger">ریستور انجام نشد. فایل آپلودشده معتبر نیست یا دیتابیس Atlas داخل آن پیدا نشد.</div>
+{% endif %}
+
+<div class="backup-layout">
+  <section class="backup-card">
+    <h3>دریافت بکاپ</h3>
+    <p>با یک کلیک از وضعیت فعلی پنل خروجی zip بگیرید و آن را جای امن نگه دارید.</p>
+    <a class="btn btn-primary" href="/{{ S }}/backups/download">دانلود بکاپ کامل</a>
+  </section>
+
+  <section class="backup-card danger-zone">
+    <h3>ریستور از فایل</h3>
+    <p>فایل zip بکاپ Atlas یا فایل مستقیم `atlas.db` را آپلود کنید. اطلاعات فعلی پنل با بکاپ جایگزین می‌شود.</p>
+    <form method="post" action="/{{ S }}/backups/restore" enctype="multipart/form-data" onsubmit="return confirm('ریستور کل اطلاعات فعلی پنل را جایگزین می‌کند. ادامه می‌دهید؟')">
+      <div class="form-group">
+        <label>فایل بکاپ</label>
+        <input class="form-control" type="file" name="backup_file" accept=".zip,.db,.sqlite,.sqlite3" required>
+      </div>
+      <input type="hidden" name="restore_env" value="0">
+      <label class="check-row">
+        <input type="checkbox" name="restore_env" value="1">
+        فایل .env هم در صورت وجود داخل بکاپ برگردانده شود
+      </label>
+      <button class="btn btn-danger" type="submit">ریستور پنل</button>
+    </form>
+  </section>
+</div>
+
+<section class="backup-card" style="margin-top:16px">
+  <h3>بکاپ‌های اضطراری قبل از ریستور</h3>
+  <p>هر بار قبل از ریستور، وضعیت فعلی پنل اینجا ذخیره می‌شود.</p>
+  {% if backups %}
+  <div class="backup-list">
+    {% for b in backups %}
+    <div class="backup-item">
+      <div>
+        <b>{{ b.name }}</b>
+        <small>{{ "{:,}".format(b.size) }} bytes | {{ b.created[:16] }}</small>
+      </div>
+      <a class="btn btn-outline btn-sm" href="/{{ S }}/backups/emergency/{{ b.name }}">دانلود</a>
+    </div>
+    {% endfor %}
+  </div>
+  {% else %}
+  <div style="color:var(--txt3);padding:18px;text-align:center">هنوز بکاپ اضطراری ساخته نشده است.</div>
+  {% endif %}
+</section>
+{% endblock %}

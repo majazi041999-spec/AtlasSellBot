@@ -1341,7 +1341,14 @@ async def get_active_subscription_profiles(limit: int = 200) -> List[Dict]:
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         async with db.execute(
-            "SELECT * FROM subscription_profiles WHERE is_active=1 ORDER BY id LIMIT ?",
+            """SELECT * FROM subscription_profiles sp
+               WHERE sp.is_active=1
+                  OR EXISTS (
+                      SELECT 1 FROM subscription_nodes n
+                      WHERE n.profile_id=sp.id AND n.is_active=1
+                  )
+               ORDER BY sp.is_active DESC, sp.id
+               LIMIT ?""",
             (max(1, int(limit or 200)),),
         ) as c:
             return [dict(r) for r in await c.fetchall()]

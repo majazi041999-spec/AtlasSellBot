@@ -38,7 +38,9 @@
       {% for p in profiles %}
       {% set total_bytes = (p.traffic_gb|float * 1073741824)|int %}
       {% set pct = ((p.used_bytes or 0) * 100 // total_bytes) if total_bytes > 0 else 0 %}
-      {% set dl = (((p.expire_timestamp or 0) - now_ts * 1000) // 86400000) if (p.expire_timestamp or 0) > 0 else -1 %}
+      {% set exp = p.expire_timestamp or 0 %}
+      {% set rem_ms = exp - now_ts * 1000 if exp > 0 else 0 %}
+      {% set dl = ((rem_ms + 86399999) // 86400000) if rem_ms > 0 else (0 if exp > 0 else -1) %}
       <tr>
         <td>#{{ p.id }}<br><small>Order #{{ p.order_id or '—' }}</small></td>
         <td><code class="link-code">{{ p.url or ('/sub/' ~ p.token) }}</code></td>
@@ -66,7 +68,9 @@
       <thead><tr><th>ایمیل</th><th>سرور</th><th>حجم</th><th>تاریخ</th><th>UUID</th><th>وضعیت</th></tr></thead>
       <tbody>
       {% for c in configs %}
-      {% set dl = (((c.expire_timestamp or 0) - now_ts * 1000) // 86400000) if (c.expire_timestamp or 0) > 0 else -1 %}
+      {% set exp = c.expire_timestamp or 0 %}
+      {% set rem_ms = exp - now_ts * 1000 if exp > 0 else 0 %}
+      {% set dl = ((rem_ms + 86399999) // 86400000) if rem_ms > 0 else (0 if exp > 0 else -1) %}
       <tr>
         <td><code>{{ c.email }}</code></td>
         <td>{{ c.server_name }}</td>
