@@ -77,7 +77,6 @@ from bot.keyboards import (
     config_delete_confirm_kb,
     renew_options_kb,
     config_links_kb,
-    configs_kb,
     user_services_kb,
     subscription_detail_kb,
     subscription_delete_confirm_kb,
@@ -199,7 +198,7 @@ async def _send_subscription_status(target, profile: dict):
         except Exception:
             pass
     else:
-        await target.message.answer(text, parse_mode=None, reply_markup=subscription_detail_kb(int(profile["id"]), sub_url))
+        await target.message.edit_text(text, parse_mode=None, reply_markup=subscription_detail_kb(int(profile["id"]), sub_url))
 
 
 async def _is_channel_member(msg_or_cb) -> bool:
@@ -513,29 +512,7 @@ async def flow_back_user(cb: CallbackQuery, state: FSMContext):
     await cb.answer()
 
 
-@router.message(F.text == "📡 وضعیت سرویس")
 async def _user_service_lists(user_id: int) -> tuple[list[dict], list[dict]]:
-    if isinstance(user_id, Message):
-        msg = user_id
-        if not await _ensure_channel_membership(msg):
-            return [], []
-        if await _blocked(msg.from_user.id):
-            await msg.answer(await get_text("blocked_message"))
-            return [], []
-        user = await get_or_create_user(msg.from_user.id)
-        configs, profiles = await _user_service_lists(user["id"])
-        total = len(configs) + len(profiles)
-        if total <= 0:
-            await msg.answer(await get_text("no_active_service"), parse_mode="Markdown")
-            return [], []
-        if total == 1 and configs:
-            await _send_config_status(msg, configs[0]["id"])
-            return [], []
-        if total == 1 and profiles:
-            await _send_subscription_status(msg, profiles[0])
-            return [], []
-        await _send_services_list(msg, user["id"], page=0)
-        return [], []
     configs = await get_user_configs(user_id)
     profiles = await get_user_subscription_profiles(user_id)
     return configs, profiles
@@ -557,6 +534,7 @@ async def _send_services_list(target, user_id: int, page: int = 0):
         await target.message.edit_text(text, reply_markup=kb, parse_mode=None)
 
 
+@router.message(F.text == "📡 وضعیت سرویس")
 async def user_status(msg: Message):
     if not await _ensure_channel_membership(msg):
         return
@@ -565,28 +543,31 @@ async def user_status(msg: Message):
         return
 
     user = await get_or_create_user(msg.from_user.id)
-    configs = [c for c in await get_user_configs(user["id"]) if int(c.get("is_active") or 0)]
-    profiles = [p for p in await get_user_subscription_profiles(user["id"]) if int(p.get("is_active") or 0)]
-    if profiles:
-        for profile in profiles[:3]:
-            await _send_subscription_status(msg, profile)
-        if not configs:
-            return
-    if not configs:
-        if profiles:
-            await _send_subscription_status(msg, profiles[0])
-            return
+    configs, profiles = await _user_service_lists(user["id"])
+    total = len(configs) + len(profiles)
+    if total <= 0:
         await msg.answer(await get_text("no_active_service"), parse_mode="Markdown")
         return
-
-    if len(configs) == 1:
+    if total == 1 and configs:
         await _send_config_status(msg, configs[0]["id"])
-    else:
-        await msg.answer(
-            f" *سرویس‌های شما* ({len(configs)} سرویس)\n\nکدام سرویس را می‌خواهید؟",
-            reply_markup=configs_kb(configs),
-            parse_mode="Markdown",
-        )
+        return
+    if total == 1 and profiles:
+        await _send_subscription_status(msg, profiles[0])
+        return
+    await _send_services_list(msg, user["id"], page=0)
+
+
+@router.callback_query(F.data.startswith("svc_pg:"))
+async def services_page(cb: CallbackQuery):
+    if not await _ensure_channel_membership(cb):
+        return
+    user = await get_or_create_user(cb.from_user.id, cb.from_user.username, cb.from_user.full_name)
+    try:
+        page = int(cb.data.split(":", 1)[1])
+    except Exception:
+        page = 0
+    await _send_services_list(cb, user["id"], page=page)
+    await cb.answer()
 
 
 @router.callback_query(F.data.startswith("cfg:"))
@@ -604,11 +585,13 @@ async def cfg_selected(cb: CallbackQuery):
 @router.callback_query(F.data == "back_configs")
 async def back_configs(cb: CallbackQuery):
     user = await get_or_create_user(cb.from_user.id)
-    configs = await get_user_configs(user["id"])
-    if not configs:
+    configs, profiles = await _user_service_lists(user["id"])
+    if not configs and not profiles:
         await cb.message.edit_text(" سرویسی ندارید.")
+        await cb.answer()
         return
-    await cb.message.edit_text(" *سرویس‌های شما:*", reply_markup=configs_kb(configs), parse_mode="Markdown")
+    await _send_services_list(cb, user["id"], page=0)
+    await cb.answer()
 
 
 async def _owned_config_for_user(user_id: int, config_id: int) -> dict | None:
