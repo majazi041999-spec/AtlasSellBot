@@ -282,6 +282,8 @@ class XUIClient:
             clients = settings.get("clients", [])
             client = next((c for c in clients if c.get("email") == email), None)
             if not client:
+                client = await self.get_client(email)
+            if not client:
                 return None
 
             parsed = urlparse(self.base_url)

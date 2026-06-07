@@ -548,16 +548,13 @@ async def ensure_subscription_profile_nodes(profile: Dict) -> Dict:
         return {"created": 0, "skipped": 0, "failed": 0}
 
     existing_nodes = await get_subscription_nodes(profile["id"])
-    existing_by_target = {
-        (int(node.get("server_id") or 0), int(node.get("inbound_id") or 0)): node
-        for node in existing_nodes
-    }
+    existing_by_email = {str(node.get("email") or ""): node for node in existing_nodes}
     configured_nodes = await get_subscription_node_configs(active_only=True)
     missing_nodes = []
     refresh_nodes = []
     for node in configured_nodes:
-        target = (int(node.get("server_id") or 0), int(node.get("inbound_id") or 0))
-        existing = existing_by_target.get(target)
+        node_email = f"{profile['email']}_n{node['id']}"[:120]
+        existing = existing_by_email.get(node_email)
         if not existing:
             missing_nodes.append(node)
         elif not existing.get("link") or not int(existing.get("is_active") or 0):
