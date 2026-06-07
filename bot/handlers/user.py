@@ -78,6 +78,7 @@ from bot.keyboards import (
     renew_options_kb,
     config_links_kb,
     configs_kb,
+    user_services_kb,
     subscription_detail_kb,
     subscription_delete_confirm_kb,
     servers_kb,
@@ -513,6 +514,28 @@ async def flow_back_user(cb: CallbackQuery, state: FSMContext):
 
 
 @router.message(F.text == "📡 وضعیت سرویس")
+async def _user_service_lists(user_id: int) -> tuple[list[dict], list[dict]]:
+    configs = await get_user_configs(user_id)
+    profiles = await get_user_subscription_profiles(user_id)
+    return configs, profiles
+
+
+async def _send_services_list(target, user_id: int, page: int = 0):
+    configs, profiles = await _user_service_lists(user_id)
+    total = len(configs) + len(profiles)
+    text = (
+        "📡 مدیریت سرویس‌های شما\n\n"
+        f"کل سرویس‌ها: {total}\n"
+        f"کانفیگ عادی: {len(configs)} | لینک ساب: {len(profiles)}\n\n"
+        "یکی از سرویس‌ها را انتخاب کنید:"
+    )
+    kb = user_services_kb(configs, profiles, page=page)
+    if isinstance(target, Message):
+        await target.answer(text, reply_markup=kb, parse_mode=None)
+    else:
+        await target.message.edit_text(text, reply_markup=kb, parse_mode=None)
+
+
 async def user_status(msg: Message):
     if not await _ensure_channel_membership(msg):
         return

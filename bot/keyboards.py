@@ -117,6 +117,60 @@ def configs_kb(configs: List[Dict]) -> InlineKeyboardMarkup:
     return b.as_markup()
 
 
+def _service_days_label(expire_ms: int) -> str:
+    expire_ms = int(expire_ms or 0)
+    if expire_ms <= 0:
+        return "نامحدود"
+    diff = expire_ms - int(time.time() * 1000)
+    if diff <= 0:
+        return "منقضی"
+    days = max(1, int((diff + 86_399_999) // 86_400_000))
+    return f"{days}روز"
+
+
+def _service_button_text(kind: str, item: Dict) -> tuple[str, str]:
+    now_ms = int(time.time() * 1000)
+    is_active = bool(int(item.get("is_active") or 0))
+    expire_ms = int(item.get("expire_timestamp") or 0)
+    expired = expire_ms > 0 and expire_ms <= now_ms
+    state_icon = "🟢" if is_active and not expired else "🔴"
+    kind_icon = "🧬" if kind == "sub" else "🔑"
+    name = str(item.get("email") or item.get("id") or "-")
+    if len(name) > 30:
+        name = name[:27] + "..."
+    try:
+        gb_label = f"{float(item.get('traffic_gb') or 0):g}GB"
+    except Exception:
+        gb_label = "GB?"
+    text = f"{state_icon} {kind_icon} {name} | {gb_label} | {_service_days_label(expire_ms)}"
+    callback = f"sub_show:{item['id']}" if kind == "sub" else f"cfg:{item['id']}"
+    return text, callback
+
+
+def user_services_kb(configs: List[Dict], profiles: List[Dict], page: int = 0, per_page: int = 8) -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    items = [("sub", p) for p in profiles] + [("cfg", c) for c in configs]
+    items.sort(key=lambda pair: (int(pair[1].get("is_active") or 0), int(pair[1].get("id") or 0)), reverse=True)
+
+    total = len(items)
+    page = max(0, int(page or 0))
+    max_page = max(0, (total - 1) // max(1, per_page))
+    page = min(page, max_page)
+    for kind, item in items[page * per_page: page * per_page + per_page]:
+        text, callback = _service_button_text(kind, item)
+        _button(b, text=text, callback_data=callback, style="primary")
+    b.adjust(1)
+
+    nav = []
+    if page > 0:
+        nav.append(_inline_button(text="◀️ قبلی", callback_data=f"svc_pg:{page-1}", style="primary"))
+    if page < max_page:
+        nav.append(_inline_button(text="بعدی ▶️", callback_data=f"svc_pg:{page+1}", style="primary"))
+    if nav:
+        b.row(*nav)
+    return b.as_markup()
+
+
 def config_detail_kb(cid: int) -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
     _button(b, text="🔗 دریافت لینک اتصال", callback_data=f"cfg_link:{cid}", style="primary")
@@ -164,6 +218,7 @@ def subscription_detail_kb(profile_id: int, sub_url: str = "") -> InlineKeyboard
         b.row(copy_btn)
     _button(b, text="♻️ تمدید ساب", callback_data=f"sub_renew:{profile_id}", style="success")
     _button(b, text="🗑️ حذف ساب", callback_data=f"sub_del:{profile_id}", style="danger")
+    _button(b, text="🔙 برگشت به سرویس‌ها", callback_data="back_configs", style="primary")
     b.adjust(1)
     return b.as_markup()
 
