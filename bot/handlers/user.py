@@ -515,6 +515,27 @@ async def flow_back_user(cb: CallbackQuery, state: FSMContext):
 
 @router.message(F.text == "📡 وضعیت سرویس")
 async def _user_service_lists(user_id: int) -> tuple[list[dict], list[dict]]:
+    if isinstance(user_id, Message):
+        msg = user_id
+        if not await _ensure_channel_membership(msg):
+            return [], []
+        if await _blocked(msg.from_user.id):
+            await msg.answer(await get_text("blocked_message"))
+            return [], []
+        user = await get_or_create_user(msg.from_user.id)
+        configs, profiles = await _user_service_lists(user["id"])
+        total = len(configs) + len(profiles)
+        if total <= 0:
+            await msg.answer(await get_text("no_active_service"), parse_mode="Markdown")
+            return [], []
+        if total == 1 and configs:
+            await _send_config_status(msg, configs[0]["id"])
+            return [], []
+        if total == 1 and profiles:
+            await _send_subscription_status(msg, profiles[0])
+            return [], []
+        await _send_services_list(msg, user["id"], page=0)
+        return [], []
     configs = await get_user_configs(user_id)
     profiles = await get_user_subscription_profiles(user_id)
     return configs, profiles
