@@ -166,6 +166,56 @@ class XUIClient:
                 return default
         return default
 
+    def _decode_b64_json(self, value: str) -> Optional[Dict]:
+        raw = (value or "").strip().split("#", 1)[0].split("?", 1)[0]
+        if not raw:
+            return None
+        raw += "=" * (-len(raw) % 4)
+        for decoder in (base64.b64decode, base64.urlsafe_b64decode):
+            try:
+                decoded = decoder(raw.encode()).decode("utf-8", "ignore")
+                obj = json.loads(decoded)
+                return obj if isinstance(obj, dict) else None
+            except Exception:
+                continue
+        return None
+
+    def _link_is_complete(self, link: str) -> bool:
+        raw = (link or "").strip()
+        if not raw:
+            return False
+        scheme = raw.split("://", 1)[0].lower() if "://" in raw else ""
+        if scheme == "vmess":
+            obj = self._decode_b64_json(raw[8:])
+            if not obj:
+                return False
+            return bool(obj.get("add") and obj.get("port") and obj.get("id"))
+        if scheme in {"vless", "trojan"}:
+            try:
+                parsed = urlparse(raw)
+                port = parsed.port
+            except Exception:
+                return False
+            return bool(parsed.hostname and port and parsed.username)
+        if scheme == "ss":
+            try:
+                parsed = urlparse(raw)
+                port = parsed.port
+            except Exception:
+                return False
+            return bool(parsed.hostname and port and parsed.netloc)
+        return False
+
+    def _first_complete_api_link(self, obj: Any) -> Optional[str]:
+        links = obj if isinstance(obj, list) else [obj]
+        for item in links:
+            link = str(item or "").strip()
+            if self._link_is_complete(link):
+                return link
+            if link:
+                logger.warning("3x-ui returned incomplete client link; rebuilding locally")
+        return None
+
     def _client_payload(self, protocol: str, client_uuid: str, email: str, traffic_bytes: int,
                         expire_ms: int, enable: bool = True, existing: Optional[Dict] = None) -> Dict:
         existing = dict(existing or {})
@@ -263,11 +313,9 @@ class XUIClient:
         try:
             r = await self._req("GET", f"/panel/api/clients/links/{quote(email, safe='')}")
             if r and r.get("success"):
-                obj = r.get("obj")
-                if isinstance(obj, list) and obj:
-                    return str(obj[0])
-                if isinstance(obj, str) and obj:
-                    return obj
+                link = self._first_complete_api_link(r.get("obj"))
+                if link:
+                    return link
 
             inbound = await self.get_inbound(inbound_id)
             if not inbound:
@@ -277,6 +325,8 @@ class XUIClient:
             stream = self._json_obj(inbound.get("streamSettings"), {})
             clients = settings.get("clients", [])
             client = next((c for c in clients if c.get("email") == email), None)
+            if not client:
+                client = await self.get_client(email)
             if not client:
                 return None
 
@@ -332,7 +382,8 @@ class XUIClient:
                     params.append("mode=gun")
                 flow = client.get("flow", "")
                 if flow: params.append(f"flow={flow}")
-                return f"vless://{cid}@{host}:{port}?{'&'.join(params)}#{email}"
+                link = f"vless://{cid}@{host}:{port}?{'&'.join(params)}#{quote(email, safe='')}"
+                return link if self._link_is_complete(link) else None
 
             elif protocol == "vmess":
                 cid = client.get("id", "")
@@ -342,8 +393,9 @@ class XUIClient:
                 if network == "ws":
                     ws = stream.get("wsSettings", {})
                     cfg["path"] = ws.get("path", "/")
-                encoded = base64.urlsafe_b64encode(json.dumps(cfg).encode()).decode()
-                return f"vmess://{encoded}"
+                encoded = base64.b64encode(json.dumps(cfg, ensure_ascii=False, separators=(",", ":")).encode()).decode()
+                link = f"vmess://{encoded}"
+                return link if self._link_is_complete(link) else None
 
             elif protocol == "trojan":
                 pw = client.get("password", "")
@@ -352,13 +404,15 @@ class XUIClient:
                     tls = stream.get("tlsSettings", stream.get("realitySettings", {}))
                     sni = tls.get("serverName", host)
                     if sni: params.append(f"sni={sni}")
-                return f"trojan://{pw}@{host}:{port}?{'&'.join(params)}#{email}"
+                link = f"trojan://{pw}@{host}:{port}?{'&'.join(params)}#{quote(email, safe='')}"
+                return link if self._link_is_complete(link) else None
 
             elif protocol == "shadowsocks":
                 method = settings.get("method", "chacha20-poly1305")
                 password = settings.get("password", "")
                 userinfo = base64.urlsafe_b64encode(f"{method}:{password}".encode()).decode().rstrip("=")
-                return f"ss://{userinfo}@{host}:{port}#{email}"
+                link = f"ss://{userinfo}@{host}:{port}#{quote(email, safe='')}"
+                return link if self._link_is_complete(link) else None
 
         except Exception as e:
             logger.error(f"get_client_link error: {e}")

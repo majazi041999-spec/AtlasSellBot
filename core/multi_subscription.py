@@ -1,12 +1,13 @@
 import base64
 import binascii
 import json
+import logging
 import secrets
 import time
 import uuid
 from datetime import datetime
 from typing import Dict, List
-from urllib.parse import quote, unquote, urlsplit, urlunsplit
+from urllib.parse import quote, urlsplit, urlunsplit
 
 from core.config import WEB_PORT
 from core.database import (
@@ -24,6 +25,9 @@ from core.database import (
     update_subscription_profile,
 )
 from core.xui_api import XUIClient, expiry_ms_from_days
+
+
+logger = logging.getLogger(__name__)
 
 
 def total_bytes(traffic_gb: float) -> int:
@@ -103,27 +107,115 @@ def _label_subscription_link(link: str, label: str) -> str:
         return link
 
 
-def _fake_vmess_info_link(label: str, index: int = 1) -> str:
+def _decode_b64_json(value: str) -> Dict | None:
+    raw = (value or "").strip().split("#", 1)[0].split("?", 1)[0]
+    if not raw:
+        return None
+    raw += "=" * (-len(raw) % 4)
+    for decoder in (base64.b64decode, base64.urlsafe_b64decode):
+        try:
+            decoded = decoder(raw.encode()).decode("utf-8", "ignore")
+            obj = json.loads(decoded)
+            return obj if isinstance(obj, dict) else None
+        except Exception:
+            continue
+    return None
+
+
+def _subscription_link_is_complete(link: str) -> bool:
+    raw = (link or "").strip()
+    if not raw or "://" not in raw:
+        return False
+    scheme = raw.split("://", 1)[0].lower()
+    if scheme == "vmess":
+        obj = _decode_b64_json(raw[8:])
+        return bool(obj and obj.get("add") and obj.get("port") and obj.get("id"))
+    if scheme in {"vless", "trojan"}:
+        try:
+            parts = urlsplit(raw)
+            port = parts.port
+        except Exception:
+            return False
+        return bool(parts.hostname and port and parts.username)
+    if scheme == "ss":
+        try:
+            parts = urlsplit(raw)
+            port = parts.port
+        except Exception:
+            return False
+        return bool(parts.hostname and port and parts.netloc)
+    return False
+
+
+def _link_dedupe_key(link: str) -> str:
+    raw = (link or "").strip()
+    scheme = raw.split("://", 1)[0].lower() if "://" in raw else ""
+    if scheme == "vmess":
+        obj = _decode_b64_json(raw[8:]) or {}
+        return f"vmess:{obj.get('id') or ''}:{obj.get('add') or ''}:{obj.get('port') or ''}"
+    try:
+        parts = urlsplit(raw)
+        port = parts.port or ""
+        username = parts.username or ""
+        return f"{parts.scheme.lower()}:{username}@{(parts.hostname or '').lower()}:{port}:{parts.path}"
+    except Exception:
+        return raw.split("#", 1)[0]
+
+
+def _dedupe_complete_links(links: list[str]) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for link in links:
+        link = (link or "").strip()
+        if not _subscription_link_is_complete(link):
+            if link:
+                logger.warning("Skipping incomplete subscription link")
+            continue
+        key = _link_dedupe_key(link)
+        if key in seen:
+            logger.warning("Skipping duplicate subscription link")
+            continue
+        seen.add(key)
+        out.append(link)
+    return out
+
+
+async def _ensure_node_link(node: Dict) -> str:
+    link = (node.get("link") or "").strip()
+    if _subscription_link_is_complete(link):
+        return link
+
+    cli = XUIClient(
+        node["server_url"],
+        node["srv_user"],
+        node["srv_pass"],
+        node.get("sub_path") or "",
+        node.get("srv_api_token", ""),
+    )
+    try:
+        refreshed = await cli.get_client_link(int(node.get("inbound_id") or 0), node.get("email") or "")
+        refreshed = (refreshed or "").strip()
+        if _subscription_link_is_complete(refreshed):
+            await update_subscription_node(node["id"], link=refreshed)
+            logger.info("Repaired subscription node link id=%s", node.get("id"))
+            return refreshed
+        logger.warning("Could not repair incomplete subscription node link id=%s", node.get("id"))
+    except Exception as e:
+        logger.warning("Subscription node link repair failed id=%s: %s", node.get("id"), e)
+    finally:
+        await cli.close()
+    return ""
+
+
+def _fake_info_link(label: str, index: int = 1) -> str:
     label = (label or "").strip()
     if not label:
         return ""
-    suffix = max(1, min(9999, int(index or 1)))
-    cfg = {
-        "v": "2",
-        "ps": label[:180],
-        "add": "127.0.0.1",
-        "port": "1",
-        "id": f"00000000-0000-0000-0000-{suffix:012d}",
-        "aid": "0",
-        "scy": "auto",
-        "net": "tcp",
-        "type": "none",
-        "host": "",
-        "path": "",
-        "tls": "",
-    }
-    encoded = base64.b64encode(json.dumps(cfg, ensure_ascii=False, separators=(",", ":")).encode()).decode()
-    return f"vmess://{encoded}"
+    fake_uuid = str(uuid.uuid5(uuid.NAMESPACE_URL, f"atlas-sub-info:{index}:{label}"))
+    return (
+        f"vless://{fake_uuid}@127.0.0.1:1"
+        f"?encryption=none&type=tcp&security=none#{quote(label[:180], safe='')}"
+    )
 
 
 def _parse_db_datetime(value: str) -> datetime | None:
@@ -186,7 +278,7 @@ async def _subscription_info_links(profile: Dict, used: int, total: int, active_
     )
     brand_template = await get_setting("sub_brand_template", "📣 {brand}")
     labels = _format_info_template(template, values) + _format_info_template(brand_template, values)
-    return [_fake_vmess_info_link(label, i + 1) for i, label in enumerate(labels) if label]
+    return [_fake_info_link(label, i + 1) for i, label in enumerate(labels) if label]
 
 
 def _fmt_bytes_short(value: int) -> str:
@@ -246,6 +338,13 @@ async def create_profile_for_order(user: Dict, order: Dict, traffic_gb: float, d
                     failures.append(f"{node.get('server_name') or node['server_id']}#{inbound_id}:add_failed")
                     continue
                 link = await cli.get_client_link(inbound_id, node_email) or ""
+                if not _subscription_link_is_complete(link):
+                    failures.append(f"{node.get('server_name') or node['server_id']}#{inbound_id}:link_failed")
+                    try:
+                        await cli.delete_client(inbound_id, client_uuid, node_email)
+                    except Exception:
+                        pass
+                    continue
                 await add_subscription_node(profile_id, node["server_id"], inbound_id, client_uuid, node_email, link)
                 created_remote.append((node, inbound_id, client_uuid, node_email))
             except Exception as e:
@@ -293,16 +392,21 @@ async def render_subscription(token: str) -> tuple[str, Dict[str, int]] | None:
     links = []
     active_count = 0
     for n in nodes:
-        if not int(n.get("is_active") or 0) or not n.get("link"):
+        if not int(n.get("is_active") or 0):
             continue
-        active_count += 1
+        raw_link = await _ensure_node_link(n)
+        if not raw_link:
+            continue
         label = n.get("node_label") or f"{n.get('server_name') or 'Node'} #{n.get('inbound_id') or ''}"
-        links.append(_label_subscription_link(n.get("link") or "", label))
+        link = _label_subscription_link(raw_link, label)
+        if _subscription_link_is_complete(link):
+            active_count += 1
+            links.append(link)
     used = int(profile.get("used_bytes") or 0)
     total = total_bytes(profile.get("traffic_gb") or 0)
     expire = int(int(profile.get("expire_timestamp") or 0) / 1000) if int(profile.get("expire_timestamp") or 0) > 0 else 0
     info_links = await _subscription_info_links(profile, used, total, active_count)
-    links = info_links + links
+    links = _dedupe_complete_links(info_links + links)
     body = base64.b64encode("\n".join(links).encode()).decode()
     return body, {"upload": 0, "download": used, "total": total, "expire": expire}
 
