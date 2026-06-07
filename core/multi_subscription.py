@@ -165,8 +165,11 @@ async def _remote_identity_and_link(cli: XUIClient, inbound_id: int, email: str,
     remote_uuid = _remote_client_uuid(remote_client, fallback_uuid)
     remote_inbound = int((found or {}).get("inbound_id") or inbound_id)
     link = await cli.get_client_link(remote_inbound, email) or ""
-    if not remote_uuid:
-        remote_uuid = _uuid_from_link(link) or _remote_client_uuid({}, fallback_uuid)
+    link_uuid = _uuid_from_link(link)
+    if link_uuid:
+        remote_uuid = link_uuid
+    elif not remote_uuid:
+        remote_uuid = _remote_client_uuid({}, fallback_uuid)
     return remote_inbound, remote_uuid, link
 
 
@@ -256,7 +259,7 @@ def _label_subscription_link(link: str, label: str) -> str:
         except Exception:
             return link
         obj["ps"] = label
-        encoded = base64.urlsafe_b64encode(json.dumps(obj, ensure_ascii=False, separators=(",", ":")).encode()).decode().rstrip("=")
+        encoded = base64.b64encode(json.dumps(obj, ensure_ascii=False, separators=(",", ":")).encode()).decode()
         return f"vmess://{encoded}"
 
     try:
@@ -361,10 +364,15 @@ async def _ensure_node_link(node: Dict) -> str:
         node.get("srv_api_token", ""),
     )
     try:
-        refreshed = await cli.get_client_link(int(node.get("inbound_id") or 0), node.get("email") or "")
+        inbound_id, remote_uuid, refreshed = await _remote_identity_and_link(
+            cli,
+            int(node.get("inbound_id") or 0),
+            node.get("email") or "",
+            node.get("uuid") or "",
+        )
         refreshed = (refreshed or "").strip()
         if _subscription_link_is_complete(refreshed):
-            await update_subscription_node(node["id"], link=refreshed)
+            await update_subscription_node(node["id"], inbound_id=inbound_id, uuid=remote_uuid, link=refreshed)
             logger.info("Repaired subscription node link id=%s", node.get("id"))
             return refreshed
         logger.warning("Could not repair incomplete subscription node link id=%s", node.get("id"))
@@ -612,6 +620,13 @@ async def create_profile_from_config(user: Dict, cfg: Dict) -> Dict:
                     failures.append(f"{node.get('server_name') or node['server_id']}#{inbound_id}:add_failed")
                     continue
                 inbound_id, client_uuid, link = await _remote_identity_and_link(cli, inbound_id, node_email, client_uuid)
+                if not _subscription_link_is_complete(link):
+                    failures.append(f"{node.get('server_name') or node['server_id']}#{inbound_id}:link_failed")
+                    try:
+                        await cli.delete_client(inbound_id, client_uuid, node_email)
+                    except Exception:
+                        pass
+                    continue
                 await add_subscription_node(profile_id, node["server_id"], inbound_id, client_uuid, node_email, link)
                 created_remote.append((node, inbound_id, client_uuid, node_email))
             except Exception as e:
@@ -695,7 +710,7 @@ async def render_subscription(token: str) -> tuple[str, Dict[str, int]] | None:
     total = total_bytes(profile.get("traffic_gb") or 0)
     expire = int(int(profile.get("expire_timestamp") or 0) / 1000) if int(profile.get("expire_timestamp") or 0) > 0 else 0
     info_links = await _subscription_info_links(profile, used, total, active_count)
-    links = _dedupe_complete_links(info_links + links)
+    links = _dedupe_complete_links(links + info_links)
     body = base64.b64encode("\n".join(links).encode()).decode()
     return body, {"upload": 0, "download": used, "total": total, "expire": expire}
 
@@ -772,7 +787,7 @@ async def ensure_subscription_profile_nodes(profile: Dict, force_refresh: bool =
                 errors.append(f"move_failed:p{profile.get('id')}:node{node.get('server_id')}/{inbound_id}:{detail}")
                 continue
             inbound_id, client_uuid, link = await _remote_identity_and_link(cli, inbound_id, node_email, client_uuid)
-            if not link:
+            if not _subscription_link_is_complete(link):
                 failed += 1
                 detail = getattr(cli, "last_error", "") or "link_not_found"
                 errors.append(f"move_link_empty:p{profile.get('id')}:node{node.get('server_id')}/{inbound_id}:{detail}")
@@ -809,7 +824,7 @@ async def ensure_subscription_profile_nodes(profile: Dict, force_refresh: bool =
             client_uuid = str(existing.get("uuid") or uuid.uuid4())
             node_email = str(existing.get("email") or f"{profile['email']}_n{node['id']}"[:120])
             link = await cli.get_client_link(inbound_id, node_email) or ""
-            if not link:
+            if not _subscription_link_is_complete(link):
                 added = await cli.add_client(inbound_id, client_uuid, node_email, traffic_gb, duration_days, starts_on_first_use=False)
                 if added and expire_ms > 0:
                     updated = await cli.update_client(inbound_id, client_uuid, node_email, traffic_gb, expire_ms, True)
@@ -825,9 +840,9 @@ async def ensure_subscription_profile_nodes(profile: Dict, force_refresh: bool =
                         inbound_id = remote_inbound or inbound_id
                         await cli.update_client(inbound_id, client_uuid, node_email, traffic_gb, expire_ms, True)
                 inbound_id, client_uuid, link = await _remote_identity_and_link(cli, inbound_id, node_email, client_uuid)
-            if link:
+            if _subscription_link_is_complete(link):
                 inbound_id, client_uuid, fresh_link = await _remote_identity_and_link(cli, inbound_id, node_email, client_uuid)
-                if fresh_link:
+                if _subscription_link_is_complete(fresh_link):
                     link = fresh_link
                 changed = (
                     link != (existing.get("link") or "")
@@ -880,11 +895,15 @@ async def ensure_subscription_profile_nodes(profile: Dict, force_refresh: bool =
                 logger.warning("subscription missing node add failed profile=%s node=%s/%s email=%s", profile.get("id"), node.get("server_id"), inbound_id, node_email)
                 continue
             inbound_id, client_uuid, link = await _remote_identity_and_link(cli, inbound_id, node_email, client_uuid)
-            if not link:
+            if not _subscription_link_is_complete(link):
                 failed += 1
                 detail = getattr(cli, "last_error", "") or "link_not_found"
                 errors.append(f"link_empty:p{profile.get('id')}:node{node.get('server_id')}/{inbound_id}:{detail}")
                 logger.warning("subscription missing node link empty profile=%s node=%s/%s email=%s", profile.get("id"), node.get("server_id"), inbound_id, node_email)
+                try:
+                    await cli.delete_client(inbound_id, client_uuid, node_email)
+                except Exception:
+                    pass
                 continue
             await add_subscription_node(profile["id"], node["server_id"], inbound_id, client_uuid, node_email, link)
             created += 1
@@ -1048,9 +1067,19 @@ async def edit_subscription_profile(profile: Dict, email: str, traffic_gb: float
                 new_email=new_node_email,
             )
             if ok:
-                link = await cli.get_client_link(node["inbound_id"], new_node_email) or node.get("link", "")
+                inbound_id, client_uuid, link = await _remote_identity_and_link(
+                    cli,
+                    int(node.get("inbound_id") or 0),
+                    new_node_email,
+                    node.get("uuid") or "",
+                )
+                if not _subscription_link_is_complete(link):
+                    failures.append(f"{node.get('server_name') or node.get('server_id')}#{node.get('inbound_id')}:link_failed")
+                    continue
                 await update_subscription_node(
                     node["id"],
+                    inbound_id=inbound_id,
+                    uuid=client_uuid,
                     email=new_node_email,
                     link=link,
                     is_active=1 if is_active else 0,
