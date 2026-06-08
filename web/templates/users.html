@@ -3,29 +3,34 @@
 {% block topbar_title %}👥 مدیریت کاربران{% endblock %}
 
 {% block content %}
-<div class="sec-hd" style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap">
-  <span class="sec-title">کل کاربران: {{ total }}</span>
-  <form action="/{{ S }}/users/transfer_owner" method="POST" style="display:flex;gap:6px;align-items:center">
-    <input type="number" name="telegram_id" class="form-control" placeholder="Telegram ID ادمین اصلی" required>
-    <button class="btn btn-sm btn-outline" type="submit">👑 انتقال ادمین اصلی</button>
-  </form>
-</div>
-<div style="display:flex;gap:8px;flex-wrap:wrap;margin:8px 0 12px">
-  <div class="search-box" style="flex:1;min-width:220px">
-    <input type="text" id="usrSearch" class="form-control" placeholder="جستجو در همین صفحه..." oninput="filterTable('usrSearch','usrTable')">
-  </div>
-  <form action="/{{ S }}/users/find" method="GET" style="display:flex;gap:6px;min-width:280px;flex:1">
-    <input type="text" name="q" class="form-control" placeholder="جستجوی مستقیم با ID، username یا نام">
-    <button class="btn btn-outline" type="submit">🔎 باز کردن کاربر</button>
-  </form>
-</div>
-
 <style>
 .wholesale-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin:12px 0}
 .wholesale-stat{background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:12px}
 .wholesale-stat b{display:block;font-size:1.35rem;margin-top:4px}
 .wholesale-panel{margin:12px 0 14px}
 .wholesale-actions{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+
+/* realtime search */
+.rt-search-wrap{position:relative;flex:1;min-width:240px}
+.rt-search-wrap .form-control{width:100%;padding-right:36px;min-height:40px}
+.rt-search-wrap .search-icon{position:absolute;right:10px;top:50%;transform:translateY(-50%);color:var(--txt3);pointer-events:none}
+#rt-results{position:absolute;top:calc(100% + 4px);right:0;left:0;background:var(--card);border:1px solid var(--border);border-radius:var(--radius);z-index:300;max-height:360px;overflow-y:auto;box-shadow:var(--shadow)}
+.rt-item{display:flex;align-items:center;gap:10px;padding:10px 12px;cursor:pointer;border-bottom:1px solid var(--border);transition:background .15s}
+.rt-item:last-child{border-bottom:none}
+.rt-item:hover{background:var(--card2)}
+.rt-item .rt-name{font-weight:700;font-size:.88rem}
+.rt-item .rt-meta{font-size:.73rem;color:var(--txt3)}
+.rt-item .rt-badge{margin-right:auto;font-size:.68rem}
+.rt-empty{padding:14px;text-align:center;color:var(--txt3);font-size:.82rem}
+.rt-spinner{display:none;width:16px;height:16px;border:2px solid var(--border);border-top-color:var(--p);border-radius:50%;animation:spin .6s linear infinite;position:absolute;right:10px;top:50%;transform:translateY(-50%)}
+.rt-spinner.show{display:block}
+
+@keyframes spin{to{transform:translateY(-50%) rotate(360deg)}}
+
+/* form fields wider */
+.form-control-wide{min-width:140px!important;min-height:40px!important}
+.num-input{min-width:150px!important;min-height:40px!important}
+
 @media (max-width:900px){
   .wholesale-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
 }
@@ -37,6 +42,35 @@
 }
 </style>
 
+<div class="sec-hd" style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap">
+  <span class="sec-title">کل کاربران: {{ total }}</span>
+  <form action="/{{ S }}/users/transfer_owner" method="POST" style="display:flex;gap:6px;align-items:center">
+    <input type="number" name="telegram_id" class="form-control form-control-wide" placeholder="Telegram ID ادمین اصلی" required>
+    <button class="btn btn-sm btn-outline" type="submit">👑 انتقال ادمین</button>
+  </form>
+</div>
+
+<!-- ─── Search Row ─── -->
+<div style="display:flex;gap:8px;flex-wrap:wrap;margin:8px 0 14px;align-items:flex-start">
+
+  <!-- Local filter -->
+  <div class="rt-search-wrap" style="max-width:260px">
+    <span class="search-icon">🔍</span>
+    <input type="text" id="usrSearch" class="form-control" placeholder="فیلتر همین صفحه..." oninput="filterTable('usrSearch','usrTable')">
+  </div>
+
+  <!-- Global real-time search -->
+  <div class="rt-search-wrap" style="max-width:400px">
+    <span class="search-icon" id="rt-icon">🔎</span>
+    <span class="rt-spinner" id="rt-spin"></span>
+    <input type="text" id="rtSearch" class="form-control" placeholder="جستجوی سراسری: نام، یوزرنیم، ID تلگرام..."
+           oninput="rtDebounce()" autocomplete="off"
+           style="padding-right:36px">
+    <div id="rt-results" style="display:none"></div>
+  </div>
+</div>
+
+<!-- ─── Wholesale Panel ─── -->
 <div class="card wholesale-panel">
   <div class="sec-title" style="margin-bottom:10px">مدیریت کاربران عمده</div>
   <div class="wholesale-grid">
@@ -47,34 +81,42 @@
   </div>
   <div class="table-wrap">
     <table>
-      <thead><tr><th>کاربر</th><th>وضعیت</th><th>آمار</th><th>قیمت/تخفیف</th><th>اقدام</th></tr></thead>
+      <thead><tr><th>کاربر</th><th>وضعیت</th><th>آمار</th><th>قیمت / تخفیف</th><th>اقدام</th></tr></thead>
       <tbody>
       {% for u in wholesale_users %}
       <tr>
         <td><a href="/{{ S }}/users/{{ u.id }}"><strong>{{ u.full_name or '—' }}</strong></a><br><span style="color:var(--txt3);font-size:.74rem">@{{ u.username or '—' }}</span><br><code>{{ u.telegram_id }}</code></td>
-        <td>{% if u.is_wholesale %}<span class="badge b-green">فعال</span>{% else %}<span class="badge b-blue">در انتظار بررسی</span>{% endif %}</td>
-        <td style="font-size:.78rem;color:var(--txt2)">سفارش: {{ u.business.approved_orders }}<br>فعال: {{ u.business.active_configs }} / {{ u.business.total_configs }}<br>کیف پول: {{ "{:,}".format(u.balance_toman or 0) }}</td>
+        <td>{% if u.is_wholesale %}<span class="badge b-green">فعال</span>{% else %}<span class="badge b-blue">در انتظار</span>{% endif %}</td>
+        <td style="font-size:.78rem;color:var(--txt2)">سفارش: {{ u.business.approved_orders }}<br>فعال: {{ u.business.active_configs }} / {{ u.business.total_configs }}<br>کیف: {{ "{:,}".format(u.balance_toman or 0) }}</td>
         <td>
-          <form action="/{{ S }}/users/{{ u.id }}/pricing" method="POST" class="wholesale-actions">
-            <input type="number" name="discount_percent" class="form-control" value="{{ u.discount_percent or 0 }}" min="0" max="100" step="0.5" style="width:82px">
-            <input type="number" name="price_per_gb" class="form-control" value="{{ u.price_per_gb or 0 }}" min="0" style="width:110px">
-            <button class="btn btn-xs btn-outline" type="submit">ذخیره</button>
-          </form>
+          <div class="wholesale-actions">
+            <div>
+              <label style="font-size:.72rem;color:var(--txt3)">تخفیف %</label>
+              <input type="number" class="form-control num-input" id="wdis-{{ u.id }}" value="{{ u.discount_percent or 0 }}" min="0" max="100" step="0.5" style="width:90px">
+            </div>
+            <div>
+              <label style="font-size:.72rem;color:var(--txt3)">قیمت/GB</label>
+              <input type="text" class="form-control num-input" id="wpgb-{{ u.id }}"
+                     value="{{ '{:,}'.format(u.price_per_gb or 0) }}" oninput="liveFormatNum(this)" style="width:130px">
+            </div>
+            <button class="btn btn-xs btn-outline" style="align-self:flex-end" onclick="savePricing({{ u.id }},'wdis-{{ u.id }}','wpgb-{{ u.id }}')">💾</button>
+          </div>
         </td>
-        <td><button class="btn btn-xs btn-outline" onclick="toggleWholesale({{ u.id }})">{{ 'برداشتن عمده' if u.is_wholesale else 'تایید عمده' }}</button></td>
+        <td><button class="btn btn-xs btn-outline" onclick="toggleWholesaleRow({{ u.id }}, this)">{{ 'برداشتن عمده' if u.is_wholesale else 'تایید عمده' }}</button></td>
       </tr>
       {% else %}
-      <tr><td colspan="5" style="text-align:center;color:var(--txt3)">هنوز کاربر عمده یا درخواست در انتظار ندارید.</td></tr>
+      <tr><td colspan="5" style="text-align:center;color:var(--txt3)">کاربر عمده یا درخواستی وجود ندارد.</td></tr>
       {% endfor %}
       </tbody>
     </table>
   </div>
 </div>
 
+<!-- ─── Users Table ─── -->
 <div class="table-wrap">
 <table id="usrTable">
   <thead>
-    <tr><th>#</th><th>نام</th><th>همکاری عمده</th><th>سطح ادمین</th><th>کیف پول (تومان)</th><th>آمار همکاری</th><th>تخفیف</th><th>قیمت هر GB</th><th>وضعیت</th><th>تاریخ</th><th>عملیات</th></tr>
+    <tr><th>#</th><th>نام</th><th>همکاری عمده</th><th>سطح ادمین</th><th>کیف پول (تومان)</th><th>آمار</th><th>تخفیف %</th><th>قیمت / GB</th><th>وضعیت</th><th>تاریخ</th><th>عملیات</th></tr>
   </thead>
   <tbody>
   {% for u in users %}
@@ -82,49 +124,53 @@
     <td>{{ u.id }}</td>
     <td><a href="/{{ S }}/users/{{ u.id }}"><strong>{{ u.full_name or '—' }}</strong></a><br><span style='color:var(--txt3);font-size:.74rem'>@{{ u.username or '—' }}</span><br><code style='font-size:.72rem'>{{ u.telegram_id }}</code></td>
     <td>
-      {% if u.is_wholesale %}<span class="badge b-green">✅ عمده‌فروش</span>{% else %}<span class="badge b-yellow">— عادی</span>{% endif %}
-      {% if u.wholesale_request_pending %}<br><span class="badge b-blue">درخواست در انتظار</span>{% endif %}
-      <br><button class="btn btn-xs btn-outline" onclick="toggleWholesale({{ u.id }})">{{ 'برداشتن عمده' if u.is_wholesale else 'پروموت به عمده' }}</button>
+      {% if u.is_wholesale %}<span class="badge b-green">✅ عمده</span>{% else %}<span class="badge b-yellow">— عادی</span>{% endif %}
+      {% if u.wholesale_request_pending %}<br><span class="badge b-blue">درخواست انتظار</span>{% endif %}
+      <br><button class="btn btn-xs btn-outline" style="margin-top:4px" onclick="toggleWholesaleRow({{ u.id }}, this)">{{ 'برداشتن' if u.is_wholesale else 'پروموت' }}</button>
     </td>
     <td>
-      <form action="/{{ S }}/users/{{ u.id }}/admin_role" method="POST" style="display:flex;gap:6px;align-items:center">
-        <select name="role" class="form-control" style="min-width:130px">
-          <option value="none" {% if (u.admin_role or 'none') == 'none' %}selected{% endif %}>کاربر عادی</option>
-          <option value="finance" {% if u.admin_role == 'finance' %}selected{% endif %}>ادمین ساده (فیش)</option>
-          <option value="full" {% if u.admin_role == 'full' or (u.is_admin and not u.admin_role) %}selected{% endif %}>ادمین کل</option>
+      <div style="display:flex;gap:6px;align-items:center">
+        <select class="form-control form-control-wide" id="role-{{ u.id }}" style="min-width:150px">
+          <option value="none" {% if (u.admin_role or 'none')=='none' %}selected{% endif %}>کاربر عادی</option>
+          <option value="finance" {% if u.admin_role=='finance' %}selected{% endif %}>ادمین ساده</option>
+          <option value="full" {% if u.admin_role=='full' or (u.is_admin and not u.admin_role) %}selected{% endif %}>ادمین کل</option>
         </select>
-        <button class="btn btn-xs btn-outline" type="submit">💾</button>
-      </form>
+        <button class="btn btn-xs btn-outline" onclick="saveRole({{ u.id }})">💾</button>
+      </div>
     </td>
     <td>
-      <div style="font-weight:700;color:var(--p)">{{ "{:,}".format(u.balance_toman or 0) }}</div>
-      <form action="/{{ S }}/users/{{ u.id }}/balance_adjust" method="POST" style="display:flex;gap:6px;align-items:center;margin-top:6px">
-        <input type="number" name="amount" class="form-control" placeholder="مثبت/منفی" style="width:110px" required>
-        <input type="text" name="note" class="form-control" placeholder="توضیح" style="width:90px">
-        <button class="btn btn-xs btn-outline" type="submit">💰 اعمال</button>
-      </form>
+      <div style="font-weight:700;color:var(--p);font-size:1rem" id="bal-{{ u.id }}">{{ "{:,}".format(u.balance_toman or 0) }}</div>
+      <div style="display:flex;gap:6px;align-items:center;margin-top:6px;flex-wrap:wrap">
+        <input type="text" id="balinp-{{ u.id }}" class="form-control num-input"
+               placeholder="مثبت / منفی" oninput="liveFormatNum(this)" style="width:150px">
+        <input type="text" id="balnote-{{ u.id }}" class="form-control form-control-wide" placeholder="توضیح" style="width:110px">
+        <button class="btn btn-xs btn-outline" onclick="saveBalance({{ u.id }})">💰</button>
+      </div>
     </td>
     <td style="font-size:.78rem;color:var(--txt2)">
-      ✅ سفارش تایید: {{ u.business.approved_orders }}<br>
-      ⏳ سفارش انتظار: {{ u.business.pending_orders }}<br>
-      🔑 کانفیگ فعال: {{ u.business.active_configs }} / {{ u.business.total_configs }}
+      ✅ {{ u.business.approved_orders }}<br>
+      ⏳ {{ u.business.pending_orders }}<br>
+      🔑 {{ u.business.active_configs }} / {{ u.business.total_configs }}
     </td>
     <td>
-      <form action="/{{ S }}/users/{{ u.id }}/pricing" method="POST" style="display:flex;gap:6px;align-items:center">
-        <input type="number" name="discount_percent" class="form-control" value="{{ u.discount_percent or 0 }}" min="0" max="100" step="0.5" style="width:82px">
-        <button class="btn btn-xs btn-outline" type="submit">💾</button>
-      </form>
+      <div style="display:flex;gap:6px;align-items:center">
+        <input type="number" id="dis-{{ u.id }}" class="form-control form-control-wide" value="{{ u.discount_percent or 0 }}" min="0" max="100" step="0.5" style="width:90px">
+        <button class="btn btn-xs btn-outline" onclick="savePricing({{ u.id }},'dis-{{ u.id }}','pgb-{{ u.id }}')">💾</button>
+      </div>
     </td>
     <td>
-      <form action="/{{ S }}/users/{{ u.id }}/pricing" method="POST" style="display:flex;gap:6px;align-items:center">
-        <input type="hidden" name="discount_percent" value="{{ u.discount_percent or 0 }}">
-        <input type="number" name="price_per_gb" class="form-control" value="{{ u.price_per_gb or 0 }}" min="0" style="width:110px">
-        <button class="btn btn-xs btn-outline" type="submit">💾</button>
-      </form>
+      <div style="display:flex;gap:6px;align-items:center">
+        <input type="text" id="pgb-{{ u.id }}" class="form-control num-input"
+               value="{{ '{:,}'.format(u.price_per_gb or 0) }}" oninput="liveFormatNum(this)" style="width:130px">
+        <button class="btn btn-xs btn-outline" onclick="savePricing({{ u.id }},'dis-{{ u.id }}','pgb-{{ u.id }}')">💾</button>
+      </div>
     </td>
     <td>{% if u.is_blocked %}<span class="badge b-red">🔴 بلاک</span>{% else %}<span class="badge b-green">🟢 فعال</span>{% endif %}</td>
     <td style="color:var(--txt3);font-size:.75rem">{{ u.created_at[:10] }}</td>
-    <td style="display:flex;gap:6px;flex-wrap:wrap"><a class="btn btn-outline btn-xs" href="/{{ S }}/users/{{ u.id }}">پرونده</a><button class="btn btn-outline btn-xs" onclick="toggleBlock({{ u.id }}, this)">{{ '🔓 آنبلاک' if u.is_blocked else '🔒 بلاک' }}</button></td>
+    <td style="display:flex;gap:6px;flex-wrap:wrap">
+      <a class="btn btn-outline btn-xs" href="/{{ S }}/users/{{ u.id }}">پرونده</a>
+      <button class="btn btn-outline btn-xs" onclick="toggleBlock({{ u.id }}, this)">{{ '🔓 آنبلاک' if u.is_blocked else '🔒 بلاک' }}</button>
+    </td>
   </tr>
   {% endfor %}
   </tbody>
@@ -133,7 +179,7 @@
 
 {% if pending_topups and pending_topups|length > 0 %}
 <div class="card" style="margin-top:14px">
-  <div class="sec-title" style="margin-bottom:10px">📥 درخواست‌های افزایش اعتبار در انتظار ({{ pending_topups|length }})</div>
+  <div class="sec-title" style="margin-bottom:10px">📥 افزایش اعتبار در انتظار ({{ pending_topups|length }})</div>
   <div class="table-wrap">
     <table>
       <thead><tr><th>#</th><th>کاربر</th><th>مبلغ</th><th>تاریخ</th><th>اقدام</th></tr></thead>
@@ -145,7 +191,7 @@
           <td>{{ "{:,}".format(t.amount or 0) }} تومان</td>
           <td>{{ t.created_at[:16] }}</td>
           <td style="display:flex;gap:6px;flex-wrap:wrap">
-            <a class="btn btn-xs btn-outline" href="/{{ S }}/receipts/topup/{{ t.id }}" target="_blank">View receipt</a>
+            <a class="btn btn-xs btn-outline" href="/{{ S }}/receipts/topup/{{ t.id }}" target="_blank">رسید</a>
             <form action="/{{ S }}/topups/{{ t.id }}/approve" method="POST"><button class="btn btn-xs btn-outline" type="submit">✅ تایید</button></form>
             <form action="/{{ S }}/topups/{{ t.id }}/reject" method="POST"><button class="btn btn-xs btn-danger" type="submit">❌ رد</button></form>
           </td>
@@ -160,24 +206,122 @@
 <div class="card pagination-wrap" style="margin-top:12px;display:flex;justify-content:space-between;align-items:center">
   <span style="color:var(--txt3)">صفحه {{ page }} از {{ total_pages }}</span>
   <div style="display:flex;gap:8px">
-    {% if page > 1 %}<a class="btn btn-outline btn-sm" href="/{{ S }}/users?page={{ page-1 }}">◀️ قبلی</a>{% endif %}
-    {% if page < total_pages %}<a class="btn btn-outline btn-sm" href="/{{ S }}/users?page={{ page+1 }}">بعدی ▶️</a>{% endif %}
+    {% if page > 1 %}<a class="btn btn-outline btn-sm" href="/{{ S }}/users?page={{ page-1 }}">◀ قبلی</a>{% endif %}
+    {% if page < total_pages %}<a class="btn btn-outline btn-sm" href="/{{ S }}/users?page={{ page+1 }}">بعدی ▶</a>{% endif %}
   </div>
 </div>
-
 {% endblock %}
 
 {% block scripts %}
 <script>
+/* ── number formatting ── */
+function liveFormatNum(inp){
+  const neg = inp.value.startsWith('-');
+  const raw = inp.value.replace(/[^\d]/g,'');
+  if(!raw){ inp.value = neg?'-':''; return; }
+  const num = parseInt(raw,10);
+  inp.value = (neg?'-':'') + num.toLocaleString('en-US');
+}
+function rawNum(id){
+  const v = (document.getElementById(id)?.value||'0').replace(/[^\d-]/g,'');
+  return parseInt(v||'0',10);
+}
+
+/* ── block toggle ── */
 async function toggleBlock(id, btn){
+  btn.disabled=true;
   const r = await api(`/${S}/users/${id}/toggle_block`);
+  btn.disabled=false;
   if(r.success) location.reload();
   else toast('خطا!','error');
 }
-async function toggleWholesale(id){
+
+/* ── wholesale toggle ── */
+async function toggleWholesaleRow(id, btn){
+  btn.disabled=true;
   const r = await api(`/${S}/users/${id}/toggle_wholesale`);
-  if(r.success) location.reload();
-  else toast('خطا در تغییر همکاری','error');
+  btn.disabled=false;
+  if(r.success){ toast('وضعیت عمده تغییر کرد','success'); setTimeout(()=>location.reload(),700); }
+  else toast('خطا','error');
 }
+
+/* ── role save ── */
+async function saveRole(id){
+  const role = document.getElementById(`role-${id}`)?.value;
+  const r = await api(`/${S}/users/${id}/admin_role`,'POST',{role});
+  if(r.success) toast('سطح دسترسی ذخیره شد ✅','success');
+  else toast('خطا','error');
+}
+
+/* ── balance save ── */
+async function saveBalance(id){
+  const amount = rawNum(`balinp-${id}`);
+  const note = document.getElementById(`balnote-${id}`)?.value || 'manual';
+  if(!amount){ toast('مبلغ را وارد کنید','warn'); return; }
+  const r = await api(`/${S}/users/${id}/balance_adjust`,'POST',{amount,note});
+  if(r.success){
+    const el = document.getElementById(`bal-${id}`);
+    if(el) el.textContent = Number(r.new_balance).toLocaleString('en-US');
+    document.getElementById(`balinp-${id}`).value='';
+    toast('موجودی اعمال شد ✅','success');
+  } else toast(r.error||'خطا','error');
+}
+
+/* ── pricing save ── */
+async function savePricing(id, disId, pgbId){
+  // disId/pgbId: explicit element IDs to read from (avoids conflict when user appears in both tables)
+  const discount_percent = parseFloat(document.getElementById(disId||`dis-${id}`)?.value||0);
+  const price_per_gb = rawNum(pgbId||`pgb-${id}`);
+  const r = await api(`/${S}/users/${id}/pricing`,'POST',{
+    discount_percent: isNaN(discount_percent)?0:discount_percent,
+    price_per_gb
+  });
+  if(r.success) toast('قیمت‌گذاری ذخیره شد ✅','success');
+  else toast('خطا','error');
+}
+
+/* ── realtime search ── */
+let _rtTimer=null;
+function rtDebounce(){
+  clearTimeout(_rtTimer);
+  const q = document.getElementById('rtSearch').value.trim();
+  const res = document.getElementById('rt-results');
+  if(q.length<2){ res.style.display='none'; return; }
+  document.getElementById('rt-icon').style.display='none';
+  document.getElementById('rt-spin').classList.add('show');
+  _rtTimer = setTimeout(()=>rtSearch(q), 380);
+}
+async function rtSearch(q){
+  const spin = document.getElementById('rt-spin');
+  const icon = document.getElementById('rt-icon');
+  const res = document.getElementById('rt-results');
+  try{
+    const data = await api(`/${S}/users/search?q=${encodeURIComponent(q)}`,'GET');
+    spin.classList.remove('show'); icon.style.display='';
+    if(!Array.isArray(data)||data.length===0){
+      res.innerHTML='<div class="rt-empty">کاربری پیدا نشد</div>';
+      res.style.display='block';
+      return;
+    }
+    res.innerHTML = data.map(u=>`
+      <a href="${u.url}" class="rt-item">
+        <div>
+          <div class="rt-name">${u.full_name}</div>
+          <div class="rt-meta">@${u.username||'—'} &nbsp;|&nbsp; ID: ${u.telegram_id} &nbsp;|&nbsp; موجودی: ${Number(u.balance_toman).toLocaleString('en-US')}</div>
+        </div>
+        <span class="rt-badge badge ${u.is_blocked?'b-red':u.is_wholesale?'b-green':'b-gray'}">
+          ${u.is_blocked?'🔴 بلاک':u.is_wholesale?'✅ عمده':'عادی'}
+        </span>
+      </a>`).join('');
+    res.style.display='block';
+  } catch(e){
+    spin.classList.remove('show'); icon.style.display='';
+    res.innerHTML='<div class="rt-empty">خطا در جستجو</div>';
+    res.style.display='block';
+  }
+}
+document.addEventListener('click', e=>{
+  if(!e.target.closest('.rt-search-wrap')) document.getElementById('rt-results').style.display='none';
+});
 </script>
 {% endblock %}

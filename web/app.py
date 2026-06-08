@@ -81,6 +81,7 @@ from core.database import (
     server_has_capacity,
     get_user_by_id,
     get_wholesale_users,
+    search_users,
     get_user_by_telegram,
     has_previous_purchase,
     save_config,
@@ -1517,6 +1518,29 @@ async def user_find_page(request: Request, q: str = ""):
     return RedirectResponse(f"/{S}/users?not_found=1", status_code=302)
 
 
+@app.get(f"/{S}/users/search")
+async def users_search_api(request: Request, q: str = ""):
+    if not _auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    q = (q or "").strip()
+    if len(q) < 2:
+        return JSONResponse([])
+    results = await search_users(q, limit=15)
+    out = []
+    for u in results:
+        out.append({
+            "id": u["id"],
+            "telegram_id": u.get("telegram_id", ""),
+            "full_name": u.get("full_name") or "—",
+            "username": u.get("username") or "",
+            "balance_toman": u.get("balance_toman") or 0,
+            "is_blocked": bool(u.get("is_blocked")),
+            "is_wholesale": bool(u.get("is_wholesale")),
+            "url": f"/{S}/users/{u['id']}",
+        })
+    return JSONResponse(out)
+
+
 @app.get(f"/{S}/users/{{uid}}", response_class=HTMLResponse)
 async def user_detail_page(request: Request, uid: int):
     if not _auth(request):
@@ -1578,15 +1602,25 @@ async def user_toggle_wholesale(request: Request, uid: int):
 
 
 @app.post(f"/{S}/users/{{uid}}/admin_role")
-async def user_set_admin_role(request: Request, uid: int, role: str = Form("none")):
+async def user_set_admin_role(request: Request, uid: int):
     if not _auth(request):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
-    role = (role or "none").strip().lower()
-    valid = {"none", "finance", "full"}
-    if role not in valid:
+    ct = request.headers.get("content-type", "")
+    if "application/json" in ct:
+        data = await request.json()
+        role = str(data.get("role", "none"))
+        is_ajax = True
+    else:
+        form = await request.form()
+        role = str(form.get("role", "none") or "none")
+        is_ajax = False
+    role = role.strip().lower()
+    if role not in {"none", "finance", "full"}:
         role = "none"
     from core.database import update_user
     await update_user(uid, is_admin=0 if role == "none" else 1, admin_role=role)
+    if is_ajax:
+        return JSONResponse({"success": True, "role": role})
     return RedirectResponse(f"/{S}/users", status_code=302)
 
 
@@ -1603,13 +1637,29 @@ async def transfer_owner(request: Request, telegram_id: int = Form(...)):
     await set_setting("owner_admin_id", str(telegram_id))
     return RedirectResponse(f"/{S}/users?owner_ok=1", status_code=302)
 @app.post(f"/{S}/users/{{uid}}/balance_adjust")
-async def user_balance_adjust(request: Request, uid: int, amount: int = Form(...), note: str = Form("manual")):
+async def user_balance_adjust(request: Request, uid: int):
     if not _auth(request):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
-    amount = int(amount or 0)
+    ct = request.headers.get("content-type", "")
+    if "application/json" in ct:
+        data = await request.json()
+        amount = int(str(data.get("amount", 0)).replace(",", "") or 0)
+        note = str(data.get("note", "manual") or "manual")
+        is_ajax = True
+    else:
+        form = await request.form()
+        amount = int(str(form.get("amount", 0) or 0).replace(",", ""))
+        note = str(form.get("note", "manual") or "manual")
+        is_ajax = False
     if amount == 0:
+        if is_ajax:
+            return JSONResponse({"error": "مبلغ نمی‌تواند صفر باشد"}, status_code=400)
         return RedirectResponse(f"/{S}/users", status_code=302)
-    await add_user_balance(uid, amount, kind="manual", note=(note or "manual"), actor_telegram_id=0)
+    await add_user_balance(uid, amount, kind="manual", note=note, actor_telegram_id=0)
+    if is_ajax:
+        from core.database import get_user_by_id
+        u = await get_user_by_id(uid)
+        return JSONResponse({"success": True, "new_balance": u.get("balance_toman", 0) if u else 0})
     return RedirectResponse(f"/{S}/users", status_code=302)
 
 
@@ -1637,21 +1687,26 @@ async def topup_reject_web(request: Request, rid: int):
 
 
 @app.post(f"/{S}/users/{{uid}}/pricing")
-async def user_set_pricing(
-    request: Request,
-    uid: int,
-    discount_percent: float = Form(0),
-    price_per_gb: int = Form(0),
-):
+async def user_set_pricing(request: Request, uid: int):
     if not _auth(request):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
-
-    discount_percent = max(0, min(100, float(discount_percent)))
-    price_per_gb = max(0, int(price_per_gb))
-
-    from core.database import update_user  # local import
-
+    ct = request.headers.get("content-type", "")
+    if "application/json" in ct:
+        data = await request.json()
+        discount_percent = float(data.get("discount_percent", 0) or 0)
+        price_per_gb = int(str(data.get("price_per_gb", 0) or 0).replace(",", ""))
+        is_ajax = True
+    else:
+        form = await request.form()
+        discount_percent = float(form.get("discount_percent", 0) or 0)
+        price_per_gb = int(str(form.get("price_per_gb", 0) or 0).replace(",", ""))
+        is_ajax = False
+    discount_percent = max(0, min(100, discount_percent))
+    price_per_gb = max(0, price_per_gb)
+    from core.database import update_user
     await update_user(uid, discount_percent=discount_percent, price_per_gb=price_per_gb)
+    if is_ajax:
+        return JSONResponse({"success": True})
     return RedirectResponse(f"/{S}/users", status_code=302)
 
 
@@ -2048,6 +2103,93 @@ async def settings_reset_legacy_sync(request: Request):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     deleted = await reset_legacy_claims()
     return JSONResponse({"success": True, "deleted": deleted})
+
+
+# ═══════════════════════════════ UPDATE ══════════════════════════════
+import asyncio as _asyncio
+
+
+async def _git_run(*args, cwd=None):
+    proc = await _asyncio.create_subprocess_exec(
+        *args,
+        stdout=_asyncio.subprocess.PIPE,
+        stderr=_asyncio.subprocess.PIPE,
+        cwd=cwd or _repo_dir,
+    )
+    out, err = await proc.communicate()
+    return out.decode("utf-8", errors="replace").strip(), err.decode("utf-8", errors="replace").strip(), proc.returncode
+
+
+async def _run_update_bg(repo_dir: str):
+    update_sh = os.path.join(repo_dir, "update.sh")
+    if os.path.exists(update_sh):
+        proc = await _asyncio.create_subprocess_exec(
+            "bash", update_sh, "hard",
+            stdout=_asyncio.subprocess.DEVNULL,
+            stderr=_asyncio.subprocess.DEVNULL,
+            cwd=repo_dir,
+        )
+        await proc.wait()
+    else:
+        await _git_run("git", "pull", "--ff-only", "origin", "main", cwd=repo_dir)
+        await _git_run("systemctl", "restart", "atlas-bot")
+
+
+@app.get(f"/{S}/update", response_class=HTMLResponse)
+async def update_page(request: Request):
+    if not _auth(request):
+        return _redir_login()
+    return _templates.TemplateResponse(
+        "update.html",
+        await _ctx_ui(request, active="update"),
+    )
+
+
+@app.get(f"/{S}/update/check")
+async def update_check(request: Request):
+    if not _auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    try:
+        _, _, rc = await _git_run("git", "fetch", "origin", "main")
+        local_hash, _, _ = await _git_run("git", "rev-parse", "HEAD")
+        remote_hash, _, _ = await _git_run("git", "rev-parse", "origin/main")
+        up_to_date = local_hash == remote_hash
+
+        changelog = []
+        if not up_to_date and local_hash and remote_hash:
+            log_out, _, _ = await _git_run(
+                "git", "log", "--no-merges",
+                "--pretty=format:%H|%s|%an|%ar",
+                f"{local_hash}..origin/main",
+            )
+            for line in log_out.split("\n"):
+                line = line.strip()
+                if line:
+                    parts = line.split("|", 3)
+                    changelog.append({
+                        "hash": parts[0][:8] if parts else "",
+                        "message": parts[1] if len(parts) > 1 else line,
+                        "author": parts[2] if len(parts) > 2 else "",
+                        "time": parts[3] if len(parts) > 3 else "",
+                    })
+
+        return JSONResponse({
+            "up_to_date": up_to_date,
+            "local_hash": local_hash[:8] if local_hash else "—",
+            "remote_hash": remote_hash[:8] if remote_hash else "—",
+            "commits_behind": len(changelog),
+            "changelog": changelog,
+        })
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.post(f"/{S}/update/apply")
+async def update_apply(request: Request):
+    if not _auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    _asyncio.create_task(_run_update_bg(_repo_dir))
+    return JSONResponse({"success": True, "message": "آپدیت شروع شد. پنل چند ثانیه دیگر ریستارت می‌شود..."})
 
 
 # ═══════════════════════════════ ROOT ═══════════════════════════════

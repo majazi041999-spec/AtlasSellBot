@@ -596,6 +596,25 @@ async def find_user(query: str) -> Optional[Dict]:
             r = await c.fetchone()
             return dict(r) if r else None
 
+async def search_users(query: str, limit: int = 20) -> List[Dict]:
+    q = (query or "").strip().lstrip("@")
+    if not q:
+        return []
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        if q.isdigit():
+            async with db.execute(
+                "SELECT * FROM users WHERE id=? OR telegram_id=? ORDER BY id DESC LIMIT ?",
+                (int(q), int(q), limit),
+            ) as c:
+                return [dict(r) for r in await c.fetchall()]
+        async with db.execute(
+            "SELECT * FROM users WHERE lower(username) LIKE lower(?) OR full_name LIKE ? ORDER BY created_at DESC LIMIT ?",
+            (f"%{q}%", f"%{q}%", limit),
+        ) as c:
+            return [dict(r) for r in await c.fetchall()]
+
+
 async def get_user_by_referral_code(code: str) -> Optional[Dict]:
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row

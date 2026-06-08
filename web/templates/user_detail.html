@@ -4,36 +4,144 @@
 
 {% block content %}
 <style>
-.profile-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:10px;margin-bottom:14px}
+.profile-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px;margin-bottom:14px}
 .profile-stat{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:14px}
-.profile-stat span{display:block;color:var(--txt3);font-size:.76rem}.profile-stat b{font-size:1.08rem}
+.profile-stat span{display:block;color:var(--txt3);font-size:.76rem}.profile-stat b{font-size:1.1rem}
 .detail-section{margin-top:16px}
-.link-code{direction:ltr;text-align:left;display:block;max-width:360px;white-space:normal;font-size:.72rem}
+.link-code{direction:ltr;text-align:left;display:block;max-width:100%;white-space:normal;word-break:break-all;font-size:.72rem}
 @media(max-width:760px){.table-wrap table{min-width:900px}}
+.action-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px;margin-top:14px}
+.action-card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:16px}
+.action-card h4{font-size:.88rem;color:var(--txt2);margin-bottom:10px;border-bottom:1px solid var(--border);padding-bottom:8px}
+.field-row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.field-row .form-control{flex:1;min-width:130px;min-height:38px;font-size:.9rem;padding:6px 10px}
+.field-row textarea.form-control{min-height:60px}
+.num-display{font-size:.78rem;color:var(--txt3);margin-top:4px;min-height:18px}
+.balance-val{font-size:1.5rem;font-weight:800;color:var(--p);display:block;margin-bottom:4px}
 </style>
 
 <div class="card" style="margin-bottom:14px">
   <div style="display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;align-items:flex-start">
     <div>
-      <h3 style="margin-bottom:4px">{{ user.full_name or '—' }}</h3>
-      <div style="color:var(--txt2)">@{{ user.username or '—' }} | Telegram ID: <code>{{ user.telegram_id }}</code> | User #{{ user.id }}</div>
+      <h3 style="margin-bottom:4px" id="ud-fullname">{{ user.full_name or '—' }}</h3>
+      <div style="color:var(--txt2);font-size:.85rem">
+        @{{ user.username or '—' }} &nbsp;|&nbsp;
+        Telegram ID: <code>{{ user.telegram_id }}</code> &nbsp;|&nbsp;
+        User #{{ user.id }}
+      </div>
     </div>
-    <a class="btn btn-outline btn-sm" href="/{{ S }}/users">بازگشت به کاربران</a>
+    <a class="btn btn-outline btn-sm" href="/{{ S }}/users">← بازگشت</a>
   </div>
 </div>
 
 <div class="profile-grid">
-  <div class="profile-stat"><span>کیف پول</span><b>{{ "{:,}".format(user.balance_toman or 0) }} تومان</b></div>
+  <div class="profile-stat">
+    <span>کیف پول</span>
+    <b id="ud-balance-display">{{ "{:,}".format(user.balance_toman or 0) }} تومان</b>
+  </div>
   <div class="profile-stat"><span>سفارش تایید</span><b>{{ business.approved_orders }}</b></div>
-  <div class="profile-stat"><span>کانفیگ فعال/کل</span><b>{{ business.active_configs }} / {{ business.total_configs }}</b></div>
-  <div class="profile-stat"><span>وضعیت</span><b>{{ 'بلاک' if user.is_blocked else 'فعال' }}</b></div>
+  <div class="profile-stat"><span>کانفیگ فعال / کل</span><b>{{ business.active_configs }} / {{ business.total_configs }}</b></div>
+  <div class="profile-stat">
+    <span>وضعیت</span>
+    <b id="ud-status-display">
+      {% if user.is_blocked %}<span class="badge b-red">🔴 بلاک</span>{% else %}<span class="badge b-green">🟢 فعال</span>{% endif %}
+    </b>
+  </div>
+  <div class="profile-stat"><span>همکاری عمده</span>
+    <b>{% if user.is_wholesale %}<span class="badge b-green">✅ فعال</span>{% else %}<span class="badge b-yellow">— عادی</span>{% endif %}</b>
+  </div>
+  <div class="profile-stat"><span>سطح ادمین</span>
+    <b>{{ {'none':'کاربر عادی','finance':'ادمین ساده','full':'ادمین کل'}.get(user.admin_role or 'none','کاربر عادی') }}</b>
+  </div>
 </div>
 
+<!-- ─── Actions ─────────────────────────────────────── -->
+<div class="sec-hd"><span class="sec-title">⚡ مدیریت کاربر</span></div>
+<div class="action-grid">
+
+  <!-- Block / Unblock -->
+  <div class="action-card">
+    <h4>🔒 وضعیت دسترسی</h4>
+    <div class="field-row">
+      <button class="btn btn-sm {% if user.is_blocked %}btn-success{% else %}btn-danger{% endif %}"
+              id="ud-block-btn"
+              onclick="toggleBlock({{ user.id }}, this)">
+        {% if user.is_blocked %}🔓 آنبلاک کاربر{% else %}🔒 بلاک کاربر{% endif %}
+      </button>
+    </div>
+  </div>
+
+  <!-- Balance Adjust -->
+  <div class="action-card">
+    <h4>💰 تنظیم موجودی</h4>
+    <span style="color:var(--txt3);font-size:.78rem">موجودی فعلی:</span>
+    <span class="balance-val" id="ud-balance-num">{{ "{:,}".format(user.balance_toman or 0) }}</span>
+    <div class="field-row">
+      <input type="text" id="ud-bal-input" class="form-control" placeholder="مثبت / منفی (تومان)"
+             oninput="liveFormatNum(this)" style="min-width:160px;min-height:42px;font-size:1rem">
+      <input type="text" id="ud-bal-note" class="form-control" placeholder="توضیح (اختیاری)" style="min-width:120px">
+      <button class="btn btn-sm btn-outline" onclick="applyBalance({{ user.id }})">اعمال</button>
+    </div>
+    <div class="num-display" id="ud-bal-hint"></div>
+  </div>
+
+  <!-- Admin Role -->
+  <div class="action-card">
+    <h4>🛡️ سطح دسترسی ادمین</h4>
+    <div class="field-row">
+      <select id="ud-role-select" class="form-control" style="min-height:42px;font-size:.9rem">
+        <option value="none" {% if (user.admin_role or 'none')=='none' %}selected{% endif %}>کاربر عادی</option>
+        <option value="finance" {% if user.admin_role=='finance' %}selected{% endif %}>ادمین ساده (فیش)</option>
+        <option value="full" {% if user.admin_role=='full' or (user.is_admin and not user.admin_role) %}selected{% endif %}>ادمین کل</option>
+      </select>
+      <button class="btn btn-sm btn-outline" onclick="applyRole({{ user.id }})">ذخیره</button>
+    </div>
+  </div>
+
+  <!-- Wholesale -->
+  <div class="action-card">
+    <h4>🤝 همکاری عمده</h4>
+    <div id="ud-wholesale-status" style="margin-bottom:8px;font-size:.85rem">
+      {% if user.is_wholesale %}<span class="badge b-green">✅ عمده‌فروش فعال</span>
+      {% elif user.wholesale_request_pending %}<span class="badge b-blue">⏳ درخواست در انتظار</span>
+      {% else %}<span class="badge b-yellow">— کاربر عادی</span>{% endif %}
+    </div>
+    <div class="field-row">
+      <button class="btn btn-sm btn-outline" id="ud-wholesale-btn" onclick="toggleWholesale({{ user.id }}, this)">
+        {% if user.is_wholesale %}برداشتن عمده{% else %}تایید / پروموت{% endif %}
+      </button>
+    </div>
+  </div>
+
+  <!-- Pricing -->
+  <div class="action-card" style="grid-column:span 2">
+    <h4>💲 قیمت‌گذاری اختصاصی</h4>
+    <div class="field-row">
+      <div>
+        <label style="font-size:.78rem;color:var(--txt3);display:block;margin-bottom:4px">درصد تخفیف (۰–۱۰۰)</label>
+        <input type="number" id="ud-discount" class="form-control" value="{{ user.discount_percent or 0 }}"
+               min="0" max="100" step="0.5" style="min-width:130px;min-height:42px">
+      </div>
+      <div>
+        <label style="font-size:.78rem;color:var(--txt3);display:block;margin-bottom:4px">قیمت هر GB (تومان)</label>
+        <input type="text" id="ud-price-gb" class="form-control"
+               value="{{ '{:,}'.format(user.price_per_gb or 0) }}"
+               oninput="liveFormatNum(this)" style="min-width:160px;min-height:42px">
+      </div>
+      <div style="align-self:flex-end">
+        <button class="btn btn-sm btn-outline" onclick="applyPricing({{ user.id }})">💾 ذخیره قیمت‌گذاری</button>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<!-- ─── Subscriptions ──────────────────────────────── -->
 <div class="detail-section">
   <div class="sec-hd"><span class="sec-title">🧬 سابسکریپشن‌ها ({{ profiles|length }})</span></div>
   <div class="table-wrap">
     <table>
-      <thead><tr><th>#</th><th>لینک</th><th>حجم/مصرف</th><th>تاریخ</th><th>نودها</th><th>وضعیت</th></tr></thead>
+      <thead><tr><th>#</th><th>لینک</th><th>حجم / مصرف</th><th>تاریخ</th><th>نودها</th><th>وضعیت</th></tr></thead>
       <tbody>
       {% for p in profiles %}
       {% set total_bytes = (p.traffic_gb|float * 1073741824)|int %}
@@ -45,7 +153,7 @@
         <td>#{{ p.id }}<br><small>Order #{{ p.order_id or '—' }}</small></td>
         <td><code class="link-code">{{ p.url or ('/sub/' ~ p.token) }}</code></td>
         <td>{{ p.traffic_gb }} GB<br><small style="color:var(--txt3)">مصرف: {{ pct }}%</small></td>
-        <td>{{ p.created_at[:16] }}<br><small style="color:var(--txt3)">{{ dl }} روز باقی</small></td>
+        <td>{{ p.created_at[:16] }}<br><small style="color:var(--txt3)">{% if dl == -1 %}بدون انقضا{% else %}{{ dl }} روز باقی{% endif %}</small></td>
         <td>
           {% for n in p.nodes %}
           <span class="badge {{ 'b-green' if n.is_active else 'b-red' }}">{{ n.node_label or n.server_name }} #{{ n.inbound_id }}</span>
@@ -54,13 +162,14 @@
         <td>{% if p.is_active %}<span class="badge b-green">فعال</span>{% else %}<span class="badge b-red">غیرفعال</span>{% endif %}</td>
       </tr>
       {% else %}
-      <tr><td colspan="6" style="text-align:center;color:var(--txt3)">سابی برای این کاربر ثبت نشده است.</td></tr>
+      <tr><td colspan="6" style="text-align:center;color:var(--txt3)">سابی ثبت نشده.</td></tr>
       {% endfor %}
       </tbody>
     </table>
   </div>
 </div>
 
+<!-- ─── Configs ────────────────────────────────────── -->
 <div class="detail-section">
   <div class="sec-hd"><span class="sec-title">🔑 کانفیگ‌های عادی ({{ configs|length }})</span></div>
   <div class="table-wrap">
@@ -75,7 +184,7 @@
         <td><code>{{ c.email }}</code></td>
         <td>{{ c.server_name }}</td>
         <td>{{ c.traffic_gb }} GB</td>
-        <td>{{ c.created_at[:16] }}<br><small style="color:var(--txt3)">{{ dl }} روز باقی</small></td>
+        <td>{{ c.created_at[:16] }}<br><small style="color:var(--txt3)">{% if dl == -1 %}بدون انقضا{% else %}{{ dl }} روز باقی{% endif %}</small></td>
         <td><code class="link-code">{{ c.uuid }}</code></td>
         <td>{% if c.is_active %}<span class="badge b-green">فعال</span>{% else %}<span class="badge b-red">غیرفعال</span>{% endif %}</td>
       </tr>
@@ -87,11 +196,12 @@
   </div>
 </div>
 
+<!-- ─── Orders ─────────────────────────────────────── -->
 <div class="detail-section">
   <div class="sec-hd"><span class="sec-title">💳 سفارش‌ها ({{ orders|length }})</span></div>
   <div class="table-wrap">
     <table>
-      <thead><tr><th>#</th><th>عنوان</th><th>مبلغ</th><th>حجم/مدت</th><th>نوع</th><th>وضعیت</th><th>تاریخ</th></tr></thead>
+      <thead><tr><th>#</th><th>عنوان</th><th>مبلغ</th><th>حجم / مدت</th><th>نوع</th><th>وضعیت</th><th>تاریخ</th></tr></thead>
       <tbody>
       {% for o in orders %}
       <tr>
@@ -110,4 +220,93 @@
     </table>
   </div>
 </div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function liveFormatNum(inp){
+  const neg = inp.value.startsWith('-');
+  const raw = inp.value.replace(/[^\d]/g,'');
+  if(!raw){ inp.value = neg ? '-' : ''; return; }
+  const num = parseInt(raw,10);
+  inp.value = (neg ? '-' : '') + num.toLocaleString('en-US');
+  // hint
+  const hint = inp.closest('.action-card')?.querySelector('.num-display');
+  if(hint) hint.textContent = num ? num.toLocaleString('fa-IR') + ' تومان' : '';
+}
+
+function rawNum(inp){
+  return parseInt((inp.value || '0').replace(/[^\d-]/g,'') || '0', 10);
+}
+
+async function toggleBlock(id, btn){
+  btn.disabled = true;
+  const r = await api(`/${S}/users/${id}/toggle_block`);
+  btn.disabled = false;
+  if(r.success){
+    const isNowBlocked = btn.textContent.includes('بلاک') && !btn.textContent.includes('آن');
+    document.getElementById('ud-status-display').innerHTML = isNowBlocked
+      ? '<span class="badge b-red">🔴 بلاک</span>'
+      : '<span class="badge b-green">🟢 فعال</span>';
+    btn.textContent = isNowBlocked ? '🔓 آنبلاک کاربر' : '🔒 بلاک کاربر';
+    btn.className = 'btn btn-sm ' + (isNowBlocked ? 'btn-success' : 'btn-danger');
+    toast(isNowBlocked ? 'کاربر بلاک شد' : 'کاربر آنبلاک شد','success');
+  } else toast('خطا در تغییر وضعیت','error');
+}
+
+async function applyBalance(id){
+  const inp = document.getElementById('ud-bal-input');
+  const note = document.getElementById('ud-bal-note').value || 'manual';
+  const amount = rawNum(inp);
+  if(!amount){ toast('مبلغ را وارد کنید','warn'); return; }
+  const btn = event.currentTarget;
+  btn.disabled = true;
+  const r = await api(`/${S}/users/${id}/balance_adjust`, 'POST', {amount, note});
+  btn.disabled = false;
+  if(r.success){
+    const nb = r.new_balance;
+    const fmt = Number(nb).toLocaleString('en-US');
+    document.getElementById('ud-balance-num').textContent = fmt;
+    document.getElementById('ud-balance-display').textContent = fmt + ' تومان';
+    inp.value = '';
+    document.getElementById('ud-bal-hint').textContent = '';
+    toast('موجودی تغییر یافت ✅','success');
+  } else toast(r.error || 'خطا در اعمال موجودی','error');
+}
+
+async function applyRole(id){
+  const role = document.getElementById('ud-role-select').value;
+  const btn = event.currentTarget;
+  btn.disabled = true;
+  const r = await api(`/${S}/users/${id}/admin_role`, 'POST', {role});
+  btn.disabled = false;
+  if(r.success) toast('سطح دسترسی ذخیره شد ✅','success');
+  else toast('خطا در ذخیره','error');
+}
+
+async function toggleWholesale(id, btn){
+  btn.disabled = true;
+  const r = await api(`/${S}/users/${id}/toggle_wholesale`);
+  btn.disabled = false;
+  if(r.success){
+    const isW = r.is_wholesale;
+    document.getElementById('ud-wholesale-status').innerHTML = isW
+      ? '<span class="badge b-green">✅ عمده‌فروش فعال</span>'
+      : '<span class="badge b-yellow">— کاربر عادی</span>';
+    btn.textContent = isW ? 'برداشتن عمده' : 'تایید / پروموت';
+    toast(isW ? 'کاربر عمده‌فروش شد' : 'عمده حذف شد','success');
+  } else toast('خطا','error');
+}
+
+async function applyPricing(id){
+  const discount_percent = parseFloat(document.getElementById('ud-discount').value || 0);
+  const price_per_gb = rawNum(document.getElementById('ud-price-gb'));
+  const btn = event.currentTarget;
+  btn.disabled = true;
+  const r = await api(`/${S}/users/${id}/pricing`, 'POST', {discount_percent, price_per_gb});
+  btn.disabled = false;
+  if(r.success) toast('قیمت‌گذاری ذخیره شد ✅','success');
+  else toast('خطا در ذخیره','error');
+}
+</script>
 {% endblock %}

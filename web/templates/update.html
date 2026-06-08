@@ -1,0 +1,222 @@
+{% extends "base.html" %}
+{% block title %}آپدیت پنل{% endblock %}
+{% block topbar_title %}🔄 آپدیت پنل{% endblock %}
+
+{% block content %}
+<style>
+.update-card{max-width:780px;margin:0 auto}
+.version-row{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:16px}
+.ver-chip{background:var(--card2);border:1px solid var(--border);border-radius:8px;padding:8px 16px;font-family:monospace;font-size:.95rem}
+.ver-chip span{color:var(--txt3);font-size:.72rem;display:block;margin-bottom:2px}
+.changelog-list{list-style:none;padding:0;margin:0}
+.changelog-list li{display:flex;gap:10px;align-items:flex-start;padding:10px 0;border-bottom:1px solid var(--border)}
+.changelog-list li:last-child{border-bottom:none}
+.cl-hash{font-family:monospace;font-size:.72rem;color:var(--txt3);background:var(--card2);border-radius:4px;padding:2px 6px;flex-shrink:0;margin-top:2px}
+.cl-msg{font-size:.88rem;color:var(--txt);flex:1}
+.cl-meta{font-size:.72rem;color:var(--txt3);margin-top:2px}
+.status-box{border-radius:var(--radius);padding:16px 20px;margin:14px 0;display:flex;align-items:center;gap:12px;font-size:.9rem}
+.status-ok{background:rgba(0,229,160,.1);border:1px solid var(--g);color:var(--g)}
+.status-update{background:rgba(124,111,255,.12);border:1px solid var(--p);color:var(--p)}
+.status-error{background:rgba(255,76,106,.1);border:1px solid var(--r);color:var(--r)}
+.status-loading{background:var(--card2);border:1px solid var(--border);color:var(--txt2)}
+.progress-bar-wrap{height:6px;background:var(--border);border-radius:4px;overflow:hidden;margin-top:12px}
+.progress-bar{height:100%;background:linear-gradient(90deg,var(--p),var(--acc));border-radius:4px;width:0%;transition:width .5s}
+.update-log{font-family:monospace;font-size:.78rem;background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:14px;max-height:180px;overflow-y:auto;color:var(--g);margin-top:12px;display:none}
+
+/* shimmer loader */
+@keyframes shimmer{0%{background-position:-400px 0}100%{background-position:400px 0}}
+.shimmer{background:linear-gradient(90deg,var(--card2) 25%,var(--card) 50%,var(--card2) 75%);background-size:800px 100%;animation:shimmer 1.4s infinite;border-radius:6px;height:18px;margin:6px 0}
+</style>
+
+<div class="update-card">
+
+  <div class="card" style="margin-bottom:14px">
+    <div class="sec-title" style="margin-bottom:14px">📦 وضعیت نسخه</div>
+
+    <div class="version-row" id="ver-row">
+      <div class="ver-chip">
+        <span>نسخه فعلی</span>
+        <span id="local-hash">در حال بررسی...</span>
+      </div>
+      <div id="ver-arrow" style="color:var(--txt3);font-size:1.2rem;display:none">→</div>
+      <div class="ver-chip" id="remote-chip" style="display:none">
+        <span>آخرین نسخه</span>
+        <span id="remote-hash">—</span>
+      </div>
+    </div>
+
+    <div id="status-box" class="status-box status-loading">
+      <span id="status-spin" class="spin" style="display:inline-block;width:18px;height:18px;border:2px solid var(--border);border-top-color:var(--txt2);border-radius:50%;animation:spin .7s linear infinite"></span>
+      <span id="status-msg">در حال بررسی گیت‌هاب...</span>
+    </div>
+
+    <div id="changelog-section" style="display:none">
+      <div class="sec-title" style="margin:16px 0 8px">📋 تغییرات این نسخه</div>
+      <ul class="changelog-list" id="changelog-list"></ul>
+    </div>
+
+    <div id="actions-row" style="margin-top:16px;display:none">
+      <button class="btn btn-primary" id="apply-btn" onclick="applyUpdate()" style="min-width:180px;min-height:44px;font-size:1rem">
+        🚀 اعمال آپدیت
+      </button>
+      <button class="btn btn-outline btn-sm" onclick="checkUpdate()" style="margin-right:10px">
+        🔃 بررسی مجدد
+      </button>
+    </div>
+
+    <div id="refresh-row" style="margin-top:16px;display:none">
+      <button class="btn btn-outline btn-sm" onclick="checkUpdate()">🔃 بررسی مجدد</button>
+    </div>
+
+    <div id="update-progress" style="display:none;margin-top:16px">
+      <div style="font-size:.88rem;color:var(--txt2);margin-bottom:6px" id="progress-msg">🔄 در حال اعمال آپدیت...</div>
+      <div class="progress-bar-wrap"><div class="progress-bar" id="prog-bar"></div></div>
+      <div class="update-log" id="update-log"></div>
+      <div style="font-size:.8rem;color:var(--txt3);margin-top:10px">
+        ⚠️ سرویس چند ثانیه ریستارت می‌شود. پس از بازگشت صفحه، لاگین کنید.
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="sec-title" style="margin-bottom:12px">ℹ️ راهنمای آپدیت</div>
+    <ul style="padding-right:20px;line-height:2;color:var(--txt2);font-size:.85rem">
+      <li>آپدیت مستقیماً از گیت‌هاب اعمال می‌شود (مشابه <code>git pull + restart</code>)</li>
+      <li>قبل از آپدیت، دیتابیس و تنظیمات شما <strong>تغییر نمی‌کنند</strong></li>
+      <li>سرویس ربات چند ثانیه قطع می‌شود و دوباره راه‌اندازی می‌گردد</li>
+      <li>در صورت بروز مشکل، می‌توانید از طریق SSH دستی آپدیت کنید: <code>sudo bash update.sh hard</code></li>
+    </ul>
+  </div>
+
+</div>
+{% endblock %}
+
+{% block scripts %}
+<style>
+@keyframes spin { to { transform: rotate(360deg); } }
+</style>
+<script>
+
+async function checkUpdate(){
+  document.getElementById('status-box').className='status-box status-loading';
+  document.getElementById('status-spin').style.display='inline-block';
+  document.getElementById('status-msg').textContent='در حال بررسی گیت‌هاب...';
+  document.getElementById('changelog-section').style.display='none';
+  document.getElementById('actions-row').style.display='none';
+  document.getElementById('refresh-row').style.display='none';
+  document.getElementById('update-progress').style.display='none';
+  document.getElementById('remote-chip').style.display='none';
+  document.getElementById('ver-arrow').style.display='none';
+
+  const r = await api(`/${S}/update/check`, 'GET');
+
+  if(r.error){
+    document.getElementById('status-box').className='status-box status-error';
+    document.getElementById('status-spin').style.display='none';
+    document.getElementById('status-msg').textContent='❌ خطا: ' + r.error;
+    document.getElementById('refresh-row').style.display='block';
+    return;
+  }
+
+  document.getElementById('local-hash').textContent = r.local_hash || '—';
+  document.getElementById('remote-hash').textContent = r.remote_hash || '—';
+  document.getElementById('remote-chip').style.display='';
+  document.getElementById('ver-arrow').style.display='';
+  document.getElementById('status-spin').style.display='none';
+
+  if(r.up_to_date){
+    document.getElementById('status-box').className='status-box status-ok';
+    document.getElementById('status-msg').textContent='✅ پنل شما به‌روز است. نسخه جدیدی وجود ندارد.';
+    document.getElementById('refresh-row').style.display='block';
+  } else {
+    document.getElementById('status-box').className='status-box status-update';
+    document.getElementById('status-msg').textContent=`🆕 ${r.commits_behind} کامیت جدید در دسترس است`;
+    document.getElementById('actions-row').style.display='block';
+
+    if(r.changelog && r.changelog.length){
+      const ul = document.getElementById('changelog-list');
+      ul.innerHTML = r.changelog.map(c=>`
+        <li>
+          <span class="cl-hash">${c.hash}</span>
+          <div>
+            <div class="cl-msg">${escHtml(c.message)}</div>
+            <div class="cl-meta">${escHtml(c.author)} · ${escHtml(c.time)}</div>
+          </div>
+        </li>`).join('');
+      document.getElementById('changelog-section').style.display='block';
+    }
+  }
+}
+
+async function applyUpdate(){
+  const btn = document.getElementById('apply-btn');
+  btn.disabled = true;
+  btn.textContent = '⏳ در حال اجرا...';
+  document.getElementById('actions-row').style.display='none';
+  document.getElementById('update-progress').style.display='block';
+
+  const log = document.getElementById('update-log');
+  log.style.display='block';
+  const steps = [
+    'git fetch origin main...',
+    'git reset --hard origin/main...',
+    'pip install -r requirements.txt...',
+    'systemctl restart atlas-bot...',
+    'سرویس در حال ریستارت است...',
+  ];
+  let stepIdx=0;
+  const bar = document.getElementById('prog-bar');
+  const msg = document.getElementById('progress-msg');
+  const stepTimer = setInterval(()=>{
+    if(stepIdx<steps.length){
+      log.innerHTML += `<div>$ ${steps[stepIdx]}</div>`;
+      log.scrollTop=log.scrollHeight;
+      bar.style.width = ((stepIdx+1)/steps.length*80)+'%';
+      stepIdx++;
+    }
+  }, 700);
+
+  const r = await api(`/${S}/update/apply`,'POST');
+  clearInterval(stepTimer);
+
+  if(r.success){
+    bar.style.width='100%';
+    msg.textContent='✅ آپدیت ارسال شد. منتظر ریستارت...';
+    log.innerHTML += `<div style="color:var(--g)">✅ ${r.message}</div>`;
+    // Poll until panel comes back up
+    setTimeout(()=>pollRestart(), 4000);
+  } else {
+    msg.textContent='❌ خطا: ' + (r.error||'نامشخص');
+    log.innerHTML += `<div style="color:var(--r)">❌ ${r.error||'خطا'}</div>`;
+    btn.disabled=false; btn.textContent='🚀 اعمال آپدیت';
+    document.getElementById('actions-row').style.display='block';
+  }
+}
+
+function pollRestart(attempts=0){
+  const msg = document.getElementById('progress-msg');
+  const dots = '.'.repeat((attempts%4)+1);
+  msg.textContent=`🔄 منتظر راه‌اندازی مجدد${dots}`;
+  fetch(`/${S}/login`, {method:'GET', cache:'no-store'})
+    .then(res=>{
+      if(res.ok || res.status===200 || res.status===302 || res.redirected){
+        msg.textContent='✅ پنل آپدیت شد! در حال انتقال...';
+        document.getElementById('prog-bar').style.width='100%';
+        setTimeout(()=>{ window.location.href=`/${S}/update`; }, 1500);
+      } else {
+        if(attempts<30) setTimeout(()=>pollRestart(attempts+1), 2000);
+        else msg.textContent='⚠️ زمان انتظار تمام شد. صفحه را رفرش کنید.';
+      }
+    })
+    .catch(()=>{
+      if(attempts<30) setTimeout(()=>pollRestart(attempts+1), 2000);
+      else msg.textContent='⚠️ زمان انتظار تمام شد. صفحه را رفرش کنید.';
+    });
+}
+
+function escHtml(s){ return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+// Auto-check on page load
+checkUpdate();
+</script>
+{% endblock %}

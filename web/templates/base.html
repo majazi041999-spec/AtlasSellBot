@@ -548,6 +548,9 @@ html[data-theme="dark"] .theme-toggle .dark-ico{display:inline}
     <a class="nav-item {% if active=='backups' %}active{% endif %}" href="/{{ S }}/backups">
       <span class="ni">💾</span> بکاپ و ریستور
     </a>
+    <a class="nav-item {% if active=='update' %}active{% endif %}" href="/{{ S }}/update">
+      <span class="ni">🔄</span> آپدیت
+    </a>
     <a class="nav-item {% if active=='settings' %}active{% endif %}" href="/{{ S }}/settings">
       <span class="ni">⚙️</span> تنظیمات
     </a>
@@ -594,8 +597,11 @@ document.addEventListener('click', e=>{ if(e.target.classList.contains('overlay'
 
 // ── API helper ────────────────────────────────────
 async function api(url, method='POST', data=null){
-  const opts = {method, headers:{'Content-Type':'application/json'}};
-  if(data) opts.body = JSON.stringify(data);
+  const opts = {method};
+  if(method !== 'GET'){
+    opts.headers = {'Content-Type':'application/json'};
+    if(data) opts.body = JSON.stringify(data);
+  }
   try{
     const r = await fetch(url, opts);
     return await r.json();
