@@ -44,7 +44,7 @@ from bot.keyboards import (
     admin_menu, order_review_kb, order_server_select_kb,
     admin_configs_kb, adm_config_detail_kb, confirm_kb, packages_kb, servers_kb,
     broadcast_target_kb, legacy_claim_admin_kb, flow_cancel_kb, topup_review_kb,
-    config_links_kb,
+    config_links_kb, parse_custom_buttons,
 )
 from bot.states import AddPackage, CreateConfig, BulkConfig, EditConfig, Broadcast, PrivateMessage
 
@@ -191,12 +191,35 @@ async def flow_back_admin(cb: CallbackQuery, state: FSMContext):
 @router.message(lambda msg: bool(msg.text and _db_admin_role(msg.from_user.id) == "owner" and any(_extract_config_identity_from_text(msg.text))))
 async def owner_config_link_lookup(msg: Message):
     email, client_uuid = _extract_config_identity_from_text(msg.text or "")
-    await msg.answer("⏳ دارم داخل همه سرورهای ثبت‌شده می‌گردم...", parse_mode=None)
-    info = await _lookup_remote_config_status(email, client_uuid)
-    if not info:
-        await msg.answer("❌ این کانفیگ با ایمیل/UUID داخل لینک، روی سرورهای ثبت‌شده پیدا نشد.", parse_mode=None)
+    status = await msg.answer("⏳ دارم داخل همه سرورهای ثبت‌شده می‌گردم...", parse_mode=None)
+    try:
+        info = await asyncio.wait_for(_lookup_remote_config_status(email, client_uuid), timeout=90)
+    except asyncio.TimeoutError:
+        try:
+            await status.edit_text("⌛️ جستجو طول کشید و متوقف شد. ممکن است یکی از سرورها در دسترس نباشد. دوباره تلاش کنید.", parse_mode=None)
+        except Exception:
+            await msg.answer("⌛️ جستجو طول کشید و متوقف شد. ممکن است یکی از سرورها در دسترس نباشد. دوباره تلاش کنید.", parse_mode=None)
         return
-    await msg.answer(_format_remote_config_status(info), parse_mode=None)
+    except Exception as e:
+        logger.exception("owner config lookup failed: %s", e)
+        try:
+            await status.edit_text(f"❌ خطا در جستجوی کانفیگ:\n{str(e)[:300]}", parse_mode=None)
+        except Exception:
+            await msg.answer(f"❌ خطا در جستجوی کانفیگ:\n{str(e)[:300]}", parse_mode=None)
+        return
+
+    if not info:
+        text = (
+            "❌ این کانفیگ با ایمیل/UUID داخل لینک، روی سرورهای ثبت‌شده پیدا نشد.\n\n"
+            f"🔎 ایمیل: {email or '—'}\n"
+            f"🔑 UUID: {client_uuid or '—'}"
+        )
+    else:
+        text = _format_remote_config_status(info)
+    try:
+        await status.edit_text(text, parse_mode=None)
+    except Exception:
+        await msg.answer(text, parse_mode=None)
 
 
 # ─── STATS ───────────────────────────────────────────────────────
@@ -1493,6 +1516,8 @@ async def _lookup_remote_config_status(email: str, client_uuid: str) -> dict | N
                         "expire_ms": expire_ms,
                         "enabled": enabled,
                     }
+        except Exception as e:
+            logger.warning("config lookup skipped server %s: %s", srv.get("name") or srv.get("url"), e)
         finally:
             await xui.close()
     return None
@@ -1809,8 +1834,20 @@ async def broadcast_pick_target(cb: CallbackQuery, state: FSMContext):
 
 
 @router.message(Broadcast.text)
-async def broadcast_preview(msg: Message, state: FSMContext):
-    await state.update_data(text=msg.text)
+async def broadcast_get_text(msg: Message, state: FSMContext):
+    await state.update_data(text=msg.text or "")
+    await state.set_state(Broadcast.buttons)
+    await msg.answer(
+        "🔘 می‌خواهید زیر پیام دکمه شیشه‌ای اضافه شود؟\n\n"
+        "اگر بله، دکمه‌ها را به این صورت بفرستید (هر خط یک ردیف):\n"
+        "`عنوان دکمه - https://example.com`\n"
+        "`کانال - https://t.me/yourchannel | سایت - https://site.com`\n\n"
+        "اگر دکمه نمی‌خواهید، روی /skip بزنید.",
+        parse_mode="Markdown",
+    )
+
+
+async def _broadcast_show_preview(msg: Message, state: FSMContext):
     await state.set_state(Broadcast.confirm)
     data = await state.get_data()
     all_users = await get_all_users(0, 100000)
@@ -1821,11 +1858,43 @@ async def broadcast_preview(msg: Message, state: FSMContext):
     else:
         total = sum(1 for u in all_users if not u.get("is_blocked", 0))
         target_text = "همه کاربران"
+    btn_note = "✅ دارد" if data.get("buttons_raw") else "—"
+    markup = parse_custom_buttons(data.get("buttons_raw") or "")
     await msg.answer(
-        f"👀 *پیش‌نمایش:*\n\n{msg.text}\n\n🎯 مخاطب: *{target_text}*\n📤 برای *{total}* کاربر ارسال می‌شود.",
-        reply_markup=confirm_kb("broadcast_do", "broadcast_cancel"),
-        parse_mode="Markdown"
+        f"👀 *پیش‌نمایش پیام:*",
+        parse_mode="Markdown",
     )
+    await msg.answer(
+        data.get("text") or "",
+        reply_markup=markup,
+    )
+    await msg.answer(
+        f"🎯 مخاطب: *{target_text}*\n🔘 دکمه: {btn_note}\n📤 برای *{total}* کاربر ارسال می‌شود.",
+        reply_markup=confirm_kb("broadcast_do", "broadcast_cancel"),
+        parse_mode="Markdown",
+    )
+
+
+@router.message(Broadcast.buttons, F.text == "/skip")
+async def broadcast_skip_buttons(msg: Message, state: FSMContext):
+    await state.update_data(buttons_raw="")
+    await _broadcast_show_preview(msg, state)
+
+
+@router.message(Broadcast.buttons)
+async def broadcast_get_buttons(msg: Message, state: FSMContext):
+    raw = msg.text or ""
+    markup = parse_custom_buttons(raw)
+    if markup is None:
+        await msg.answer(
+            "⚠️ هیچ دکمه معتبری پیدا نشد. قالب درست:\n"
+            "`عنوان - https://example.com`\n\n"
+            "دوباره بفرستید یا برای رد شدن /skip بزنید.",
+            parse_mode="Markdown",
+        )
+        return
+    await state.update_data(buttons_raw=raw)
+    await _broadcast_show_preview(msg, state)
 
 
 @router.callback_query(F.data == "broadcast_do", Broadcast.confirm)
@@ -1834,6 +1903,7 @@ async def broadcast_do(cb: CallbackQuery, state: FSMContext, bot: Bot):
     await state.clear()
     users = await get_all_users(0, 100000)
     target = data.get("target", "all")
+    markup = parse_custom_buttons(data.get("buttons_raw") or "")
     sent = failed = 0
     await cb.message.edit_text("⏳ در حال ارسال...")
     for u in users:
@@ -1842,7 +1912,7 @@ async def broadcast_do(cb: CallbackQuery, state: FSMContext, bot: Bot):
         if target == "wholesale" and not u.get("is_wholesale", 0):
             continue
         try:
-            await bot.send_message(u["telegram_id"], data["text"])
+            await bot.send_message(u["telegram_id"], data["text"], reply_markup=markup)
             sent += 1
             await asyncio.sleep(0.04)
         except Exception:
@@ -1877,15 +1947,48 @@ async def private_msg_user(msg: Message, state: FSMContext):
 
 
 @router.message(PrivateMessage.text)
-async def private_msg_send(msg: Message, state: FSMContext):
+async def private_msg_get_text(msg: Message, state: FSMContext):
+    await state.update_data(text=msg.text or "")
+    await state.set_state(PrivateMessage.buttons)
+    await msg.answer(
+        "🔘 می‌خواهید زیر پیام دکمه شیشه‌ای اضافه شود؟\n\n"
+        "اگر بله، دکمه‌ها را به این صورت بفرستید (هر خط یک ردیف):\n"
+        "`عنوان دکمه - https://example.com`\n"
+        "`کانال - https://t.me/yourchannel | سایت - https://site.com`\n\n"
+        "اگر دکمه نمی‌خواهید، روی /skip بزنید.",
+        parse_mode="Markdown",
+    )
+
+
+async def _private_msg_deliver(msg: Message, state: FSMContext, raw_buttons: str):
     data = await state.get_data()
     await state.clear()
-    uid = data.get('uid')
+    uid = data.get("uid")
+    markup = parse_custom_buttons(raw_buttons or "")
     try:
-        await msg.bot.send_message(uid, msg.text or '')
+        await msg.bot.send_message(uid, data.get("text") or "", reply_markup=markup)
         await msg.answer("✅ پیام خصوصی ارسال شد.")
     except Exception:
         await msg.answer("❌ ارسال ناموفق بود. آیدی یا وضعیت چت کاربر را بررسی کنید.")
+
+
+@router.message(PrivateMessage.buttons, F.text == "/skip")
+async def private_msg_skip_buttons(msg: Message, state: FSMContext):
+    await _private_msg_deliver(msg, state, "")
+
+
+@router.message(PrivateMessage.buttons)
+async def private_msg_buttons(msg: Message, state: FSMContext):
+    raw = msg.text or ""
+    if parse_custom_buttons(raw) is None:
+        await msg.answer(
+            "⚠️ هیچ دکمه معتبری پیدا نشد. قالب درست:\n"
+            "`عنوان - https://example.com`\n\n"
+            "دوباره بفرستید یا برای رد شدن /skip بزنید.",
+            parse_mode="Markdown",
+        )
+        return
+    await _private_msg_deliver(msg, state, raw)
 
 
 @router.callback_query(F.data.startswith("tp_appr:"))

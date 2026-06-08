@@ -70,6 +70,61 @@ def user_menu(include_wholesale: bool = True) -> ReplyKeyboardMarkup:
     return b.as_markup(resize_keyboard=True)
 
 
+def parse_custom_buttons(text: str) -> InlineKeyboardMarkup | None:
+    """Parse admin-typed buttons into an inline keyboard.
+
+    Format (one row per line, buttons in a row separated by |):
+        عنوان دکمه - https://example.com
+        کانال - https://t.me/ch | سایت - https://site.com
+    Separator between label and URL can be ' - ' or ' | ' inside a button via '-'.
+    Returns None if nothing valid was parsed.
+    """
+    raw = (text or "").strip()
+    if not raw:
+        return None
+    b = InlineKeyboardBuilder()
+    rows: list[int] = []
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        count = 0
+        for cell in line.split("|"):
+            cell = cell.strip()
+            if not cell:
+                continue
+            # Prefer the explicit " - " separator so labels may contain dashes.
+            if " - " in cell:
+                label, _, url = cell.partition(" - ")
+            elif "-" in cell:
+                label, _, url = cell.partition("-")
+            else:
+                continue
+            label = label.strip()
+            url = url.strip()
+            if not label or not url:
+                continue
+            # Telegram requires a scheme; add tg/http handling
+            low = url.lower()
+            if low.startswith(("http://", "https://", "tg://")):
+                pass
+            elif low.startswith("@") or "t.me/" in low:
+                url = "https://t.me/" + url.lstrip("@").split("t.me/")[-1]
+            else:
+                url = "https://" + url
+            try:
+                b.button(text=label[:60], url=url)
+                count += 1
+            except Exception:
+                continue
+        if count:
+            rows.append(count)
+    if not rows:
+        return None
+    b.adjust(*rows)
+    return b.as_markup()
+
+
 def broadcast_target_kb() -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
     _button(b, text="👥 همه کاربران", callback_data="bc_target:all", style="primary")

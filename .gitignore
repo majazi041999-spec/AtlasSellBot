@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# Atlas runtime data
+atlas.db
+atlas.db-journal
+atlas.db-wal
+atlas.db-shm
+atlas.log
+backups/
+*.patch
+update-local-changes-*.patch
+
+# Env / secrets
+.env
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

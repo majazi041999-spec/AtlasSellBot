@@ -42,6 +42,7 @@ class RenewService(StatesGroup):
 class Broadcast(StatesGroup):
     target = State()
     text = State()
+    buttons = State()
     confirm = State()
 
 
@@ -64,6 +65,7 @@ class LegacySync(StatesGroup):
 class PrivateMessage(StatesGroup):
     user_id = State()
     text = State()
+    buttons = State()
 
 
 class WalletTopup(StatesGroup):
