@@ -41,6 +41,21 @@ SETTINGS_DEFAULTS: Dict[str, str] = {
     "sub_force_local_links_on_render": "1",
     "sub_info_template": "📊 حجم کل: {traffic_gb}GB | مصرف: {used} | باقی: {remaining}\n📅 باقی‌مانده: {days_left} روز | سپری‌شده: {days_elapsed} روز",
     "sub_brand_template": "📣 {brand}",
+    "sub_grace_days": "3",
+    "sub_expiry_notice_template": (
+        "⛔️ اشتراک سرویس شما به پایان رسید.\n\n"
+        "سرویس: {service}\n"
+        "حجم مصرف‌شده: {used} از {total}\n"
+        "تاریخ انقضا: {expire_date}\n\n"
+        "⏳ تا {grace_days} روز دیگر فرصت دارید سرویس را تمدید کنید.\n"
+        "در غیر این صورت لینک اشتراک شما به‌طور کامل حذف می‌شود و برای استفاده مجدد باید سرویس جدید خریداری کنید."
+    ),
+    "sub_deleted_notice_template": (
+        "🗑 لینک اشتراک سرویس شما حذف شد.\n\n"
+        "سرویس: {service}\n"
+        "به دلیل عدم تمدید پس از {grace_days} روز، تمام لینک‌های این اشتراک حذف شدند.\n"
+        "برای استفاده مجدد لطفاً یک سرویس جدید خریداری کنید. 🌐"
+    ),
     "test_account_enabled": "1",
     "test_account_traffic_gb": "1",
     "test_account_duration_days": "1",

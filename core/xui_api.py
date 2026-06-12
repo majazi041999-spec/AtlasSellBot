@@ -330,6 +330,21 @@ class XUIClient:
             return str(client.get("auth") or "")
         return self._normal_uuid(client.get("id") or client.get("uuid"))
 
+    def _client_belongs(self, client: Optional[Dict], protocol: str, email: str = "", client_uuid: str = "") -> bool:
+        """True only if `client` is positively the one identified by email or uuid.
+
+        Used to make sure we never modify a client we did not actually target
+        (prevents corrupting unrelated clients when the panel API returns
+        unexpected data, e.g. when a server-side API token is enabled)."""
+        if not client:
+            return False
+        email = (email or "").strip()
+        if email and str(client.get("email") or "").strip() == email:
+            return True
+        ident = self._client_identity(protocol, client)
+        target = self._normal_uuid(client_uuid) or str(client_uuid or "").strip()
+        return bool(ident and target and ident == target)
+
     def _find_inbound_client(self, inbound: Optional[Dict], protocol: str, email: str = "", client_uuid: str = "") -> Optional[Dict]:
         if not inbound:
             return None
@@ -454,31 +469,58 @@ class XUIClient:
         traffic_bytes = int(traffic_gb * 1024 ** 3)
         payload_email = (new_email or email or "").strip()
 
+        # Resolve the REAL existing client so its true identity is always
+        # preserved. Only accept an API-fetched client if it positively
+        # belongs to the target (by email or uuid) — otherwise we might
+        # rewrite an unrelated client and clear/change its UUID.
         existing = self._find_inbound_client(inbound, protocol, email, client_uuid)
-        api_existing = None
-        if not existing:
+        if not existing and email:
             api_existing = await self.get_client(email)
-        if not existing and payload_email != email:
-            api_existing = await self.get_client(payload_email)
-        if api_existing:
-            safe_identity = self._client_identity(protocol, api_existing)
-            if safe_identity:
+            if self._client_belongs(api_existing, protocol, email, client_uuid):
                 existing = api_existing
+        if not existing and payload_email and payload_email != email:
+            api_existing = await self.get_client(payload_email)
+            if self._client_belongs(api_existing, protocol, payload_email, client_uuid):
+                existing = api_existing
+
         try:
             client = self._client_payload(protocol, client_uuid, payload_email, traffic_bytes, expire_ms, enable, existing)
         except ValueError as e:
             self.last_error = str(e)
             return False
 
-        path_identity = self._client_identity(protocol, existing) or self._client_identity(protocol, client) or client_uuid
+        existing_identity = self._client_identity(protocol, existing) if existing else ""
+        new_identity = self._client_identity(protocol, client)
+
+        # SAFETY: never reassign an existing client's identity. If the payload
+        # identity would differ from the real client's identity, refuse the
+        # write instead of corrupting the client's UUID/password.
+        if existing_identity and new_identity and existing_identity != new_identity:
+            self.last_error = "identity_mismatch_refused"
+            logger.error(
+                "update_client refused: identity would change (%s -> %s) email=%s",
+                existing_identity, new_identity, email,
+            )
+            return False
+
+        path_identity = existing_identity or new_identity or client_uuid
+        if not path_identity:
+            self.last_error = "no_client_identity"
+            return False
+
         payload = {"id": inbound_id, "settings": json.dumps({"clients": [client]})}
         r = await self._req("POST", f"/panel/api/inbounds/updateClient/{quote(path_identity, safe='')}", json=payload)
         if r and r.get("success"):
             return True
 
-        r = await self._req("POST", f"/panel/api/clients/update/{quote(email, safe='')}", json=client)
-        if r and r.get("success"):
-            return True
+        # By-email fallback ONLY when we positively confirmed the existing
+        # client (so client["id"] equals its real identity and cannot change).
+        # Without this guard, this endpoint can overwrite a real client's UUID
+        # with a stale local value — the root cause of UUID corruption.
+        if existing and email:
+            r = await self._req("POST", f"/panel/api/clients/update/{quote(email, safe='')}", json=client)
+            if r and r.get("success"):
+                return True
         return False
 
     async def reset_client_traffic(self, inbound_id: int, email: str) -> bool:

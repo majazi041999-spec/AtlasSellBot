@@ -307,6 +307,24 @@ async def _multi_subscription_worker():
         await asyncio.sleep(180)
 
 
+async def _subscription_lifecycle_worker(bot):
+    """Notify users about ended subscriptions and delete them after the grace period."""
+    from core.database import get_setting
+    from core.multi_subscription import run_subscription_lifecycle
+
+    await asyncio.sleep(60)
+    while True:
+        try:
+            await run_subscription_lifecycle(bot)
+        except Exception as e:
+            logger.exception("subscription lifecycle worker failed: %s", e)
+        try:
+            interval = int(await get_setting("sub_lifecycle_check_interval", "1800") or 1800)
+        except Exception:
+            interval = 1800
+        await asyncio.sleep(max(300, interval))
+
+
 
 async def run_bot():
     from aiogram import Bot, Dispatcher
@@ -349,6 +367,7 @@ async def run_bot():
     asyncio.create_task(_config_alert_worker(bot))
     asyncio.create_task(_daily_report_worker(bot))
     asyncio.create_task(_multi_subscription_worker())
+    asyncio.create_task(_subscription_lifecycle_worker(bot))
     await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
 

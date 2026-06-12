@@ -1,3 +1,4 @@
+import asyncio
 import uuid as _uuid
 import time
 import json
@@ -154,8 +155,10 @@ def _format_subscription_status_card(profile: dict, sub_url: str, used: int, tot
 async def _send_subscription_status(target, profile: dict):
     if not profile:
         return
+    # Live usage sync is best-effort and time-boxed: a slow/down X-UI server
+    # must never block showing the user their cached subscription link.
     try:
-        await sync_profile_usage(profile)
+        await asyncio.wait_for(sync_profile_usage(profile), timeout=12)
         profile = await get_subscription_profile_by_token(profile["token"]) or profile
     except Exception:
         pass

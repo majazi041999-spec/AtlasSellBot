@@ -202,6 +202,8 @@ CREATE TABLE IF NOT EXISTS subscription_profiles (
     expire_timestamp INTEGER DEFAULT 0,
     is_active INTEGER DEFAULT 1,
     used_bytes INTEGER DEFAULT 0,
+    expired_at INTEGER DEFAULT 0,
+    expiry_notified INTEGER DEFAULT 0,
     created_at TEXT DEFAULT (datetime('now','localtime')),
     updated_at TEXT DEFAULT (datetime('now','localtime')),
     FOREIGN KEY(user_id) REFERENCES users(id)
@@ -302,6 +304,8 @@ async def _ensure_columns(db):
             ("order_id", "INTEGER DEFAULT 0"),
             ("used_bytes", "INTEGER DEFAULT 0"),
             ("updated_at", "TEXT DEFAULT ''"),
+            ("expired_at", "INTEGER DEFAULT 0"),
+            ("expiry_notified", "INTEGER DEFAULT 0"),
         ],
         "subscription_node_configs": [
             ("label", "TEXT DEFAULT ''"),
@@ -1369,6 +1373,26 @@ async def get_active_subscription_profiles(limit: int = 200) -> List[Dict]:
                ORDER BY sp.is_active DESC, sp.id
                LIMIT ?""",
             (max(1, int(limit or 200)),),
+        ) as c:
+            return [dict(r) for r in await c.fetchall()]
+
+
+async def get_expired_subscription_profiles(now_ms: int, limit: int = 300) -> List[Dict]:
+    """Profiles that are out of time or out of quota, with the owner's chat id.
+
+    Used by the lifecycle worker to notify the user that their subscription
+    ended and, after the grace period, to delete it."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            """SELECT sp.*, u.telegram_id, u.full_name
+               FROM subscription_profiles sp
+               JOIN users u ON u.id = sp.user_id
+               WHERE (sp.expire_timestamp > 0 AND sp.expire_timestamp <= ?)
+                  OR (sp.traffic_gb > 0 AND sp.used_bytes >= sp.traffic_gb * 1073741824)
+               ORDER BY sp.id
+               LIMIT ?""",
+            (int(now_ms), max(1, int(limit or 300))),
         ) as c:
             return [dict(r) for r in await c.fetchall()]
 

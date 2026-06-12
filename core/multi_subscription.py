@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import binascii
 import json
@@ -15,6 +16,7 @@ from core.database import (
     create_subscription_profile,
     delete_subscription_profile,
     get_active_subscription_profiles,
+    get_expired_subscription_profiles,
     count_active_server_load,
     count_active_subscription_nodes_by_target,
     get_available_subscription_node_configs,
@@ -351,9 +353,10 @@ def _dedupe_complete_links(links: list[str]) -> list[str]:
     return out
 
 
-async def _ensure_node_link(node: Dict) -> str:
+async def _ensure_node_link(node: Dict, force_refresh: bool | None = None) -> str:
     link = (node.get("link") or "").strip()
-    force_refresh = await get_setting("sub_force_local_links_on_render", "1") == "1"
+    if force_refresh is None:
+        force_refresh = await get_setting("sub_force_local_links_on_render", "1") == "1"
     if _subscription_link_is_complete(link) and not force_refresh:
         return link
 
@@ -681,27 +684,72 @@ async def create_profile_from_config(user: Dict, cfg: Dict) -> Dict:
         return {"ok": False, "error": str(e)}
 
 
+# Tokens with an in-flight background sync, to avoid piling up duplicate work
+# when a client polls the subscription URL frequently.
+_inflight_render_sync: set[str] = set()
+
+
+async def _background_render_sync(token: str) -> None:
+    """Heavy reconciliation (usage sync + node ensure) done OFF the request path.
+
+    Rendering the subscription must stay fast; this keeps usage/links fresh in
+    the background so the next fetch already has up-to-date data."""
+    if token in _inflight_render_sync:
+        return
+    _inflight_render_sync.add(token)
+    try:
+        profile = await get_subscription_profile_by_token(token)
+        if not profile:
+            return
+        await sync_profile_usage(profile)
+        fresh = await get_subscription_profile_by_token(token)
+        if fresh and int(fresh.get("is_active") or 0):
+            await ensure_subscription_profile_nodes(fresh, force_refresh=False)
+    except Exception as e:
+        logger.warning("background subscription sync failed: %s", e)
+    finally:
+        _inflight_render_sync.discard(token)
+
+
 async def render_subscription(token: str) -> tuple[str, Dict[str, int]] | None:
+    """Serve the subscription body FAST.
+
+    Heavy X-UI reconciliation is intentionally NOT done inline here — it caused
+    request timeouts (every client poll triggered writes to every node on every
+    server). Instead we serve cached links from the DB, do a cheap DB-only
+    expiry/quota check, and kick off the heavy sync in the background.
+    """
     profile = await get_subscription_profile_by_token(token)
-    if not profile or not int(profile.get("is_active") or 0):
+    if not profile:
         return None
-    sync_on_render = await get_setting("sub_info_sync_on_render", "1") == "1"
-    if sync_on_render:
-        try:
-            await sync_profile_usage(profile)
-            profile = await get_subscription_profile_by_token(token) or profile
-            if not int(profile.get("is_active") or 0):
-                return None
-        except Exception:
-            pass
-    await ensure_subscription_profile_nodes(profile, force_refresh=sync_on_render)
+
+    now_ms = int(time.time() * 1000)
+    expire_ms = int(profile.get("expire_timestamp") or 0)
+    used = int(profile.get("used_bytes") or 0)
+    total = total_bytes(profile.get("traffic_gb") or 0)
+    db_expired = (expire_ms > 0 and expire_ms <= now_ms) or (total > 0 and used >= total)
+
+    if not int(profile.get("is_active") or 0) or db_expired:
+        # Inactive or out of quota/time: don't serve configs. Reconcile (disable
+        # nodes on X-UI) in the background so the panel state stays consistent.
+        if db_expired and int(profile.get("is_active") or 0):
+            asyncio.create_task(_background_render_sync(token))
+        return None
+
     nodes = await get_subscription_nodes(profile["id"])
     links = []
     active_count = 0
     for n in nodes:
         if not int(n.get("is_active") or 0):
             continue
-        raw_link = await _ensure_node_link(n)
+        raw_link = (n.get("link") or "").strip()
+        if not _subscription_link_is_complete(raw_link):
+            # Only broken/missing cached links are repaired inline, and only
+            # with a tight timeout so one slow/down server can't stall the page.
+            try:
+                raw_link = await asyncio.wait_for(_ensure_node_link(n, force_refresh=False), timeout=8)
+            except Exception:
+                raw_link = ""
         if not raw_link:
             continue
         label = n.get("node_label") or f"{n.get('server_name') or 'Node'} #{n.get('inbound_id') or ''}"
@@ -709,12 +757,16 @@ async def render_subscription(token: str) -> tuple[str, Dict[str, int]] | None:
         if _subscription_link_is_complete(link):
             active_count += 1
             links.append(link)
-    used = int(profile.get("used_bytes") or 0)
-    total = total_bytes(profile.get("traffic_gb") or 0)
-    expire = int(int(profile.get("expire_timestamp") or 0) / 1000) if int(profile.get("expire_timestamp") or 0) > 0 else 0
+
+    expire = int(expire_ms / 1000) if expire_ms > 0 else 0
     info_links = await _subscription_info_links(profile, used, total, active_count)
     links = _dedupe_complete_links(links + info_links)
     body = base64.b64encode("\n".join(links).encode()).decode()
+
+    # Keep data fresh without blocking the response.
+    if await get_setting("sub_info_sync_on_render", "1") == "1":
+        asyncio.create_task(_background_render_sync(token))
+
     return body, {"upload": 0, "download": used, "total": total, "expire": expire}
 
 
@@ -1041,6 +1093,8 @@ async def renew_subscription_profile(profile: Dict, traffic_gb: float, duration_
         expire_timestamp=new_expire_ms,
         used_bytes=0,
         is_active=1,
+        expired_at=0,
+        expiry_notified=0,
     )
     return {"ok": True, "nodes": ok_count, "expire_ms": new_expire_ms}
 
@@ -1097,6 +1151,9 @@ async def edit_subscription_profile(profile: Dict, email: str, traffic_gb: float
 
     now_ms = int(time.time() * 1000)
     duration_days = int((int(expire_ms or 0) - now_ms + 86399999) // 86400000) if int(expire_ms or 0) > 0 else 0
+    reset_lifecycle = {}
+    if is_active:
+        reset_lifecycle = {"expired_at": 0, "expiry_notified": 0}
     await update_subscription_profile(
         profile["id"],
         email=email,
@@ -1104,6 +1161,7 @@ async def edit_subscription_profile(profile: Dict, email: str, traffic_gb: float
         duration_days=max(0, duration_days),
         expire_timestamp=int(expire_ms or 0),
         is_active=1 if is_active else 0,
+        **reset_lifecycle,
     )
     return {"ok": True, "nodes": ok_count, "expire_ms": int(expire_ms or 0)}
 
@@ -1167,3 +1225,95 @@ async def sync_subscription_nodes_for_all(limit: int = 1000, force_refresh: bool
         "disabled": disabled,
         "errors": errors,
     }
+
+
+def _format_lifecycle_template(template: str, values: Dict[str, str]) -> str:
+    try:
+        return (template or "").format(**values)
+    except Exception:
+        return template or ""
+
+
+async def run_subscription_lifecycle(bot, limit: int = 300) -> Dict:
+    """Notify users when their subscription ends and delete it after a grace period.
+
+    Flow per expired profile (out of time OR out of quota):
+      1) First time seen expired -> stamp expired_at.
+      2) If not yet notified -> send the "subscription ended" message with usage
+         stats + a warning that they have N days to renew, then mark notified
+         and make sure the profile is inactive.
+      3) Once the grace window passes without renewal -> delete every remote
+         node + the local profile and tell the user to buy again.
+    """
+    from core.jalali import jalali_display
+
+    now_ms = int(time.time() * 1000)
+    try:
+        grace_days = max(0, int(await get_setting("sub_grace_days", "3") or 3))
+    except Exception:
+        grace_days = 3
+    grace_ms = grace_days * 86400000
+    brand = await get_setting("ui.brand_name", "Atlas Account")
+    notice_tpl = await get_setting("sub_expiry_notice_template", "")
+    deleted_tpl = await get_setting("sub_deleted_notice_template", "")
+
+    notified = deleted = 0
+    for profile in await get_expired_subscription_profiles(now_ms, limit):
+        try:
+            pid = int(profile["id"])
+            telegram_id = int(profile.get("telegram_id") or 0)
+            total = total_bytes(profile.get("traffic_gb") or 0)
+            used = int(profile.get("used_bytes") or 0)
+            remaining = max(0, total - used) if total > 0 else 0
+            expire_ms = int(profile.get("expire_timestamp") or 0)
+            expire_date = jalali_display(datetime.fromtimestamp(expire_ms / 1000)) if expire_ms > 0 else "—"
+            values = {
+                "brand": brand,
+                "service": profile.get("email") or f"#{pid}",
+                "used": _fmt_bytes_short(used),
+                "total": _fmt_bytes_short(total) if total > 0 else "نامحدود",
+                "remaining": _fmt_bytes_short(remaining),
+                "duration_days": str(int(profile.get("duration_days") or 0)),
+                "expire_date": expire_date,
+                "grace_days": str(grace_days),
+            }
+
+            expired_at = int(profile.get("expired_at") or 0)
+            if expired_at <= 0:
+                expired_at = now_ms
+                await update_subscription_profile(pid, expired_at=expired_at, is_active=0)
+
+            # Step 1: ensure the user is informed exactly once.
+            if not int(profile.get("expiry_notified") or 0):
+                if telegram_id and notice_tpl.strip():
+                    try:
+                        await bot.send_message(telegram_id, _format_lifecycle_template(notice_tpl, values), parse_mode=None)
+                        notified += 1
+                        await asyncio.sleep(0.1)
+                    except Exception:
+                        pass
+                await update_subscription_profile(pid, expiry_notified=1, is_active=0)
+                # Make sure the nodes are actually disabled on the panels.
+                try:
+                    await set_nodes_enabled(pid, False)
+                except Exception:
+                    pass
+
+            # Step 2: delete after the grace window with no renewal.
+            if grace_ms >= 0 and now_ms >= expired_at + grace_ms:
+                try:
+                    await delete_subscription_profile_remote(pid)
+                    deleted += 1
+                    if telegram_id and deleted_tpl.strip():
+                        try:
+                            await bot.send_message(telegram_id, _format_lifecycle_template(deleted_tpl, values), parse_mode=None)
+                        except Exception:
+                            pass
+                except Exception as e:
+                    logger.warning("subscription lifecycle delete failed pid=%s: %s", pid, e)
+        except Exception as e:
+            logger.warning("subscription lifecycle error profile=%s: %s", profile.get("id"), e)
+
+    if notified or deleted:
+        logger.info("subscription lifecycle: notified=%s deleted=%s grace_days=%s", notified, deleted, grace_days)
+    return {"notified": notified, "deleted": deleted}
