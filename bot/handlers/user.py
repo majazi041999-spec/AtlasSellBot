@@ -475,46 +475,31 @@ async def wallet_topup_receipt_wrong(msg: Message):
 # ─── STATUS ──────────────────────────────────────────────────────
 
 
-@router.callback_query(F.data == "flow_back")
-async def flow_back_user(cb: CallbackQuery, state: FSMContext):
-    cur = await state.get_state()
-    if not cur:
-        await cb.answer("مرحله‌ای برای برگشت وجود ندارد.", show_alert=True)
-        return
+# ── ثبت مسیرهای «برگشت» کاربر در سیستم ناوبری یکپارچه (bot/nav.py) ──
+def _register_user_back_steps():
+    from bot import nav
 
-    if cur.endswith("WalletTopup:waiting_receipt"):
-        await state.set_state(WalletTopup.waiting_amount)
-        await cb.message.edit_text("💵 مبلغ افزایش اعتبار را به تومان وارد کنید.\nمثال: `250000`", parse_mode="Markdown", reply_markup=flow_cancel_kb())
-    elif cur.endswith("WholesaleBuy:traffic"):
-        await state.set_state(WholesaleBuy.count)
-        await cb.message.edit_text("🔢 تعداد کانفیگ موردنیاز را وارد کنید (مثلاً 5):", reply_markup=flow_cancel_kb())
-    elif cur.endswith("WholesaleBuy:duration"):
-        await state.set_state(WholesaleBuy.traffic)
-        await cb.message.edit_text("📊 حجم *هر کانفیگ* را به GB وارد کنید (مثلاً 20):", parse_mode="Markdown", reply_markup=flow_cancel_kb())
-    elif cur.endswith("WholesaleBuy:naming_prefix"):
-        await state.set_state(WholesaleBuy.duration)
-        await cb.message.edit_text("📅 مدت *هر کانفیگ* را به روز وارد کنید (مثلاً 30):", parse_mode="Markdown", reply_markup=flow_cancel_kb())
-    elif cur.endswith("WholesaleBuy:naming_start"):
-        await state.set_state(WholesaleBuy.naming_prefix)
-        await cb.message.edit_text("✍️ یک پیشوند نام وارد کنید (مثلاً `vip`):", parse_mode="Markdown", reply_markup=flow_cancel_kb())
-    elif cur.endswith("BuyService:waiting_receipt"):
-        data = await state.get_data()
-        oid = int(data.get("order_id") or 0)
-        await state.clear()
-        if oid:
-            await update_order(oid, status="pending_payment")
-            await cb.message.edit_text("⬅️ برگشتید به مرحله پرداخت.", reply_markup=payment_kb(oid), parse_mode="Markdown")
-        else:
-            await cb.message.edit_text("⬅️ برگشتید.")
-    elif cur.endswith("BuyService:custom_name"):
-        await state.clear()
-        pkgs = await get_packages(active_only=True)
-        await cb.message.edit_text(
-            "🛒 *پکیج مورد نظر را انتخاب کنید:*",
-            reply_markup=packages_kb(pkgs),
-            parse_mode="Markdown",
-        )
-    elif cur.endswith("RenewService:duration"):
+    # شارژ کیف پول
+    nav.register(WalletTopup.waiting_receipt, nav.static(
+        WalletTopup.waiting_amount,
+        "💵 مبلغ افزایش اعتبار را به تومان وارد کنید.\nمثال: `250000`",
+        "Markdown",
+    ))
+    nav.register(WalletTopup.waiting_amount, nav.go_home)
+
+    # خرید عمده
+    nav.register(WholesaleBuy.traffic, nav.static(
+        WholesaleBuy.count, "🔢 تعداد کانفیگ موردنیاز را وارد کنید (مثلاً 5):"))
+    nav.register(WholesaleBuy.duration, nav.static(
+        WholesaleBuy.traffic, "📊 حجم *هر کانفیگ* را به GB وارد کنید (مثلاً 20):", "Markdown"))
+    nav.register(WholesaleBuy.naming_prefix, nav.static(
+        WholesaleBuy.duration, "📅 مدت *هر کانفیگ* را به روز وارد کنید (مثلاً 30):", "Markdown"))
+    nav.register(WholesaleBuy.naming_start, nav.static(
+        WholesaleBuy.naming_prefix, "✍️ یک پیشوند نام وارد کنید (مثلاً `vip`):", "Markdown"))
+    nav.register(WholesaleBuy.count, nav.go_home)
+
+    # تمدید سرویس
+    async def _renew_duration_back(cb: CallbackQuery, state: FSMContext):
         min_traffic = await _renewal_min_traffic()
         await state.set_state(RenewService.traffic)
         await cb.message.edit_text(
@@ -522,25 +507,46 @@ async def flow_back_user(cb: CallbackQuery, state: FSMContext):
             reply_markup=flow_cancel_kb(),
             parse_mode="Markdown",
         )
-    elif cur.endswith("RenewService:traffic"):
+    nav.register(RenewService.duration, _renew_duration_back)
+
+    async def _renew_traffic_back(cb: CallbackQuery, state: FSMContext):
         data = await state.get_data()
         cid = int(data.get("config_id") or 0)
         await state.clear()
         if cid:
             await cb.message.edit_text("♻️ نوع تمدید را انتخاب کنید:", reply_markup=renew_options_kb(cid), parse_mode="Markdown")
         else:
-            await cb.message.edit_text("⬅️ برگشتید.")
-    elif cur.endswith("LegacySync:waiting_link"):
+            await nav.go_home(cb, state)
+    nav.register(RenewService.traffic, _renew_traffic_back)
+
+    # خرید سرویس
+    async def _buy_receipt_back(cb: CallbackQuery, state: FSMContext):
+        data = await state.get_data()
+        oid = int(data.get("order_id") or 0)
         await state.clear()
-        user = await get_or_create_user(cb.from_user.id, cb.from_user.username, cb.from_user.full_name)
-        await cb.message.edit_text("⬅️ برگشتید به منو.")
-        await cb.message.answer("منوی اصلی", reply_markup=user_menu(include_wholesale=bool(user.get("is_wholesale", 0))))
-    else:
+        if oid:
+            await update_order(oid, status="pending_payment")
+            await cb.message.edit_text("⬅️ برگشتید به مرحله پرداخت.", reply_markup=payment_kb(oid), parse_mode="Markdown")
+        else:
+            await nav.go_home(cb, state)
+    nav.register(BuyService.waiting_receipt, _buy_receipt_back)
+
+    async def _buy_name_back(cb: CallbackQuery, state: FSMContext):
         await state.clear()
-        user = await get_or_create_user(cb.from_user.id, cb.from_user.username, cb.from_user.full_name)
-        await cb.message.edit_text("⬅️ عملیات قبلی بسته شد.")
-        await cb.message.answer("منوی اصلی", reply_markup=user_menu(include_wholesale=bool(user.get("is_wholesale", 0))))
-    await cb.answer()
+        pkgs = await get_packages(active_only=True)
+        await cb.message.edit_text(
+            "🛒 *پکیج مورد نظر را انتخاب کنید:*",
+            reply_markup=packages_kb(pkgs),
+            parse_mode="Markdown",
+        )
+    nav.register(BuyService.custom_name, _buy_name_back)
+
+    # سینک کانفیگ قدیمی و بازخورد ناشناس
+    nav.register(LegacySync.waiting_link, nav.go_home)
+    nav.register(AnonymousFeedback.text, nav.go_home)
+
+
+_register_user_back_steps()
 
 
 async def _user_service_lists(user_id: int) -> tuple[list[dict], list[dict]]:

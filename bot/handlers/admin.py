@@ -137,55 +137,65 @@ def can_review_payments(uid: int) -> bool:
 
 
 
-@router.callback_query(F.data == "flow_back")
-async def flow_back_admin(cb: CallbackQuery, state: FSMContext):
-    cur = await state.get_state()
-    if not cur:
-        await cb.answer("مرحله‌ای برای برگشت وجود ندارد.", show_alert=True)
-        return
+# ── ثبت مسیرهای «برگشت» ادمین در سیستم ناوبری یکپارچه (bot/nav.py) ──
+def _register_admin_back_steps():
+    from bot import nav
 
-    if cur.endswith("AddPackage:traffic"):
-        await state.set_state(AddPackage.name)
-        await cb.message.edit_text("✍️ نام پکیج را وارد کنید:", reply_markup=flow_cancel_kb())
-    elif cur.endswith("AddPackage:duration"):
-        await state.set_state(AddPackage.traffic)
-        await cb.message.edit_text("📊 حجم (GB):", reply_markup=flow_cancel_kb())
-    elif cur.endswith("AddPackage:price"):
-        await state.set_state(AddPackage.duration)
-        await cb.message.edit_text("📅 مدت (روز):", reply_markup=flow_cancel_kb())
-    elif cur.endswith("AddPackage:description"):
-        await state.set_state(AddPackage.price)
-        await cb.message.edit_text("💰 قیمت (تومان):", reply_markup=flow_cancel_kb())
-    elif cur.endswith("CreateConfig:traffic"):
-        await state.set_state(CreateConfig.email)
-        await cb.message.edit_text("📧 شناسه (ایمیل) کانفیگ را وارد کنید:\n_مثال: ali_vip_30d_", parse_mode="Markdown", reply_markup=flow_cancel_kb())
-    elif cur.endswith("CreateConfig:duration"):
-        await state.set_state(CreateConfig.traffic)
-        await cb.message.edit_text("📊 حجم ترافیک (GB):", reply_markup=flow_cancel_kb())
-    elif cur.endswith("CreateConfig:server"):
-        await state.set_state(CreateConfig.duration)
-        await cb.message.edit_text("📅 مدت (روز):", reply_markup=flow_cancel_kb())
-    elif cur.endswith("BulkConfig:count"):
-        await state.set_state(BulkConfig.prefix)
-        await cb.message.edit_text("📋 *ساخت گروهی*\n\nپیشوند نام کانفیگ‌ها:\n_مثال: vip_user_", parse_mode="Markdown", reply_markup=flow_cancel_kb())
-    elif cur.endswith("BulkConfig:traffic"):
-        await state.set_state(BulkConfig.count)
-        await cb.message.edit_text("🔢 تعداد کانفیگ (حداکثر ۵۰):", reply_markup=flow_cancel_kb())
-    elif cur.endswith("BulkConfig:duration"):
-        await state.set_state(BulkConfig.traffic)
-        await cb.message.edit_text("📊 حجم هر کانفیگ (GB):", reply_markup=flow_cancel_kb())
-    elif cur.endswith("BulkConfig:server"):
-        await state.set_state(BulkConfig.duration)
-        await cb.message.edit_text("📅 مدت (روز):", reply_markup=flow_cancel_kb())
-    elif cur.endswith("PrivateMessage:text"):
-        await state.set_state(PrivateMessage.user_id)
-        await cb.message.edit_text("🆔 آیدی عددی کاربر را ارسال کنید:", reply_markup=flow_cancel_kb())
-    else:
+    # افزودن پکیج
+    nav.register(AddPackage.traffic, nav.static(AddPackage.name, "✍️ نام پکیج را وارد کنید:"))
+    nav.register(AddPackage.duration, nav.static(AddPackage.traffic, "📊 حجم (GB):"))
+    nav.register(AddPackage.price, nav.static(AddPackage.duration, "📅 مدت (روز):"))
+    nav.register(AddPackage.description, nav.static(AddPackage.price, "💰 قیمت (تومان):"))
+    nav.register(AddPackage.name, nav.go_home)
+
+    # ساخت کانفیگ تکی
+    nav.register(CreateConfig.traffic, nav.static(CreateConfig.email, "📧 شناسه (ایمیل) کانفیگ را وارد کنید:\n_مثال: ali_vip_30d_", "Markdown"))
+    nav.register(CreateConfig.duration, nav.static(CreateConfig.traffic, "📊 حجم ترافیک (GB):"))
+    nav.register(CreateConfig.server, nav.static(CreateConfig.duration, "📅 مدت (روز):"))
+    nav.register(CreateConfig.email, nav.go_home)
+
+    # ساخت گروهی
+    nav.register(BulkConfig.count, nav.static(BulkConfig.prefix, "📋 *ساخت گروهی*\n\nپیشوند نام کانفیگ‌ها:\n_مثال: vip_user_", "Markdown"))
+    nav.register(BulkConfig.traffic, nav.static(BulkConfig.count, "🔢 تعداد کانفیگ (حداکثر ۵۰):"))
+    nav.register(BulkConfig.duration, nav.static(BulkConfig.traffic, "📊 حجم هر کانفیگ (GB):"))
+    nav.register(BulkConfig.server, nav.static(BulkConfig.duration, "📅 مدت (روز):"))
+    nav.register(BulkConfig.prefix, nav.go_home)
+
+    # پیام خصوصی
+    nav.register(PrivateMessage.text, nav.static(PrivateMessage.user_id, "🆔 آیدی عددی کاربر را ارسال کنید:"))
+    nav.register(PrivateMessage.user_id, nav.go_home)
+
+    async def _pm_buttons_back(cb: CallbackQuery, state: FSMContext):
+        await state.set_state(PrivateMessage.text)
+        await cb.message.edit_text("✍️ متن پیام خصوصی را ارسال کنید:", reply_markup=flow_cancel_kb())
+    nav.register(PrivateMessage.buttons, _pm_buttons_back)
+
+    # پیام همگانی
+    async def _bc_text_back(cb: CallbackQuery, state: FSMContext):
+        await state.set_state(Broadcast.target)
+        await cb.message.edit_text("📣 مخاطب پیام را انتخاب کنید:", reply_markup=broadcast_target_kb())
+    nav.register(Broadcast.text, _bc_text_back)
+
+    async def _bc_buttons_back(cb: CallbackQuery, state: FSMContext):
+        await state.set_state(Broadcast.text)
+        await cb.message.edit_text("✍️ متن پیام را بنویسید:", reply_markup=flow_cancel_kb())
+    nav.register(Broadcast.buttons, _bc_buttons_back)
+    nav.register(Broadcast.target, nav.go_home)
+
+    # ویرایش حجم/تاریخ کانفیگ → برگشت به جزئیات همان کانفیگ
+    async def _edit_cfg_back(cb: CallbackQuery, state: FSMContext):
+        data = await state.get_data()
+        cid = int(data.get("cid") or 0)
         await state.clear()
-        role = _db_admin_role(cb.from_user.id)
-        await cb.message.edit_text("⬅️ عملیات قبلی بسته شد.")
-        await cb.message.answer("منوی مدیریت", reply_markup=admin_menu(finance_only=(role == "finance")))
-    await cb.answer()
+        if cid:
+            await _render_cfg_detail(cb.message, cid)
+        else:
+            await nav.go_home(cb, state)
+    nav.register(EditConfig.traffic, _edit_cfg_back)
+    nav.register(EditConfig.expire, _edit_cfg_back)
+
+
+_register_admin_back_steps()
 
 
 @router.message(lambda msg: bool(msg.text and _db_admin_role(msg.from_user.id) == "owner" and any(_extract_config_identity_from_text(msg.text))))
@@ -876,14 +886,14 @@ async def start_add_pkg(cb: CallbackQuery, state: FSMContext):
     if not is_admin(cb.from_user.id):
         return
     await state.set_state(AddPackage.name)
-    await cb.message.edit_text("📦 نام پکیج را وارد کنید:\n_مثال: پکیج نقره‌ای_", parse_mode="Markdown")
+    await cb.message.edit_text("📦 نام پکیج را وارد کنید:\n_مثال: پکیج نقره‌ای_", parse_mode="Markdown", reply_markup=flow_cancel_kb())
 
 
 @router.message(AddPackage.name)
 async def pkg_name(msg: Message, state: FSMContext):
     await state.update_data(name=msg.text.strip())
     await state.set_state(AddPackage.traffic)
-    await msg.answer("📊 حجم ترافیک (GB):\n_مثال: 20_", parse_mode="Markdown")
+    await msg.answer("📊 حجم ترافیک (GB):\n_مثال: 20_", parse_mode="Markdown", reply_markup=flow_cancel_kb())
 
 
 @router.message(AddPackage.traffic)
@@ -895,7 +905,7 @@ async def pkg_traffic(msg: Message, state: FSMContext):
         return
     await state.update_data(traffic_gb=v)
     await state.set_state(AddPackage.duration)
-    await msg.answer("📅 مدت زمان (روز):\n_مثال: 30_", parse_mode="Markdown")
+    await msg.answer("📅 مدت زمان (روز):\n_مثال: 30_", parse_mode="Markdown", reply_markup=flow_cancel_kb())
 
 
 @router.message(AddPackage.duration)
@@ -907,7 +917,7 @@ async def pkg_duration(msg: Message, state: FSMContext):
         return
     await state.update_data(duration_days=v)
     await state.set_state(AddPackage.price)
-    await msg.answer("💰 قیمت (تومن):\n_مثال: 100000_", parse_mode="Markdown")
+    await msg.answer("💰 قیمت (تومن):\n_مثال: 100000_", parse_mode="Markdown", reply_markup=flow_cancel_kb())
 
 
 @router.message(AddPackage.price)
@@ -919,7 +929,7 @@ async def pkg_price(msg: Message, state: FSMContext):
         return
     await state.update_data(price=v)
     await state.set_state(AddPackage.description)
-    await msg.answer("📝 توضیحات پکیج (اختیاری — برای رد کردن `-` بزن):", parse_mode="Markdown")
+    await msg.answer("📝 توضیحات پکیج (اختیاری — برای رد کردن `-` بزن):", parse_mode="Markdown", reply_markup=flow_cancel_kb())
 
 
 @router.message(AddPackage.description)
@@ -1052,18 +1062,15 @@ async def adm_cfg_page(cb: CallbackQuery):
 
 
 @router.callback_query(F.data.startswith("adm_cfg:"))
-async def adm_cfg_detail(cb: CallbackQuery):
-    if not is_admin(cb.from_user.id):
-        return
-    cid = int(cb.data.split(":")[1])
+async def _render_cfg_detail(message, cid: int):
     cfg = await get_config(cid)
     if not cfg:
-        await cb.answer("یافت نشد!", show_alert=True)
+        await message.edit_text("یافت نشد!")
         return
     dl = days_left(cfg["expire_timestamp"] or 0)
     dl_text = f"{dl} روز" if dl >= 0 else "نامحدود"
     status = "🟢 فعال" if cfg["is_active"] else "🔴 غیرفعال"
-    await cb.message.edit_text(
+    await message.edit_text(
         f"🔑 *{cfg['email']}*\n"
         f"🖥️ سرور: `{cfg['server_name']}`\n"
         f"📊 حجم: `{cfg['traffic_gb']} GB`\n"
@@ -1072,6 +1079,13 @@ async def adm_cfg_detail(cb: CallbackQuery):
         reply_markup=adm_config_detail_kb(cid, bool(cfg["is_active"])),
         parse_mode="Markdown"
     )
+
+
+async def adm_cfg_detail(cb: CallbackQuery):
+    if not is_admin(cb.from_user.id):
+        return
+    cid = int(cb.data.split(":")[1])
+    await _render_cfg_detail(cb.message, cid)
 
 
 @router.callback_query(F.data.startswith("toggle_cfg:"))
@@ -1102,7 +1116,7 @@ async def edit_gb_start(cb: CallbackQuery, state: FSMContext):
     cid = int(cb.data.split(":")[1])
     await state.set_state(EditConfig.traffic)
     await state.update_data(cid=cid)
-    await cb.message.edit_text("📊 حجم جدید را به GB وارد کنید:\n_مثال: 30_", parse_mode="Markdown")
+    await cb.message.edit_text("📊 حجم جدید را به GB وارد کنید:\n_مثال: 30_", parse_mode="Markdown", reply_markup=flow_cancel_kb())
 
 
 @router.message(EditConfig.traffic)
@@ -1135,7 +1149,7 @@ async def edit_exp_start(cb: CallbackQuery, state: FSMContext):
     cid = int(cb.data.split(":")[1])
     await state.set_state(EditConfig.expire)
     await state.update_data(cid=cid)
-    await cb.message.edit_text("📅 تعداد روز از امروز وارد کنید:\n_مثال: 30_", parse_mode="Markdown")
+    await cb.message.edit_text("📅 تعداد روز از امروز وارد کنید:\n_مثال: 30_", parse_mode="Markdown", reply_markup=flow_cancel_kb())
 
 
 @router.message(EditConfig.expire)
@@ -1199,7 +1213,8 @@ async def create_single_start(cb: CallbackQuery, state: FSMContext):
     await state.set_state(CreateConfig.email)
     await cb.message.edit_text(
         "📧 شناسه (ایمیل) کانفیگ را وارد کنید:\n_مثال: ali_vip_30d_",
-        parse_mode="Markdown"
+        parse_mode="Markdown",
+        reply_markup=flow_cancel_kb(),
     )
 
 
@@ -1232,7 +1247,7 @@ async def single_duration(msg: Message, state: FSMContext):
     await state.update_data(duration_days=v)
     await state.set_state(CreateConfig.server)
     servers = await get_servers()
-    await msg.answer("🖥️ سرور را انتخاب کنید:", reply_markup=servers_kb(servers, "single_srv"))
+    await msg.answer("🖥️ سرور را انتخاب کنید:", reply_markup=servers_kb(servers, "single_srv", with_back=True))
 
 
 @router.callback_query(F.data.startswith("single_srv:"), CreateConfig.server)
@@ -1281,7 +1296,8 @@ async def create_bulk_start(cb: CallbackQuery, state: FSMContext):
     await state.set_state(BulkConfig.prefix)
     await cb.message.edit_text(
         "📋 *ساخت گروهی*\n\nپیشوند نام کانفیگ‌ها:\n_مثال: vip_user_",
-        parse_mode="Markdown"
+        parse_mode="Markdown",
+        reply_markup=flow_cancel_kb(),
     )
 
 
@@ -1289,7 +1305,7 @@ async def create_bulk_start(cb: CallbackQuery, state: FSMContext):
 async def bulk_prefix(msg: Message, state: FSMContext):
     await state.update_data(prefix=msg.text.strip().replace(" ", "_"))
     await state.set_state(BulkConfig.count)
-    await msg.answer("🔢 تعداد کانفیگ (حداکثر ۵۰):")
+    await msg.answer("🔢 تعداد کانفیگ (حداکثر ۵۰):", reply_markup=flow_cancel_kb())
 
 
 @router.message(BulkConfig.count)
@@ -1326,7 +1342,7 @@ async def bulk_duration(msg: Message, state: FSMContext):
     await state.update_data(duration_days=v)
     await state.set_state(BulkConfig.server)
     servers = await get_servers()
-    await msg.answer("🖥️ سرور را انتخاب کنید:", reply_markup=servers_kb(servers, "bulk_srv"))
+    await msg.answer("🖥️ سرور را انتخاب کنید:", reply_markup=servers_kb(servers, "bulk_srv", with_back=True))
 
 
 @router.callback_query(F.data.startswith("bulk_srv:"), BulkConfig.server)
@@ -1830,7 +1846,7 @@ async def broadcast_pick_target(cb: CallbackQuery, state: FSMContext):
     target = cb.data.split(":", 1)[1]
     await state.update_data(target=target)
     await state.set_state(Broadcast.text)
-    await cb.message.edit_text("✍️ متن پیام را بنویسید:\nبرای لغو /cancel بزنید.")
+    await cb.message.edit_text("✍️ متن پیام را بنویسید:", reply_markup=flow_cancel_kb())
 
 
 @router.message(Broadcast.text)
@@ -1844,6 +1860,7 @@ async def broadcast_get_text(msg: Message, state: FSMContext):
         "`کانال - https://t.me/yourchannel | سایت - https://site.com`\n\n"
         "اگر دکمه نمی‌خواهید، روی /skip بزنید.",
         parse_mode="Markdown",
+        reply_markup=flow_cancel_kb(),
     )
 
 

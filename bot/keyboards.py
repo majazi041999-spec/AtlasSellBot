@@ -313,11 +313,13 @@ def subscription_delete_confirm_kb(profile_id: int) -> InlineKeyboardMarkup:
     return b.as_markup()
 
 
-def servers_kb(servers: List[Dict], cb_prefix: str, extra_data: str = "") -> InlineKeyboardMarkup:
+def servers_kb(servers: List[Dict], cb_prefix: str, extra_data: str = "", with_back: bool = False) -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
     for s in servers:
         cb = f"{cb_prefix}:{s['id']}" + (f":{extra_data}" if extra_data else "")
         _button(b, text=f"🖥️ {s['name']}", callback_data=cb, style="primary")
+    if with_back:
+        _button(b, text="⬅️ برگشت", callback_data="flow_back", style="primary")
     _button(b, text="❌ لغو", callback_data="cancel", style="danger")
     b.adjust(1)
     return b.as_markup()
