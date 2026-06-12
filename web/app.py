@@ -134,6 +134,7 @@ from core.multi_subscription import (
     delete_subscription_profile_remote,
     edit_subscription_profile,
     sync_subscription_nodes_for_all,
+    sync_subscription_nodes_streamed,
 )
 from core.database import get_subscription_profile_by_token as _get_sub_profile_by_token
 from core.database import get_subscription_nodes as _get_sub_nodes
@@ -1093,10 +1094,35 @@ async def subscriptions_settings_save(
 
 @app.post(f"/{S}/subs/sync-nodes")
 async def subscription_sync_nodes(request: Request):
+    # Legacy blocking endpoint kept for compatibility; the panel now uses the
+    # streamed start/log endpoints below for a fast, observable sync.
     if not _auth(request):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
-    result = await sync_subscription_nodes_for_all(5000, force_refresh=True)
+    result = await sync_subscription_nodes_for_all(5000, force_refresh=False)
     return JSONResponse({"success": True, **result})
+
+
+@app.post(f"/{S}/subs/sync-nodes/start")
+async def subscription_sync_nodes_start(request: Request):
+    if not _auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    if _read_job_log("sync").get("running"):
+        return JSONResponse({"error": "یک همگام‌سازی همین الان در حال اجراست."}, status_code=409)
+    form = await request.form()
+    deep = str(form.get("deep") or "").lower() in ("1", "true", "on", "yes")
+
+    async def _runner(log):
+        await sync_subscription_nodes_streamed(log, limit=5000, force_refresh=deep, concurrency=6)
+
+    _asyncio.create_task(_run_python_job("sync", _runner))
+    return JSONResponse({"success": True, "deep": deep})
+
+
+@app.get(f"/{S}/subs/sync-nodes/log")
+async def subscription_sync_nodes_log(request: Request):
+    if not _auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    return JSONResponse(_read_job_log("sync"))
 
 
 @app.post(f"/{S}/subs/nodes/add")
@@ -2300,6 +2326,7 @@ import asyncio as _asyncio
 _JOB_LOG_PATHS = {
     "cert": os.path.join(_repo_dir, "atlas-cert.log"),
     "update": os.path.join(_repo_dir, "atlas-update.log"),
+    "sync": os.path.join(_repo_dir, "atlas-sync.log"),
 }
 _JOB_DONE_OK = "__ATLAS_JOB_OK__"
 _JOB_DONE_FAIL = "__ATLAS_JOB_FAIL__"
@@ -2361,6 +2388,39 @@ async def _run_logged_job(name: str, script: str):
         try:
             with open(path, "a", encoding="utf-8") as f:
                 f.write(f"\n❌ خطای داخلی هنگام اجرا: {e}\n{_JOB_DONE_FAIL}\n")
+        except Exception:
+            pass
+
+
+async def _run_python_job(name: str, coro_func):
+    """Run an async Python routine as a streamed background job.
+
+    `coro_func(log)` receives a synchronous `log(line)` callback that appends a
+    line to the job log file (read by /.../log endpoints for live display)."""
+    path = _job_log_path(name)
+    try:
+        f = open(path, "w", encoding="utf-8")
+    except Exception:
+        return
+    f.write(f"$ شروع عملیات «{name}» — {datetime.now():%Y-%m-%d %H:%M:%S}\n")
+    f.flush()
+
+    def log(line: str = ""):
+        try:
+            f.write(str(line).rstrip("\n") + "\n")
+            f.flush()
+        except Exception:
+            pass
+
+    try:
+        await coro_func(log)
+        f.write(f"\n✅ عملیات با موفقیت تمام شد.\n{_JOB_DONE_OK}\n")
+    except Exception as e:
+        f.write(f"\n❌ خطای داخلی: {e}\n{_JOB_DONE_FAIL}\n")
+    finally:
+        try:
+            f.flush()
+            f.close()
         except Exception:
             pass
 

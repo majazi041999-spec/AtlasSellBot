@@ -15,6 +15,7 @@ atlas.log
 atlas-update.log
 atlas-cert.log
 atlas-job.log
+atlas-sync.log
 backups/
 *.patch
 update-local-changes-*.patch

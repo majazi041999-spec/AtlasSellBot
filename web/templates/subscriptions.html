@@ -252,20 +252,102 @@ async function testNode(id, btn){
   setTimeout(()=>{ btn.innerHTML=old; btn.className='btn btn-outline btn-sm'; },3500);
 }
 
-async function syncSubNodes(btn){
-  const old = btn.innerHTML;
-  btn.innerHTML = '<span class="spin"></span>';
-  btn.disabled = true;
-  const r = await api(`/${S}/subs/sync-nodes`);
-  btn.disabled = false;
-  btn.innerHTML = old;
-  if(r.success){
-    const firstErrors = (r.errors || []).slice(0, 3).join(' | ');
-    const msg = `Sync انجام شد | بررسی: ${r.checked || 0} | ساخته: ${r.created || 0} | ترمیم: ${r.refreshed || 0} | تایید: ${r.verified || 0} | انتقال: ${r.moved || 0} | خطا: ${r.failed || 0}`;
-    toast(firstErrors ? `${msg} | ${firstErrors}` : msg, r.failed ? 'error' : 'success');
-  } else {
-    toast(r.error || 'خطا در Sync نودها','error');
+let _syncPollTimer = null;
+function syncSubNodes(){ openSyncModal(); }
+
+async function openSyncModal(){
+  document.getElementById('sync-log').textContent = 'آمادهٔ شروع...';
+  document.getElementById('sync-result').style.display = 'none';
+  document.getElementById('sync-deep').checked = false;
+  const b = document.getElementById('sync-start-btn');
+  b.style.display=''; b.disabled=false; b.textContent='🚀 شروع همگام‌سازی';
+  document.getElementById('sync-modal').style.display='flex';
+  // If a sync is already running, resume showing its live log.
+  try{
+    const r = await api(`/${S}/subs/sync-nodes/log`, 'GET');
+    if(r && r.running){
+      b.style.display='none';
+      document.getElementById('sync-log').textContent = (r.lines||[]).join('\n') || 'در حال اجرا...';
+      if(_syncPollTimer) clearInterval(_syncPollTimer);
+      _syncPollTimer = setInterval(pollSyncLog, 1200);
+    }
+  }catch(e){}
+}
+function closeSyncModal(){
+  document.getElementById('sync-modal').style.display='none';
+  if(_syncPollTimer){ clearInterval(_syncPollTimer); _syncPollTimer=null; }
+}
+
+async function startSync(){
+  const btn = document.getElementById('sync-start-btn');
+  btn.disabled=true; btn.textContent='⏳ در حال شروع...';
+  const fd = new FormData();
+  fd.append('deep', document.getElementById('sync-deep').checked ? '1' : '0');
+  let r;
+  try{ r = await (await fetch(`/${S}/subs/sync-nodes/start`, {method:'POST', body:fd})).json(); }
+  catch(e){ r = {error:e.message}; }
+  if(r.error){
+    document.getElementById('sync-log').textContent = '❌ ' + r.error;
+    btn.disabled=false; btn.textContent='🚀 تلاش دوباره';
+    return;
+  }
+  btn.style.display='none';
+  document.getElementById('sync-log').textContent = 'در حال اجرا...';
+  _syncPollTimer = setInterval(pollSyncLog, 1200);
+  pollSyncLog();
+}
+
+async function pollSyncLog(){
+  let r;
+  try{ r = await api(`/${S}/subs/sync-nodes/log`, 'GET'); }catch(e){ return; }
+  if(r.error) return;
+  const logEl = document.getElementById('sync-log');
+  logEl.textContent = (r.lines||[]).join('\n') || 'در حال اجرا...';
+  logEl.scrollTop = logEl.scrollHeight;
+  if(r.status==='ok' || r.status==='error'){
+    clearInterval(_syncPollTimer); _syncPollTimer=null;
+    const box = document.getElementById('sync-result');
+    box.style.display='block';
+    box.className = 'sync-result ' + (r.status==='ok' ? 'ok' : 'err');
+    box.textContent = r.status==='ok' ? '✅ همگام‌سازی کامل شد.' : '❌ همگام‌سازی با خطا تمام شد (لاگ را ببینید).';
+    const b=document.getElementById('sync-start-btn'); b.style.display=''; b.disabled=false; b.textContent='🔁 اجرای دوباره';
   }
 }
 </script>
+
+<!-- ───────── Sync nodes live modal ───────── -->
+<div id="sync-modal" class="sync-overlay" style="display:none">
+  <div class="sync-dialog">
+    <div class="sync-head">
+      <span>🔄 همگام‌سازی نودهای همهٔ ساب‌ها</span>
+      <button type="button" class="sync-x" onclick="closeSyncModal()">✕</button>
+    </div>
+    <div class="sync-body">
+      <label class="sync-deep-row">
+        <input type="checkbox" id="sync-deep">
+        <span>بازسازی کامل لینک‌ها (دقیق‌تر ولی کندتر). برای حالت سریع، تیک نزنید.</span>
+      </label>
+      <div class="sync-log" id="sync-log">آمادهٔ شروع...</div>
+      <div id="sync-result" class="sync-result" style="display:none"></div>
+    </div>
+    <div class="sync-foot">
+      <button type="button" class="btn btn-primary" id="sync-start-btn" onclick="startSync()">🚀 شروع همگام‌سازی</button>
+      <button type="button" class="btn btn-outline" onclick="closeSyncModal()">بستن</button>
+    </div>
+  </div>
+</div>
+
+<style>
+.sync-overlay{position:fixed;inset:0;background:rgba(0,0,0,.6);backdrop-filter:blur(3px);z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px}
+.sync-dialog{background:var(--card);border:1px solid var(--border);border-radius:16px;width:100%;max-width:640px;max-height:92vh;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.45)}
+.sync-head{display:flex;align-items:center;justify-content:space-between;padding:14px 18px;border-bottom:1px solid var(--border);font-weight:700}
+.sync-x{background:none;border:none;color:var(--txt2);font-size:1.1rem;cursor:pointer}
+.sync-body{padding:16px 18px;overflow-y:auto}
+.sync-deep-row{display:flex;gap:8px;align-items:flex-start;font-size:.83rem;color:var(--txt2);margin-bottom:12px;cursor:pointer}
+.sync-log{font-family:monospace;font-size:.76rem;background:var(--bg2);border:1px solid var(--border);border-radius:10px;padding:12px;height:300px;overflow-y:auto;white-space:pre-wrap;word-break:break-word;color:var(--txt2);line-height:1.7;direction:ltr;text-align:left}
+.sync-result{margin-top:12px;border-radius:10px;padding:10px 14px;font-size:.88rem}
+.sync-result.ok{background:rgba(0,229,160,.1);border:1px solid var(--g)}
+.sync-result.err{background:rgba(255,76,106,.1);border:1px solid var(--r);color:var(--r)}
+.sync-foot{display:flex;gap:10px;padding:14px 18px;border-top:1px solid var(--border)}
+</style>
 {% endblock %}

@@ -1227,6 +1227,77 @@ async def sync_subscription_nodes_for_all(limit: int = 1000, force_refresh: bool
     }
 
 
+async def sync_subscription_nodes_streamed(
+    log,
+    limit: int = 5000,
+    force_refresh: bool = False,
+    concurrency: int = 6,
+    per_profile_timeout: int = 120,
+) -> Dict:
+    """Same as sync_subscription_nodes_for_all but FAST and observable.
+
+    - Profiles are processed concurrently (network-bound work → big speedup).
+    - Each profile is time-boxed so one slow/down server can't stall everything.
+    - `log(line)` is called with human-readable progress for live display.
+    """
+    profiles = await get_active_subscription_profiles(limit)
+    total = len(profiles)
+    mode = "بازسازی کامل لینک‌ها" if force_refresh else "سریع (فقط نودهای ناقص/جدید)"
+    log(f"🔎 {total} ساب فعال پیدا شد | حالت: {mode} | پردازش همزمان: {concurrency}")
+    agg = {"checked": 0, "created": 0, "refreshed": 0, "verified": 0,
+           "moved": 0, "failed": 0, "skipped": 0, "disabled": 0}
+    if not total:
+        log("هیچ ساب فعالی برای همگام‌سازی وجود ندارد.")
+        return agg
+
+    sem = asyncio.Semaphore(max(1, int(concurrency)))
+    state = {"done": 0}
+
+    async def worker(profile: Dict):
+        async with sem:
+            label = str(profile.get("email") or f"#{profile.get('id')}")[-28:]
+            try:
+                usage = await asyncio.wait_for(sync_profile_usage(profile), timeout=per_profile_timeout)
+                agg["checked"] += 1
+                if usage.get("disabled"):
+                    agg["disabled"] += 1
+                    state["done"] += 1
+                    log(f"[{state['done']}/{total}] ⏸ {label}: غیرفعال/منقضی شد")
+                    return
+                fresh = await get_subscription_profile_by_token(profile["token"]) or profile
+                r = await asyncio.wait_for(
+                    ensure_subscription_profile_nodes(fresh, force_refresh=force_refresh),
+                    timeout=per_profile_timeout,
+                )
+                for k in ("created", "refreshed", "verified", "moved", "failed", "skipped"):
+                    agg[k] += int(r.get(k) or 0)
+                state["done"] += 1
+                log(
+                    f"[{state['done']}/{total}] ✅ {label}: "
+                    f"ساخته={r.get('created', 0)} ترمیم={r.get('refreshed', 0)} "
+                    f"تایید={r.get('verified', 0)} انتقال={r.get('moved', 0)} خطا={r.get('failed', 0)}"
+                )
+                for err in (r.get("errors") or [])[:2]:
+                    log(f"    ↳ {err}")
+            except asyncio.TimeoutError:
+                agg["failed"] += 1
+                state["done"] += 1
+                log(f"[{state['done']}/{total}] ⌛️ {label}: طول کشید و رد شد (سرور کند یا در دسترس نیست)")
+            except Exception as e:
+                agg["failed"] += 1
+                state["done"] += 1
+                log(f"[{state['done']}/{total}] ❌ {label}: {str(e)[:140]}")
+
+    await asyncio.gather(*(worker(p) for p in profiles))
+    log("")
+    log(
+        f"📊 خلاصه — بررسی: {agg['checked']} | ساخته: {agg['created']} | "
+        f"ترمیم: {agg['refreshed']} | تایید: {agg['verified']} | انتقال: {agg['moved']} | "
+        f"غیرفعال: {agg['disabled']} | خطا: {agg['failed']}"
+    )
+    return agg
+
+
 def _format_lifecycle_template(template: str, values: Dict[str, str]) -> str:
     try:
         return (template or "").format(**values)
