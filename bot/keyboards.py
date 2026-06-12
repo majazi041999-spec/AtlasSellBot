@@ -266,11 +266,38 @@ def renew_options_kb(cid: int) -> InlineKeyboardMarkup:
     return b.as_markup()
 
 
-def subscription_detail_kb(profile_id: int, sub_url: str = "") -> InlineKeyboardMarkup:
+def _node_remark(node: Dict, index: int) -> str:
+    return str(
+        node.get("node_label")
+        or node.get("server_name")
+        or f"سرور {index}"
+    ).strip()[:48]
+
+
+def subscription_detail_kb(profile_id: int, sub_url: str = "", nodes: List[Dict] | None = None) -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
+    rows = []
     copy_btn = _copy_text_button("📋 کپی لینک ساب", sub_url, style="primary")
     if copy_btn:
         b.row(copy_btn)
+        rows.append(1)
+
+    # Per-node connection links shown as buttons: tapping copies that node's
+    # link. Useful as a fallback when the subscription URL itself has trouble.
+    # Telegram caps copy_text at 256 chars, so longer links are skipped here
+    # (they are still listed in the message text).
+    idx = 0
+    for node in (nodes or []):
+        if not int(node.get("is_active") or 0):
+            continue
+        link = (node.get("link") or "").strip()
+        if not link or len(link) > 256:
+            continue
+        idx += 1
+        btn = _copy_text_button(f"📍 {_node_remark(node, idx)}", link, style="success")
+        if btn:
+            b.row(btn)
+
     _button(b, text="♻️ تمدید ساب", callback_data=f"sub_renew:{profile_id}", style="success")
     _button(b, text="🗑️ حذف ساب", callback_data=f"sub_del:{profile_id}", style="danger")
     _button(b, text="🔙 برگشت به سرویس‌ها", callback_data="back_configs", style="primary")

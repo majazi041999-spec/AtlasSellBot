@@ -152,6 +152,23 @@ def _format_subscription_status_card(profile: dict, sub_url: str, used: int, tot
     )
 
 
+def _format_node_links_block(active_nodes: list[dict]) -> str:
+    """List each server's connection link with its remark, so the user can copy
+    a single server's link directly if the subscription URL has trouble."""
+    rows = []
+    idx = 0
+    for n in active_nodes:
+        link = (n.get("link") or "").strip()
+        if not link:
+            continue
+        idx += 1
+        remark = str(n.get("node_label") or n.get("server_name") or f"سرور {idx}").strip()
+        rows.append(f"📍 {remark}:\n{link}")
+    if not rows:
+        return ""
+    return "🔗 لینک مستقیم سرورها (در صورت مشکل لینک ساب):\n\n" + "\n\n".join(rows)
+
+
 async def _send_subscription_status(target, profile: dict):
     if not profile:
         return
@@ -193,15 +210,26 @@ async def _send_subscription_status(target, profile: dict):
     pretty_days = f"{dl} روز" if dl > 0 else ("نامحدود" if dl < 0 else "منقضی شده")
     text = _format_subscription_status_card(profile, sub_url, used, total, remaining, pct, pretty_days, active_nodes)
 
+    # Per-server connection links (fallback if the sub URL itself fails) + guide.
+    links_block = _format_node_links_block(active_nodes)
+    guide = (await get_setting("sub_connection_guide", "")).strip()
+    if links_block:
+        text += "\n\n" + links_block
+    if guide:
+        text += "\n\n" + guide
+    if len(text) > 3900:
+        text = text[:3900] + "\n…"
+
+    kb = subscription_detail_kb(int(profile["id"]), sub_url, active_nodes)
     if isinstance(target, Message):
-        await target.answer(text, parse_mode=None, reply_markup=subscription_detail_kb(int(profile["id"]), sub_url))
+        await target.answer(text, parse_mode=None, reply_markup=kb)
         try:
             qr_label = profile.get("email") or "Subscription"
             await target.answer_photo(_qr_input_file(sub_url, qr_label), caption=f"QR سابسکریپشن: {qr_label}", parse_mode=None)
         except Exception:
             pass
     else:
-        await target.message.edit_text(text, parse_mode=None, reply_markup=subscription_detail_kb(int(profile["id"]), sub_url))
+        await target.message.edit_text(text, parse_mode=None, reply_markup=kb)
 
 
 async def _is_channel_member(msg_or_cb) -> bool:

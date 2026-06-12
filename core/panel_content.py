@@ -42,6 +42,12 @@ SETTINGS_DEFAULTS: Dict[str, str] = {
     "sub_info_template": "📊 حجم کل: {traffic_gb}GB | مصرف: {used} | باقی: {remaining}\n📅 باقی‌مانده: {days_left} روز | سپری‌شده: {days_elapsed} روز",
     "sub_brand_template": "📣 {brand}",
     "sub_grace_days": "3",
+    "sub_connection_guide": (
+        "📚 راهنمای اتصال:\n"
+        "۱) بهترین روش: «کپی لینک ساب» را بزنید و در برنامه (v2rayNG / NekoBox / Streisand / V2Box) از بخش افزودن از کلیپ‌بورد، آن را اضافه کنید و آپدیت بزنید.\n"
+        "۲) اگر لینک ساب باز نشد: روی دکمهٔ هر سرور (📍) بزنید تا لینک همان سرور کپی شود و مستقیم در برنامه وارد کنید.\n"
+        "۳) همیشه چند سرور دارید؛ اگر یکی وصل نشد، سرور دیگر را امتحان کنید."
+    ),
     "sub_expiry_notice_template": (
         "⛔️ اشتراک سرویس شما به پایان رسید.\n\n"
         "سرویس: {service}\n"

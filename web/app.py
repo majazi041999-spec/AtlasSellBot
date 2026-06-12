@@ -135,6 +135,8 @@ from core.multi_subscription import (
     edit_subscription_profile,
     sync_subscription_nodes_for_all,
 )
+from core.database import get_subscription_profile_by_token as _get_sub_profile_by_token
+from core.database import get_subscription_nodes as _get_sub_nodes
 
 logger = logging.getLogger(__name__)
 
@@ -164,8 +166,172 @@ async def health_check():
     return JSONResponse({"ok": True, "panel": f"/{S}/login"})
 
 
+_SUB_CLIENT_UAS = (
+    "v2ray", "v2rayng", "nekobox", "nekoray", "sing-box", "singbox", "sagernet",
+    "clash", "clashmeta", "mihomo", "stash", "streisand", "shadowrocket", "v2box",
+    "hiddify", "foxray", "loon", "quantumult", "surge", "matsuri", "throne",
+    "karing", "happ", "ktor-client", "go-http", "okhttp", "curl", "wget",
+)
+
+
+def _wants_html_sub(request: Request) -> bool:
+    """True when a human browser opens the link (show a status page); False for
+    VPN clients fetching the config list."""
+    if request.query_params.get("config") in ("1", "true"):
+        return False
+    if request.query_params.get("html") in ("1", "true"):
+        return True
+    ua = (request.headers.get("user-agent") or "").lower()
+    accept = (request.headers.get("accept") or "").lower()
+    if any(tok in ua for tok in _SUB_CLIENT_UAS):
+        return False
+    return ("text/html" in accept) and ("mozilla" in ua)
+
+
+def _fmt_bytes_web(b: int) -> str:
+    b = int(b or 0)
+    if b <= 0:
+        return "0 B"
+    units = ["B", "KB", "MB", "GB", "TB"]
+    i = 0
+    f = float(b)
+    while f >= 1024 and i < len(units) - 1:
+        f /= 1024
+        i += 1
+    return f"{f:.2f} {units[i]}"
+
+
+async def _render_sub_status_html(token: str, profile: dict) -> str:
+    import html as _html
+
+    brand = await get_setting("ui.brand_name", "Atlas Account")
+    sub_url = await subscription_url(token)
+    nodes = await _get_sub_nodes(int(profile["id"]))
+    active_nodes = [n for n in nodes if int(n.get("is_active") or 0) and (n.get("link") or "").strip()]
+
+    now_ms = int(time.time() * 1000)
+    expire_ms = int(profile.get("expire_timestamp") or 0)
+    total = int(float(profile.get("traffic_gb") or 0) * 1024 ** 3)
+    used = int(profile.get("used_bytes") or 0)
+    remaining = max(0, total - used) if total > 0 else 0
+    pct = min(100, int(used / total * 100)) if total > 0 else 0
+    if expire_ms > 0:
+        days_left = max(0, int((expire_ms - now_ms) / 86400000))
+        expire_date = datetime.fromtimestamp(expire_ms / 1000).strftime("%Y-%m-%d")
+    else:
+        days_left = -1
+        expire_date = "نامحدود"
+    expired = (expire_ms > 0 and expire_ms <= now_ms) or (total > 0 and used >= total) or not int(profile.get("is_active") or 0)
+    status_label = "منقضی / غیرفعال" if expired else "فعال"
+    status_color = "#ff4c6a" if expired else "#00e5a0"
+    days_text = "نامحدود" if days_left < 0 else (f"{days_left} روز" if days_left > 0 else "کمتر از یک روز / منقضی")
+
+    node_rows = ""
+    for i, n in enumerate(active_nodes, 1):
+        remark = _html.escape(str(n.get("node_label") or n.get("server_name") or f"سرور {i}"))
+        link = _html.escape(n.get("link") or "", quote=True)
+        node_rows += f"""
+        <div class="node">
+          <div class="node-name">📍 {remark}</div>
+          <input class="hide-input" id="node{i}" value="{link}" readonly>
+          <button class="copy-btn" onclick="copyFrom(this,'node{i}')">کپی لینک</button>
+        </div>"""
+    if not node_rows:
+        node_rows = '<div class="muted">سروری برای نمایش موجود نیست.</div>'
+
+    safe_brand = _html.escape(str(brand or "Atlas Account"))
+    safe_service = _html.escape(str(profile.get("email") or f"#{profile.get('id')}"))
+    safe_sub = _html.escape(sub_url, quote=True)
+    return f"""<!doctype html>
+<html lang="fa" dir="rtl"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex,nofollow">
+<title>{safe_brand} — وضعیت اشتراک</title>
+<style>
+*{{box-sizing:border-box}}
+body{{margin:0;font-family:Tahoma,Vazirmatn,system-ui,sans-serif;background:linear-gradient(160deg,#0b0f1a,#131a2b);color:#e8edf6;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:18px}}
+.card{{width:100%;max-width:480px;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.08);border-radius:20px;padding:22px;box-shadow:0 24px 60px rgba(0,0,0,.45)}}
+.brand{{font-size:1.25rem;font-weight:800;text-align:center;margin-bottom:4px}}
+.sub-title{{text-align:center;color:#9aa6bd;font-size:.85rem;margin-bottom:18px}}
+.status{{display:inline-block;padding:4px 12px;border-radius:999px;font-size:.8rem;font-weight:700;color:{status_color};border:1px solid {status_color};background:rgba(255,255,255,.03)}}
+.row{{display:flex;justify-content:space-between;align-items:center;padding:11px 0;border-bottom:1px solid rgba(255,255,255,.06);font-size:.9rem}}
+.row:last-child{{border-bottom:none}}
+.row .k{{color:#9aa6bd}}
+.row .v{{font-weight:700}}
+.bar{{height:10px;border-radius:999px;background:rgba(255,255,255,.08);overflow:hidden;margin:6px 0 2px}}
+.bar > i{{display:block;height:100%;width:{pct}%;background:linear-gradient(90deg,#7c6fff,#00e5a0)}}
+.section-title{{margin:18px 0 8px;font-weight:700;font-size:.95rem}}
+.sub-box{{display:flex;gap:8px;align-items:center;background:#0a0e18;border:1px solid rgba(255,255,255,.08);border-radius:12px;padding:10px;margin-bottom:6px}}
+.sub-box input{{flex:1;background:transparent;border:none;color:#cfe;font-family:monospace;font-size:.72rem;direction:ltr;text-align:left;outline:none;min-width:0}}
+.copy-btn{{background:#7c6fff;border:none;color:#fff;border-radius:9px;padding:8px 12px;font-size:.78rem;font-weight:700;cursor:pointer;white-space:nowrap}}
+.copy-btn:active{{transform:scale(.96)}}
+.node{{display:flex;justify-content:space-between;align-items:center;background:#0a0e18;border:1px solid rgba(255,255,255,.06);border-radius:12px;padding:10px 12px;margin-bottom:8px}}
+.node-name{{font-size:.9rem;font-weight:600;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}
+.hide-input{{position:absolute;left:-9999px;opacity:0;width:1px;height:1px}}
+.muted{{color:#9aa6bd;font-size:.85rem}}
+.guide{{margin-top:16px;font-size:.78rem;color:#9aa6bd;line-height:1.9;background:rgba(255,255,255,.03);border-radius:12px;padding:12px}}
+.foot{{text-align:center;color:#5d6680;font-size:.72rem;margin-top:16px}}
+</style></head>
+<body><div class="card">
+  <div class="brand">{safe_brand}</div>
+  <div class="sub-title">صفحهٔ وضعیت اشتراک</div>
+  <div style="text-align:center;margin-bottom:16px"><span class="status">{status_label}</span></div>
+
+  <div class="row"><span class="k">سرویس</span><span class="v">{safe_service}</span></div>
+  <div class="row"><span class="k">مصرف</span><span class="v">{_fmt_bytes_web(used)} از {(_fmt_bytes_web(total) if total>0 else 'نامحدود')}</span></div>
+  <div class="bar"><i></i></div>
+  <div class="row"><span class="k">باقی‌مانده</span><span class="v">{(_fmt_bytes_web(remaining) if total>0 else 'نامحدود')} ({pct}%)</span></div>
+  <div class="row"><span class="k">زمان باقی‌مانده</span><span class="v">{days_text}</span></div>
+  <div class="row"><span class="k">تاریخ انقضا</span><span class="v">{expire_date}</span></div>
+  <div class="row"><span class="k">تعداد سرور</span><span class="v">{len(active_nodes)}</span></div>
+
+  <div class="section-title">🔗 لینک اشتراک</div>
+  <div class="sub-box">
+    <input id="suburl" value="{safe_sub}" readonly onclick="this.select()">
+    <button class="copy-btn" onclick="copyText(this,document.getElementById('suburl').value)">کپی</button>
+  </div>
+
+  <div class="section-title">🖥 سرورها</div>
+  {node_rows}
+
+  <div class="guide">
+    📚 راهنما: لینک اشتراک بالا را کپی کنید و در برنامه‌هایی مثل v2rayNG، NekoBox، Streisand یا V2Box از بخش «افزودن از کلیپ‌بورد» اضافه کنید و آپدیت بزنید. اگر لینک اشتراک باز نشد، لینک هر سرور را جداگانه کپی و وارد کنید.
+  </div>
+  <div class="foot">{safe_brand}</div>
+</div>
+<script>
+function copyText(btn, text){{
+  const done=()=>{{const o=btn.textContent;btn.textContent='✅ کپی شد';setTimeout(()=>btn.textContent=o,1500);}};
+  if(navigator.clipboard&&window.isSecureContext){{navigator.clipboard.writeText(text).then(done).catch(()=>fallback(text,done));}}
+  else fallback(text,done);
+}}
+function copyFrom(btn, id){{var el=document.getElementById(id); if(el) copyText(btn, el.value);}}
+function fallback(text,done){{const t=document.createElement('textarea');t.value=text;t.style.position='fixed';t.style.opacity='0';document.body.appendChild(t);t.select();try{{document.execCommand('copy');done();}}catch(e){{}}document.body.removeChild(t);}}
+</script>
+</body></html>"""
+
+
 @app.get("/sub/{token}")
-async def public_subscription(token: str):
+async def public_subscription(token: str, request: Request):
+    # Human opening the link in a browser → pretty status page.
+    if _wants_html_sub(request):
+        profile = await _get_sub_profile_by_token(token)
+        if not profile:
+            return HTMLResponse(
+                "<!doctype html><html lang='fa' dir='rtl'><meta charset='utf-8'>"
+                "<body style='font-family:Tahoma;background:#0b0f1a;color:#e8edf6;text-align:center;padding-top:80px'>"
+                "<h2>لینک اشتراک یافت نشد</h2><p style='color:#9aa6bd'>این لینک معتبر نیست یا حذف شده است.</p></body></html>",
+                status_code=404,
+            )
+        # keep usage/links fresh in the background without blocking the page
+        try:
+            _asyncio.create_task(render_subscription(token))
+        except Exception:
+            pass
+        html = await _render_sub_status_html(token, profile)
+        return HTMLResponse(html, headers={"Cache-Control": "no-store"})
+
+    # VPN client → base64 config list (fast, read-only).
     rendered = await render_subscription(token)
     if not rendered:
         return StreamingResponse(iter([b""]), media_type="text/plain", status_code=404)
@@ -2038,61 +2204,82 @@ async def settings_save(
     return RedirectResponse(f"/{S}/settings?saved=1", status_code=302)
 
 
-@app.post(f"/{S}/settings/certificate/apply")
-async def settings_apply_certificate(request: Request):
+def _public_url_for(domain: str, https_port: int) -> str:
+    return f"https://{domain}" if int(https_port) == 443 else f"https://{domain}:{int(https_port)}"
+
+
+@app.post(f"/{S}/settings/certificate/start")
+async def settings_cert_start(request: Request):
+    """Kick off the SSL/Nginx setup as a background streamed job (no blocking)."""
     if not _auth(request):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
-
     form = await request.form()
-    raw_domain = str(form.get("panel_domain") or form.get("public_base_url") or await get_setting("panel_domain", ""))
-    domain = _clean_domain(raw_domain)
+    domain = _clean_domain(str(form.get("panel_domain") or await get_setting("panel_domain", "")))
     email = str(form.get("cert_email") or await get_setting("cert_email", "")).strip().lower()
     try:
         https_port = int(form.get("atlas_tls_https_port") or await get_setting("atlas_tls_https_port", "443") or 443)
     except (TypeError, ValueError):
         https_port = 443
     https_port = max(1, min(65535, https_port))
-    if https_port in {80, WEB_PORT}:
-        await set_setting("cert_status", f"❌ پورت HTTPS انتخابی ({https_port}) مناسب نیست؛ با پورت 80 یا پورت داخلی ربات تداخل دارد.")
-        return RedirectResponse(f"/{S}/settings?cert=error", status_code=302)
     if not domain:
-        await set_setting("cert_status", "❌ دامنه معتبر نیست. مثال درست: sm.example.com")
-        return RedirectResponse(f"/{S}/settings?cert=error", status_code=302)
+        return JSONResponse({"error": "دامنه معتبر نیست. مثال درست: sm.example.com"}, status_code=400)
+    if https_port in {80, WEB_PORT}:
+        return JSONResponse({"error": f"پورت HTTPS ({https_port}) مناسب نیست؛ با پورت 80 یا پورت داخلی ربات تداخل دارد."}, status_code=400)
 
+    # already running?
+    if _read_job_log("cert").get("running"):
+        return JSONResponse({"error": "یک عملیات گواهی همین الان در حال اجراست. کمی صبر کنید."}, status_code=409)
+
+    await set_setting("panel_domain", domain)
+    await set_setting("cert_email", email)
+    await set_setting("atlas_tls_https_port", str(https_port))
+
+    script = _atlas_tls_proxy_script(domain, email, WEB_PORT, https_port)
+    _asyncio.create_task(_run_logged_job("cert", script))
+    return JSONResponse({
+        "success": True,
+        "domain": domain,
+        "https_port": https_port,
+        "public_url": _public_url_for(domain, https_port),
+    })
+
+
+@app.get(f"/{S}/settings/certificate/log")
+async def settings_cert_log(request: Request):
+    if not _auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    data = _read_job_log("cert")
+    if data["status"] == "ok":
+        domain = _clean_domain(await get_setting("panel_domain", ""))
+        try:
+            https_port = int(await get_setting("atlas_tls_https_port", "443") or 443)
+        except (TypeError, ValueError):
+            https_port = 443
+        data["public_url"] = _public_url_for(domain, https_port) if domain else ""
+        data["domain"] = domain
+        data["https_port"] = https_port
+    return JSONResponse(data)
+
+
+@app.post(f"/{S}/settings/certificate/apply-domain")
+async def settings_cert_apply_domain(request: Request):
+    """Set the verified domain as the public base URL for the panel + bot sub links."""
+    if not _auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    form = await request.form()
+    domain = _clean_domain(str(form.get("domain") or await get_setting("panel_domain", "")))
     try:
-        script = _atlas_tls_proxy_script(domain, email, WEB_PORT, https_port)
-        cmd = ["bash", "-lc", script]
-        if hasattr(os, "geteuid") and os.geteuid() != 0:
-            cmd = ["sudo", "-n", "bash", "-lc", script]
-        subprocess.run(
-            cmd,
-            check=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            timeout=600,
-        )
-        await set_setting("panel_domain", domain)
-        await set_setting("cert_email", email)
-        await set_setting("atlas_tls_https_port", str(https_port))
-        public_url = f"https://{domain}" if https_port == 443 else f"https://{domain}:{https_port}"
-        await set_setting("public_base_url", public_url)
-        await set_setting(
-            "cert_status",
-            f"✅ SSL و Nginx برای Atlas فعال شد | لینک عمومی ساب: {public_url} | پورت داخلی ربات: {WEB_PORT}",
-        )
-        return RedirectResponse(f"/{S}/settings?cert=ok", status_code=302)
-    except subprocess.CalledProcessError as e:
-        detail = (e.stderr or e.stdout or str(e)).strip()[-900:]
-        await set_setting(
-            "cert_status",
-            "❌ خطا در نصب SSL/Nginx. مطمئن شوید DNS روی IP همین سرور و حالت DNS Only است، پورت‌های 80 و 443 بازند، "
-            f"و سرویس با دسترسی root اجرا می‌شود. جزئیات: {detail}",
-        )
-        return RedirectResponse(f"/{S}/settings?cert=error", status_code=302)
-    except Exception as e:
-        await set_setting("cert_status", f"❌ خطا در دریافت/اعمال گواهی Atlas: {e}")
-        return RedirectResponse(f"/{S}/settings?cert=error", status_code=302)
+        https_port = int(form.get("https_port") or await get_setting("atlas_tls_https_port", "443") or 443)
+    except (TypeError, ValueError):
+        https_port = 443
+    if not domain:
+        return JSONResponse({"error": "دامنه نامعتبر است."}, status_code=400)
+    public_url = _public_url_for(domain, https_port)
+    await set_setting("public_base_url", public_url)
+    await set_setting("panel_domain", domain)
+    await set_setting("atlas_tls_https_port", str(https_port))
+    await set_setting("cert_status", f"✅ دامنه روی پنل و ربات تنظیم شد | لینک عمومی ساب: {public_url}")
+    return JSONResponse({"success": True, "public_url": public_url})
 
 
 
@@ -2109,6 +2296,107 @@ async def settings_reset_legacy_sync(request: Request):
 import asyncio as _asyncio
 
 
+# ───────── Background log-job infra (shared by SSL setup + self-update) ─────────
+_JOB_LOG_PATHS = {
+    "cert": os.path.join(_repo_dir, "atlas-cert.log"),
+    "update": os.path.join(_repo_dir, "atlas-update.log"),
+}
+_JOB_DONE_OK = "__ATLAS_JOB_OK__"
+_JOB_DONE_FAIL = "__ATLAS_JOB_FAIL__"
+
+
+def _job_log_path(name: str) -> str:
+    return _JOB_LOG_PATHS.get(name, os.path.join(_repo_dir, "atlas-job.log"))
+
+
+def _read_job_log(name: str) -> dict:
+    path = _job_log_path(name)
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            text = f.read()
+    except FileNotFoundError:
+        return {"lines": [], "running": False, "status": "idle"}
+    status = "running"
+    if _JOB_DONE_OK in text:
+        status = "ok"
+    elif _JOB_DONE_FAIL in text:
+        status = "error"
+    lines = [ln for ln in text.splitlines() if _JOB_DONE_OK not in ln and _JOB_DONE_FAIL not in ln]
+    return {"lines": lines[-500:], "running": status == "running", "status": status}
+
+
+async def _run_logged_job(name: str, script: str):
+    """Run a bash script in-process, streaming combined output to the job log file.
+
+    For jobs that do NOT restart this service (e.g. SSL setup). For self-update
+    use _launch_detached_job(): stopping atlas-bot would kill an in-process job.
+    """
+    path = _job_log_path(name)
+    cmd = ["bash", "-lc", script]
+    if hasattr(os, "geteuid") and os.geteuid() != 0:
+        cmd = ["sudo", "-n", "bash", "-lc", script]
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(f"$ شروع عملیات «{name}» — {datetime.now():%Y-%m-%d %H:%M:%S}\n")
+        proc = await _asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=_asyncio.subprocess.PIPE,
+            stderr=_asyncio.subprocess.STDOUT,
+            cwd=_repo_dir,
+        )
+        with open(path, "a", encoding="utf-8") as f:
+            while True:
+                chunk = await proc.stdout.readline()
+                if not chunk:
+                    break
+                f.write(chunk.decode("utf-8", errors="replace"))
+                f.flush()
+        rc = await proc.wait()
+        with open(path, "a", encoding="utf-8") as f:
+            if rc == 0:
+                f.write(f"\n✅ عملیات با موفقیت تمام شد.\n{_JOB_DONE_OK}\n")
+            else:
+                f.write(f"\n❌ عملیات با کد خطای {rc} متوقف شد.\n{_JOB_DONE_FAIL}\n")
+    except Exception as e:
+        try:
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(f"\n❌ خطای داخلی هنگام اجرا: {e}\n{_JOB_DONE_FAIL}\n")
+        except Exception:
+            pass
+
+
+def _launch_detached_job(name: str, script: str) -> None:
+    """Run a script fully detached from this service's cgroup so it survives a
+    restart. Required for self-update (update.sh stops atlas-bot, which would
+    otherwise kill the updater before the restart completes)."""
+    path = _job_log_path(name)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(f"$ شروع آپدیت — {datetime.now():%Y-%m-%d %H:%M:%S}\n")
+    qpath = shlex.quote(path)
+    inner = (
+        f"({script}) >> {qpath} 2>&1; "
+        f"if [ $? -eq 0 ]; then echo {_JOB_DONE_OK} >> {qpath}; "
+        f"else echo {_JOB_DONE_FAIL} >> {qpath}; fi"
+    )
+    sudo = [] if (hasattr(os, "geteuid") and os.geteuid() == 0) else ["sudo", "-n"]
+    if shutil.which("systemd-run"):
+        unit = f"atlas-selfupdate-{int(time.time())}"
+        cmd = sudo + [
+            "systemd-run", "--collect", "--unit", unit,
+            "--property=KillMode=process",
+            "bash", "-lc", inner,
+        ]
+    elif shutil.which("setsid"):
+        cmd = sudo + ["setsid", "bash", "-lc", inner]
+    else:
+        cmd = sudo + ["bash", "-lc", inner]
+    subprocess.Popen(
+        cmd, cwd=_repo_dir,
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+
+
 async def _git_run(*args, cwd=None):
     proc = await _asyncio.create_subprocess_exec(
         *args,
@@ -2120,19 +2408,49 @@ async def _git_run(*args, cwd=None):
     return out.decode("utf-8", errors="replace").strip(), err.decode("utf-8", errors="replace").strip(), proc.returncode
 
 
-async def _run_update_bg(repo_dir: str):
+def _extract_new_changelog(local_md: str, remote_md: str) -> str:
+    """Persian, user-friendly changelog: the remote CHANGELOG.md version blocks
+    that are newer than the one currently installed."""
+    def first_version_header(md: str) -> str:
+        for line in (md or "").splitlines():
+            if line.strip().startswith("## ["):
+                return line.strip()
+        return ""
+
+    local_top = first_version_header(local_md)
+    out_lines: list[str] = []
+    capturing = False
+    for line in (remote_md or "").splitlines():
+        stripped = line.strip()
+        if stripped.startswith("## ["):
+            if local_top and stripped == local_top:
+                break  # reached the installed version; stop
+            capturing = True
+        if capturing:
+            out_lines.append(line.rstrip())
+    text = "\n".join(out_lines).strip()
+    return text
+
+
+async def _read_remote_changelog() -> str:
+    out, _, rc = await _git_run("git", "show", "origin/main:CHANGELOG.md")
+    return out if rc == 0 else ""
+
+
+def _run_update_bg(repo_dir: str):
+    """Start the self-update DETACHED so it survives the service restart.
+
+    update.sh stops atlas-bot; if the updater were a child of this process it
+    would be killed mid-update. systemd-run (or setsid) keeps it alive."""
     update_sh = os.path.join(repo_dir, "update.sh")
     if os.path.exists(update_sh):
-        proc = await _asyncio.create_subprocess_exec(
-            "bash", update_sh, "hard",
-            stdout=_asyncio.subprocess.DEVNULL,
-            stderr=_asyncio.subprocess.DEVNULL,
-            cwd=repo_dir,
-        )
-        await proc.wait()
+        script = f"bash {shlex.quote(update_sh)} hard"
     else:
-        await _git_run("git", "pull", "--ff-only", "origin", "main", cwd=repo_dir)
-        await _git_run("systemctl", "restart", "atlas-bot")
+        script = (
+            f"cd {shlex.quote(repo_dir)} && git fetch origin main && "
+            f"git reset --hard origin/main && systemctl restart atlas-bot"
+        )
+    _launch_detached_job("update", script)
 
 
 @app.get(f"/{S}/update", response_class=HTMLResponse)
@@ -2156,6 +2474,7 @@ async def update_check(request: Request):
         up_to_date = local_hash == remote_hash
 
         changelog = []
+        changelog_md = ""
         if not up_to_date and local_hash and remote_hash:
             log_out, _, _ = await _git_run(
                 "git", "log", "--no-merges",
@@ -2173,12 +2492,25 @@ async def update_check(request: Request):
                         "time": parts[3] if len(parts) > 3 else "",
                     })
 
+            # Persian, user-friendly changelog straight from the new CHANGELOG.md
+            try:
+                local_md = ""
+                local_changelog_path = os.path.join(_repo_dir, "CHANGELOG.md")
+                if os.path.exists(local_changelog_path):
+                    with open(local_changelog_path, "r", encoding="utf-8", errors="replace") as f:
+                        local_md = f.read()
+                remote_md = await _read_remote_changelog()
+                changelog_md = _extract_new_changelog(local_md, remote_md)
+            except Exception:
+                changelog_md = ""
+
         return JSONResponse({
             "up_to_date": up_to_date,
             "local_hash": local_hash[:8] if local_hash else "—",
             "remote_hash": remote_hash[:8] if remote_hash else "—",
             "commits_behind": len(changelog),
             "changelog": changelog,
+            "changelog_md": changelog_md,
         })
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
@@ -2188,8 +2520,20 @@ async def update_check(request: Request):
 async def update_apply(request: Request):
     if not _auth(request):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
-    _asyncio.create_task(_run_update_bg(_repo_dir))
+    if _read_job_log("update").get("running"):
+        return JSONResponse({"error": "یک آپدیت همین الان در حال اجراست."}, status_code=409)
+    try:
+        _run_update_bg(_repo_dir)
+    except Exception as e:
+        return JSONResponse({"error": f"شروع آپدیت ناموفق بود: {e}"}, status_code=500)
     return JSONResponse({"success": True, "message": "آپدیت شروع شد. پنل چند ثانیه دیگر ریستارت می‌شود..."})
+
+
+@app.get(f"/{S}/update/log")
+async def update_log(request: Request):
+    if not _auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    return JSONResponse(_read_job_log("update"))
 
 
 # ═══════════════════════════════ ROOT ═══════════════════════════════

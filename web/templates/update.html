@@ -21,7 +21,14 @@
 .status-loading{background:var(--card2);border:1px solid var(--border);color:var(--txt2)}
 .progress-bar-wrap{height:6px;background:var(--border);border-radius:4px;overflow:hidden;margin-top:12px}
 .progress-bar{height:100%;background:linear-gradient(90deg,var(--p),var(--acc));border-radius:4px;width:0%;transition:width .5s}
-.update-log{font-family:monospace;font-size:.78rem;background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:14px;max-height:180px;overflow-y:auto;color:var(--g);margin-top:12px;display:none}
+.update-log{font-family:monospace;font-size:.78rem;background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:14px;max-height:280px;overflow-y:auto;color:var(--txt2);margin-top:12px;display:none;white-space:pre-wrap;word-break:break-word;line-height:1.6}
+.changelog-md{background:var(--card2);border:1px solid var(--border);border-radius:10px;padding:14px 16px;font-size:.86rem;line-height:2;color:var(--txt2)}
+.changelog-md .cl-ver{font-weight:800;color:var(--p);font-size:.98rem;margin:6px 0 8px}
+.changelog-md .cl-sec{font-weight:700;color:var(--txt);margin:12px 0 4px}
+.changelog-md .cl-li{padding-right:18px;position:relative}
+.changelog-md .cl-li::before{content:'•';position:absolute;right:4px;color:var(--acc)}
+.changelog-md code{background:var(--bg2);border-radius:4px;padding:1px 5px;font-size:.8rem}
+.changelog-md hr{border:none;border-top:1px solid var(--border);margin:10px 0}
 
 /* shimmer loader */
 @keyframes shimmer{0%{background-position:-400px 0}100%{background-position:400px 0}}
@@ -52,6 +59,7 @@
 
     <div id="changelog-section" style="display:none">
       <div class="sec-title" style="margin:16px 0 8px">📋 تغییرات این نسخه</div>
+      <div id="changelog-md" class="changelog-md" style="display:none"></div>
       <ul class="changelog-list" id="changelog-list"></ul>
     </div>
 
@@ -133,8 +141,15 @@ async function checkUpdate(){
     document.getElementById('status-msg').textContent=`🆕 ${r.commits_behind} کامیت جدید در دسترس است`;
     document.getElementById('actions-row').style.display='block';
 
-    if(r.changelog && r.changelog.length){
-      const ul = document.getElementById('changelog-list');
+    const mdBox = document.getElementById('changelog-md');
+    const ul = document.getElementById('changelog-list');
+    if(r.changelog_md && r.changelog_md.trim()){
+      mdBox.innerHTML = renderChangelogMd(r.changelog_md);
+      mdBox.style.display='block';
+      ul.innerHTML='';
+      document.getElementById('changelog-section').style.display='block';
+    } else if(r.changelog && r.changelog.length){
+      mdBox.style.display='none';
       ul.innerHTML = r.changelog.map(c=>`
         <li>
           <span class="cl-hash">${c.hash}</span>
@@ -148,6 +163,25 @@ async function checkUpdate(){
   }
 }
 
+// Lightweight, safe renderer for the Persian CHANGELOG.md section
+function renderChangelogMd(md){
+  const inline = (s)=> escHtml(s)
+      .replace(/\*\*([^*]+)\*\*/g,'<b>$1</b>')
+      .replace(/`([^`]+)`/g,'<code>$1</code>');
+  const out = [];
+  (md||'').split('\n').forEach(raw=>{
+    const line = raw.trim();
+    if(!line){ return; }
+    if(line.startsWith('## ')){ out.push(`<div class="cl-ver">${inline(line.replace(/^##\s*/,''))}</div>`); }
+    else if(line.startsWith('### ')){ out.push(`<div class="cl-sec">${inline(line.replace(/^###\s*/,''))}</div>`); }
+    else if(line.startsWith('#')){ out.push(`<div class="cl-sec">${inline(line.replace(/^#+\s*/,''))}</div>`); }
+    else if(line==='---'){ out.push('<hr>'); }
+    else if(line.startsWith('- ')){ out.push(`<div class="cl-li">${inline(line.slice(2))}</div>`); }
+    else { out.push(`<div>${inline(line)}</div>`); }
+  });
+  return out.join('');
+}
+
 async function applyUpdate(){
   const btn = document.getElementById('apply-btn');
   btn.disabled = true;
@@ -157,40 +191,54 @@ async function applyUpdate(){
 
   const log = document.getElementById('update-log');
   log.style.display='block';
-  const steps = [
-    'git fetch origin main...',
-    'git reset --hard origin/main...',
-    'pip install -r requirements.txt...',
-    'systemctl restart atlas-bot...',
-    'سرویس در حال ریستارت است...',
-  ];
-  let stepIdx=0;
+  log.textContent='در حال شروع آپدیت...';
   const bar = document.getElementById('prog-bar');
   const msg = document.getElementById('progress-msg');
-  const stepTimer = setInterval(()=>{
-    if(stepIdx<steps.length){
-      log.innerHTML += `<div>$ ${steps[stepIdx]}</div>`;
-      log.scrollTop=log.scrollHeight;
-      bar.style.width = ((stepIdx+1)/steps.length*80)+'%';
-      stepIdx++;
-    }
-  }, 700);
+  bar.style.width='8%';
 
   const r = await api(`/${S}/update/apply`,'POST');
-  clearInterval(stepTimer);
 
-  if(r.success){
-    bar.style.width='100%';
-    msg.textContent='✅ آپدیت ارسال شد. منتظر ریستارت...';
-    log.innerHTML += `<div style="color:var(--g)">✅ ${r.message}</div>`;
-    // Poll until panel comes back up
-    setTimeout(()=>pollRestart(), 4000);
-  } else {
+  if(!r.success){
     msg.textContent='❌ خطا: ' + (r.error||'نامشخص');
-    log.innerHTML += `<div style="color:var(--r)">❌ ${r.error||'خطا'}</div>`;
+    log.textContent = '❌ ' + (r.error||'خطا');
     btn.disabled=false; btn.textContent='🚀 اعمال آپدیت';
     document.getElementById('actions-row').style.display='block';
+    return;
   }
+  msg.textContent='🔄 در حال اجرای آپدیت روی سرور...';
+  pollUpdateLog();
+}
+
+let _restartStarted = false;
+async function pollUpdateLog(){
+  const log = document.getElementById('update-log');
+  const bar = document.getElementById('prog-bar');
+  const msg = document.getElementById('progress-msg');
+  let r;
+  try{ r = await api(`/${S}/update/log`,'GET'); }
+  catch(e){
+    // panel likely restarting — switch to restart polling
+    if(!_restartStarted){ _restartStarted=true; pollRestart(); }
+    return;
+  }
+  if(r && r.lines){
+    log.textContent = r.lines.join('\n');
+    log.scrollTop = log.scrollHeight;
+    if(bar.style.width==='' || parseInt(bar.style.width)<85){ bar.style.width = Math.min(85, 8 + r.lines.length*2)+'%'; }
+  }
+  if(r && r.status==='ok'){
+    bar.style.width='95%';
+    msg.textContent='✅ آپدیت با موفقیت اعمال شد. منتظر ریستارت سرویس...';
+    if(!_restartStarted){ _restartStarted=true; setTimeout(()=>pollRestart(), 2500); }
+    return;
+  }
+  if(r && r.status==='error'){
+    msg.textContent='❌ آپدیت ناموفق بود. لاگ را بررسی کنید.';
+    document.getElementById('actions-row').style.display='block';
+    const b=document.getElementById('apply-btn'); b.disabled=false; b.textContent='🚀 تلاش دوباره';
+    return;
+  }
+  setTimeout(pollUpdateLog, 1500);
 }
 
 function pollRestart(attempts=0){

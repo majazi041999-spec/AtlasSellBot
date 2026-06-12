@@ -141,10 +141,11 @@
       <div class="form-group"><label>دامنه عمومی ربات/ساب (مثال: sm.example.com)</label><input class="form-control" type="text" name="panel_domain" value="{{ settings.panel_domain }}" /></div>
       <div class="form-group"><label>پورت HTTPS لینک ساب</label><input class="form-control" type="number" name="atlas_tls_https_port" value="{{ settings.atlas_tls_https_port or 443 }}" min="1" max="65535" /><small style="color:var(--txt3)">اگر 443 آزاد نیست، یک پورت آزاد مثل 9443 بگذارید. لینک ساب با همین پورت ذخیره می‌شود.</small></div>
       <div class="form-group"><label>ایمیل (اختیاری برای اعلان‌های گواهی)</label><input class="form-control" type="email" name="cert_email" value="{{ settings.cert_email }}" /></div>
-      <div class="settings-note" style="margin-top:8px">{{ settings.cert_status or 'هنوز عملیاتی انجام نشده است.' }}</div>
+      <div class="settings-note" id="cert-status-note" style="margin-top:8px">{{ settings.cert_status or 'هنوز عملیاتی انجام نشده است.' }}</div>
       <div class="form-group" style="margin-top:10px">
-        <button class="btn btn-outline" formaction="/{{ S }}/settings/certificate/apply" formmethod="post" type="submit">🚀 نصب SSL و تنظیم لینک ساب</button>
+        <button class="btn btn-primary" type="button" onclick="openCertModal()">🔐 دریافت گواهی SSL (نمایش زنده)</button>
       </div>
+      <p class="hint" style="margin-top:6px">پنجره‌ای باز می‌شود که مرحله‌به‌مرحله و لاگ زندهٔ گرفتن گواهی را نشان می‌دهد و در پایان می‌پرسد دامنه روی پنل و ربات تنظیم شود یا نه.</p>
     </section>
 
     <section class="settings-card">
@@ -168,6 +169,56 @@
   </div>
 </form>
 
+<!-- ───────── SSL Certificate live modal ───────── -->
+<div id="cert-modal" class="cert-overlay" style="display:none">
+  <div class="cert-dialog">
+    <div class="cert-head">
+      <span>🔐 دریافت گواهی SSL</span>
+      <button type="button" class="cert-x" onclick="closeCertModal()">✕</button>
+    </div>
+
+    <div class="cert-body">
+      <div id="cert-summary" class="cert-summary"></div>
+
+      <div id="cert-steps" class="cert-steps">
+        <div class="cert-step" data-step="dns">۱) بررسی دامنه و آماده‌سازی Nginx</div>
+        <div class="cert-step" data-step="acme">۲) دریافت گواهی از Let's Encrypt</div>
+        <div class="cert-step" data-step="https">۳) فعال‌سازی HTTPS و ری‌لود Nginx</div>
+      </div>
+
+      <div class="cert-log" id="cert-log">آمادهٔ شروع...</div>
+
+      <div id="cert-result" class="cert-result" style="display:none"></div>
+    </div>
+
+    <div class="cert-foot" id="cert-foot">
+      <button type="button" class="btn btn-primary" id="cert-start-btn" onclick="startCert()">🚀 شروع دریافت گواهی</button>
+      <button type="button" class="btn btn-outline" onclick="closeCertModal()">بستن</button>
+    </div>
+  </div>
+</div>
+
+<style>
+.cert-overlay{position:fixed;inset:0;background:rgba(0,0,0,.6);backdrop-filter:blur(3px);z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px}
+.cert-dialog{background:var(--card);border:1px solid var(--border);border-radius:16px;width:100%;max-width:640px;max-height:92vh;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.45)}
+.cert-head{display:flex;align-items:center;justify-content:space-between;padding:14px 18px;border-bottom:1px solid var(--border);font-weight:700}
+.cert-x{background:none;border:none;color:var(--txt2);font-size:1.1rem;cursor:pointer}
+.cert-body{padding:16px 18px;overflow-y:auto}
+.cert-summary{font-size:.85rem;color:var(--txt2);background:var(--card2);border:1px solid var(--border);border-radius:10px;padding:10px 12px;margin-bottom:12px;line-height:1.9}
+.cert-steps{display:flex;flex-direction:column;gap:8px;margin-bottom:12px}
+.cert-step{font-size:.85rem;color:var(--txt3);padding:8px 12px;border-radius:8px;border:1px solid var(--border);display:flex;align-items:center;gap:8px}
+.cert-step::before{content:'○';color:var(--txt3)}
+.cert-step.active{color:var(--p);border-color:var(--p)}
+.cert-step.active::before{content:'◔';color:var(--p)}
+.cert-step.done{color:var(--g);border-color:var(--g)}
+.cert-step.done::before{content:'✔';color:var(--g)}
+.cert-log{font-family:monospace;font-size:.76rem;background:var(--bg2);border:1px solid var(--border);border-radius:10px;padding:12px;height:240px;overflow-y:auto;white-space:pre-wrap;word-break:break-word;color:var(--txt2);line-height:1.6}
+.cert-result{margin-top:12px;border-radius:10px;padding:12px 14px;font-size:.88rem;line-height:1.9}
+.cert-result.ok{background:rgba(0,229,160,.1);border:1px solid var(--g)}
+.cert-result.err{background:rgba(255,76,106,.1);border:1px solid var(--r);color:var(--r)}
+.cert-foot{display:flex;gap:10px;padding:14px 18px;border-top:1px solid var(--border)}
+</style>
+
 <script>
 async function resetLegacyClaims(){
   if(!confirm('همه درخواست‌های سینک قبلی پاک شود؟')) return;
@@ -175,5 +226,108 @@ async function resetLegacyClaims(){
   if(r.success){ toast('ریست شد','success'); setTimeout(()=>location.reload(),700); }
   else toast('خطا در ریست','error');
 }
+
+let _certPollTimer = null;
+function _certVal(name){ const el = document.querySelector(`[name=${name}]`); return el ? el.value.trim() : ''; }
+
+function openCertModal(){
+  const domain = _certVal('panel_domain');
+  const port = _certVal('atlas_tls_https_port') || '443';
+  const email = _certVal('cert_email');
+  if(!domain){ toast('اول دامنه را وارد کنید','error'); return; }
+  document.getElementById('cert-summary').innerHTML =
+    `دامنه: <b>${escHtmlC(domain)}</b><br>پورت HTTPS: <b>${escHtmlC(port)}</b>`+
+    (email?`<br>ایمیل: <b>${escHtmlC(email)}</b>`:'')+
+    `<br><span style="color:var(--txt3)">قبل از شروع مطمئن شوید رکورد DNS دامنه روی IP همین سرور و حالت <b>DNS Only</b> (ابر خاکستری) است و پورت‌های ۸۰ و ${escHtmlC(port)} باز هستند.</span>`;
+  document.getElementById('cert-log').textContent = 'آمادهٔ شروع...';
+  document.getElementById('cert-result').style.display='none';
+  document.getElementById('cert-start-btn').style.display='';
+  document.getElementById('cert-start-btn').disabled=false;
+  document.getElementById('cert-start-btn').textContent='🚀 شروع دریافت گواهی';
+  _setCertSteps('reset');
+  document.getElementById('cert-modal').style.display='flex';
+}
+function closeCertModal(){
+  document.getElementById('cert-modal').style.display='none';
+  if(_certPollTimer){ clearInterval(_certPollTimer); _certPollTimer=null; }
+}
+
+function _setCertSteps(state){
+  const steps = document.querySelectorAll('.cert-step');
+  steps.forEach(s=>s.classList.remove('active','done'));
+  if(state==='reset') return;
+}
+function _markStepsFromLog(text){
+  const t = (text||'').toLowerCase();
+  const dns = document.querySelector('.cert-step[data-step=dns]');
+  const acme = document.querySelector('.cert-step[data-step=acme]');
+  const https = document.querySelector('.cert-step[data-step=https]');
+  // step 1
+  dns.classList.add('active');
+  if(t.includes('acme') || t.includes('.well-known') || t.includes('issue')){ dns.classList.remove('active'); dns.classList.add('done'); acme.classList.add('active'); }
+  if(t.includes('install-cert') || t.includes('cert success') || t.includes('your cert is in') || t.includes('reload')){ acme.classList.remove('active'); acme.classList.add('done'); https.classList.add('active'); }
+}
+
+async function startCert(){
+  const fd = new FormData();
+  fd.append('panel_domain', _certVal('panel_domain'));
+  fd.append('cert_email', _certVal('cert_email'));
+  fd.append('atlas_tls_https_port', _certVal('atlas_tls_https_port') || '443');
+  const btn = document.getElementById('cert-start-btn');
+  btn.disabled=true; btn.textContent='⏳ در حال شروع...';
+  document.getElementById('cert-log').textContent='در حال شروع عملیات...';
+  let r;
+  try{ r = await (await fetch(`/${S}/settings/certificate/start`, {method:'POST', body:fd})).json(); }
+  catch(e){ r = {error:e.message}; }
+  if(r.error){
+    document.getElementById('cert-log').textContent='❌ '+r.error;
+    btn.disabled=false; btn.textContent='🚀 تلاش دوباره';
+    return;
+  }
+  btn.style.display='none';
+  _certPollTimer = setInterval(pollCertLog, 1500);
+  pollCertLog();
+}
+
+async function pollCertLog(){
+  let r;
+  try{ r = await api(`/${S}/settings/certificate/log`, 'GET'); }catch(e){ return; }
+  if(r.error) return;
+  const logEl = document.getElementById('cert-log');
+  logEl.textContent = (r.lines||[]).join('\n') || 'در حال اجرا...';
+  logEl.scrollTop = logEl.scrollHeight;
+  _markStepsFromLog(logEl.textContent);
+
+  if(r.status==='ok'){
+    clearInterval(_certPollTimer); _certPollTimer=null;
+    document.querySelectorAll('.cert-step').forEach(s=>{s.classList.remove('active');s.classList.add('done');});
+    const box = document.getElementById('cert-result');
+    box.className='cert-result ok'; box.style.display='block';
+    box.innerHTML = `✅ گواهی با موفقیت گرفته شد و Nginx تنظیم شد.<br>لینک عمومی: <b>${escHtmlC(r.public_url||'')}</b><br><br>`+
+      `این دامنه روی پنل و ربات (لینک ساب کاربران) تنظیم شود؟`+
+      `<div style="margin-top:10px;display:flex;gap:10px">`+
+      `<button class="btn btn-primary btn-sm" onclick="applyCertDomain('${escAttrC(r.domain||'')}','${escAttrC(String(r.https_port||443))}')">✅ بله، روی پنل و ربات تنظیم کن</button>`+
+      `<button class="btn btn-outline btn-sm" onclick="closeCertModal()">فعلاً نه</button>`+
+      `</div>`;
+  } else if(r.status==='error'){
+    clearInterval(_certPollTimer); _certPollTimer=null;
+    const box = document.getElementById('cert-result');
+    box.className='cert-result err'; box.style.display='block';
+    box.innerHTML = '❌ عملیات ناموفق بود. لاگ بالا را بررسی کنید. معمول‌ترین علت‌ها: DNS اشتباه/پروکسی Cloudflare روشن، بسته بودن پورت ۸۰، یا نبود دسترسی root.';
+    const btn=document.getElementById('cert-start-btn'); btn.style.display=''; btn.disabled=false; btn.textContent='🚀 تلاش دوباره';
+  }
+}
+
+async function applyCertDomain(domain, port){
+  const fd = new FormData(); fd.append('domain', domain); fd.append('https_port', port);
+  let r;
+  try{ r = await (await fetch(`/${S}/settings/certificate/apply-domain`, {method:'POST', body:fd})).json(); }
+  catch(e){ r={error:e.message}; }
+  if(r.success){ toast('دامنه روی پنل و ربات تنظیم شد ✅','success'); setTimeout(()=>location.reload(),900); }
+  else toast(r.error||'خطا در تنظیم دامنه','error');
+}
+
+function escHtmlC(s){ return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function escAttrC(s){ return String(s||'').replace(/'/g,'&#39;').replace(/"/g,'&quot;'); }
 </script>
 {% endblock %}

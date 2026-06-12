@@ -12,6 +12,9 @@ atlas.db-journal
 atlas.db-wal
 atlas.db-shm
 atlas.log
+atlas-update.log
+atlas-cert.log
+atlas-job.log
 backups/
 *.patch
 update-local-changes-*.patch
