@@ -42,6 +42,8 @@ SETTINGS_DEFAULTS: Dict[str, str] = {
     "sub_info_template": "📊 حجم کل: {traffic_gb}GB | مصرف: {used} | باقی: {remaining}\n📅 باقی‌مانده: {days_left} روز | سپری‌شده: {days_elapsed} روز",
     "sub_brand_template": "📣 {brand}",
     "sub_grace_days": "3",
+    "sub_start_on_first_use": "1",
+    "single_to_sub_nudge_enabled": "0",
     "sub_connection_guide": (
         "📚 راهنمای اتصال:\n"
         "۱) بهترین روش: «کپی لینک ساب» را بزنید و در برنامه (v2rayNG / NekoBox / Streisand / V2Box) از بخش افزودن از کلیپ‌بورد، آن را اضافه کنید و آپدیت بزنید.\n"

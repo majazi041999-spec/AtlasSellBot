@@ -83,6 +83,29 @@
         <label>متن تبلیغ/برند داخل ساب</label>
         <input class="form-control" type="text" name="sub_brand_template" value="{{ settings.sub_brand_template }}">
       </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>شروع اشتراک از اولین اتصال</label>
+          <select class="form-control" name="sub_start_on_first_use">
+            <option value="1" {% if settings.sub_start_on_first_use == "1" %}selected{% endif %}>فعال (زمان از اولین استفاده شروع می‌شود)</option>
+            <option value="0" {% if settings.sub_start_on_first_use != "1" %}selected{% endif %}>غیرفعال (از لحظهٔ خرید)</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>تبدیل خودکار کانفیگ تکی به ساب هنگام تمدید</label>
+          <select class="form-control" name="convert_single_on_renew">
+            <option value="1" {% if settings.convert_single_on_renew == "1" %}selected{% endif %}>فعال</option>
+            <option value="0" {% if settings.convert_single_on_renew != "1" %}selected{% endif %}>غیرفعال</option>
+          </select>
+        </div>
+      </div>
+      <div class="form-group">
+        <label>یادآوری به کاربران کانفیگ تکی برای تبدیل به ساب</label>
+        <select class="form-control" name="single_to_sub_nudge_enabled">
+          <option value="1" {% if settings.single_to_sub_nudge_enabled == "1" %}selected{% endif %}>فعال (هر چند روز یک‌بار پیام با دکمهٔ تبدیل)</option>
+          <option value="0" {% if settings.single_to_sub_nudge_enabled != "1" %}selected{% endif %}>غیرفعال</option>
+        </select>
+      </div>
       <button class="btn btn-primary" type="submit">💾 ذخیره تنظیمات</button>
     </form>
   </section>

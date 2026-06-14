@@ -307,6 +307,50 @@ async def _multi_subscription_worker():
         await asyncio.sleep(180)
 
 
+async def _single_to_sub_nudge_worker(bot):
+    """Periodically nudge users who still have single configs to convert to a sub."""
+    import time as _t
+    from core.database import get_active_configs_for_alerts, get_setting, set_setting
+    from bot.keyboards import single_to_sub_nudge_kb
+
+    await asyncio.sleep(120)
+    while True:
+        try:
+            enabled = await get_setting("single_to_sub_nudge_enabled", "0") == "1"
+            multi = await get_setting("multi_sub_enabled", "0") == "1"
+            if enabled and multi:
+                interval_days = max(1, int(await get_setting("single_to_sub_nudge_days", "3") or 3))
+                last = float(await get_setting("single_to_sub_nudge_last", "0") or 0)
+                now = _t.time()
+                if now - last >= interval_days * 86400 - 60:
+                    text = await get_setting(
+                        "single_to_sub_nudge_text",
+                        "♻️ سرویس تکی شما قابل ارتقا به «لینک ساب چندسروره» است.\n"
+                        "با تبدیل، اگر یک سرور قطع شد، سرورهای دیگر همچنان وصل می‌مانند و مدیریت ساده‌تر می‌شود.\n"
+                        "حجم و زمان باقی‌مانده‌تان دقیقاً منتقل می‌شود.",
+                    )
+                    sent = 0
+                    seen_users = set()
+                    for cfg in await get_active_configs_for_alerts(1000):
+                        try:
+                            await bot.send_message(
+                                cfg["telegram_id"], text,
+                                reply_markup=single_to_sub_nudge_kb(int(cfg["id"])),
+                                parse_mode=None,
+                            )
+                            sent += 1
+                            seen_users.add(cfg["telegram_id"])
+                            await asyncio.sleep(0.1)
+                        except Exception:
+                            pass
+                    await set_setting("single_to_sub_nudge_last", str(now))
+                    if sent:
+                        logger.info(f"single→sub nudge sent={sent} users={len(seen_users)}")
+        except Exception as e:
+            logger.exception("single→sub nudge worker failed: %s", e)
+        await asyncio.sleep(3600)
+
+
 async def _subscription_lifecycle_worker(bot):
     """Notify users about ended subscriptions and delete them after the grace period."""
     from core.database import get_setting
@@ -371,6 +415,7 @@ async def run_bot():
     asyncio.create_task(_daily_report_worker(bot))
     asyncio.create_task(_multi_subscription_worker())
     asyncio.create_task(_subscription_lifecycle_worker(bot))
+    asyncio.create_task(_single_to_sub_nudge_worker(bot))
     await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
 

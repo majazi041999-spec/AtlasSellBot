@@ -503,8 +503,22 @@ async def create_profile_for_order(user: Dict, order: Dict, traffic_gb: float, d
     if "YOUR_SERVER_IP" in sub_url:
         return {"ok": False, "error": "public_base_url_not_configured"}
     email = f"sub_{user['telegram_id']}_{int(time.time())}_{secrets.token_hex(3)}"
-    expire_ms = expiry_ms_from_days(duration_days)
-    profile_id = await create_subscription_profile(user["id"], order["id"], token, email, traffic_gb, duration_days, expire_ms)
+    display_name = str((order or {}).get("custom_config_name") or "").strip()
+
+    # Count duration from first use? Then create with no time-expiry yet; the
+    # timer is armed on the first subscription fetch (see render_subscription).
+    first_use = await get_setting("sub_start_on_first_use", "1") == "1"
+    if first_use:
+        expire_ms = 0
+        node_expire_days = 0  # unlimited time until first use; traffic still capped
+    else:
+        expire_ms = expiry_ms_from_days(duration_days)
+        node_expire_days = duration_days
+
+    profile_id = await create_subscription_profile(
+        user["id"], order["id"], token, email, traffic_gb, duration_days, expire_ms,
+        name=display_name, starts_on_first_use=1 if first_use else 0,
+    )
     created_remote: list[tuple[Dict, int, str, str]] = []
     failures: list[str] = []
 
@@ -515,7 +529,7 @@ async def create_profile_for_order(user: Dict, order: Dict, traffic_gb: float, d
             node_email = f"{email}_n{node['id']}"
             cli = XUIClient(node["server_url"], node["srv_user"], node["srv_pass"], node.get("sub_path") or "", node.get("srv_api_token", ""))
             try:
-                ok = await cli.add_client(inbound_id, client_uuid, node_email, traffic_gb, duration_days, starts_on_first_use=False)
+                ok = await cli.add_client(inbound_id, client_uuid, node_email, traffic_gb, node_expire_days, starts_on_first_use=False)
                 if not ok:
                     failures.append(f"{node.get('server_name') or node['server_id']}#{inbound_id}:add_failed")
                     continue
@@ -608,7 +622,10 @@ async def create_profile_from_config(user: Dict, cfg: Dict) -> Dict:
 
     base_email = str(cfg.get("email") or f"legacy_{user['telegram_id']}").replace(" ", "_")
     email = f"sub_{base_email}_{int(time.time())}_{secrets.token_hex(3)}"[:96]
-    profile_id = await create_subscription_profile(user["id"], 0, token, email, remaining_gb, remaining_days, expire_ms)
+    display_name = str(cfg.get("email") or "").strip()
+    profile_id = await create_subscription_profile(
+        user["id"], 0, token, email, remaining_gb, remaining_days, expire_ms, name=display_name,
+    )
     created_remote: list[tuple[Dict, int, str, str]] = []
     failures: list[str] = []
 
@@ -724,6 +741,19 @@ async def render_subscription(token: str) -> tuple[str, Dict[str, int]] | None:
         return None
 
     now_ms = int(time.time() * 1000)
+
+    # First-use start: the very first fetch arms the timer. We set the expiry in
+    # the DB immediately (fast) and let the background sync push it to the nodes.
+    if int(profile.get("starts_on_first_use") or 0) and int(profile.get("first_use_at") or 0) <= 0:
+        duration_days = _as_int(profile.get("duration_days"))
+        new_expire = now_ms + duration_days * 86400000 if duration_days > 0 else 0
+        await update_subscription_profile(
+            profile["id"], first_use_at=now_ms, expire_timestamp=new_expire,
+        )
+        profile["first_use_at"] = now_ms
+        profile["expire_timestamp"] = new_expire
+        asyncio.create_task(_background_render_sync(token))
+
     expire_ms = int(profile.get("expire_timestamp") or 0)
     used = int(profile.get("used_bytes") or 0)
     total = total_bytes(profile.get("traffic_gb") or 0)
@@ -767,7 +797,8 @@ async def render_subscription(token: str) -> tuple[str, Dict[str, int]] | None:
     if await get_setting("sub_info_sync_on_render", "1") == "1":
         asyncio.create_task(_background_render_sync(token))
 
-    return body, {"upload": 0, "download": used, "total": total, "expire": expire}
+    title = str(profile.get("name") or "").strip()
+    return body, {"upload": 0, "download": used, "total": total, "expire": expire, "title": title}
 
 
 async def ensure_subscription_profile_nodes(profile: Dict, force_refresh: bool = False) -> Dict:
@@ -985,6 +1016,10 @@ async def ensure_subscription_profile_nodes(profile: Dict, force_refresh: bool =
 
 
 async def repair_subscription_profile_expiry(profile: Dict) -> Dict:
+    # Don't "repair" a first-use profile that hasn't started yet — its expiry is
+    # intentionally 0 until the first fetch arms the timer.
+    if int(profile.get("starts_on_first_use") or 0) and int(profile.get("first_use_at") or 0) <= 0:
+        return profile
     if int(profile.get("expire_timestamp") or 0) > 0 or _as_int(profile.get("duration_days")) <= 0:
         return profile
 

@@ -337,7 +337,8 @@ async def public_subscription(token: str, request: Request):
     if not rendered:
         return StreamingResponse(iter([b""]), media_type="text/plain", status_code=404)
     body, info = rendered
-    title = await get_setting("ui.brand_name", "Atlas Account")
+    brand = await get_setting("ui.brand_name", "Atlas Account")
+    title = (info.get("title") or "").strip() or brand
     title_b64 = base64.b64encode(str(title or "Atlas Account").encode("utf-8")).decode()
     headers = {
         "Subscription-Userinfo": (
@@ -975,6 +976,9 @@ async def subscriptions_page(request: Request):
         "sub_info_sync_on_render": await get_setting("sub_info_sync_on_render", SETTINGS_DEFAULTS["sub_info_sync_on_render"]),
         "sub_info_template": await get_setting("sub_info_template", SETTINGS_DEFAULTS["sub_info_template"]),
         "sub_brand_template": await get_setting("sub_brand_template", SETTINGS_DEFAULTS["sub_brand_template"]),
+        "sub_start_on_first_use": await get_setting("sub_start_on_first_use", SETTINGS_DEFAULTS["sub_start_on_first_use"]),
+        "convert_single_on_renew": await get_setting("convert_single_on_renew", "0"),
+        "single_to_sub_nudge_enabled": await get_setting("single_to_sub_nudge_enabled", SETTINGS_DEFAULTS["single_to_sub_nudge_enabled"]),
     }
     return _templates.TemplateResponse(
         "subscriptions.html",
@@ -1076,6 +1080,9 @@ async def subscriptions_settings_save(
     sub_info_sync_on_render: str = Form("0"),
     sub_info_template: str = Form(""),
     sub_brand_template: str = Form(""),
+    sub_start_on_first_use: str = Form("0"),
+    convert_single_on_renew: str = Form("0"),
+    single_to_sub_nudge_enabled: str = Form("0"),
 ):
     if not _auth(request):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
@@ -1089,6 +1096,9 @@ async def subscriptions_settings_save(
     await set_setting("sub_info_sync_on_render", "1" if sub_info_sync_on_render == "1" else "0")
     await set_setting("sub_info_template", sub_info_template.strip() or SETTINGS_DEFAULTS["sub_info_template"])
     await set_setting("sub_brand_template", sub_brand_template.strip() or SETTINGS_DEFAULTS["sub_brand_template"])
+    await set_setting("sub_start_on_first_use", "1" if sub_start_on_first_use == "1" else "0")
+    await set_setting("convert_single_on_renew", "1" if convert_single_on_renew == "1" else "0")
+    await set_setting("single_to_sub_nudge_enabled", "1" if single_to_sub_nudge_enabled == "1" else "0")
     return RedirectResponse(f"/{S}/subs?saved=1", status_code=302)
 
 
@@ -2458,14 +2468,26 @@ def _launch_detached_job(name: str, script: str) -> None:
 
 
 async def _git_run(*args, cwd=None):
-    proc = await _asyncio.create_subprocess_exec(
-        *args,
-        stdout=_asyncio.subprocess.PIPE,
-        stderr=_asyncio.subprocess.PIPE,
-        cwd=cwd or _repo_dir,
-    )
+    try:
+        proc = await _asyncio.create_subprocess_exec(
+            *args,
+            stdout=_asyncio.subprocess.PIPE,
+            stderr=_asyncio.subprocess.PIPE,
+            cwd=cwd or _repo_dir,
+        )
+    except FileNotFoundError:
+        return "", "git_not_installed", 127
     out, err = await proc.communicate()
     return out.decode("utf-8", errors="replace").strip(), err.decode("utf-8", errors="replace").strip(), proc.returncode
+
+
+async def _git(*subargs):
+    """Run git against the repo, trusting it (avoids 'dubious ownership' failures)."""
+    return await _git_run("git", "-C", _repo_dir, "-c", f"safe.directory={_repo_dir}", *subargs)
+
+
+def _is_git_sha(value: str) -> bool:
+    return bool(re.fullmatch(r"[0-9a-f]{7,40}", (value or "").strip()))
 
 
 def _extract_new_changelog(local_md: str, remote_md: str) -> str:
@@ -2493,7 +2515,7 @@ def _extract_new_changelog(local_md: str, remote_md: str) -> str:
 
 
 async def _read_remote_changelog() -> str:
-    out, _, rc = await _git_run("git", "show", "origin/main:CHANGELOG.md")
+    out, _, rc = await _git("show", "origin/main:CHANGELOG.md")
     return out if rc == 0 else ""
 
 
@@ -2528,16 +2550,43 @@ async def update_check(request: Request):
     if not _auth(request):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     try:
-        _, _, rc = await _git_run("git", "fetch", "origin", "main")
-        local_hash, _, _ = await _git_run("git", "rev-parse", "HEAD")
-        remote_hash, _, _ = await _git_run("git", "rev-parse", "origin/main")
+        # Is this even a git checkout?
+        inside, _, inside_rc = await _git("rev-parse", "--is-inside-work-tree")
+        if inside_rc != 0 or inside.strip() != "true":
+            return JSONResponse({
+                "error": "این نصب یک مخزن git نیست؛ آپدیت خودکار ممکن نیست. لطفاً از طریق SSH به‌روزرسانی کنید.",
+            }, status_code=400)
+
+        local_hash, lerr, lrc = await _git("rev-parse", "HEAD")
+        if lrc != 0 or not _is_git_sha(local_hash):
+            return JSONResponse({
+                "error": f"خواندن نسخهٔ فعلی ناموفق بود: {lerr or 'unknown'}",
+            }, status_code=500)
+
+        # Fetch latest refs; if this fails (network/filtering), say so clearly
+        # instead of comparing against stale data and always showing "update".
+        fetch_out, fetch_err, fetch_rc = await _git("fetch", "--prune", "origin", "main")
+        if fetch_rc != 0:
+            return JSONResponse({
+                "error": "اتصال به گیت‌هاب برای بررسی نسخهٔ جدید برقرار نشد (شبکه/فیلترینگ). کمی بعد دوباره امتحان کنید.",
+                "local_hash": local_hash[:8],
+                "detail": (fetch_err or fetch_out or "")[:300],
+            }, status_code=502)
+
+        remote_hash, rerr, rrc = await _git("rev-parse", "origin/main")
+        if rrc != 0 or not _is_git_sha(remote_hash):
+            return JSONResponse({
+                "error": f"خواندن نسخهٔ گیت‌هاب ناموفق بود: {rerr or 'unknown'}",
+                "local_hash": local_hash[:8],
+            }, status_code=500)
+
         up_to_date = local_hash == remote_hash
 
         changelog = []
         changelog_md = ""
         if not up_to_date and local_hash and remote_hash:
-            log_out, _, _ = await _git_run(
-                "git", "log", "--no-merges",
+            log_out, _, _ = await _git(
+                "log", "--no-merges",
                 "--pretty=format:%H|%s|%an|%ar",
                 f"{local_hash}..origin/main",
             )

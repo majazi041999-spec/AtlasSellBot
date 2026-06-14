@@ -282,25 +282,36 @@ def subscription_detail_kb(profile_id: int, sub_url: str = "", nodes: List[Dict]
         b.row(copy_btn)
         rows.append(1)
 
-    # Per-node connection links shown as buttons: tapping copies that node's
-    # link. Useful as a fallback when the subscription URL itself has trouble.
-    # Telegram caps copy_text at 256 chars, so longer links are skipped here
-    # (they are still listed in the message text).
+    # Per-node connection links shown as buttons — EVERY active server gets a
+    # button. Telegram caps copy_text at 256 chars, so for shorter links we use
+    # a one-tap copy button; for longer links (e.g. reality) we fall back to a
+    # callback that sends the link as a copyable message.
     idx = 0
     for node in (nodes or []):
         if not int(node.get("is_active") or 0):
             continue
         link = (node.get("link") or "").strip()
-        if not link or len(link) > 256:
+        if not link:
             continue
         idx += 1
-        btn = _copy_text_button(f"📍 {_node_remark(node, idx)}", link, style="success")
-        if btn:
-            b.row(btn)
+        label = f"📍 {_node_remark(node, idx)}"
+        btn = None
+        if len(link) <= 256:
+            btn = _copy_text_button(label, link, style="success")
+        if btn is None:
+            btn = _inline_button(f"{label} — نمایش لینک", callback_data=f"subnode:{int(node.get('id') or 0)}", style="success")
+        b.row(btn)
 
     _button(b, text="♻️ تمدید ساب", callback_data=f"sub_renew:{profile_id}", style="success")
     _button(b, text="🗑️ حذف ساب", callback_data=f"sub_del:{profile_id}", style="danger")
     _button(b, text="🔙 برگشت به سرویس‌ها", callback_data="back_configs", style="primary")
+    b.adjust(1)
+    return b.as_markup()
+
+
+def single_to_sub_nudge_kb(config_id: int) -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    _button(b, text="🧬 همین حالا تبدیل به لینک ساب", callback_data=f"cfg_to_sub:{config_id}", style="success")
     b.adjust(1)
     return b.as_markup()
 

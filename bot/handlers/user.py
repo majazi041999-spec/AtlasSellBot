@@ -55,6 +55,7 @@ from core.database import (
     get_user_subscription_profiles,
     get_subscription_profile_by_token,
     get_subscription_nodes,
+    get_subscription_node,
     get_subscription_profile,
 )
 from core.xui_api import XUIClient, fmt_bytes, days_left, expiry_ms_from_days
@@ -124,7 +125,7 @@ def _extract_subscription_token(text: str) -> str:
 
 def _format_subscription_status_card(profile: dict, sub_url: str, used: int, total: int, remaining: int,
                                      pct: int, days_text: str, active_nodes: list[dict]) -> str:
-    service_name = profile.get("email") or f"ساب #{profile.get('id')}"
+    service_name = profile.get("name") or profile.get("email") or f"ساب #{profile.get('id')}"
     status_text = "فعال" if int(profile.get("is_active") or 0) else "غیرفعال"
     filled = max(0, min(10, int(round((pct / 100) * 10))))
     usage_bar = "█" * filled + "░" * (10 - filled)
@@ -186,8 +187,13 @@ async def _send_subscription_status(target, profile: dict):
     total = int(float(profile.get("traffic_gb") or 0) * 1024 ** 3)
     remaining = max(0, total - used) if total > 0 else 0
     pct = min(100, int(used / total * 100)) if total > 0 else 0
+    not_started = int(profile.get("starts_on_first_use") or 0) and int(profile.get("first_use_at") or 0) <= 0
     dl = days_left(int(profile.get("expire_timestamp") or 0))
-    dl_text = f"{dl} روز" if dl > 0 else ("نامحدود" if dl < 0 else "منقضی شده")
+    if not_started:
+        dur = int(profile.get("duration_days") or 0)
+        dl_text = f"از اولین اتصال شروع می‌شود ({dur} روز)" if dur > 0 else "از اولین اتصال شروع می‌شود"
+    else:
+        dl_text = f"{dl} روز" if dl > 0 else ("نامحدود" if dl < 0 else "منقضی شده")
     active_nodes = [n for n in nodes if int(n.get("is_active") or 0)]
     node_names = [
         str(n.get("node_label") or n.get("server_name") or f"Node #{n.get('id')}")
@@ -207,8 +213,7 @@ async def _send_subscription_status(target, profile: dict):
         f"لینک ساب:\n{sub_url}"
     )
 
-    pretty_days = f"{dl} روز" if dl > 0 else ("نامحدود" if dl < 0 else "منقضی شده")
-    text = _format_subscription_status_card(profile, sub_url, used, total, remaining, pct, pretty_days, active_nodes)
+    text = _format_subscription_status_card(profile, sub_url, used, total, remaining, pct, dl_text, active_nodes)
 
     # Per-server connection links (fallback if the sub URL itself fails) + guide.
     links_block = _format_node_links_block(active_nodes)
@@ -224,7 +229,7 @@ async def _send_subscription_status(target, profile: dict):
     if isinstance(target, Message):
         await target.answer(text, parse_mode=None, reply_markup=kb)
         try:
-            qr_label = profile.get("email") or "Subscription"
+            qr_label = profile.get("name") or profile.get("email") or "Subscription"
             await target.answer_photo(_qr_input_file(sub_url, qr_label), caption=f"QR سابسکریپشن: {qr_label}", parse_mode=None)
         except Exception:
             pass
@@ -643,10 +648,15 @@ async def _send_config_status(target, config_id: int):
     if not cfg:
         return
 
-    # get_config already JOINs server data → use cfg aliases directly
+    # get_config already JOINs server data → use cfg aliases directly.
+    # Time-box the live X-UI call so a slow/down server can't freeze the bot.
     cli = XUIClient(cfg["server_url"], cfg["srv_user"], cfg["srv_pass"], cfg["sub_path"], cfg.get("srv_api_token", ""))
-    traffic = await cli.get_client_traffic(cfg["email"])
-    await cli.close()
+    try:
+        traffic = await asyncio.wait_for(cli.get_client_traffic(cfg["email"]), timeout=12)
+    except Exception:
+        traffic = None
+    finally:
+        await cli.close()
 
     if traffic:
         total = traffic.get("total", 0)
@@ -829,6 +839,32 @@ async def _owned_subscription_for_user(user_id: int, profile_id: int) -> dict | 
     if not profile or int(profile.get("user_id") or 0) != int(user_id):
         return None
     return profile
+
+
+@router.callback_query(F.data.startswith("subnode:"))
+async def sub_node_link(cb: CallbackQuery):
+    """Send a single server's connection link (for links too long for a copy button)."""
+    user = await get_or_create_user(cb.from_user.id, cb.from_user.username, cb.from_user.full_name)
+    try:
+        nid = int(cb.data.split(":")[1])
+    except (ValueError, IndexError):
+        await cb.answer("نامعتبر", show_alert=True)
+        return
+    node = await get_subscription_node(nid)
+    if not node:
+        await cb.answer("سرور پیدا نشد.", show_alert=True)
+        return
+    profile = await get_subscription_profile(int(node.get("profile_id") or 0))
+    if not profile or int(profile.get("user_id") or 0) != int(user["id"]):
+        await cb.answer("این سرور برای شما نیست.", show_alert=True)
+        return
+    link = (node.get("link") or "").strip()
+    if not link:
+        await cb.answer("لینک این سرور هنوز آماده نیست.", show_alert=True)
+        return
+    remark = str(node.get("node_label") or node.get("server_name") or "سرور")
+    await cb.message.answer(f"📍 {remark}\n\n`{link}`", parse_mode="Markdown")
+    await cb.answer("لینک ارسال شد ⬇️")
 
 
 @router.callback_query(F.data.startswith("sub_show:"))

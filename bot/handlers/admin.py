@@ -35,6 +35,7 @@ from core.xui_api import XUIClient, fmt_bytes, days_left, expiry_ms_from_days
 from core.qr import build_qr_image
 from core.multi_subscription import (
     create_profile_for_order,
+    create_profile_from_config,
     multi_sub_enabled_for_single_purchase,
     subscription_error_message,
     renew_subscription_profile,
@@ -106,7 +107,17 @@ def _extract_config_identity_from_text(text: str) -> tuple[str, str]:
         return "", ""
 
 
+# Small TTL cache so we don't open a synchronous sqlite connection on every
+# single message (this function is also evaluated inside message filters).
+_role_cache: dict[int, tuple[str, float]] = {}
+_ROLE_TTL = 30.0
+
+
 def _db_admin_role(uid: int) -> str:
+    cached = _role_cache.get(uid)
+    if cached and cached[1] > time.monotonic():
+        return cached[0]
+    role = "none"
     try:
         conn = sqlite3.connect("atlas.db")
         cur = conn.cursor()
@@ -114,17 +125,18 @@ def _db_admin_role(uid: int) -> str:
         own = cur.fetchone()
         owner_id = int((own[0] if own else "0") or 0)
         if uid in ADMIN_IDS or (owner_id and uid == owner_id):
-            conn.close()
-            return "owner"
-        cur.execute("SELECT is_admin, admin_role FROM users WHERE telegram_id=?", (uid,))
-        row = cur.fetchone()
+            role = "owner"
+        else:
+            cur.execute("SELECT is_admin, admin_role FROM users WHERE telegram_id=?", (uid,))
+            row = cur.fetchone()
+            if row and int(row[0] or 0) == 1:
+                r = str(row[1] or "full").strip().lower()
+                role = r if r in {"full", "finance"} else "full"
         conn.close()
     except Exception:
         return "none"
-    if not row or int(row[0] or 0) != 1:
-        return "none"
-    role = str(row[1] or "full").strip().lower()
-    return role if role in {"full", "finance"} else "full"
+    _role_cache[uid] = (role, time.monotonic() + _ROLE_TTL)
+    return role
 
 
 def is_admin(uid: int) -> bool:
@@ -198,7 +210,7 @@ def _register_admin_back_steps():
 _register_admin_back_steps()
 
 
-@router.message(lambda msg: bool(msg.text and _db_admin_role(msg.from_user.id) == "owner" and any(_extract_config_identity_from_text(msg.text))))
+@router.message(lambda msg: bool(msg.text and any(_extract_config_identity_from_text(msg.text)) and _db_admin_role(msg.from_user.id) == "owner"))
 async def owner_config_link_lookup(msg: Message):
     email, client_uuid = _extract_config_identity_from_text(msg.text or "")
     status = await msg.answer("⏳ دارم داخل همه سرورهای ثبت‌شده می‌گردم...", parse_mode=None)
@@ -515,6 +527,41 @@ async def _do_renew(cb: CallbackQuery, order: dict) -> bool:
         inbound_id=result.get("inbound_id") or cfg["inbound_id"],
         approved_at=datetime.now().isoformat(),
     )
+
+    # Optionally convert the renewed single config into a multi-server sub link.
+    if (
+        await get_setting("convert_single_on_renew", "0") == "1"
+        and await get_setting("multi_sub_enabled", "0") == "1"
+    ):
+        try:
+            fresh_cfg = await get_config(cid) or cfg
+            renew_user = await get_user_by_telegram(order["telegram_id"])
+            if renew_user:
+                conv = await create_profile_from_config(renew_user, fresh_cfg)
+                if conv.get("ok"):
+                    sub_url = conv["url"]
+                    try:
+                        await cb.bot.send_message(
+                            order["telegram_id"],
+                            "✅ سرویس شما تمدید و به لینک ساب چندسروره تبدیل شد.\n\n"
+                            f"حجم: {float(conv.get('traffic_gb') or traffic_gb):g} GB\n"
+                            f"نودهای فعال: {int(conv.get('nodes') or 0)}\n\n"
+                            f"لینک ساب:\n{sub_url}",
+                            parse_mode=None,
+                            reply_markup=config_links_kb("", sub_url),
+                        )
+                        await cb.bot.send_photo(order["telegram_id"], _qr_input_file(sub_url, conv.get("email") or "Subscription"), caption="QR سابسکریپشن", parse_mode=None)
+                    except Exception:
+                        pass
+                    try:
+                        if cb.message.photo:
+                            cap = cb.message.caption or ""
+                            await cb.message.edit_caption(cap + ("" if "تمدید" in cap else "\n\n✅ تمدید و تبدیل به ساب شد"), reply_markup=None, parse_mode=None)
+                    except Exception:
+                        pass
+                    return True
+        except Exception as e:
+            logger.warning("convert-on-renew failed for order %s: %s", order.get("id"), e)
 
     try:
         text = (

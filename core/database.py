@@ -197,6 +197,7 @@ CREATE TABLE IF NOT EXISTS subscription_profiles (
     order_id INTEGER DEFAULT 0,
     token TEXT UNIQUE NOT NULL,
     email TEXT NOT NULL,
+    name TEXT DEFAULT '',
     traffic_gb REAL NOT NULL,
     duration_days INTEGER NOT NULL,
     expire_timestamp INTEGER DEFAULT 0,
@@ -204,6 +205,8 @@ CREATE TABLE IF NOT EXISTS subscription_profiles (
     used_bytes INTEGER DEFAULT 0,
     expired_at INTEGER DEFAULT 0,
     expiry_notified INTEGER DEFAULT 0,
+    starts_on_first_use INTEGER DEFAULT 0,
+    first_use_at INTEGER DEFAULT 0,
     created_at TEXT DEFAULT (datetime('now','localtime')),
     updated_at TEXT DEFAULT (datetime('now','localtime')),
     FOREIGN KEY(user_id) REFERENCES users(id)
@@ -306,6 +309,9 @@ async def _ensure_columns(db):
             ("updated_at", "TEXT DEFAULT ''"),
             ("expired_at", "INTEGER DEFAULT 0"),
             ("expiry_notified", "INTEGER DEFAULT 0"),
+            ("name", "TEXT DEFAULT ''"),
+            ("starts_on_first_use", "INTEGER DEFAULT 0"),
+            ("first_use_at", "INTEGER DEFAULT 0"),
         ],
         "subscription_node_configs": [
             ("label", "TEXT DEFAULT ''"),
@@ -1252,12 +1258,15 @@ async def set_setting(key: str, value: str):
 # ══════════════════ MULTI-SERVER SUBSCRIPTIONS (EXPERIMENTAL) ══════════════════
 
 async def create_subscription_profile(user_id: int, order_id: int, token: str, email: str,
-                                      traffic_gb: float, duration_days: int, expire_timestamp: int) -> int:
+                                      traffic_gb: float, duration_days: int, expire_timestamp: int,
+                                      name: str = "", starts_on_first_use: int = 0) -> int:
     async with aiosqlite.connect(DB_PATH) as db:
         c = await db.execute(
-            """INSERT INTO subscription_profiles(user_id,order_id,token,email,traffic_gb,duration_days,expire_timestamp)
-               VALUES(?,?,?,?,?,?,?)""",
-            (int(user_id), int(order_id or 0), token, email, float(traffic_gb), int(duration_days), int(expire_timestamp or 0)),
+            """INSERT INTO subscription_profiles
+                   (user_id,order_id,token,email,name,traffic_gb,duration_days,expire_timestamp,starts_on_first_use)
+               VALUES(?,?,?,?,?,?,?,?,?)""",
+            (int(user_id), int(order_id or 0), token, email, (name or "").strip(),
+             float(traffic_gb), int(duration_days), int(expire_timestamp or 0), int(starts_on_first_use or 0)),
         )
         await db.commit()
         return c.lastrowid
@@ -1358,6 +1367,22 @@ async def get_subscription_nodes(profile_id: int) -> List[Dict]:
             (int(profile_id),),
         ) as c:
             return [dict(r) for r in await c.fetchall()]
+
+
+async def get_subscription_node(node_id: int) -> Optional[Dict]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            """SELECT n.*, s.name AS server_name, nc.label AS node_label
+               FROM subscription_nodes n
+               JOIN servers s ON s.id=n.server_id
+               LEFT JOIN subscription_node_configs nc
+                    ON nc.server_id=n.server_id AND nc.inbound_id=n.inbound_id
+               WHERE n.id=?""",
+            (int(node_id),),
+        ) as c:
+            r = await c.fetchone()
+            return dict(r) if r else None
 
 
 async def get_active_subscription_profiles(limit: int = 200) -> List[Dict]:
