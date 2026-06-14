@@ -1093,8 +1093,12 @@ async def get_config(cid: int) -> Optional[Dict]:
             SELECT c.*,s.name as server_name,s.url as server_url,
                    s.username as srv_user,s.password as srv_pass,
                    s.api_token as srv_api_token,
-                   s.sub_path,s.inbound_id as srv_inbound
-            FROM configs c JOIN servers s ON c.server_id=s.id WHERE c.id=?
+                   s.sub_path,s.inbound_id as srv_inbound,
+                   u.telegram_id as owner_telegram_id, u.username as owner_username,
+                   u.full_name as owner_name
+            FROM configs c JOIN servers s ON c.server_id=s.id
+            LEFT JOIN users u ON u.id=c.user_id
+            WHERE c.id=?
         """, (cid,)) as cu:
             r = await cu.fetchone()
             return dict(r) if r else None

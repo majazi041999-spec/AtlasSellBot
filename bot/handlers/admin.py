@@ -213,6 +213,18 @@ _register_admin_back_steps()
 @router.message(lambda msg: bool(msg.text and any(_extract_config_identity_from_text(msg.text)) and _db_admin_role(msg.from_user.id) == "owner"))
 async def owner_config_link_lookup(msg: Message):
     email, client_uuid = _extract_config_identity_from_text(msg.text or "")
+
+    # Fast path: a config we manage in the DB → show the full admin panel with
+    # owner info + action buttons (toggle, edit, convert-to-sub, message owner…).
+    cfg = await get_config_by_email(email) if email else None
+    if not cfg and client_uuid:
+        cfg = await get_config_by_uuid(client_uuid)
+    if cfg:
+        sent = await msg.answer("🔎 کانفیگ پیدا شد. در حال بارگذاری پنل مدیریت...", parse_mode=None)
+        await _render_cfg_detail(sent, int(cfg["id"]))
+        return
+
+    # Slow path: search every registered server (for foreign/legacy configs).
     status = await msg.answer("⏳ دارم داخل همه سرورهای ثبت‌شده می‌گردم...", parse_mode=None)
     try:
         info = await asyncio.wait_for(_lookup_remote_config_status(email, client_uuid), timeout=90)
@@ -1108,7 +1120,6 @@ async def adm_cfg_page(cb: CallbackQuery):
     )
 
 
-@router.callback_query(F.data.startswith("adm_cfg:"))
 async def _render_cfg_detail(message, cid: int):
     cfg = await get_config(cid)
     if not cfg:
@@ -1117,22 +1128,153 @@ async def _render_cfg_detail(message, cid: int):
     dl = days_left(cfg["expire_timestamp"] or 0)
     dl_text = f"{dl} روز" if dl >= 0 else "نامحدود"
     status = "🟢 فعال" if cfg["is_active"] else "🔴 غیرفعال"
+    owner_name = cfg.get("owner_name") or "—"
+    owner_tid = cfg.get("owner_telegram_id") or "—"
+    owner_un = cfg.get("owner_username")
+    owner_line = f"👤 مالک: {owner_name}" + (f" (@{owner_un})" if owner_un else "") + f"\n🆔 آیدی: `{owner_tid}`"
+    can_convert = bool(cfg["is_active"]) and (await get_setting("multi_sub_enabled", "0") == "1")
     await message.edit_text(
         f"🔑 *{cfg['email']}*\n"
+        f"{owner_line}\n"
         f"🖥️ سرور: `{cfg['server_name']}`\n"
         f"📊 حجم: `{cfg['traffic_gb']} GB`\n"
         f"📅 باقی‌مانده: `{dl_text}`\n"
         f"📡 وضعیت: {status}",
-        reply_markup=adm_config_detail_kb(cid, bool(cfg["is_active"])),
+        reply_markup=adm_config_detail_kb(cid, bool(cfg["is_active"]), can_convert=can_convert),
         parse_mode="Markdown"
     )
 
 
+@router.callback_query(F.data.startswith("adm_cfg:"))
 async def adm_cfg_detail(cb: CallbackQuery):
     if not is_admin(cb.from_user.id):
         return
     cid = int(cb.data.split(":")[1])
     await _render_cfg_detail(cb.message, cid)
+    try:
+        await cb.answer()
+    except Exception:
+        pass
+
+
+@router.callback_query(F.data.startswith("adm_cfg_link:"))
+async def adm_cfg_link(cb: CallbackQuery):
+    if not is_admin(cb.from_user.id):
+        return
+    cid = int(cb.data.split(":")[1])
+    cfg = await get_config(cid)
+    if not cfg:
+        await cb.answer("یافت نشد", show_alert=True)
+        return
+    await cb.answer("در حال دریافت لینک...")
+    cli = XUIClient(cfg["server_url"], cfg["srv_user"], cfg["srv_pass"], cfg.get("sub_path") or "", cfg.get("srv_api_token", ""))
+    try:
+        link = await asyncio.wait_for(cli.get_client_link(cfg["inbound_id"], cfg["email"]), timeout=15)
+    except Exception:
+        link = None
+    finally:
+        await cli.close()
+    if not link:
+        await cb.message.answer("❌ لینک اتصال به‌دست نیامد (سرور کند یا کانفیگ روی سرور نیست).", parse_mode=None)
+        return
+    await cb.message.answer(f"🔗 لینک اتصال «{cfg['email']}»:\n\n`{link}`", parse_mode="Markdown", reply_markup=config_links_kb(link, ""))
+
+
+@router.callback_query(F.data.startswith("adm_cfg2sub:"))
+async def adm_cfg2sub_confirm(cb: CallbackQuery):
+    if not is_admin(cb.from_user.id):
+        return
+    cid = int(cb.data.split(":")[1])
+    cfg = await get_config(cid)
+    if not cfg or not int(cfg.get("is_active") or 0):
+        await cb.answer("این کانفیگ فعال نیست.", show_alert=True)
+        return
+    owner = cfg.get("owner_name") or cfg.get("owner_telegram_id") or "کاربر"
+    await cb.message.answer(
+        "🧬 تبدیل کانفیگ تکی به لینک ساب چندسروره\n\n"
+        f"کانفیگ: {cfg.get('email')}\n"
+        f"مالک: {owner}\n\n"
+        "با تایید: باقی‌ماندهٔ حجم/زمان به ساب جدید منتقل، کانفیگ قبلی غیرفعال، "
+        "و لینک ساب مستقیماً برای خود کاربر ارسال می‌شود.",
+        reply_markup=confirm_kb(f"adm_cfg2sub_do:{cid}", f"adm_cfg:{cid}"),
+        parse_mode=None,
+    )
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("adm_cfg2sub_do:"))
+async def adm_cfg2sub_do(cb: CallbackQuery):
+    if not is_admin(cb.from_user.id):
+        return
+    cid = int(cb.data.split(":")[1])
+    cfg = await get_config(cid)
+    if not cfg or not int(cfg.get("is_active") or 0):
+        await cb.answer("این کانفیگ فعال نیست یا قبلاً تبدیل شده.", show_alert=True)
+        return
+    owner_user = await get_user_by_id(int(cfg.get("user_id") or 0))
+    if not owner_user:
+        await cb.answer("مالک این کانفیگ پیدا نشد.", show_alert=True)
+        return
+    await cb.answer("⏳ در حال تبدیل...")
+    try:
+        await cb.message.edit_text("⏳ در حال تبدیل به ساب و ارسال به کاربر...", parse_mode=None)
+    except Exception:
+        pass
+    result = await create_profile_from_config(owner_user, cfg)
+    if not result.get("ok"):
+        await cb.message.answer(
+            "❌ تبدیل ناموفق بود.\nعلت: " + subscription_error_message(str(result.get("error") or "")),
+            parse_mode=None,
+        )
+        return
+
+    sub_url = result["url"]
+    # Deliver the sub link straight to the user.
+    delivered = False
+    try:
+        await cb.bot.send_message(
+            owner_user["telegram_id"],
+            "🎉 سرویس شما به لینک ساب چندسروره ارتقا یافت.\n\n"
+            f"حجم باقی‌مانده: {fmt_bytes(int(result.get('remaining_bytes') or 0))}\n"
+            f"روز باقی‌مانده: {int(result.get('duration_days') or 0)} روز\n"
+            f"نودهای فعال: {int(result.get('nodes') or 0)}\n\n"
+            f"لینک ساب شما:\n{sub_url}",
+            parse_mode=None,
+            reply_markup=config_links_kb("", sub_url),
+        )
+        try:
+            await cb.bot.send_photo(owner_user["telegram_id"], _qr_input_file(sub_url, result.get("email") or "Subscription"), caption="QR سابسکریپشن", parse_mode=None)
+        except Exception:
+            pass
+        delivered = True
+    except Exception:
+        delivered = False
+
+    await cb.message.answer(
+        ("✅ تبدیل انجام شد و لینک ساب برای کاربر ارسال شد.\n" if delivered
+         else "✅ تبدیل انجام شد، اما ارسال پیام به کاربر ناموفق بود (شاید ربات را بلاک کرده).\n")
+        + f"نودهای فعال: {int(result.get('nodes') or 0)}\n\nلینک ساب:\n{sub_url}",
+        parse_mode=None,
+        reply_markup=config_links_kb("", sub_url),
+    )
+
+
+@router.callback_query(F.data.startswith("adm_cfg_msg:"))
+async def adm_cfg_msg_start(cb: CallbackQuery, state: FSMContext):
+    if not is_admin(cb.from_user.id):
+        return
+    cid = int(cb.data.split(":")[1])
+    cfg = await get_config(cid)
+    if not cfg or not cfg.get("owner_telegram_id"):
+        await cb.answer("مالک این کانفیگ پیدا نشد.", show_alert=True)
+        return
+    await state.set_state(PrivateMessage.text)
+    await state.update_data(uid=int(cfg["owner_telegram_id"]))
+    await cb.message.answer(
+        f"✍️ متن پیام به مالک «{cfg.get('email')}» را ارسال کنید:",
+        reply_markup=flow_cancel_kb(),
+    )
+    await cb.answer()
 
 
 @router.callback_query(F.data.startswith("toggle_cfg:"))

@@ -396,14 +396,18 @@ def admin_configs_kb(configs: List[Dict], page: int = 0) -> InlineKeyboardMarkup
     return b.as_markup()
 
 
-def adm_config_detail_kb(cid: int, active: bool) -> InlineKeyboardMarkup:
+def adm_config_detail_kb(cid: int, active: bool, can_convert: bool = True) -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
     _button(b, text="🔴 غیرفعال" if active else "🟢 فعال", callback_data=f"toggle_cfg:{cid}", style="danger" if active else "success")
     _button(b, text="📊 تغییر حجم", callback_data=f"edit_gb:{cid}", style="primary")
     _button(b, text="📅 تمدید تاریخ", callback_data=f"edit_exp:{cid}", style="success")
+    _button(b, text="🔗 دریافت لینک اتصال", callback_data=f"adm_cfg_link:{cid}", style="primary")
+    if can_convert:
+        _button(b, text="🧬 تبدیل به ساب و ارسال به کاربر", callback_data=f"adm_cfg2sub:{cid}", style="success")
+    _button(b, text="✉️ پیام به مالک", callback_data=f"adm_cfg_msg:{cid}", style="primary")
     _button(b, text="🗑️ حذف", callback_data=f"del_cfg:{cid}", style="danger")
     _button(b, text="🔙 بازگشت", callback_data="adm_cfg_list", style="primary")
-    b.adjust(2, 2, 1)
+    b.adjust(2, 2, 1, 1, 2)
     return b.as_markup()
 
 
