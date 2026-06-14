@@ -13,16 +13,29 @@ BRANCH="${BRANCH:-main}"
 SERVICE="${SERVICE:-atlas-bot}"
 MODE="${1:-pull}"   # pull | hard | pull-no-stash
 
+# When launched from the panel via systemd-run, the environment is minimal and
+# HOME may be unset — which breaks `git config --global` and acme.sh
+# ("fatal: $HOME not set"). Make sure HOME exists.
+if [ -z "${HOME:-}" ]; then
+  export HOME="$(getent passwd "$(id -u)" 2>/dev/null | cut -d: -f6)"
+  [ -z "$HOME" ] && export HOME="/root"
+fi
+
 need_cmd() { command -v "$1" >/dev/null 2>&1 || { echo "❌ '$1' is not installed"; exit 1; }; }
 need_cmd git
 need_cmd systemctl
 need_cmd python3
 
+# Trust the repo proactively (system-level needs no HOME; global as fallback).
+git config --system --add safe.directory "$REPO_DIR" 2>/dev/null \
+  || git config --global --add safe.directory "$REPO_DIR" 2>/dev/null || true
+
 cd "$REPO_DIR"
 if ! git rev-parse --is-inside-work-tree >/dev/null 2>/tmp/atlas_git_check.err; then
   if grep -qi "dubious ownership" /tmp/atlas_git_check.err; then
     echo "⚠️ Git safe.directory issue detected; trusting $REPO_DIR for this user."
-    git config --global --add safe.directory "$REPO_DIR"
+    git config --system --add safe.directory "$REPO_DIR" 2>/dev/null \
+      || git config --global --add safe.directory "$REPO_DIR" 2>/dev/null || true
   fi
 fi
 if ! git rev-parse --is-inside-work-tree >/dev/null 2>/tmp/atlas_git_check.err; then

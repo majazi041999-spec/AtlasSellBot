@@ -579,6 +579,10 @@ def _atlas_tls_proxy_script(domain: str, email: str, app_port: int, https_port: 
     q_keyfile = shlex.quote(f"/etc/ssl/atlas/{domain}/{domain}.key")
     email_arg = f" --accountemail {q_email}" if email else ""
     return f"""set -e
+if [ -z "${{HOME:-}}" ]; then
+  export HOME="$(getent passwd "$(id -u)" 2>/dev/null | cut -d: -f6)"
+  [ -z "$HOME" ] && export HOME="/root"
+fi
 DOMAIN={q_domain}
 APP_PORT={q_port}
 HTTPS_PORT={q_https_port}
@@ -2448,22 +2452,29 @@ def _launch_detached_job(name: str, script: str) -> None:
         f"if [ $? -eq 0 ]; then echo {_JOB_DONE_OK} >> {qpath}; "
         f"else echo {_JOB_DONE_FAIL} >> {qpath}; fi"
     )
+    # systemd-run gives the unit a minimal env where HOME is often unset, which
+    # breaks `git config --global` / acme.sh ("fatal: $HOME not set"). Pass a
+    # sane HOME (and keep the current env for the fallback paths).
+    home = os.environ.get("HOME") or "/root"
     sudo = [] if (hasattr(os, "geteuid") and os.geteuid() == 0) else ["sudo", "-n"]
     if shutil.which("systemd-run"):
         unit = f"atlas-selfupdate-{int(time.time())}"
         cmd = sudo + [
             "systemd-run", "--collect", "--unit", unit,
             "--property=KillMode=process",
+            f"--setenv=HOME={home}",
             "bash", "-lc", inner,
         ]
     elif shutil.which("setsid"):
         cmd = sudo + ["setsid", "bash", "-lc", inner]
     else:
         cmd = sudo + ["bash", "-lc", inner]
+    env = dict(os.environ)
+    env["HOME"] = home
     subprocess.Popen(
         cmd, cwd=_repo_dir,
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        start_new_session=True,
+        start_new_session=True, env=env,
     )
 
 
