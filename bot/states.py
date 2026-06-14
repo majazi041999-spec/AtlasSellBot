@@ -75,3 +75,11 @@ class WalletTopup(StatesGroup):
 
 class AnonymousFeedback(StatesGroup):
     text = State()
+
+
+class AdminUserSearch(StatesGroup):
+    query = State()
+
+
+class AdminBalance(StatesGroup):
+    amount = State()

@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import re
 import uuid
 import time
 import json
@@ -11,6 +12,7 @@ from urllib.parse import urlparse, parse_qs, unquote
 from aiogram import Router, F, Bot
 from aiogram.types import Message, CallbackQuery, BufferedInputFile
 from aiogram.fsm.context import FSMContext
+from aiogram.filters import StateFilter
 
 from core.config import ADMIN_IDS, WEB_SECRET_PATH, WEB_PORT
 from core.database import (
@@ -30,7 +32,14 @@ from core.database import (
     get_recent_daily_reports,
     format_daily_report,
     get_subscription_profile,
+    get_subscription_profile_by_token,
+    get_subscription_nodes,
+    update_subscription_profile,
+    find_user,
+    get_user_configs,
+    get_user_subscription_profiles,
 )
+from core.renewal import find_and_renew_config
 from core.xui_api import XUIClient, fmt_bytes, days_left, expiry_ms_from_days
 from core.qr import build_qr_image
 from core.multi_subscription import (
@@ -40,14 +49,20 @@ from core.multi_subscription import (
     subscription_error_message,
     renew_subscription_profile,
     subscription_url,
+    set_nodes_enabled,
+    delete_subscription_profile_remote,
 )
 from bot.keyboards import (
     admin_menu, order_review_kb, order_server_select_kb,
     admin_configs_kb, adm_config_detail_kb, confirm_kb, packages_kb, servers_kb,
     broadcast_target_kb, legacy_claim_admin_kb, flow_cancel_kb, topup_review_kb,
     config_links_kb, parse_custom_buttons,
+    adm_user_card_kb, adm_user_services_kb, adm_sub_panel_kb,
 )
-from bot.states import AddPackage, CreateConfig, BulkConfig, EditConfig, Broadcast, PrivateMessage
+from bot.states import (
+    AddPackage, CreateConfig, BulkConfig, EditConfig, Broadcast, PrivateMessage,
+    AdminUserSearch, AdminBalance,
+)
 
 router = Router()
 logger = logging.getLogger(__name__)
@@ -210,7 +225,7 @@ def _register_admin_back_steps():
 _register_admin_back_steps()
 
 
-@router.message(lambda msg: bool(msg.text and any(_extract_config_identity_from_text(msg.text)) and _db_admin_role(msg.from_user.id) == "owner"))
+@router.message(StateFilter(None), lambda msg: bool(msg.text and any(_extract_config_identity_from_text(msg.text)) and _db_admin_role(msg.from_user.id) in ("owner", "full")))
 async def owner_config_link_lookup(msg: Message):
     email, client_uuid = _extract_config_identity_from_text(msg.text or "")
 
@@ -1277,6 +1292,222 @@ async def adm_cfg_msg_start(cb: CallbackQuery, state: FSMContext):
     await cb.answer()
 
 
+@router.callback_query(F.data.startswith("adm_cfg_renew:"))
+async def adm_cfg_renew(cb: CallbackQuery):
+    if not is_admin(cb.from_user.id):
+        return
+    cid = int(cb.data.split(":")[1])
+    cfg = await get_config(cid)
+    if not cfg:
+        await cb.answer("یافت نشد", show_alert=True)
+        return
+    await cb.answer("⏳ در حال تمدید...")
+    traffic_gb = float(cfg.get("traffic_gb") or 0)
+    duration = int(cfg.get("duration_days") or 0) or 30
+    result = await find_and_renew_config(cfg, traffic_gb, duration)
+    if result.get("ok"):
+        owner_tid = cfg.get("owner_telegram_id")
+        if owner_tid:
+            try:
+                await cb.bot.send_message(
+                    int(owner_tid),
+                    f"✅ سرویس «{cfg.get('email')}» شما تمدید شد.\n"
+                    f"مدت اضافه‌شده: {duration} روز | حجم: {traffic_gb:g} GB (ریست شد).",
+                    parse_mode=None,
+                )
+            except Exception:
+                pass
+        await cb.message.answer(f"✅ تمدید شد: +{duration} روز | حجم {traffic_gb:g}GB ریست شد.", parse_mode=None)
+        await _render_cfg_detail(cb.message, cid)
+    else:
+        await cb.message.answer("❌ تمدید ناموفق بود: " + str(result.get("error") or "-"), parse_mode=None)
+
+
+# ─── ADMIN SUBSCRIPTION PANEL (send sub link → full control) ──────
+
+def _extract_sub_token_from_text(text: str) -> str:
+    raw = (text or "").strip()
+    m = re.search(r"/sub/([A-Za-z0-9_\-]{8,})", raw)
+    if m:
+        return m.group(1)
+    return ""
+
+
+async def _render_sub_panel(message, pid: int):
+    profile = await get_subscription_profile(pid)
+    if not profile:
+        await message.edit_text("ساب یافت نشد.", parse_mode=None)
+        return
+    owner = await get_user_by_id(int(profile.get("user_id") or 0))
+    nodes = await get_subscription_nodes(pid)
+    active_nodes = [n for n in nodes if int(n.get("is_active") or 0)]
+    used = int(profile.get("used_bytes") or 0)
+    total = int(float(profile.get("traffic_gb") or 0) * 1024 ** 3)
+    remaining = max(0, total - used) if total > 0 else 0
+    not_started = int(profile.get("starts_on_first_use") or 0) and int(profile.get("first_use_at") or 0) <= 0
+    dl = days_left(int(profile.get("expire_timestamp") or 0))
+    if not_started:
+        dur = int(profile.get("duration_days") or 0)
+        dl_text = f"از اولین اتصال ({dur} روز)"
+    else:
+        dl_text = f"{dl} روز" if dl > 0 else ("نامحدود" if dl < 0 else "منقضی")
+    sub_url = await subscription_url(profile["token"])
+    is_active = bool(int(profile.get("is_active") or 0))
+    owner_name = (owner or {}).get("full_name") or "—"
+    owner_tid = (owner or {}).get("telegram_id") or "—"
+    text = (
+        "📡 پنل مدیریت ساب\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        f"نام: {profile.get('name') or profile.get('email') or pid}\n"
+        f"👤 مالک: {owner_name} | 🆔 {owner_tid}\n"
+        f"وضعیت: {'🟢 فعال' if is_active else '🔴 غیرفعال'}\n"
+        f"حجم: {fmt_bytes(used)} از {fmt_bytes(total) if total>0 else 'نامحدود'} (باقی {fmt_bytes(remaining) if total>0 else '∞'})\n"
+        f"زمان باقی‌مانده: {dl_text}\n"
+        f"نودهای فعال: {len(active_nodes)} از {len(nodes)}\n\n"
+        f"لینک ساب:\n{sub_url}"
+    )
+    await message.edit_text(text, reply_markup=adm_sub_panel_kb(pid, is_active, int(profile.get("user_id") or 0)), parse_mode=None)
+
+
+@router.message(StateFilter(None), lambda msg: bool(msg.text and _extract_sub_token_from_text(msg.text) and _db_admin_role(msg.from_user.id) in ("owner", "full")))
+async def admin_sub_link_lookup(msg: Message):
+    token = _extract_sub_token_from_text(msg.text or "")
+    profile = await get_subscription_profile_by_token(token)
+    if not profile:
+        await msg.answer("❌ این لینک ساب در دیتابیس پیدا نشد.", parse_mode=None)
+        return
+    sent = await msg.answer("🔎 ساب پیدا شد. در حال بارگذاری پنل...", parse_mode=None)
+    await _render_sub_panel(sent, int(profile["id"]))
+
+
+@router.callback_query(F.data.startswith("adm_sub:"))
+async def adm_sub_open(cb: CallbackQuery):
+    if not is_admin(cb.from_user.id):
+        return
+    await _render_sub_panel(cb.message, int(cb.data.split(":")[1]))
+    try:
+        await cb.answer()
+    except Exception:
+        pass
+
+
+@router.callback_query(F.data.startswith("adm_sub_toggle:"))
+async def adm_sub_toggle(cb: CallbackQuery):
+    if not is_admin(cb.from_user.id):
+        return
+    pid = int(cb.data.split(":")[1])
+    profile = await get_subscription_profile(pid)
+    if not profile:
+        await cb.answer("یافت نشد", show_alert=True)
+        return
+    new_active = not bool(int(profile.get("is_active") or 0))
+    await cb.answer("⏳ در حال اعمال...")
+    await update_subscription_profile(pid, is_active=1 if new_active else 0)
+    try:
+        await set_nodes_enabled(pid, new_active)
+    except Exception:
+        pass
+    await _render_sub_panel(cb.message, pid)
+
+
+@router.callback_query(F.data.startswith("adm_sub_renew:"))
+async def adm_sub_renew(cb: CallbackQuery):
+    if not is_admin(cb.from_user.id):
+        return
+    pid = int(cb.data.split(":")[1])
+    profile = await get_subscription_profile(pid)
+    if not profile:
+        await cb.answer("یافت نشد", show_alert=True)
+        return
+    await cb.answer("⏳ در حال تمدید...")
+    traffic_gb = float(profile.get("traffic_gb") or 0)
+    duration = int(profile.get("duration_days") or 0) or 30
+    result = await renew_subscription_profile(profile, traffic_gb, duration)
+    if result.get("ok"):
+        owner = await get_user_by_id(int(profile.get("user_id") or 0))
+        if owner:
+            try:
+                await cb.bot.send_message(owner["telegram_id"], f"✅ لینک ساب شما تمدید شد (+{duration} روز، حجم {traffic_gb:g}GB).", parse_mode=None)
+            except Exception:
+                pass
+        await cb.message.answer(f"✅ ساب تمدید شد (+{duration} روز).", parse_mode=None)
+        await _render_sub_panel(cb.message, pid)
+    else:
+        await cb.message.answer("❌ تمدید ناموفق: " + str(result.get("error") or "-"), parse_mode=None)
+
+
+@router.callback_query(F.data.startswith("adm_sub_send:"))
+async def adm_sub_send(cb: CallbackQuery):
+    if not is_admin(cb.from_user.id):
+        return
+    pid = int(cb.data.split(":")[1])
+    profile = await get_subscription_profile(pid)
+    if not profile:
+        await cb.answer("یافت نشد", show_alert=True)
+        return
+    owner = await get_user_by_id(int(profile.get("user_id") or 0))
+    if not owner:
+        await cb.answer("مالک پیدا نشد", show_alert=True)
+        return
+    sub_url = await subscription_url(profile["token"])
+    try:
+        await cb.bot.send_message(
+            owner["telegram_id"],
+            f"📡 لینک ساب شما:\n{sub_url}",
+            parse_mode=None,
+            reply_markup=config_links_kb("", sub_url),
+        )
+        try:
+            await cb.bot.send_photo(owner["telegram_id"], _qr_input_file(sub_url, profile.get("name") or profile.get("email") or "Subscription"), caption="QR سابسکریپشن", parse_mode=None)
+        except Exception:
+            pass
+        await cb.answer("✅ برای کاربر ارسال شد", show_alert=True)
+    except Exception:
+        await cb.answer("❌ ارسال ناموفق (شاید ربات بلاک شده)", show_alert=True)
+
+
+@router.callback_query(F.data.startswith("adm_sub_msg:"))
+async def adm_sub_msg_start(cb: CallbackQuery, state: FSMContext):
+    if not is_admin(cb.from_user.id):
+        return
+    pid = int(cb.data.split(":")[1])
+    profile = await get_subscription_profile(pid)
+    owner = await get_user_by_id(int((profile or {}).get("user_id") or 0)) if profile else None
+    if not owner:
+        await cb.answer("مالک پیدا نشد", show_alert=True)
+        return
+    await state.set_state(PrivateMessage.text)
+    await state.update_data(uid=int(owner["telegram_id"]))
+    await cb.message.answer("✍️ متن پیام به مالک این ساب را ارسال کنید:", reply_markup=flow_cancel_kb())
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("adm_sub_del:"))
+async def adm_sub_del_confirm(cb: CallbackQuery):
+    if not is_admin(cb.from_user.id):
+        return
+    pid = int(cb.data.split(":")[1])
+    await cb.message.answer(
+        "🗑️ حذف کامل این ساب؟ همهٔ نودهای آن از سرورها و رکورد محلی حذف می‌شود.",
+        reply_markup=confirm_kb(f"adm_sub_del_do:{pid}", f"adm_sub:{pid}"),
+        parse_mode=None,
+    )
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("adm_sub_del_do:"))
+async def adm_sub_del_do(cb: CallbackQuery):
+    if not is_admin(cb.from_user.id):
+        return
+    pid = int(cb.data.split(":")[1])
+    await cb.answer("⏳ در حال حذف...")
+    result = await delete_subscription_profile_remote(pid)
+    await cb.message.answer(
+        f"✅ ساب حذف شد. نودهای حذف‌شده: {result.get('deleted', 0)} | خطا: {result.get('failed', 0)}",
+        parse_mode=None,
+    )
+
+
 @router.callback_query(F.data.startswith("toggle_cfg:"))
 async def toggle_cfg(cb: CallbackQuery):
     if not is_admin(cb.from_user.id):
@@ -1588,28 +1819,49 @@ async def manage_users(msg: Message):
     )
 
 
+async def _render_user_card(message, uid: int):
+    u = await get_user_by_id(uid)
+    if not u:
+        await message.edit_text("کاربر یافت نشد!", parse_mode=None)
+        return
+    configs = await get_user_configs(uid)
+    profiles = await get_user_subscription_profiles(uid)
+    active_cfg = sum(1 for c in configs if int(c.get("is_active") or 0))
+    active_sub = sum(1 for p in profiles if int(p.get("is_active") or 0))
+    status = "🔴 بلاک" if u["is_blocked"] else "🟢 فعال"
+    role_bits = []
+    if int(u.get("is_admin") or 0):
+        role_bits.append("ادمین")
+    if int(u.get("is_wholesale") or 0):
+        role_bits.append("عمده")
+    role_line = (" | ".join(role_bits)) or "کاربر عادی"
+    bal = int(u.get("balance_toman") or 0)
+    name = u.get("full_name") or "—"
+    un = u.get("username")
+    created = str(u.get("created_at") or "")[:10]
+    text = (
+        f"👤 {name}" + (f" (@{un})" if un else "") + "\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        f"🆔 آیدی: {u['telegram_id']}\n"
+        f"📡 وضعیت: {status} | نقش: {role_line}\n"
+        f"💰 موجودی کیف پول: {_fmt_toman(bal)} تومان\n"
+        f"🔑 کانفیگ‌ها: {active_cfg} فعال از {len(configs)}\n"
+        f"📡 ساب‌ها: {active_sub} فعال از {len(profiles)}\n"
+        f"📅 عضویت: {created}"
+    )
+    await message.edit_text(text, reply_markup=adm_user_card_kb(uid, bool(u["is_blocked"])), parse_mode=None)
+
+
 @router.callback_query(F.data.startswith("usr:"))
 async def user_detail(cb: CallbackQuery):
     if not is_admin(cb.from_user.id):
         return
     uid = int(cb.data.split(":")[1])
-    u = await get_user_by_id(uid)
-    if not u:
-        await cb.answer("یافت نشد!", show_alert=True)
-        return
-    from aiogram.utils.keyboard import InlineKeyboardBuilder
-    b = InlineKeyboardBuilder()
-    b.button(text="🔓 آنبلاک" if u["is_blocked"] else "🔒 بلاک", callback_data=f"toggle_block:{uid}")
-    b.button(text="🔙 بازگشت", callback_data="usr_back")
-    b.adjust(2)
-    status = "🔴 بلاک" if u["is_blocked"] else "🟢 فعال"
-    await cb.message.edit_text(
-        f"👤 *{u['full_name'] or '—'}*\n"
-        f"🆔 `{u['telegram_id']}`\n"
-        f"📡 وضعیت: {status}\n"
-        f"📅 عضویت: {u['created_at'][:10]}",
-        reply_markup=b.as_markup(), parse_mode="Markdown"
-    )
+    await _render_user_card(cb.message, uid)
+    try:
+        await cb.answer()
+    except Exception:
+        pass
 
 
 @router.callback_query(F.data.startswith("toggle_block:"))
@@ -1618,10 +1870,114 @@ async def toggle_block(cb: CallbackQuery):
         return
     uid = int(cb.data.split(":")[1])
     u = await get_user_by_id(uid)
-    from core.database import update_user
     await update_user(uid, is_blocked=0 if u["is_blocked"] else 1)
     await cb.answer("✅ تغییر کرد")
-    await user_detail(cb)
+    await _render_user_card(cb.message, uid)
+
+
+@router.message(F.text == "🔍 جستجوی کاربر")
+async def admin_user_search_start(msg: Message, state: FSMContext):
+    if not is_admin(msg.from_user.id):
+        return
+    await state.set_state(AdminUserSearch.query)
+    await msg.answer(
+        "🔍 آیدی عددی، یوزرنیم (با یا بدون @) یا بخشی از نام کاربر را بفرستید:",
+        reply_markup=flow_cancel_kb(show_back=False),
+    )
+
+
+@router.message(AdminUserSearch.query)
+async def admin_user_search_do(msg: Message, state: FSMContext):
+    await state.clear()
+    u = await find_user(msg.text or "")
+    if not u:
+        await msg.answer("❌ کاربری پیدا نشد. دوباره از «🔍 جستجوی کاربر» امتحان کنید.", parse_mode=None)
+        return
+    sent = await msg.answer("🔎 کاربر پیدا شد...", parse_mode=None)
+    await _render_user_card(sent, int(u["id"]))
+
+
+@router.callback_query(F.data.startswith("adm_usr_svcs:"))
+async def adm_usr_services(cb: CallbackQuery):
+    if not is_admin(cb.from_user.id):
+        return
+    uid = int(cb.data.split(":")[1])
+    configs = await get_user_configs(uid)
+    profiles = await get_user_subscription_profiles(uid)
+    await cb.message.edit_text(
+        f"📡 سرویس‌های کاربر — {len(profiles)} ساب | {len(configs)} کانفیگ\nیکی را برای مدیریت انتخاب کنید:",
+        reply_markup=adm_user_services_kb(uid, configs, profiles),
+        parse_mode=None,
+    )
+    try:
+        await cb.answer()
+    except Exception:
+        pass
+
+
+@router.callback_query(F.data.startswith("adm_usr_msg:"))
+async def adm_usr_msg_start(cb: CallbackQuery, state: FSMContext):
+    if not is_admin(cb.from_user.id):
+        return
+    uid = int(cb.data.split(":")[1])
+    u = await get_user_by_id(uid)
+    if not u:
+        await cb.answer("یافت نشد", show_alert=True)
+        return
+    await state.set_state(PrivateMessage.text)
+    await state.update_data(uid=int(u["telegram_id"]))
+    await cb.message.answer("✍️ متن پیام به این کاربر را ارسال کنید:", reply_markup=flow_cancel_kb())
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("adm_usr_bal:"))
+async def adm_usr_bal_start(cb: CallbackQuery, state: FSMContext):
+    if not is_admin(cb.from_user.id):
+        return
+    uid = int(cb.data.split(":")[1])
+    u = await get_user_by_id(uid)
+    if not u:
+        await cb.answer("یافت نشد", show_alert=True)
+        return
+    await state.set_state(AdminBalance.amount)
+    await state.update_data(uid=uid)
+    await cb.message.answer(
+        f"💰 موجودی فعلی: {_fmt_toman(int(u.get('balance_toman') or 0))} تومان\n\n"
+        "مبلغ تغییر را بفرستید (تومان). برای کم‌کردن، عدد منفی بدهید.\nمثال: `50000` یا `-20000`",
+        reply_markup=flow_cancel_kb(show_back=False),
+        parse_mode="Markdown",
+    )
+    await cb.answer()
+
+
+@router.message(AdminBalance.amount)
+async def adm_usr_bal_apply(msg: Message, state: FSMContext):
+    data = await state.get_data()
+    await state.clear()
+    uid = int(data.get("uid") or 0)
+    raw = (msg.text or "").strip().replace(",", "").replace("،", "")
+    try:
+        amount = int(float(raw))
+    except ValueError:
+        await msg.answer("❌ عدد معتبر نیست.", parse_mode=None)
+        return
+    u = await get_user_by_id(uid)
+    if not u:
+        await msg.answer("❌ کاربر یافت نشد.", parse_mode=None)
+        return
+    new_balance = await add_user_balance(uid, amount, kind="admin", note="admin_manual", actor_telegram_id=msg.from_user.id)
+    sign = "اضافه" if amount >= 0 else "کسر"
+    await msg.answer(f"✅ {abs(amount):,} تومان {sign} شد.\nموجودی جدید: {_fmt_toman(int(new_balance or 0))} تومان", parse_mode=None)
+    try:
+        await msg.bot.send_message(
+            u["telegram_id"],
+            ("💰 موجودی کیف پول شما به‌روزرسانی شد.\n" + (f"➕ {amount:,} تومان افزوده شد." if amount >= 0 else f"➖ {abs(amount):,} تومان کسر شد.")),
+            parse_mode=None,
+        )
+    except Exception:
+        pass
+    sent = await msg.answer("بازگشت به کارت کاربر...", parse_mode=None)
+    await _render_user_card(sent, uid)
 
 
 @router.callback_query(F.data.startswith("wh_appr:"))

@@ -50,8 +50,9 @@ def admin_menu(finance_only: bool = False) -> ReplyKeyboardMarkup:
     b.row(KeyboardButton(text="📊 آمار کلی"), KeyboardButton(text="📈 گزارش روزانه"))
     b.row(KeyboardButton(text="💰 سفارش‌های در انتظار"))
     b.row(KeyboardButton(text="🔑 مدیریت کانفیگ"), KeyboardButton(text="📦 پکیج‌ها"))
-    b.row(KeyboardButton(text="👥 کاربران"), KeyboardButton(text="📣 پیام همگانی"))
-    b.row(KeyboardButton(text="✉️ پیام خصوصی"), KeyboardButton(text="🌐 پنل مدیریت"))
+    b.row(KeyboardButton(text="👥 کاربران"), KeyboardButton(text="🔍 جستجوی کاربر"))
+    b.row(KeyboardButton(text="📣 پیام همگانی"), KeyboardButton(text="✉️ پیام خصوصی"))
+    b.row(KeyboardButton(text="🌐 پنل مدیریت"))
     b.row(KeyboardButton(text="🔄 شروع مجدد"))
     return b.as_markup(resize_keyboard=True)
 
@@ -399,6 +400,7 @@ def admin_configs_kb(configs: List[Dict], page: int = 0) -> InlineKeyboardMarkup
 def adm_config_detail_kb(cid: int, active: bool, can_convert: bool = True) -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
     _button(b, text="🔴 غیرفعال" if active else "🟢 فعال", callback_data=f"toggle_cfg:{cid}", style="danger" if active else "success")
+    _button(b, text="♻️ تمدید سریع", callback_data=f"adm_cfg_renew:{cid}", style="success")
     _button(b, text="📊 تغییر حجم", callback_data=f"edit_gb:{cid}", style="primary")
     _button(b, text="📅 تمدید تاریخ", callback_data=f"edit_exp:{cid}", style="success")
     _button(b, text="🔗 دریافت لینک اتصال", callback_data=f"adm_cfg_link:{cid}", style="primary")
@@ -407,7 +409,47 @@ def adm_config_detail_kb(cid: int, active: bool, can_convert: bool = True) -> In
     _button(b, text="✉️ پیام به مالک", callback_data=f"adm_cfg_msg:{cid}", style="primary")
     _button(b, text="🗑️ حذف", callback_data=f"del_cfg:{cid}", style="danger")
     _button(b, text="🔙 بازگشت", callback_data="adm_cfg_list", style="primary")
-    b.adjust(2, 2, 1, 1, 2)
+    b.adjust(2, 2, 1, 1, 1, 2)
+    return b.as_markup()
+
+
+def adm_user_card_kb(uid: int, is_blocked: bool) -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    _button(b, text="📡 سرویس‌های کاربر", callback_data=f"adm_usr_svcs:{uid}", style="primary")
+    _button(b, text="💰 تنظیم موجودی", callback_data=f"adm_usr_bal:{uid}", style="success")
+    _button(b, text="✉️ پیام به کاربر", callback_data=f"adm_usr_msg:{uid}", style="primary")
+    _button(b, text="🔓 آنبلاک" if is_blocked else "🔒 بلاک", callback_data=f"toggle_block:{uid}", style="success" if is_blocked else "danger")
+    _button(b, text="🔙 بازگشت", callback_data="usr_back", style="primary")
+    b.adjust(1, 2, 1, 1)
+    return b.as_markup()
+
+
+def adm_user_services_kb(uid: int, configs: List[Dict], profiles: List[Dict]) -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    for p in profiles:
+        icon = "🟢" if int(p.get("is_active") or 0) else "🔴"
+        name = p.get("name") or p.get("email") or f"ساب #{p.get('id')}"
+        _button(b, text=f"📡 {icon} {str(name)[:34]}", callback_data=f"adm_sub:{p['id']}", style="primary")
+    for c in configs:
+        icon = "🟢" if int(c.get("is_active") or 0) else "🔴"
+        _button(b, text=f"🔑 {icon} {str(c.get('email') or c.get('id'))[:34]}", callback_data=f"adm_cfg:{c['id']}", style="primary")
+    if not configs and not profiles:
+        _button(b, text="— سرویسی ندارد —", callback_data=f"usr:{uid}", style="primary")
+    _button(b, text="🔙 بازگشت به کارت کاربر", callback_data=f"usr:{uid}", style="primary")
+    b.adjust(1)
+    return b.as_markup()
+
+
+def adm_sub_panel_kb(pid: int, is_active: bool, owner_uid: int = 0) -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    _button(b, text="🔴 غیرفعال کردن" if is_active else "🟢 فعال کردن", callback_data=f"adm_sub_toggle:{pid}", style="danger" if is_active else "success")
+    _button(b, text="♻️ تمدید (همان پلن)", callback_data=f"adm_sub_renew:{pid}", style="success")
+    _button(b, text="📤 ارسال لینک به کاربر", callback_data=f"adm_sub_send:{pid}", style="primary")
+    _button(b, text="✉️ پیام به مالک", callback_data=f"adm_sub_msg:{pid}", style="primary")
+    _button(b, text="🗑️ حذف کامل ساب", callback_data=f"adm_sub_del:{pid}", style="danger")
+    if owner_uid:
+        _button(b, text="🔙 سرویس‌های کاربر", callback_data=f"adm_usr_svcs:{owner_uid}", style="primary")
+    b.adjust(2, 2, 1, 1)
     return b.as_markup()
 
 
