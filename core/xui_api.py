@@ -171,10 +171,12 @@ class XUIClient:
 
     async def get_client_traffic(self, email: str) -> Optional[Dict]:
         enc = quote(email, safe="")
-        r = await self._req("GET", f"/panel/api/clients/traffic/{enc}")
+        # Standard MHSanaei 3x-ui endpoint first; fall back to the fork-specific
+        # one only if it's missing. Avoids a wasted 404 round-trip on stock 3x-ui.
+        r = await self._req("GET", f"/panel/api/inbounds/getClientTraffics/{enc}")
         if r and r.get("success"):
             return r.get("obj")
-        r = await self._req("GET", f"/panel/api/inbounds/getClientTraffics/{enc}")
+        r = await self._req("GET", f"/panel/api/clients/traffic/{enc}")
         return r.get("obj") if r and r.get("success") else None
 
     async def get_client(self, email: str) -> Optional[Dict]:
@@ -193,10 +195,7 @@ class XUIClient:
         email = (email or "").strip()
         client_uuid = (client_uuid or "").strip()
 
-        api_client = None
-        if email:
-            api_client = await self.get_client(email)
-
+        # Primary, authoritative source: the inbound list (works on every 3x-ui).
         for inbound in await self.get_inbounds():
             protocol = inbound.get("protocol", "vless")
             client = self._find_inbound_client(inbound, protocol, email, client_uuid)
@@ -206,6 +205,10 @@ class XUIClient:
                     "inbound_id": int(inbound.get("id") or 0),
                     "inbound": inbound,
                     }
+
+        # Last resort: a fork-specific clients API (absent on stock 3x-ui, where
+        # it simply 404s). Only consulted when the inbound parse found nothing.
+        api_client = await self.get_client(email) if email else None
         if api_client:
             protocol = str(api_client.get("protocol") or "vless")
             if not self._client_identity(protocol, api_client):
@@ -391,13 +394,22 @@ class XUIClient:
             base["group"] = existing.get("group")
 
         if protocol == "trojan":
-            base["password"] = existing.get("password") or client_uuid
+            pw = (existing.get("password") or client_uuid or "").strip()
+            if not pw:
+                raise ValueError("invalid_password_for_client_payload")
+            base["password"] = pw
         elif protocol == "shadowsocks":
-            base["password"] = existing.get("password") or client_uuid.replace("-", "")
+            pw = (existing.get("password") or (client_uuid or "").replace("-", "")).strip()
+            if not pw:
+                raise ValueError("invalid_password_for_client_payload")
+            base["password"] = pw
             if existing.get("method"):
                 base["method"] = existing.get("method")
         elif protocol == "hysteria":
-            base["auth"] = existing.get("auth") or client_uuid.replace("-", "")
+            auth = (existing.get("auth") or (client_uuid or "").replace("-", "")).strip()
+            if not auth:
+                raise ValueError("invalid_auth_for_client_payload")
+            base["auth"] = auth
         else:
             cid = self._normal_uuid(existing.get("id") or existing.get("uuid")) or self._normal_uuid(client_uuid)
             if not cid:
@@ -447,13 +459,15 @@ class XUIClient:
             self.last_error = str(e)
             return False
 
-        payload = {"client": client, "inboundIds": [int(inbound_id)]}
-        r = await self._req("POST", "/panel/api/clients/add", json=payload)
+        # Standard MHSanaei 3x-ui endpoint first (well-defined, safe), then the
+        # fork-specific one as a fallback.
+        payload = {"id": inbound_id, "settings": json.dumps({"clients": [client]})}
+        r = await self._req("POST", "/panel/api/inbounds/addClient", json=payload)
         if r and r.get("success"):
             return True
 
-        payload = {"id": inbound_id, "settings": json.dumps({"clients": [client]})}
-        r = await self._req("POST", "/panel/api/inbounds/addClient", json=payload)
+        payload = {"client": client, "inboundIds": [int(inbound_id)]}
+        r = await self._req("POST", "/panel/api/clients/add", json=payload)
         if r and r.get("success"):
             return True
         return False
