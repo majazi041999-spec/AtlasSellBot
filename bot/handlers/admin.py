@@ -2391,12 +2391,28 @@ async def broadcast_pick_target(cb: CallbackQuery, state: FSMContext):
     target = cb.data.split(":", 1)[1]
     await state.update_data(target=target)
     await state.set_state(Broadcast.text)
-    await cb.message.edit_text("✍️ متن پیام را بنویسید:", reply_markup=flow_cancel_kb())
+    await cb.message.edit_text(
+        "✍️ پیام همگانی را ارسال کنید.\n\n"
+        "می‌تواند متن، عکس با کپشن، لینک، بولد یا هر پیام قابل کپی دیگری باشد.",
+        reply_markup=flow_cancel_kb(),
+    )
 
 
 @router.message(Broadcast.text)
 async def broadcast_get_text(msg: Message, state: FSMContext):
-    await state.update_data(text=msg.text or "")
+    fallback_text = (
+        getattr(msg, "html_text", None)
+        or getattr(msg, "html_caption", None)
+        or msg.text
+        or msg.caption
+        or ""
+    )
+    await state.update_data(
+        text=msg.text or msg.caption or "",
+        fallback_text=fallback_text,
+        source_chat_id=msg.chat.id,
+        source_message_id=msg.message_id,
+    )
     await state.set_state(Broadcast.buttons)
     await msg.answer(
         "🔘 می‌خواهید زیر پیام دکمه شیشه‌ای اضافه شود؟\n\n"
@@ -2407,6 +2423,25 @@ async def broadcast_get_text(msg: Message, state: FSMContext):
         parse_mode="Markdown",
         reply_markup=flow_cancel_kb(),
     )
+
+
+async def _copy_broadcast_message(bot: Bot, chat_id: int, data: dict, markup=None):
+    source_chat_id = data.get("source_chat_id")
+    source_message_id = data.get("source_message_id")
+    if source_chat_id and source_message_id:
+        kwargs = {
+            "chat_id": chat_id,
+            "from_chat_id": source_chat_id,
+            "message_id": source_message_id,
+        }
+        if markup is not None:
+            kwargs["reply_markup"] = markup
+        return await bot.copy_message(**kwargs)
+
+    fallback = data.get("fallback_text") or data.get("text") or ""
+    if not fallback:
+        raise ValueError("broadcast source message is missing")
+    return await bot.send_message(chat_id, fallback, reply_markup=markup, parse_mode="HTML")
 
 
 async def _broadcast_show_preview(msg: Message, state: FSMContext):
@@ -2426,10 +2461,11 @@ async def _broadcast_show_preview(msg: Message, state: FSMContext):
         f"👀 *پیش‌نمایش پیام:*",
         parse_mode="Markdown",
     )
-    await msg.answer(
-        data.get("text") or "",
-        reply_markup=markup,
-    )
+    try:
+        await _copy_broadcast_message(msg.bot, msg.chat.id, data, markup)
+    except Exception:
+        fallback = data.get("fallback_text") or data.get("text") or "پیش‌نمایش این پیام قابل نمایش نبود، اما هنگام ارسال با روش کپی تلاش می‌شود."
+        await msg.answer(fallback, reply_markup=markup, parse_mode="HTML")
     await msg.answer(
         f"🎯 مخاطب: *{target_text}*\n🔘 دکمه: {btn_note}\n📤 برای *{total}* کاربر ارسال می‌شود.",
         reply_markup=confirm_kb("broadcast_do", "broadcast_cancel"),
@@ -2474,7 +2510,7 @@ async def broadcast_do(cb: CallbackQuery, state: FSMContext, bot: Bot):
         if target == "wholesale" and not u.get("is_wholesale", 0):
             continue
         try:
-            await bot.send_message(u["telegram_id"], data["text"], reply_markup=markup)
+            await _copy_broadcast_message(bot, u["telegram_id"], data, markup)
             sent += 1
             await asyncio.sleep(0.04)
         except Exception:

@@ -191,7 +191,7 @@ def _service_button_text(kind: str, item: Dict) -> tuple[str, str]:
     expired = expire_ms > 0 and expire_ms <= now_ms
     state_icon = "🟢" if is_active and not expired else "🔴"
     kind_icon = "🧬" if kind == "sub" else "🔑"
-    name = str(item.get("email") or item.get("id") or "-")
+    name = str((item.get("name") if kind == "sub" else "") or item.get("email") or item.get("id") or "-")
     if len(name) > 30:
         name = name[:27] + "..."
     try:

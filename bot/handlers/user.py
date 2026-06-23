@@ -170,7 +170,7 @@ def _format_node_links_block(active_nodes: list[dict]) -> str:
     return "🔗 لینک مستقیم سرورها (در صورت مشکل لینک ساب):\n\n" + "\n\n".join(rows)
 
 
-async def _send_subscription_status(target, profile: dict):
+async def _send_subscription_status(target, profile: dict, send_qr: bool = True):
     if not profile:
         return
     # Live usage sync is best-effort and time-boxed: a slow/down X-UI server
@@ -215,11 +215,9 @@ async def _send_subscription_status(target, profile: dict):
 
     text = _format_subscription_status_card(profile, sub_url, used, total, remaining, pct, dl_text, active_nodes)
 
-    # Per-server connection links (fallback if the sub URL itself fails) + guide.
-    links_block = _format_node_links_block(active_nodes)
+    # Node links are exposed as buttons in subscription_detail_kb. Keeping long
+    # configs out of the status text makes the card readable on mobile.
     guide = (await get_setting("sub_connection_guide", "")).strip()
-    if links_block:
-        text += "\n\n" + links_block
     if guide:
         text += "\n\n" + guide
     if len(text) > 3900:
@@ -228,11 +226,12 @@ async def _send_subscription_status(target, profile: dict):
     kb = subscription_detail_kb(int(profile["id"]), sub_url, active_nodes)
     if isinstance(target, Message):
         await target.answer(text, parse_mode=None, reply_markup=kb)
-        try:
-            qr_label = profile.get("name") or profile.get("email") or "Subscription"
-            await target.answer_photo(_qr_input_file(sub_url, qr_label), caption=f"QR سابسکریپشن: {qr_label}", parse_mode=None)
-        except Exception:
-            pass
+        if send_qr:
+            try:
+                qr_label = profile.get("name") or profile.get("email") or "Subscription"
+                await target.answer_photo(_qr_input_file(sub_url, qr_label), caption=f"QR سابسکریپشن: {qr_label}", parse_mode=None)
+            except Exception:
+                pass
     else:
         await target.message.edit_text(text, parse_mode=None, reply_markup=kb)
 
@@ -1761,8 +1760,7 @@ async def user_subscription_link_lookup(msg: Message):
     profile = await get_subscription_profile_by_token(token) if token else None
     user = await get_or_create_user(msg.from_user.id, msg.from_user.username, msg.from_user.full_name)
     if profile and int(profile.get("user_id") or 0) == int(user["id"]):
-        await msg.answer("🔎 لینک ساب شما پیدا شد. وضعیت سرویس:")
-        await _send_subscription_status(msg, profile)
+        await _send_subscription_status(msg, profile, send_qr=False)
         return
 
     if profile:

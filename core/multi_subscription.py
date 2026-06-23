@@ -273,6 +273,25 @@ def _label_subscription_link(link: str, label: str) -> str:
         return link
 
 
+def _clean_display_part(value: str, max_len: int = 32) -> str:
+    value = " ".join(str(value or "").replace("_", " ").split())
+    if len(value) <= max_len:
+        return value
+    return value[: max(1, max_len - 1)].rstrip() + "…"
+
+
+async def _subscription_node_display_label(profile: Dict, node: Dict, index: int) -> str:
+    brand = _clean_display_part(await get_setting("ui.brand_name", "Atlas Account"), 22)
+    custom_name = _clean_display_part(profile.get("name") or "", 26)
+    node_name = _clean_display_part(
+        node.get("node_label") or node.get("server_name") or f"Node {index}",
+        28,
+    )
+    if custom_name:
+        return " | ".join(part for part in (brand, custom_name, node_name) if part)[:90]
+    return node_name[:90]
+
+
 def _decode_b64_json(value: str) -> Dict | None:
     raw = (value or "").strip().split("#", 1)[0].split("?", 1)[0]
     if not raw:
@@ -782,7 +801,7 @@ async def render_subscription(token: str) -> tuple[str, Dict[str, int]] | None:
                 raw_link = ""
         if not raw_link:
             continue
-        label = n.get("node_label") or f"{n.get('server_name') or 'Node'} #{n.get('inbound_id') or ''}"
+        label = await _subscription_node_display_label(profile, n, active_count + 1)
         link = _label_subscription_link(raw_link, label)
         if _subscription_link_is_complete(link):
             active_count += 1
