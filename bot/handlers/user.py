@@ -32,6 +32,8 @@ from core.database import (
     get_user_migration_count_today,
     get_setting,
     get_referral_stats,
+    get_referral_tiers,
+    count_converted_referrals,
     update_user,
     DB_PATH,
     get_user_pricing,
@@ -57,6 +59,8 @@ from core.database import (
     get_subscription_nodes,
     get_subscription_node,
     get_subscription_profile,
+    update_subscription_profile,
+    validate_discount_code,
 )
 from core.xui_api import XUIClient, fmt_bytes, days_left, expiry_ms_from_days
 from core.texts import get_text
@@ -85,13 +89,14 @@ from bot.keyboards import (
     subscription_delete_confirm_kb,
     servers_kb,
     custom_name_kb,
+    discount_skip_kb,
     wholesale_request_kb,
     wholesale_request_admin_kb,
     legacy_claim_admin_kb,
     wallet_kb,
     flow_cancel_kb,
 )
-from bot.states import AnonymousFeedback, BuyService, RenewService, WholesaleBuy, LegacySync, WalletTopup
+from bot.states import AnonymousFeedback, BuyService, RenewService, WholesaleBuy, LegacySync, WalletTopup, RenameSub, BuyDiscount
 
 router = Router()
 RENEWAL_MIN_DAYS = 30
@@ -879,6 +884,57 @@ async def sub_show(cb: CallbackQuery):
     await cb.answer()
 
 
+@router.callback_query(F.data.startswith("sub_rename:"))
+async def sub_rename_start(cb: CallbackQuery, state: FSMContext):
+    user = await get_or_create_user(cb.from_user.id, cb.from_user.username, cb.from_user.full_name)
+    pid = int(cb.data.split(":")[1])
+    profile = await _owned_subscription_for_user(user["id"], pid)
+    if not profile:
+        await cb.answer("این ساب برای شما پیدا نشد.", show_alert=True)
+        return
+    await state.set_state(RenameSub.name)
+    await state.update_data(pid=pid)
+    cur = (profile.get("name") or "").strip() or "—"
+    await cb.message.answer(
+        "✏️ یک نام دلخواه برای این سرویس بفرست تا توی لیست سرویس‌ها و داخل برنامه (Remark هر سرور) نمایش داده شود.\n\n"
+        f"نام فعلی: {cur}\n"
+        "فقط حرف، عدد، فاصله، خط تیره و آندرلاین. برای حذف نام، `-` بفرست.",
+        parse_mode="Markdown",
+        reply_markup=flow_cancel_kb(),
+    )
+    await cb.answer()
+
+
+@router.message(RenameSub.name)
+async def sub_rename_apply(msg: Message, state: FSMContext):
+    raw = (msg.text or "").strip()
+    if raw.split()[0].split("@", 1)[0].lower() == "/cancel" if raw else False:
+        await state.clear()
+        await msg.answer("❌ لغو شد.")
+        return
+    data = await state.get_data()
+    await state.clear()
+    pid = int(data.get("pid") or 0)
+    user = await get_or_create_user(msg.from_user.id, msg.from_user.username, msg.from_user.full_name)
+    profile = await _owned_subscription_for_user(user["id"], pid)
+    if not profile:
+        await msg.answer("این ساب برای شما پیدا نشد.")
+        return
+    new_name = "" if raw == "-" else _safe_user_config_name(raw)
+    if raw != "-" and not new_name:
+        await msg.answer("❌ نام نامعتبر است. فقط حرف، عدد، فاصله، خط تیره و آندرلاین مجاز است.")
+        return
+    await update_subscription_profile(pid, name=new_name)
+    profile["name"] = new_name
+    shown = new_name or "(بدون نام)"
+    await msg.answer(
+        f"✅ نام سرویس به «{shown}» تغییر کرد.\n"
+        "برای دیدن نام جدید، در برنامه‌ات لینک ساب را یک‌بار آپدیت کن.",
+        parse_mode=None,
+    )
+    await _send_subscription_status(msg, profile)
+
+
 @router.callback_query(F.data.startswith("sub_del:"))
 async def sub_delete_confirm(cb: CallbackQuery):
     user = await get_or_create_user(cb.from_user.id, cb.from_user.username, cb.from_user.full_name)
@@ -1282,7 +1338,7 @@ async def buy_pkg_selected(cb: CallbackQuery, state: FSMContext):
     await cb.answer()
 
 
-async def _create_buy_payment_from_state(from_user, state: FSMContext, custom_name: str):
+async def _finalize_buy_payment(from_user, state: FSMContext):
     data = await state.get_data()
     pid = int(data.get("package_id") or 0)
     pkg = await get_package(pid)
@@ -1292,15 +1348,33 @@ async def _create_buy_payment_from_state(from_user, state: FSMContext, custom_na
 
     user = await get_or_create_user(from_user.id, from_user.username, from_user.full_name)
     final_price, base_price, discount, price_per_gb = await _calc_package_price_for_user(user["id"], pkg)
-    oid = await create_order(user["id"], pid, custom_config_name=custom_name, custom_price=final_price)
+    custom_name = data.get("custom_name") or ""
 
-    text = await _payment_text(oid, pkg["name"], pkg["traffic_gb"], pkg["duration_days"], final_price)
-    if price_per_gb > 0 or discount > 0:
+    # Re-validate the discount code against the live price right before creating
+    # the order (guards against price/limit changes mid-flow).
+    code = (data.get("discount_code") or "").strip()
+    code_amount = int(data.get("discount_amount") or 0)
+    if code:
+        v = await validate_discount_code(code, user["id"], pid, final_price)
+        code_amount = int(v.get("discount_amount") or 0) if v.get("ok") else 0
+        if not v.get("ok"):
+            code = ""
+    net_price = max(0, final_price - code_amount)
+
+    oid = await create_order(user["id"], pid, custom_config_name=custom_name, custom_price=net_price)
+    if code and code_amount > 0:
+        await update_order(oid, discount_code=code, discount_amount=code_amount)
+
+    text = await _payment_text(oid, pkg["name"], pkg["traffic_gb"], pkg["duration_days"], net_price)
+    if price_per_gb > 0 or discount > 0 or code_amount > 0:
         text += f"\n\nقیمت پایه: `{_fmt_toman(base_price)}` تومان"
         if price_per_gb > 0:
             text += f"\nقیمت اختصاصی هر GB: `{_fmt_toman(price_per_gb)}` تومان"
         if discount > 0:
             text += f"\nتخفیف شما: `{discount:g}%`"
+        if code_amount > 0:
+            text += f"\n🎟️ کد تخفیف `{code}`: `{_fmt_toman(code_amount)}-` تومان"
+            text += f"\n💳 مبلغ نهایی: *{_fmt_toman(net_price)}* تومان"
     if custom_name:
         text += f"\n\nنام دلخواه انتهای کانفیگ: `{custom_name}`"
     await state.clear()
@@ -1309,13 +1383,7 @@ async def _create_buy_payment_from_state(from_user, state: FSMContext, custom_na
 
 @router.callback_query(StateFilter(BuyService.custom_name), F.data == "buy_name_default")
 async def buy_default_name(cb: CallbackQuery, state: FSMContext):
-    result, error = await _create_buy_payment_from_state(cb.from_user, state, "")
-    if error:
-        await cb.message.edit_text(error)
-        await cb.answer()
-        return
-    oid, text = result
-    await cb.message.edit_text(text, reply_markup=payment_kb(oid), parse_mode="Markdown")
+    await _go_to_discount_step(cb.message.answer, cb.from_user, state, "")
     await cb.answer("با نام پیش‌فرض ادامه داده شد.")
 
 
@@ -1332,15 +1400,83 @@ async def buy_custom_name(msg: Message, state: FSMContext):
     if raw_name != "-" and not custom_name:
         await msg.answer("❌ نام فقط می‌تواند شامل حرف، عدد، خط تیره و آندرلاین باشد. دوباره بفرستید یا `-` را بفرستید.", parse_mode="Markdown")
         return
+    await _go_to_discount_step(msg.answer, msg.from_user, state, custom_name)
 
-    result, error = await _create_buy_payment_from_state(msg.from_user, state, custom_name)
+
+async def _go_to_discount_step(send, from_user, state: FSMContext, custom_name: str):
+    """After the name step, optionally ask for a discount code, else finalize."""
+    await state.update_data(custom_name=custom_name, discount_code="", discount_amount=0)
+    if await get_setting("discount_enabled", "1") != "1":
+        await _emit_buy_payment(send, from_user, state)
+        return
+    await state.set_state(BuyDiscount.code)
+    await send(
+        "🎟️ اگر کد تخفیف دارید همینجا بفرستید.\n\nاگر ندارید، روی «بدون کد تخفیف» بزنید.",
+        reply_markup=discount_skip_kb(),
+    )
+
+
+def _discount_error_text(v: dict) -> str:
+    return {
+        "not_found": "❌ کد تخفیف نامعتبر است.",
+        "inactive": "❌ این کد تخفیف غیرفعال است.",
+        "expired": "❌ مهلت استفاده از این کد تمام شده است.",
+        "exhausted": "❌ ظرفیت استفاده از این کد پر شده است.",
+        "wrong_package": "❌ این کد برای این پکیج معتبر نیست.",
+        "min_amount": f"❌ این کد فقط برای سفارش‌های بالای {_fmt_toman(int(v.get('min_amount') or 0))} تومان است.",
+        "user_limit": "❌ شما قبلاً از این کد استفاده کرده‌اید.",
+        "zero_discount": "❌ این کد برای این سفارش تخفیفی ندارد.",
+    }.get(v.get("error"), "❌ کد تخفیف معتبر نیست.")
+
+
+@router.callback_query(StateFilter(BuyDiscount.code), F.data == "buy_disc_skip")
+async def buy_discount_skip(cb: CallbackQuery, state: FSMContext):
+    await state.update_data(discount_code="", discount_amount=0)
+    await _emit_buy_payment(cb.message.answer, cb.from_user, state)
+    await cb.answer()
+
+
+@router.message(BuyDiscount.code)
+async def buy_discount_code(msg: Message, state: FSMContext):
+    raw = (msg.text or "").strip()
+    low = raw.split()[0].split("@", 1)[0].lower() if raw else ""
+    if low == "/cancel":
+        await state.clear()
+        await msg.answer("❌ عملیات لغو شد.")
+        return
+    if low == "/skip" or raw == "-":
+        await state.update_data(discount_code="", discount_amount=0)
+        await _emit_buy_payment(msg.answer, msg.from_user, state)
+        return
+
+    data = await state.get_data()
+    pid = int(data.get("package_id") or 0)
+    pkg = await get_package(pid)
+    if not pkg or not pkg["is_active"]:
+        await state.clear()
+        await msg.answer("❌ این پکیج دیگر در دسترس نیست.")
+        return
+    user = await get_or_create_user(msg.from_user.id, msg.from_user.username, msg.from_user.full_name)
+    final_price, *_ = await _calc_package_price_for_user(user["id"], pkg)
+    v = await validate_discount_code(raw, user["id"], pid, final_price)
+    if not v.get("ok"):
+        await msg.answer(
+            _discount_error_text(v) + "\n\nکد دیگری بفرستید یا «بدون کد تخفیف» را بزنید.",
+            reply_markup=discount_skip_kb(),
+        )
+        return
+    await state.update_data(discount_code=v["code"], discount_amount=int(v["discount_amount"]))
+    await msg.answer(f"✅ کد «{v['code']}» اعمال شد — {_fmt_toman(int(v['discount_amount']))} تومان تخفیف.")
+    await _emit_buy_payment(msg.answer, msg.from_user, state)
+
+
+async def _emit_buy_payment(send, from_user, state: FSMContext):
+    result, error = await _finalize_buy_payment(from_user, state)
     if error:
-        await msg.answer(error)
+        await send(error)
         return
     oid, text = result
-    await msg.answer(text, reply_markup=payment_kb(oid), parse_mode="Markdown")
-
-
+    await send(text, reply_markup=payment_kb(oid), parse_mode="Markdown")
 
 
 @router.callback_query(F.data.startswith("pay_wallet:"))
@@ -2146,25 +2282,56 @@ async def mig_confirm(cb: CallbackQuery):
 async def referral_menu(msg: Message):
     if not await _ensure_channel_membership(msg):
         return
+    if await get_setting("referral_enabled", "1") != "1":
+        await msg.answer("🎁 سیستم دعوت دوستان فعلاً غیرفعال است.")
+        return
+
+    from core.rewards import referral_tier_reward_text
 
     user = await get_or_create_user(msg.from_user.id)
     stats = await get_referral_stats(user["id"])
     code = user.get("referral_code", "—")
     bot_info = await msg.bot.get_me()
     ref_link = f"https://t.me/{bot_info.username}?start={code}"
+    brand = await get_setting("ui.brand_name", "Atlas Account")
 
-    intro = await get_text("referral_intro", bonus_gb=int(REFERRAL_BONUS_GB))
-    text = (
-        f"{intro}\n\n"
-        f" *لینک اختصاصی شما:*\n`{ref_link}`\n\n"
-        f"━━━━━━━━━━━━━━\n"
-        f" *آمار شما:*\n"
-        f" دعوت‌شدگان: `{stats['invited']}` نفر\n"
-        f"✅ خریداران: `{stats['converted']}` نفر\n"
-        f" هدیه کسب‌شده: `{stats['bonus_gb']} GB`\n\n"
-        f" برای استفاده از هدیه با پشتیبانی در تماس باشید."
+    converted = await count_converted_referrals(user["id"])
+    tiers = await get_referral_tiers(active_only=True)
+    tier_lines = []
+    for t in tiers:
+        need = int(t.get("referrals_needed") or 0)
+        mark = "✅" if converted >= need else f"⏳ {converted}/{need}"
+        tier_lines.append(f"{mark} {need} معرفی → {referral_tier_reward_text(t)}")
+
+    info = (
+        "🎁 *دعوت دوستان*\n"
+        "━━━━━━━━━━━━━━\n"
+        f"👥 دعوت‌شدگان: `{stats['invited']}` | 🛒 خریداران: `{stats['converted']}`\n"
+        f"💎 اعتبار هدیه: `{stats['bonus_gb']} GB`\n"
     )
-    await msg.answer(text, parse_mode="Markdown")
+    if tier_lines:
+        info += "\n🏆 *پله‌های هدیه:*\n" + "\n".join(tier_lines) + "\n"
+        info += "\n_هدایا پس از رسیدن به هر پله و تأیید پشتیبانی فعال می‌شوند._\n"
+    info += f"\n🔗 *لینک اختصاصی شما:*\n`{ref_link}`\n\n👇 پیام زیر را برای دوستانتان فوروارد کنید:"
+    await msg.answer(info, parse_mode="Markdown")
+
+    # The forwardable banner + caption (customizable from the panel).
+    caption_tpl = await get_setting(
+        "referral_caption",
+        "🎁 با لینک اختصاصی من به {brand} بپیوند!\n\n👇 برای شروع:\n{link}",
+    )
+    try:
+        share_text = caption_tpl.format(brand=brand, link=ref_link)
+    except Exception:
+        share_text = f"{caption_tpl}\n{ref_link}"
+    banner = (await get_setting("referral_banner_file_id", "")).strip() or (await get_setting("referral_banner_url", "")).strip()
+    if banner:
+        try:
+            await msg.answer_photo(banner, caption=share_text, parse_mode=None)
+            return
+        except Exception:
+            pass
+    await msg.answer(share_text, parse_mode=None)
 
 
 # ─── SUPPORT ─────────────────────────────────────────────────────

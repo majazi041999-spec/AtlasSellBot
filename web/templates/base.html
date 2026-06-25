@@ -542,6 +542,9 @@ pre,code{white-space:pre-wrap;word-break:break-word;max-width:100%}
     <a class="nav-item {% if active=='packages' %}active{% endif %}" href="/{{ S }}/packages">
       <span class="ni">📦</span> پکیج‌ها
     </a>
+    <a class="nav-item {% if active=='discounts' %}active{% endif %}" href="/{{ S }}/discounts">
+      <span class="ni">🎟️</span> کد تخفیف
+    </a>
     <a class="nav-item {% if active=='orders' %}active{% endif %}" href="/{{ S }}/orders">
       <span class="ni">💰</span> سفارش‌ها
       {% if pending_badge is defined and pending_badge > 0 %}
@@ -550,6 +553,9 @@ pre,code{white-space:pre-wrap;word-break:break-word;max-width:100%}
     </a>
     <a class="nav-item {% if active=='users' %}active{% endif %}" href="/{{ S }}/users">
       <span class="ni">👥</span> کاربران
+    </a>
+    <a class="nav-item {% if active=='referrals' %}active{% endif %}" href="/{{ S }}/referrals">
+      <span class="ni">🎁</span> معرفی و هدایا
     </a>
     <a class="nav-item {% if active=='transactions' %}active{% endif %}" href="/{{ S }}/transactions">
       <span class="ni">🧾</span> آخرین تراکنش‌ها

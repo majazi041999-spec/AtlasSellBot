@@ -1,0 +1,123 @@
+{% extends "base.html" %}
+{% block title %}کد تخفیف{% endblock %}
+{% block topbar_title %}🎟️ کدهای تخفیف{% endblock %}
+
+{% block content %}
+<div class="sec-hd">
+  <span class="sec-title">کدهای تخفیف ({{ codes|length }})</span>
+  <button class="btn btn-primary" onclick="openModal('addModal')">➕ کد جدید</button>
+</div>
+
+<div class="table-wrap">
+<table>
+  <thead>
+    <tr><th>#</th><th>کد</th><th>نوع</th><th>مقدار</th><th>استفاده</th><th>هر کاربر</th><th>حداقل خرید</th><th>پکیج</th><th>انقضا</th><th>وضعیت</th><th>عملیات</th></tr>
+  </thead>
+  <tbody>
+  {% for c in codes %}
+  <tr>
+    <td>{{ c.id }}</td>
+    <td><strong><code>{{ c.code }}</code></strong>{% if c.note %}<br><span style="color:var(--txt3);font-size:.72rem">{{ c.note }}</span>{% endif %}</td>
+    <td>{% if c.kind == 'fixed' %}<span class="badge b-blue">مبلغ</span>{% else %}<span class="badge b-purple">درصد</span>{% endif %}</td>
+    <td>{% if c.kind == 'fixed' %}{{ "{:,}".format(c.value|int) }} تومان{% else %}{{ c.value|int }}%{% endif %}</td>
+    <td>{{ c.used_count }} / {{ c.max_uses if c.max_uses else '∞' }}</td>
+    <td>{{ c.per_user_limit if c.per_user_limit else '∞' }}</td>
+    <td>{{ "{:,}".format(c.min_amount) if c.min_amount else '—' }}</td>
+    <td>{% if c.package_id %}{{ pkg_names.get(c.package_id, c.package_id) }}{% else %}همه{% endif %}</td>
+    <td>{{ c.expires_label or '—' }}</td>
+    <td>{% if c.is_active %}<span class="badge b-green">🟢 فعال</span>{% else %}<span class="badge b-red">🔴 غیرفعال</span>{% endif %}</td>
+    <td style="white-space:nowrap">
+      <button class="btn btn-outline btn-xs"
+        onclick='openEdit({{ c.id }}, {{ c.code|tojson }}, {{ c.kind|tojson }}, {{ c.value }}, {{ c.max_uses }}, {{ c.per_user_limit }}, {{ c.min_amount }}, {{ c.package_id }}, {{ (c.expires_input or "")|tojson }}, {{ (c.note or "")|tojson }})'>✏️</button>
+      <button class="btn btn-outline btn-xs" onclick="toggleCode({{ c.id }})">{{ '🔴' if c.is_active else '🟢' }}</button>
+      <button class="btn btn-danger btn-xs" onclick="deleteCode({{ c.id }}, {{ c.code|tojson }})">🗑️</button>
+    </td>
+  </tr>
+  {% endfor %}
+  {% if not codes %}
+  <tr><td colspan="11" style="text-align:center;color:var(--txt3);padding:24px">هنوز کد تخفیفی نساخته‌اید.</td></tr>
+  {% endif %}
+  </tbody>
+</table>
+</div>
+
+{% macro code_fields(prefix) %}
+  <div class="form-group"><label>کد تخفیف</label><input type="text" name="code" id="{{ prefix }}_code" class="form-control" placeholder="مثال: OFF20" required></div>
+  <div class="form-row">
+    <div class="form-group">
+      <label>نوع تخفیف</label>
+      <select name="kind" id="{{ prefix }}_kind" class="form-control">
+        <option value="percent">درصدی (%)</option>
+        <option value="fixed">مبلغ ثابت (تومان)</option>
+      </select>
+    </div>
+    <div class="form-group"><label>مقدار (درصد یا تومان)</label><input type="number" name="value" id="{{ prefix }}_value" class="form-control" min="0" step="1" required></div>
+  </div>
+  <div class="form-row">
+    <div class="form-group"><label>سقف کل استفاده (۰=نامحدود)</label><input type="number" name="max_uses" id="{{ prefix }}_max_uses" class="form-control" min="0" value="0"></div>
+    <div class="form-group"><label>سقف هر کاربر (۰=نامحدود)</label><input type="number" name="per_user_limit" id="{{ prefix }}_per_user_limit" class="form-control" min="0" value="1"></div>
+  </div>
+  <div class="form-row">
+    <div class="form-group"><label>حداقل مبلغ خرید (تومان، ۰=ندارد)</label><input type="number" name="min_amount" id="{{ prefix }}_min_amount" class="form-control" min="0" value="0"></div>
+    <div class="form-group">
+      <label>محدود به پکیج</label>
+      <select name="package_id" id="{{ prefix }}_package_id" class="form-control">
+        <option value="0">همه پکیج‌ها</option>
+        {% for p in packages %}<option value="{{ p.id }}">{{ p.name }}</option>{% endfor %}
+      </select>
+    </div>
+  </div>
+  <div class="form-group"><label>تاریخ انقضا (اختیاری)</label><input type="date" name="expires" id="{{ prefix }}_expires" class="form-control"></div>
+  <div class="form-group"><label>یادداشت (اختیاری)</label><input type="text" name="note" id="{{ prefix }}_note" class="form-control"></div>
+{% endmacro %}
+
+<div class="overlay" id="addModal">
+<div class="modal">
+  <div class="modal-hd"><h3>➕ کد تخفیف جدید</h3><button class="modal-close" onclick="closeModal('addModal')">✕</button></div>
+  <form action="/{{ S }}/discounts/add" method="POST">
+    {{ code_fields('a') }}
+    <div style="display:flex;gap:8px;justify-content:flex-end">
+      <button type="button" class="btn btn-outline" onclick="closeModal('addModal')">انصراف</button>
+      <button type="submit" class="btn btn-primary">💾 ذخیره</button>
+    </div>
+  </form>
+</div>
+</div>
+
+<div class="overlay" id="editModal">
+<div class="modal">
+  <div class="modal-hd"><h3>✏️ ویرایش کد تخفیف</h3><button class="modal-close" onclick="closeModal('editModal')">✕</button></div>
+  <form id="editForm" method="POST">
+    {{ code_fields('e') }}
+    <div style="display:flex;gap:8px;justify-content:flex-end">
+      <button type="button" class="btn btn-outline" onclick="closeModal('editModal')">انصراف</button>
+      <button type="submit" class="btn btn-primary">💾 ذخیره تغییرات</button>
+    </div>
+  </form>
+</div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+async function toggleCode(id){ const r = await api(`/${S}/discounts/${id}/toggle`); if(r.success) location.reload(); else toast('خطا!','error'); }
+async function deleteCode(id, code){
+  if(!confirm(`کد "${code}" حذف شود؟`)) return;
+  const r = await api(`/${S}/discounts/${id}/delete`);
+  if(r.success){ toast('حذف شد','success'); setTimeout(()=>location.reload(),700); } else toast('خطا!','error');
+}
+function openEdit(id, code, kind, value, maxUses, perUser, minAmount, pkgId, expires, note){
+  document.getElementById('e_code').value = code;
+  document.getElementById('e_kind').value = kind;
+  document.getElementById('e_value').value = value;
+  document.getElementById('e_max_uses').value = maxUses;
+  document.getElementById('e_per_user_limit').value = perUser;
+  document.getElementById('e_min_amount').value = minAmount;
+  document.getElementById('e_package_id').value = pkgId;
+  document.getElementById('e_expires').value = expires || '';
+  document.getElementById('e_note').value = note || '';
+  document.getElementById('editForm').action = `/${S}/discounts/${id}/edit`;
+  openModal('editModal');
+}
+</script>
+{% endblock %}

@@ -20,13 +20,14 @@
 
 <div class="backup-hero">
   <h2>بکاپ کامل پنل</h2>
-  <p>بکاپ شامل دیتابیس پنل و در صورت وجود فایل تنظیمات `.env` است. قبل از هر ریستور هم یک بکاپ اضطراری روی سرور ذخیره می‌شود.</p>
+  <p>بکاپ شامل دیتابیس پنل، فایل تنظیمات <code>.env</code> و در صورت موجود بودن گواهی‌های SSL (پوشهٔ <code>/etc/ssl/atlas</code>)، کانفیگ Nginx و فایل سرویس systemd است؛ یعنی با یک ریستور همه‌چیز برمی‌گردد. قبل از هر ریستور هم یک بکاپ اضطراری روی سرور ذخیره می‌شود.</p>
 </div>
 
 {% if result == "restored" %}
 <div class="alert alert-success">
   ریستور با موفقیت انجام شد.
-  {% if pre %} بکاپ قبل از ریستور ذخیره شد: <b>{{ pre }}</b>{% endif %}
+  {% if pre %} بکاپ قبل از ریستور ذخیره شد: <b>{{ pre }}</b>.{% endif %}
+  {% if ssl_ok %} فایل‌های SSL/Nginx بازگردانده‌شده: <b>{{ ssl_ok }}</b>{% if ssl_fail and ssl_fail != "0" %} (ناموفق: {{ ssl_fail }} — احتمالاً به دسترسی root نیاز است){% endif %}.{% endif %}
 </div>
 {% elif result == "restore_error" %}
 <div class="alert alert-danger">ریستور انجام نشد. فایل آپلودشده معتبر نیست یا دیتابیس Atlas داخل آن پیدا نشد.</div>
@@ -74,6 +75,11 @@
       <label class="check-row">
         <input type="checkbox" name="restore_env" value="1">
         فایل .env هم در صورت وجود داخل بکاپ برگردانده شود
+      </label>
+      <input type="hidden" name="restore_ssl" value="0">
+      <label class="check-row">
+        <input type="checkbox" name="restore_ssl" value="1">
+        گواهی SSL و کانفیگ Nginx هم برگردانده شود (نیاز به اجرای پنل با دسترسی root)
       </label>
       <button class="btn btn-danger" type="submit">ریستور پنل</button>
     </form>

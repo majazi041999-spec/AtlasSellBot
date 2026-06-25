@@ -722,6 +722,10 @@ async def _do_approve_impl(cb: CallbackQuery, oid: int, sid: int):
         )
         return False
 
+    # Capture BEFORE flipping to approved so "first purchase" is accurate.
+    from core.database import has_previous_purchase
+    first_purchase = not await has_previous_purchase(user["id"])
+
     await update_order(
         oid,
         status="approved",
@@ -735,21 +739,9 @@ async def _do_approve_impl(cb: CallbackQuery, oid: int, sid: int):
         await update_user(user["id"], referral_bonus_gb=0)
         await update_order(oid, referral_bonus_applied=1)
 
-    # Referral reward for the inviter (first paid purchase only).
-    from core.database import has_previous_purchase
-    from core.config import REFERRAL_BONUS_GB
-    if order.get("referred_by") and not await has_previous_purchase(user["id"]):
-        referrer = await get_user_by_id(order["referred_by"])
-        if referrer:
-            await update_user(referrer["id"], referral_bonus_gb=float(referrer.get("referral_bonus_gb") or 0) + REFERRAL_BONUS_GB)
-            try:
-                await cb.bot.send_message(
-                    referrer["telegram_id"],
-                    f"🎁 هدیه دعوت شما فعال شد: {REFERRAL_BONUS_GB}GB به اعتبار هدیه‌تان اضافه شد.",
-                    parse_mode=None,
-                )
-            except Exception:
-                pass
+    # Discount redemption + referral incentives (per-referral GB + milestone tiers).
+    from core.rewards import apply_post_approval_rewards
+    await apply_post_approval_rewards(cb.bot, user, order, first_purchase)
 
     head = (
         "🎉 سرویس شما فعال شد!\n"
@@ -2380,6 +2372,7 @@ async def broadcast_get_text(msg: Message, state: FSMContext):
         "اگر بله، دکمه‌ها را به این صورت بفرستید (هر خط یک ردیف):\n"
         "`عنوان دکمه - https://example.com`\n"
         "`کانال - https://t.me/yourchannel | سایت - https://site.com`\n\n"
+        "🚀 برای افزودن دکمهٔ آمادهٔ «شروع ربات» روی /startbtn بزنید.\n"
         "اگر دکمه نمی‌خواهید، روی /skip بزنید.",
         parse_mode="Markdown",
         reply_markup=flow_cancel_kb(),
@@ -2440,6 +2433,25 @@ async def broadcast_skip_buttons(msg: Message, state: FSMContext):
     await _broadcast_show_preview(msg, state)
 
 
+@router.message(Broadcast.buttons, F.text == "/startbtn")
+async def broadcast_add_start_button(msg: Message, state: FSMContext):
+    """Attach a ready-made 'Start bot' deep-link button to the broadcast post."""
+    try:
+        me = await msg.bot.get_me()
+        username = me.username
+    except Exception:
+        username = None
+    if not username:
+        await msg.answer("⚠️ نام کاربری ربات در دسترس نیست. لینک را دستی بفرستید.")
+        return
+    data = await state.get_data()
+    existing = (data.get("buttons_raw") or "").strip()
+    start_line = f"🚀 شروع ربات - https://t.me/{username}?start"
+    buttons_raw = f"{existing}\n{start_line}" if existing else start_line
+    await state.update_data(buttons_raw=buttons_raw)
+    await _broadcast_show_preview(msg, state)
+
+
 @router.message(Broadcast.buttons)
 async def broadcast_get_buttons(msg: Message, state: FSMContext):
     raw = msg.text or ""
@@ -2483,6 +2495,82 @@ async def broadcast_do(cb: CallbackQuery, state: FSMContext, bot: Bot):
 async def broadcast_cancel(cb: CallbackQuery, state: FSMContext):
     await state.clear()
     await cb.message.edit_text("❌ ارسال لغو شد.")
+
+
+# ─── REFERRAL TIER CLAIMS (admin approval) ───────────────────────
+@router.callback_query(F.data.startswith("refclaim_ok:"))
+async def referral_claim_approve(cb: CallbackQuery, bot: Bot):
+    if not is_admin(cb.from_user.id):
+        await cb.answer("اجازه ندارید.", show_alert=True)
+        return
+    from core.database import get_referral_claim, update_referral_claim
+    from core.rewards import referral_tier_reward_text
+    claim_id = int(cb.data.split(":")[1])
+    claim = await get_referral_claim(claim_id)
+    if not claim or str(claim.get("status")) != "pending":
+        await cb.answer("این درخواست قبلاً بررسی شده است.", show_alert=True)
+        return
+    reward_user = await get_user_by_id(int(claim["user_id"]))
+    if not reward_user:
+        await cb.answer("کاربر یافت نشد.", show_alert=True)
+        return
+    reward = referral_tier_reward_text(claim)
+    if str(claim.get("reward_kind")) == "service":
+        traffic_gb = 0.0 if int(claim.get("is_unlimited") or 0) else float(claim.get("reward_gb") or 0)
+        days = int(claim.get("duration_days") or 0)
+        synthetic_order = {"id": 0, "custom_config_name": "🎁 هدیه معرفی"}
+        res = await create_profile_for_order(reward_user, synthetic_order, traffic_gb, days)
+        if not res.get("ok"):
+            await cb.answer("ساخت سرویس هدیه ناموفق بود: " + subscription_error_message(res.get("error")), show_alert=True)
+            return
+        await update_referral_claim(claim_id, status="approved", reviewed_at=datetime.now().isoformat())
+        try:
+            await bot.send_message(
+                reward_user["telegram_id"],
+                "🎁 هدیهٔ معرفی شما فعال شد!\n"
+                f"{reward}\n\n"
+                f"لینک اشتراک:\n{res['url']}",
+                parse_mode=None,
+            )
+        except Exception:
+            pass
+    else:
+        gb = float(claim.get("reward_gb") or 0)
+        await update_user(reward_user["id"], referral_bonus_gb=float(reward_user.get("referral_bonus_gb") or 0) + gb)
+        await update_referral_claim(claim_id, status="approved", reviewed_at=datetime.now().isoformat())
+        try:
+            await bot.send_message(
+                reward_user["telegram_id"],
+                f"🎁 هدیهٔ معرفی شما اعطا شد: {gb:g}GB به اعتبار هدیهٔ شما اضافه شد.\n"
+                "هنگام خرید بعدی، روی سرویس اعمال می‌شود.",
+                parse_mode=None,
+            )
+        except Exception:
+            pass
+    try:
+        await cb.message.edit_text((cb.message.text or "") + "\n\n✅ اعطا شد.", parse_mode=None)
+    except Exception:
+        pass
+    await cb.answer("هدیه اعطا شد.")
+
+
+@router.callback_query(F.data.startswith("refclaim_no:"))
+async def referral_claim_reject(cb: CallbackQuery):
+    if not is_admin(cb.from_user.id):
+        await cb.answer("اجازه ندارید.", show_alert=True)
+        return
+    from core.database import get_referral_claim, update_referral_claim
+    claim_id = int(cb.data.split(":")[1])
+    claim = await get_referral_claim(claim_id)
+    if not claim or str(claim.get("status")) != "pending":
+        await cb.answer("این درخواست قبلاً بررسی شده است.", show_alert=True)
+        return
+    await update_referral_claim(claim_id, status="rejected", reviewed_at=datetime.now().isoformat())
+    try:
+        await cb.message.edit_text((cb.message.text or "") + "\n\n❌ رد شد.", parse_mode=None)
+    except Exception:
+        pass
+    await cb.answer("رد شد.")
 
 
 @router.message(F.text == "✉️ پیام خصوصی")

@@ -7,6 +7,7 @@ import logging
 import base64
 import os
 import re
+import glob
 import shlex
 import time
 import subprocess
@@ -53,6 +54,16 @@ from core.database import (
     delete_server,
     add_subscription_node_config,
     delete_subscription_node_config,
+    get_discount_codes,
+    get_discount_code,
+    add_discount_code,
+    update_discount_code,
+    delete_discount_code,
+    get_referral_tiers,
+    get_referral_tier,
+    add_referral_tier,
+    update_referral_tier,
+    delete_referral_tier,
     get_all_configs,
     get_configs_by_base_email,
     delete_configs_by_base_email,
@@ -532,11 +543,61 @@ def _sqlite_snapshot_bytes() -> bytes:
             pass
 
 
+# Installed-cert + reverse-proxy locations written by the in-panel SSL setup.
+_SSL_BASE = "/etc/ssl/atlas"
+_NGINX_CONF_GLOB = "/etc/nginx/conf.d/atlas-*.conf"
+_SYSTEMD_UNITS = ["/etc/systemd/system/atlas-bot.service", "/etc/systemd/system/atlasbot.service"]
+
+
+def _system_backup_files() -> list[tuple[str, str]]:
+    """Readable SSL certs + nginx vhost(s) + systemd unit, as (abspath, arcname)."""
+    out: list[tuple[str, str]] = []
+    try:
+        if os.path.isdir(_SSL_BASE):
+            for root, _dirs, files in os.walk(_SSL_BASE):
+                for fn in files:
+                    ap = os.path.join(root, fn)
+                    rel = os.path.relpath(ap, _SSL_BASE).replace(os.sep, "/")
+                    if os.access(ap, os.R_OK):
+                        out.append((ap, f"ssl/atlas/{rel}"))
+        for ap in glob.glob(_NGINX_CONF_GLOB):
+            if os.access(ap, os.R_OK):
+                out.append((ap, f"nginx/{os.path.basename(ap)}"))
+        for ap in _SYSTEMD_UNITS:
+            if os.path.isfile(ap) and os.access(ap, os.R_OK):
+                out.append((ap, f"systemd/{os.path.basename(ap)}"))
+    except Exception as e:
+        logger.warning("collecting system backup files failed: %s", e)
+    return out
+
+
+def _system_restore_target(arc: str) -> Optional[str]:
+    """Map a backup arcname back to its absolute system path (restore)."""
+    if arc.startswith("ssl/atlas/"):
+        tail = arc[len("ssl/atlas/"):]
+        if ".." in tail.split("/"):
+            return None
+        return os.path.join(_SSL_BASE, *tail.split("/"))
+    if arc.startswith("nginx/") and arc.endswith(".conf"):
+        return os.path.join("/etc/nginx/conf.d", os.path.basename(arc))
+    if arc.startswith("systemd/") and arc.endswith(".service"):
+        return os.path.join("/etc/systemd/system", os.path.basename(arc))
+    return None
+
+
 def _build_backup_zip() -> bytes:
+    sys_files = _system_backup_files()
+    contains = ["atlas.db"]
+    if os.path.exists(_env_path):
+        contains.append(".env")
+    if any(a.startswith("ssl/") for _, a in sys_files):
+        contains.append("ssl")
+    if any(a.startswith("nginx/") for _, a in sys_files):
+        contains.append("nginx")
     meta = {
         "app": "AtlasSellBot",
         "created_at": datetime.now().isoformat(),
-        "contains": ["atlas.db"] + ([".env"] if os.path.exists(_env_path) else []),
+        "contains": contains,
     }
     buf = BytesIO()
     with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as z:
@@ -544,6 +605,11 @@ def _build_backup_zip() -> bytes:
         z.writestr("atlas.db", _sqlite_snapshot_bytes())
         if os.path.exists(_env_path):
             z.write(_env_path, ".env")
+        for ap, arc in sys_files:
+            try:
+                z.write(ap, arc)
+            except Exception:
+                pass
     buf.seek(0)
     return buf.getvalue()
 
@@ -571,10 +637,11 @@ def _validate_sqlite_db(path: str):
         con.close()
 
 
-def _extract_restore_payload(upload_path: str, workdir: str) -> tuple[str, str | None]:
+def _extract_restore_payload(upload_path: str, workdir: str) -> tuple[str, str | None, list[tuple[str, str]]]:
     db_out = os.path.join(workdir, "restore-atlas.db")
     env_out = os.path.join(workdir, "restore.env")
     env_found: str | None = None
+    sys_staged: list[tuple[str, str]] = []  # (staged_path, target_abspath)
 
     if zipfile.is_zipfile(upload_path):
         with zipfile.ZipFile(upload_path) as z:
@@ -589,11 +656,49 @@ def _extract_restore_payload(upload_path: str, workdir: str) -> tuple[str, str |
                 with z.open(env_name) as src, open(env_out, "wb") as dst:
                     shutil.copyfileobj(src, dst)
                 env_found = env_out
+            # Stage SSL/nginx/systemd files for an optional system restore.
+            sys_dir = os.path.join(workdir, "sys")
+            for arc in names:
+                target = _system_restore_target(arc)
+                if not target:
+                    continue
+                staged = os.path.join(sys_dir, arc.replace("/", os.sep))
+                os.makedirs(os.path.dirname(staged), exist_ok=True)
+                with z.open(arc) as src, open(staged, "wb") as dst:
+                    shutil.copyfileobj(src, dst)
+                sys_staged.append((staged, target))
     else:
         shutil.copyfile(upload_path, db_out)
 
     _validate_sqlite_db(db_out)
-    return db_out, env_found
+    return db_out, env_found, sys_staged
+
+
+def _restore_system_files(sys_staged: list[tuple[str, str]]) -> dict:
+    """Best-effort write of SSL/nginx/systemd files back to the system."""
+    restored = 0
+    failed = 0
+    for staged, target in sys_staged:
+        try:
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            shutil.copyfile(staged, target)
+            # Private keys should stay readable only by root.
+            if target.endswith((".key", ".pem")):
+                try:
+                    os.chmod(target, 0o600)
+                except OSError:
+                    pass
+            restored += 1
+        except Exception as e:
+            failed += 1
+            logger.warning("system file restore failed %s: %s", target, e)
+    if restored:
+        for cmd in (["nginx", "-t"], ["nginx", "-s", "reload"]):
+            try:
+                subprocess.run(cmd, capture_output=True, timeout=20)
+            except Exception:
+                pass
+    return {"restored": restored, "failed": failed}
 
 
 def _clean_domain(value: str) -> str:
@@ -838,6 +943,8 @@ async def backups_page(request: Request):
             active="backups",
             result=request.query_params.get("result", ""),
             pre=request.query_params.get("pre", ""),
+            ssl_ok=request.query_params.get("ssl_ok", ""),
+            ssl_fail=request.query_params.get("ssl_fail", ""),
             backups=backups,
             settings=backup_settings,
         ),
@@ -927,7 +1034,12 @@ async def backups_servers_send(request: Request):
 
 
 @app.post(f"/{S}/backups/restore")
-async def backup_restore(request: Request, backup_file: UploadFile = File(...), restore_env: str = Form("0")):
+async def backup_restore(
+    request: Request,
+    backup_file: UploadFile = File(...),
+    restore_env: str = Form("0"),
+    restore_ssl: str = Form("0"),
+):
     if not _auth(request):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
 
@@ -937,13 +1049,17 @@ async def backup_restore(request: Request, backup_file: UploadFile = File(...), 
             shutil.copyfileobj(backup_file.file, f)
 
         try:
-            db_restore, env_restore = _extract_restore_payload(upload_path, tmpdir)
+            db_restore, env_restore, sys_staged = _extract_restore_payload(upload_path, tmpdir)
             pre_name = _save_pre_restore_backup()
             os.replace(db_restore, _db_path)
             if restore_env == "1" and env_restore:
                 os.replace(env_restore, _env_path)
+            ssl_q = ""
+            if restore_ssl == "1" and sys_staged:
+                res = _restore_system_files(sys_staged)
+                ssl_q = f"&ssl_ok={res['restored']}&ssl_fail={res['failed']}"
             await init_db()
-            return RedirectResponse(f"/{S}/backups?result=restored&pre={pre_name}", status_code=302)
+            return RedirectResponse(f"/{S}/backups?result=restored&pre={pre_name}{ssl_q}", status_code=302)
         except Exception as e:
             logger.exception("backup restore failed: %s", e)
             return RedirectResponse(f"/{S}/backups?result=restore_error", status_code=302)
@@ -1417,6 +1533,205 @@ async def pkg_delete(request: Request, pid: int):
     return JSONResponse({"success": True})
 
 
+# ═══════════════════════════════ DISCOUNT CODES ═════════════════════
+def _date_to_ms(s: str) -> int:
+    s = (s or "").strip()
+    if not s:
+        return 0
+    try:
+        return int(datetime.strptime(s, "%Y-%m-%d").replace(hour=23, minute=59, second=59).timestamp() * 1000)
+    except Exception:
+        return 0
+
+
+def _ms_to_date(ms) -> str:
+    ms = int(ms or 0)
+    if ms <= 0:
+        return ""
+    try:
+        return datetime.fromtimestamp(ms / 1000).strftime("%Y-%m-%d")
+    except Exception:
+        return ""
+
+
+@app.get(f"/{S}/discounts", response_class=HTMLResponse)
+async def discounts_page(request: Request):
+    if not _auth(request):
+        return _redir_login()
+    codes = await get_discount_codes()
+    packages = await get_packages(active_only=False)
+    pkg_names = {int(p["id"]): p["name"] for p in packages}
+    for c in codes:
+        c["expires_input"] = _ms_to_date(c.get("expires_at"))
+        c["expires_label"] = c["expires_input"] or ""
+    return _templates.TemplateResponse(
+        "discounts.html",
+        await _ctx_ui(request, codes=codes, packages=packages, pkg_names=pkg_names, active="discounts"),
+    )
+
+
+@app.post(f"/{S}/discounts/add")
+async def discount_add(
+    request: Request,
+    code: str = Form(...),
+    kind: str = Form("percent"),
+    value: float = Form(0),
+    max_uses: int = Form(0),
+    per_user_limit: int = Form(1),
+    min_amount: int = Form(0),
+    package_id: int = Form(0),
+    expires: str = Form(""),
+    note: str = Form(""),
+):
+    if not _auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    code = (code or "").strip()
+    if code:
+        await add_discount_code(
+            code, kind, value, max_uses=max_uses, per_user_limit=per_user_limit,
+            min_amount=min_amount, package_id=package_id, expires_at=_date_to_ms(expires), note=note,
+        )
+    return RedirectResponse(f"/{S}/discounts", status_code=302)
+
+
+@app.post(f"/{S}/discounts/{{cid}}/edit")
+async def discount_edit(
+    request: Request,
+    cid: int,
+    code: str = Form(...),
+    kind: str = Form("percent"),
+    value: float = Form(0),
+    max_uses: int = Form(0),
+    per_user_limit: int = Form(1),
+    min_amount: int = Form(0),
+    package_id: int = Form(0),
+    expires: str = Form(""),
+    note: str = Form(""),
+):
+    if not _auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    await update_discount_code(
+        cid, code=(code or "").strip(),
+        kind=kind if kind in ("percent", "fixed") else "percent",
+        value=float(value or 0), max_uses=int(max_uses or 0),
+        per_user_limit=int(per_user_limit or 0), min_amount=int(min_amount or 0),
+        package_id=int(package_id or 0), expires_at=_date_to_ms(expires), note=(note or "").strip(),
+    )
+    return RedirectResponse(f"/{S}/discounts", status_code=302)
+
+
+@app.post(f"/{S}/discounts/{{cid}}/toggle")
+async def discount_toggle(request: Request, cid: int):
+    if not _auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    c = await get_discount_code(cid)
+    if c:
+        await update_discount_code(cid, is_active=0 if int(c.get("is_active") or 0) else 1)
+    return JSONResponse({"success": True})
+
+
+@app.post(f"/{S}/discounts/{{cid}}/delete")
+async def discount_delete(request: Request, cid: int):
+    if not _auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    await delete_discount_code(cid)
+    return JSONResponse({"success": True})
+
+
+# ═══════════════════════════════ REFERRALS ══════════════════════════
+@app.get(f"/{S}/referrals", response_class=HTMLResponse)
+async def referrals_page(request: Request):
+    if not _auth(request):
+        return _redir_login()
+    tiers = await get_referral_tiers(active_only=False)
+    s = {
+        "referral_enabled": await get_setting("referral_enabled", "1"),
+        "referral_per_referral_gb": await get_setting("referral_per_referral_gb", "5"),
+        "referral_banner_url": await get_setting("referral_banner_url", ""),
+        "referral_caption": await get_setting("referral_caption", ""),
+    }
+    return _templates.TemplateResponse(
+        "referrals.html",
+        await _ctx_ui(request, tiers=tiers, s=s, active="referrals"),
+    )
+
+
+@app.post(f"/{S}/referrals/settings")
+async def referrals_settings(
+    request: Request,
+    referral_enabled: str = Form("1"),
+    referral_per_referral_gb: str = Form("0"),
+    referral_banner_url: str = Form(""),
+    referral_caption: str = Form(""),
+):
+    if not _auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    await set_setting("referral_enabled", "1" if referral_enabled == "1" else "0")
+    await set_setting("referral_per_referral_gb", str(referral_per_referral_gb or "0"))
+    await set_setting("referral_banner_url", (referral_banner_url or "").strip())
+    await set_setting("referral_caption", referral_caption or "")
+    return RedirectResponse(f"/{S}/referrals", status_code=302)
+
+
+@app.post(f"/{S}/referrals/tiers/add")
+async def referral_tier_add(
+    request: Request,
+    referrals_needed: int = Form(...),
+    reward_kind: str = Form("gb"),
+    reward_gb: float = Form(0),
+    duration_days: int = Form(0),
+    is_unlimited: str = Form("0"),
+    label: str = Form(""),
+):
+    if not _auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    await add_referral_tier(
+        referrals_needed, reward_kind, reward_gb=reward_gb, duration_days=duration_days,
+        is_unlimited=1 if is_unlimited == "1" else 0, label=label,
+    )
+    return RedirectResponse(f"/{S}/referrals", status_code=302)
+
+
+@app.post(f"/{S}/referrals/tiers/{{tid}}/edit")
+async def referral_tier_edit(
+    request: Request,
+    tid: int,
+    referrals_needed: int = Form(...),
+    reward_kind: str = Form("gb"),
+    reward_gb: float = Form(0),
+    duration_days: int = Form(0),
+    is_unlimited: str = Form("0"),
+    label: str = Form(""),
+):
+    if not _auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    await update_referral_tier(
+        tid, referrals_needed=int(referrals_needed or 0),
+        reward_kind=reward_kind if reward_kind in ("gb", "service") else "gb",
+        reward_gb=float(reward_gb or 0), duration_days=int(duration_days or 0),
+        is_unlimited=1 if is_unlimited == "1" else 0, label=(label or "").strip(),
+    )
+    return RedirectResponse(f"/{S}/referrals", status_code=302)
+
+
+@app.post(f"/{S}/referrals/tiers/{{tid}}/toggle")
+async def referral_tier_toggle(request: Request, tid: int):
+    if not _auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    t = await get_referral_tier(tid)
+    if t:
+        await update_referral_tier(tid, is_active=0 if int(t.get("is_active") or 0) else 1)
+    return JSONResponse({"success": True})
+
+
+@app.post(f"/{S}/referrals/tiers/{{tid}}/delete")
+async def referral_tier_delete(request: Request, tid: int):
+    if not _auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    await delete_referral_tier(tid)
+    return JSONResponse({"success": True})
+
+
 # ═══════════════════════════════ ORDERS ═════════════════════════════
 @app.get(f"/{S}/orders", response_class=HTMLResponse)
 async def orders_page(request: Request):
@@ -1591,6 +1906,8 @@ async def _order_approve_web_impl(request: Request, oid: int):
         logger.warning("Subscription creation failed for order %s: %s", oid, subscription_error_message(last_error))
         return RedirectResponse(f"/{S}/orders", status_code=302)
 
+    # Capture BEFORE flipping to approved so "first purchase" is accurate.
+    first_purchase = not await has_previous_purchase(user["id"])
     await update_order(
         oid,
         status="approved",
@@ -1602,13 +1919,13 @@ async def _order_approve_web_impl(request: Request, oid: int):
     if bonus_gb > 0:
         await update_user(user["id"], referral_bonus_gb=0)
         await update_order(oid, referral_bonus_applied=1)
-    if order.get("referred_by") and not await has_previous_purchase(user["id"]):
-        referrer = await get_user_by_id(order["referred_by"])
-        if referrer:
-            await update_user(referrer["id"], referral_bonus_gb=float(referrer.get("referral_bonus_gb") or 0) + REFERRAL_BONUS_GB)
     await _clear_review_buttons("order", oid)
-    if BOT_TOKEN and len(BOT_TOKEN) > 20:
-        bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.MARKDOWN))
+    reward_bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.MARKDOWN)) if (BOT_TOKEN and len(BOT_TOKEN) > 20) else None
+    # Discount redemption + referral incentives (per-referral GB + milestone tiers).
+    from core.rewards import apply_post_approval_rewards
+    await apply_post_approval_rewards(reward_bot, user, order, first_purchase)
+    if reward_bot:
+        bot = reward_bot
         try:
             head = (
                 "🎉 سرویس شما فعال شد!\n\n"

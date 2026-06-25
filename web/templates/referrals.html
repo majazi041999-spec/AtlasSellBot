@@ -1,0 +1,143 @@
+{% extends "base.html" %}
+{% block title %}معرفی و هدایا{% endblock %}
+{% block topbar_title %}🎁 سیستم معرفی و هدایا{% endblock %}
+
+{% block content %}
+
+<div class="card" style="margin-bottom:18px">
+  <div class="sec-hd"><span class="sec-title">⚙️ تنظیمات معرفی</span></div>
+  <form action="/{{ S }}/referrals/settings" method="POST">
+    <div class="form-row">
+      <div class="form-group">
+        <label>وضعیت سیستم معرفی</label>
+        <select name="referral_enabled" class="form-control">
+          <option value="1" {% if s.referral_enabled == '1' %}selected{% endif %}>🟢 فعال</option>
+          <option value="0" {% if s.referral_enabled != '1' %}selected{% endif %}>🔴 غیرفعال</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>هدیهٔ ثابت هر معرفی موفق (GB) — ۰=غیرفعال</label>
+        <input type="number" step="0.5" min="0" name="referral_per_referral_gb" class="form-control" value="{{ s.referral_per_referral_gb }}">
+      </div>
+    </div>
+    <div class="form-group">
+      <label>آدرس بنر (URL تصویر) — اختیاری</label>
+      <input type="text" name="referral_banner_url" class="form-control" value="{{ s.referral_banner_url }}" placeholder="https://...">
+    </div>
+    <div class="form-group">
+      <label>کپشن قابل فوروارد — از <code>{brand}</code> و <code>{link}</code> استفاده کنید</label>
+      <textarea name="referral_caption" class="form-control" rows="4">{{ s.referral_caption }}</textarea>
+    </div>
+    <div style="display:flex;justify-content:flex-end">
+      <button type="submit" class="btn btn-primary">💾 ذخیره تنظیمات</button>
+    </div>
+  </form>
+</div>
+
+<div class="sec-hd">
+  <span class="sec-title">🏆 پله‌های هدیه ({{ tiers|length }})</span>
+  <button class="btn btn-primary" onclick="openModal('addModal')">➕ پلهٔ جدید</button>
+</div>
+<p style="color:var(--txt2);font-size:.8rem;margin-bottom:12px">
+  معیار، تعداد «معرفی موفق» است: کاربرانی که با لینک شما عضو شده و حداقل یک خرید تأییدشده دارند.
+  با رسیدن کاربر به هر پله، درخواست در ربات برای شما ارسال می‌شود و با تأیید شما هدیه اعطا می‌گردد.
+</p>
+
+<div class="table-wrap">
+<table>
+  <thead>
+    <tr><th>#</th><th>تعداد معرفی</th><th>نوع هدیه</th><th>حجم</th><th>مدت</th><th>برچسب</th><th>وضعیت</th><th>عملیات</th></tr>
+  </thead>
+  <tbody>
+  {% for t in tiers %}
+  <tr>
+    <td>{{ t.id }}</td>
+    <td><strong>{{ t.referrals_needed }}</strong> معرفی</td>
+    <td>{% if t.reward_kind == 'service' %}<span class="badge b-blue">سرویس هدیه</span>{% else %}<span class="badge b-purple">حجم هدیه</span>{% endif %}</td>
+    <td>{% if t.reward_kind == 'service' and t.is_unlimited %}نامحدود{% else %}{{ t.reward_gb }} GB{% endif %}</td>
+    <td>{% if t.reward_kind == 'service' %}{{ t.duration_days if t.duration_days else '∞' }} روز{% else %}—{% endif %}</td>
+    <td style="color:var(--txt2)">{{ t.label or '—' }}</td>
+    <td>{% if t.is_active %}<span class="badge b-green">🟢 فعال</span>{% else %}<span class="badge b-red">🔴 غیرفعال</span>{% endif %}</td>
+    <td style="white-space:nowrap">
+      <button class="btn btn-outline btn-xs"
+        onclick='openEdit({{ t.id }}, {{ t.referrals_needed }}, {{ t.reward_kind|tojson }}, {{ t.reward_gb }}, {{ t.duration_days }}, {{ t.is_unlimited }}, {{ (t.label or "")|tojson }})'>✏️</button>
+      <button class="btn btn-outline btn-xs" onclick="toggleTier({{ t.id }})">{{ '🔴' if t.is_active else '🟢' }}</button>
+      <button class="btn btn-danger btn-xs" onclick="deleteTier({{ t.id }})">🗑️</button>
+    </td>
+  </tr>
+  {% endfor %}
+  {% if not tiers %}
+  <tr><td colspan="8" style="text-align:center;color:var(--txt3);padding:24px">هنوز پله‌ای تعریف نشده. مثال: ۵ معرفی → ۱۰ گیگ، ۱۰ معرفی → سرویس نامحدود یک‌ماهه.</td></tr>
+  {% endif %}
+  </tbody>
+</table>
+</div>
+
+{% macro tier_fields(prefix) %}
+  <div class="form-row">
+    <div class="form-group"><label>تعداد معرفی موفق لازم</label><input type="number" min="1" name="referrals_needed" id="{{ prefix }}_need" class="form-control" required></div>
+    <div class="form-group">
+      <label>نوع هدیه</label>
+      <select name="reward_kind" id="{{ prefix }}_kind" class="form-control">
+        <option value="gb">حجم هدیه (به اعتبار کاربر)</option>
+        <option value="service">سرویس هدیه (ساب جدید)</option>
+      </select>
+    </div>
+  </div>
+  <div class="form-row">
+    <div class="form-group"><label>حجم (GB) — برای «حجم هدیه» یا حجم سرویس</label><input type="number" step="0.5" min="0" name="reward_gb" id="{{ prefix }}_gb" class="form-control" value="0"></div>
+    <div class="form-group"><label>مدت سرویس (روز) — فقط برای سرویس هدیه</label><input type="number" min="0" name="duration_days" id="{{ prefix }}_days" class="form-control" value="0"></div>
+  </div>
+  <div class="form-group">
+    <label class="toggle"><input type="checkbox" name="is_unlimited" id="{{ prefix }}_unlim" value="1"><span class="toggle-track"></span> سرویس هدیه با حجم نامحدود</label>
+  </div>
+  <div class="form-group"><label>برچسب (اختیاری)</label><input type="text" name="label" id="{{ prefix }}_label" class="form-control" placeholder="مثال: مشتری طلایی"></div>
+{% endmacro %}
+
+<div class="overlay" id="addModal">
+<div class="modal">
+  <div class="modal-hd"><h3>➕ پلهٔ هدیه</h3><button class="modal-close" onclick="closeModal('addModal')">✕</button></div>
+  <form action="/{{ S }}/referrals/tiers/add" method="POST">
+    {{ tier_fields('a') }}
+    <div style="display:flex;gap:8px;justify-content:flex-end">
+      <button type="button" class="btn btn-outline" onclick="closeModal('addModal')">انصراف</button>
+      <button type="submit" class="btn btn-primary">💾 ذخیره</button>
+    </div>
+  </form>
+</div>
+</div>
+
+<div class="overlay" id="editModal">
+<div class="modal">
+  <div class="modal-hd"><h3>✏️ ویرایش پله</h3><button class="modal-close" onclick="closeModal('editModal')">✕</button></div>
+  <form id="editForm" method="POST">
+    {{ tier_fields('e') }}
+    <div style="display:flex;gap:8px;justify-content:flex-end">
+      <button type="button" class="btn btn-outline" onclick="closeModal('editModal')">انصراف</button>
+      <button type="submit" class="btn btn-primary">💾 ذخیره تغییرات</button>
+    </div>
+  </form>
+</div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+async function toggleTier(id){ const r = await api(`/${S}/referrals/tiers/${id}/toggle`); if(r.success) location.reload(); else toast('خطا!','error'); }
+async function deleteTier(id){
+  if(!confirm('این پله حذف شود؟')) return;
+  const r = await api(`/${S}/referrals/tiers/${id}/delete`);
+  if(r.success){ toast('حذف شد','success'); setTimeout(()=>location.reload(),700); } else toast('خطا!','error');
+}
+function openEdit(id, need, kind, gb, days, unlim, label){
+  document.getElementById('e_need').value = need;
+  document.getElementById('e_kind').value = kind;
+  document.getElementById('e_gb').value = gb;
+  document.getElementById('e_days').value = days;
+  document.getElementById('e_unlim').checked = !!unlim;
+  document.getElementById('e_label').value = label || '';
+  document.getElementById('editForm').action = `/${S}/referrals/tiers/${id}/edit`;
+  openModal('editModal');
+}
+</script>
+{% endblock %}

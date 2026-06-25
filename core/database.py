@@ -240,6 +240,59 @@ CREATE TABLE IF NOT EXISTS subscription_node_configs (
     FOREIGN KEY(server_id) REFERENCES servers(id)
 );
 
+CREATE TABLE IF NOT EXISTS discount_codes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    code TEXT NOT NULL UNIQUE,
+    kind TEXT DEFAULT 'percent',          -- 'percent' | 'fixed'
+    value REAL DEFAULT 0,                 -- percent (0-100) or toman amount
+    max_uses INTEGER DEFAULT 0,           -- 0 = unlimited (total)
+    per_user_limit INTEGER DEFAULT 1,     -- 0 = unlimited per user
+    used_count INTEGER DEFAULT 0,
+    min_amount INTEGER DEFAULT 0,         -- min order price to qualify
+    package_id INTEGER DEFAULT 0,         -- 0 = all packages
+    expires_at INTEGER DEFAULT 0,         -- epoch ms, 0 = never
+    is_active INTEGER DEFAULT 1,
+    note TEXT DEFAULT '',
+    created_at TEXT DEFAULT (datetime('now','localtime'))
+);
+
+CREATE TABLE IF NOT EXISTS discount_redemptions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    code_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    order_id INTEGER DEFAULT 0,
+    amount INTEGER DEFAULT 0,
+    created_at TEXT DEFAULT (datetime('now','localtime')),
+    FOREIGN KEY(code_id) REFERENCES discount_codes(id),
+    FOREIGN KEY(user_id) REFERENCES users(id)
+);
+
+CREATE TABLE IF NOT EXISTS referral_tiers (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    referrals_needed INTEGER NOT NULL,
+    reward_kind TEXT DEFAULT 'gb',        -- 'gb' | 'service'
+    reward_gb REAL DEFAULT 0,             -- for 'gb', or service traffic for 'service'
+    duration_days INTEGER DEFAULT 0,      -- for 'service'
+    is_unlimited INTEGER DEFAULT 0,       -- service with unlimited volume
+    label TEXT DEFAULT '',
+    is_active INTEGER DEFAULT 1,
+    sort_order INTEGER DEFAULT 0,
+    created_at TEXT DEFAULT (datetime('now','localtime'))
+);
+
+CREATE TABLE IF NOT EXISTS referral_claims (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    tier_id INTEGER NOT NULL,
+    status TEXT DEFAULT 'pending',        -- 'pending' | 'approved' | 'rejected'
+    referrals_at_claim INTEGER DEFAULT 0,
+    created_at TEXT DEFAULT (datetime('now','localtime')),
+    reviewed_at TEXT DEFAULT '',
+    UNIQUE(user_id, tier_id),
+    FOREIGN KEY(user_id) REFERENCES users(id),
+    FOREIGN KEY(tier_id) REFERENCES referral_tiers(id)
+);
+
 INSERT OR IGNORE INTO settings VALUES
     ('welcome_message','به Atlas Account خوش آمدید! 🌐\nبهترین سرویس VPN با سرعت بالا.'),
     ('support_username',''),
@@ -294,6 +347,8 @@ async def _ensure_columns(db):
             ("renew_config_id", "INTEGER DEFAULT 0"),
             ("renew_sub_profile_id", "INTEGER DEFAULT 0"),
             ("referral_bonus_applied", "INTEGER DEFAULT 0"),
+            ("discount_code", "TEXT DEFAULT ''"),
+            ("discount_amount", "INTEGER DEFAULT 0"),
         ],
         "daily_reports": [
             ("renewals", "INTEGER DEFAULT 0"),
@@ -844,6 +899,244 @@ async def get_referral_stats(user_id: int) -> Dict:
             r = await c.fetchone()
             bonus = r['referral_bonus_gb'] if r else 0
     return {'invited': count, 'converted': purchases, 'bonus_gb': bonus}
+
+
+async def count_converted_referrals(user_id: int) -> int:
+    """Distinct referred users who have made at least one approved purchase.
+
+    This is the metric the milestone referral tiers reward (real paying
+    referrals, not just sign-ups or repeat orders)."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            """SELECT COUNT(DISTINCT u.id)
+               FROM users u JOIN orders o ON o.user_id=u.id
+               WHERE u.referred_by=? AND o.status='approved'""",
+            (int(user_id),),
+        ) as c:
+            return int((await c.fetchone())[0] or 0)
+
+
+# ══════════════════ DISCOUNT CODES ══════════════════
+
+async def get_discount_codes() -> List[Dict]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute("SELECT * FROM discount_codes ORDER BY is_active DESC, id DESC") as c:
+            return [dict(r) for r in await c.fetchall()]
+
+
+async def get_discount_code(cid: int) -> Optional[Dict]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute("SELECT * FROM discount_codes WHERE id=?", (int(cid),)) as c:
+            r = await c.fetchone()
+            return dict(r) if r else None
+
+
+async def get_discount_code_by_code(code: str) -> Optional[Dict]:
+    raw = (code or "").strip()
+    if not raw:
+        return None
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute("SELECT * FROM discount_codes WHERE code=? COLLATE NOCASE", (raw,)) as c:
+            r = await c.fetchone()
+            return dict(r) if r else None
+
+
+async def add_discount_code(code: str, kind: str, value: float, max_uses: int = 0,
+                            per_user_limit: int = 1, min_amount: int = 0, package_id: int = 0,
+                            expires_at: int = 0, note: str = "") -> int:
+    async with aiosqlite.connect(DB_PATH) as db:
+        c = await db.execute(
+            """INSERT INTO discount_codes(code,kind,value,max_uses,per_user_limit,min_amount,package_id,expires_at,note)
+               VALUES(?,?,?,?,?,?,?,?,?)""",
+            ((code or "").strip(), kind if kind in ("percent", "fixed") else "percent",
+             float(value or 0), int(max_uses or 0), int(per_user_limit or 0),
+             int(min_amount or 0), int(package_id or 0), int(expires_at or 0), (note or "").strip()),
+        )
+        await db.commit()
+        return int(c.lastrowid)
+
+
+async def update_discount_code(cid: int, **kw):
+    if not kw:
+        return
+    fields = ",".join(f"{k}=?" for k in kw)
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(f"UPDATE discount_codes SET {fields} WHERE id=?", (*kw.values(), int(cid)))
+        await db.commit()
+
+
+async def delete_discount_code(cid: int):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("DELETE FROM discount_codes WHERE id=?", (int(cid),))
+        await db.commit()
+
+
+async def count_user_code_redemptions(code_id: int, user_id: int) -> int:
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT COUNT(*) FROM discount_redemptions WHERE code_id=? AND user_id=?",
+            (int(code_id), int(user_id)),
+        ) as c:
+            return int((await c.fetchone())[0] or 0)
+
+
+async def record_discount_redemption(code_id: int, user_id: int, order_id: int, amount: int):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "INSERT INTO discount_redemptions(code_id,user_id,order_id,amount) VALUES(?,?,?,?)",
+            (int(code_id), int(user_id), int(order_id or 0), int(amount or 0)),
+        )
+        await db.execute("UPDATE discount_codes SET used_count=used_count+1 WHERE id=?", (int(code_id),))
+        await db.commit()
+
+
+def discount_amount_for(code: Dict, amount: int) -> int:
+    """Toman discount a code grants on an order of `amount` toman."""
+    amount = int(amount or 0)
+    if amount <= 0:
+        return 0
+    if str(code.get("kind")) == "fixed":
+        return min(amount, int(float(code.get("value") or 0)))
+    pct = max(0.0, min(100.0, float(code.get("value") or 0)))
+    return int(amount * pct / 100)
+
+
+async def validate_discount_code(code: str, user_id: int, package_id: int, amount: int) -> Dict:
+    """Check a code for a specific user/package/amount.
+
+    Returns {ok, error?, code_id, kind, value, discount_amount, final_amount}."""
+    import time as _time
+    row = await get_discount_code_by_code(code)
+    if not row:
+        return {"ok": False, "error": "not_found"}
+    if not int(row.get("is_active") or 0):
+        return {"ok": False, "error": "inactive"}
+    exp = int(row.get("expires_at") or 0)
+    if exp and exp <= int(_time.time() * 1000):
+        return {"ok": False, "error": "expired"}
+    max_uses = int(row.get("max_uses") or 0)
+    if max_uses and int(row.get("used_count") or 0) >= max_uses:
+        return {"ok": False, "error": "exhausted"}
+    pkg = int(row.get("package_id") or 0)
+    if pkg and pkg != int(package_id or 0):
+        return {"ok": False, "error": "wrong_package"}
+    if int(amount or 0) < int(row.get("min_amount") or 0):
+        return {"ok": False, "error": "min_amount", "min_amount": int(row.get("min_amount") or 0)}
+    per_user = int(row.get("per_user_limit") or 0)
+    if per_user and await count_user_code_redemptions(int(row["id"]), user_id) >= per_user:
+        return {"ok": False, "error": "user_limit"}
+    disc = discount_amount_for(row, amount)
+    if disc <= 0:
+        return {"ok": False, "error": "zero_discount"}
+    return {
+        "ok": True,
+        "code_id": int(row["id"]),
+        "code": row["code"],
+        "kind": row["kind"],
+        "value": float(row["value"] or 0),
+        "discount_amount": disc,
+        "final_amount": max(0, int(amount) - disc),
+    }
+
+
+# ══════════════════ REFERRAL TIERS ══════════════════
+
+async def get_referral_tiers(active_only: bool = False) -> List[Dict]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        where = " WHERE is_active=1" if active_only else ""
+        async with db.execute(
+            f"SELECT * FROM referral_tiers{where} ORDER BY referrals_needed ASC, id ASC"
+        ) as c:
+            return [dict(r) for r in await c.fetchall()]
+
+
+async def get_referral_tier(tid: int) -> Optional[Dict]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute("SELECT * FROM referral_tiers WHERE id=?", (int(tid),)) as c:
+            r = await c.fetchone()
+            return dict(r) if r else None
+
+
+async def add_referral_tier(referrals_needed: int, reward_kind: str, reward_gb: float = 0,
+                            duration_days: int = 0, is_unlimited: int = 0, label: str = "") -> int:
+    async with aiosqlite.connect(DB_PATH) as db:
+        c = await db.execute(
+            """INSERT INTO referral_tiers(referrals_needed,reward_kind,reward_gb,duration_days,is_unlimited,label)
+               VALUES(?,?,?,?,?,?)""",
+            (int(referrals_needed or 0), reward_kind if reward_kind in ("gb", "service") else "gb",
+             float(reward_gb or 0), int(duration_days or 0), 1 if int(is_unlimited or 0) else 0, (label or "").strip()),
+        )
+        await db.commit()
+        return int(c.lastrowid)
+
+
+async def update_referral_tier(tid: int, **kw):
+    if not kw:
+        return
+    fields = ",".join(f"{k}=?" for k in kw)
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(f"UPDATE referral_tiers SET {fields} WHERE id=?", (*kw.values(), int(tid)))
+        await db.commit()
+
+
+async def delete_referral_tier(tid: int):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("DELETE FROM referral_tiers WHERE id=?", (int(tid),))
+        await db.commit()
+
+
+async def get_user_referral_claim(user_id: int, tier_id: int) -> Optional[Dict]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT * FROM referral_claims WHERE user_id=? AND tier_id=?",
+            (int(user_id), int(tier_id)),
+        ) as c:
+            r = await c.fetchone()
+            return dict(r) if r else None
+
+
+async def create_referral_claim(user_id: int, tier_id: int, referrals_at_claim: int) -> int:
+    async with aiosqlite.connect(DB_PATH) as db:
+        try:
+            c = await db.execute(
+                "INSERT INTO referral_claims(user_id,tier_id,referrals_at_claim) VALUES(?,?,?)",
+                (int(user_id), int(tier_id), int(referrals_at_claim or 0)),
+            )
+            await db.commit()
+            return int(c.lastrowid)
+        except Exception:
+            return 0
+
+
+async def get_referral_claim(claim_id: int) -> Optional[Dict]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            """SELECT rc.*, u.telegram_id, u.full_name, u.username,
+                      t.referrals_needed, t.reward_kind, t.reward_gb, t.duration_days, t.is_unlimited, t.label
+               FROM referral_claims rc
+               JOIN users u ON u.id=rc.user_id
+               JOIN referral_tiers t ON t.id=rc.tier_id
+               WHERE rc.id=?""",
+            (int(claim_id),),
+        ) as c:
+            r = await c.fetchone()
+            return dict(r) if r else None
+
+
+async def update_referral_claim(claim_id: int, **kw):
+    if not kw:
+        return
+    fields = ",".join(f"{k}=?" for k in kw)
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(f"UPDATE referral_claims SET {fields} WHERE id=?", (*kw.values(), int(claim_id)))
+        await db.commit()
 
 
 # ══════════════════ PACKAGES ══════════════════

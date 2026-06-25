@@ -25,6 +25,7 @@ from core.database import (
     get_subscription_node_configs,
     get_setting,
     get_subscription_nodes,
+    get_subscription_profile,
     get_subscription_profile_by_token,
     update_config,
     update_subscription_node,
@@ -289,9 +290,12 @@ async def _subscription_node_display_label(profile: Dict, node: Dict, index: int
         node.get("node_label") or node.get("server_name") or f"Node {index}",
         28,
     )
+    # Lead with the user's chosen name so it's the first thing they see in their
+    # app's server list; then the server name so they can tell servers apart.
+    # When there's no custom name, fall back to brand + server.
     if custom_name:
-        return " | ".join(part for part in (brand, custom_name, node_name) if part)[:90]
-    return node_name[:90]
+        return " | ".join(part for part in (custom_name, node_name) if part)[:90]
+    return " | ".join(part for part in (brand, node_name) if part)[:90]
 
 
 def _decode_b64_json(value: str) -> Dict | None:
@@ -1215,10 +1219,49 @@ async def set_nodes_enabled(profile_id: int, enabled: bool):
 
 
 async def renew_subscription_profile(profile: Dict, traffic_gb: float, duration_days: int) -> Dict:
-    nodes = await get_subscription_nodes(profile["id"])
+    """Renew a subscription.
+
+    Rules (per product spec):
+      * Consumed/used volume ALWAYS resets to zero and counting restarts.
+      * If renewed *while still fully usable* — it still had BOTH remaining
+        volume AND remaining time — the leftover volume and leftover time are
+        CARRIED OVER and summed with the newly purchased volume/duration.
+      * Otherwise (it had run out of volume OR time) it starts fresh from now.
+    """
+    # Freshest figures so carry-over isn't computed off stale usage.
+    fresh = await get_subscription_profile(profile["id"]) or profile
     now_ms = int(time.time() * 1000)
-    base_expire = max(int(profile.get("expire_timestamp") or 0), now_ms)
-    new_expire_ms = base_expire + int(duration_days) * 86400000 if int(duration_days) > 0 else 0
+    new_duration = int(duration_days or 0)
+    new_traffic_gb = float(traffic_gb or 0)
+
+    cur_total = total_bytes(fresh.get("traffic_gb") or 0)        # 0 = unlimited volume
+    cur_used = int(fresh.get("used_bytes") or 0)
+    cur_expire = int(fresh.get("expire_timestamp") or 0)         # 0 = unlimited / not armed
+    not_started = bool(int(fresh.get("starts_on_first_use") or 0) and int(fresh.get("first_use_at") or 0) <= 0)
+
+    volume_remaining = cur_total <= 0 or cur_used < cur_total
+    time_remaining = cur_expire <= 0 or cur_expire > now_ms
+    carry = volume_remaining and time_remaining and not not_started
+
+    # Volume: carry leftover + new, or top-up unused, or fresh. Unlimited stays unlimited.
+    if carry:
+        final_traffic_gb = 0.0 if (cur_total <= 0 or new_traffic_gb <= 0) else \
+            round(max(0.0, (cur_total - cur_used) / (1024 ** 3)) + new_traffic_gb, 3)
+    elif not_started:
+        final_traffic_gb = 0.0 if (cur_total <= 0 or new_traffic_gb <= 0) else \
+            round(cur_total / (1024 ** 3) + new_traffic_gb, 3)
+    else:
+        final_traffic_gb = new_traffic_gb
+
+    # Time: carry leftover + new, or fresh from now. First-use timer stays unarmed.
+    if not_started:
+        final_expire_ms = 0
+    elif carry:
+        final_expire_ms = 0 if (cur_expire <= 0 or new_duration <= 0) else cur_expire + new_duration * 86400000
+    else:
+        final_expire_ms = now_ms + new_duration * 86400000 if new_duration > 0 else 0
+
+    nodes = await get_subscription_nodes(profile["id"])
     ok_count = 0
     failures = []
     for node in nodes:
@@ -1227,7 +1270,7 @@ async def renew_subscription_profile(profile: Dict, traffic_gb: float, duration_
             inbound_id = int(node.get("inbound_id") or 0)
             node_uuid = node.get("uuid") or ""
             node_email = node.get("email") or ""
-            ok = await cli.update_client(inbound_id, node_uuid, node_email, traffic_gb, new_expire_ms, True)
+            ok = await cli.update_client(inbound_id, node_uuid, node_email, final_traffic_gb, final_expire_ms, True)
             if not ok:
                 # Identity drift recovery: the cached uuid/inbound may be stale
                 # (client recreated on the panel). Re-resolve by email and retry,
@@ -1236,7 +1279,7 @@ async def renew_subscription_profile(profile: Dict, traffic_gb: float, duration_
                 if resolved_uuid:
                     inbound_id = resolved_inbound or inbound_id
                     node_uuid = resolved_uuid
-                    ok = await cli.update_client(inbound_id, node_uuid, node_email, traffic_gb, new_expire_ms, True)
+                    ok = await cli.update_client(inbound_id, node_uuid, node_email, final_traffic_gb, final_expire_ms, True)
             if ok:
                 await cli.reset_client_traffic(inbound_id, node_email)
                 # Refresh the cached link/identity so the served sub immediately
@@ -1255,17 +1298,24 @@ async def renew_subscription_profile(profile: Dict, traffic_gb: float, duration_
             await cli.close()
     if ok_count <= 0:
         return {"ok": False, "error": "no_nodes_updated:" + ",".join(failures[:6])}
-    await update_subscription_profile(
-        profile["id"],
-        traffic_gb=float(traffic_gb),
-        duration_days=int(duration_days),
-        expire_timestamp=new_expire_ms,
+    update_kwargs = dict(
+        traffic_gb=float(final_traffic_gb),
         used_bytes=0,
         is_active=1,
         expired_at=0,
         expiry_notified=0,
     )
-    return {"ok": True, "nodes": ok_count, "expire_ms": new_expire_ms}
+    if not_started:
+        update_kwargs.update(expire_timestamp=0, duration_days=int(new_duration))
+    else:
+        final_duration_days = _days_remaining(final_expire_ms, now_ms) if final_expire_ms > 0 else 0
+        update_kwargs.update(
+            expire_timestamp=int(final_expire_ms),
+            duration_days=int(final_duration_days),
+            starts_on_first_use=0,
+        )
+    await update_subscription_profile(profile["id"], **update_kwargs)
+    return {"ok": True, "nodes": ok_count, "expire_ms": final_expire_ms, "carried": carry, "traffic_gb": final_traffic_gb}
 
 
 async def edit_subscription_profile(profile: Dict, email: str, traffic_gb: float, expire_ms: int, is_active: bool = True) -> Dict:

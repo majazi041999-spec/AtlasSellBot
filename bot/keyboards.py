@@ -303,6 +303,7 @@ def subscription_detail_kb(profile_id: int, sub_url: str = "", nodes: List[Dict]
             btn = _inline_button(f"{label} — نمایش لینک", callback_data=f"subnode:{int(node.get('id') or 0)}", style="success")
         b.row(btn)
 
+    _button(b, text="✏️ تغییر نام سرویس", callback_data=f"sub_rename:{profile_id}", style="primary")
     _button(b, text="♻️ تمدید ساب", callback_data=f"sub_renew:{profile_id}", style="success")
     _button(b, text="🗑️ حذف ساب", callback_data=f"sub_del:{profile_id}", style="danger")
     _button(b, text="🔙 برگشت به سرویس‌ها", callback_data="back_configs", style="primary")
@@ -351,6 +352,14 @@ def custom_name_kb() -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
     _button(b, text="✅ ادامه با نام پیش‌فرض", callback_data="buy_name_default", style="success")
     _button(b, text="⬅️ برگشت", callback_data="flow_back", style="primary")
+    _button(b, text="❌ کنسل", callback_data="cancel", style="danger")
+    b.adjust(1)
+    return b.as_markup()
+
+
+def discount_skip_kb() -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    _button(b, text="بدون کد تخفیف ➡️", callback_data="buy_disc_skip", style="primary")
     _button(b, text="❌ کنسل", callback_data="cancel", style="danger")
     b.adjust(1)
     return b.as_markup()

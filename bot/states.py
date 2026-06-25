@@ -44,6 +44,14 @@ class RenewService(StatesGroup):
     duration = State()
 
 
+class RenameSub(StatesGroup):
+    name = State()
+
+
+class BuyDiscount(StatesGroup):
+    code = State()
+
+
 class Broadcast(StatesGroup):
     target = State()
     text = State()

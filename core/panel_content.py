@@ -74,6 +74,16 @@ SETTINGS_DEFAULTS: Dict[str, str] = {
     "test_account_duration_days": "1",
     "test_account_server_id": "0",
     "test_account_prefix": "test",
+    "discount_enabled": "1",
+    "referral_enabled": "1",
+    "referral_per_referral_gb": "5",
+    "referral_banner_url": "",
+    "referral_banner_file_id": "",
+    "referral_caption": (
+        "🎁 با لینک اختصاصی من به {brand} بپیوند!\n"
+        "سرویس پرسرعت و چندسروره، با پشتیبانی همیشگی.\n\n"
+        "👇 برای شروع روی لینک بزن:\n{link}"
+    ),
 }
 
 
