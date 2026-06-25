@@ -3,6 +3,7 @@ import base64
 import binascii
 import json
 import logging
+import re
 import secrets
 import time
 import uuid
@@ -19,6 +20,7 @@ from core.database import (
     get_expired_subscription_profiles,
     count_active_server_load,
     count_active_subscription_nodes_by_target,
+    delete_subscription_node,
     get_available_subscription_node_configs,
     get_subscription_node_configs,
     get_setting,
@@ -482,6 +484,35 @@ async def _subscription_info_links(profile: Dict, used: int, total: int, active_
     return [_fake_info_link(label, i + 1) for i, label in enumerate(labels) if label]
 
 
+async def _subscription_expired_notice_links(profile: Dict) -> list[str]:
+    """Fake info configs shown INSTEAD of real servers once a sub is finished.
+
+    A finished sub must never keep leftover servers in the user's app; we replace
+    the whole list with a clear 'expired — renew from the bot' notice so people
+    know what happened and how to fix it (and don't think the service is broken).
+    """
+    brand = await get_setting("ui.brand_name", "Atlas Account")
+    now_ms = int(time.time() * 1000)
+    expire_ms = int(profile.get("expire_timestamp") or 0)
+    total = total_bytes(profile.get("traffic_gb") or 0)
+    used = int(profile.get("used_bytes") or 0)
+    out_of_quota = total > 0 and used >= total
+    out_of_time = expire_ms > 0 and expire_ms <= now_ms
+    if out_of_quota and not out_of_time:
+        reason = "حجم سرویس شما تمام شد"
+    elif out_of_time and not out_of_quota:
+        reason = "زمان سرویس شما تمام شد"
+    else:
+        reason = "سرویس شما به پایان رسید"
+    template = await get_setting(
+        "sub_expired_link_template",
+        "⛔️ {reason} — برای ادامه از ربات «تمدید» کنید 🤖",
+    )
+    values = {"brand": brand, "reason": reason}
+    labels = _format_info_template(template, values) or [f"⛔️ {reason} — از ربات تمدید کنید"]
+    return [_fake_info_link(label, i + 1) for i, label in enumerate(labels) if label]
+
+
 def _fmt_bytes_short(value: int) -> str:
     value = int(value or 0)
     units = ("B", "KB", "MB", "GB", "TB")
@@ -591,6 +622,15 @@ async def create_profile_for_order(user: Dict, order: Dict, traffic_gb: float, d
                 await cli.close()
         await delete_subscription_profile(profile_id)
         return {"ok": False, "error": str(e)}
+
+
+async def create_test_subscription(user: Dict, traffic_gb: float, duration_days: int, name: str = "اکانت تست") -> Dict:
+    """Provision a free trial as a multi-server subscription (no single server).
+
+    Reuses the standard order-provisioning path with a synthetic order so trials
+    behave exactly like paid subs (first-use timer, node failover, lifecycle)."""
+    fake_order = {"id": 0, "custom_config_name": name}
+    return await create_profile_for_order(user, fake_order, traffic_gb, duration_days)
 
 
 async def create_profile_from_config(user: Dict, cfg: Dict) -> Dict:
@@ -779,11 +819,20 @@ async def render_subscription(token: str) -> tuple[str, Dict[str, int]] | None:
     db_expired = (expire_ms > 0 and expire_ms <= now_ms) or (total > 0 and used >= total)
 
     if not int(profile.get("is_active") or 0) or db_expired:
-        # Inactive or out of quota/time: don't serve configs. Reconcile (disable
-        # nodes on X-UI) in the background so the panel state stays consistent.
+        # Out of quota/time (or disabled): do NOT serve any real servers. Instead
+        # of returning an empty list — which makes apps keep showing the last
+        # cached servers, so some stay "alive" with no explanation — we serve a
+        # single clear "expired, renew from the bot" notice that replaces the
+        # whole list. Reconcile (disable remote nodes) in the background.
         if db_expired and int(profile.get("is_active") or 0):
             asyncio.create_task(_background_render_sync(token))
-        return None
+        notice = _dedupe_complete_links(await _subscription_expired_notice_links(profile))
+        if not notice:
+            return None
+        body = base64.b64encode("\n".join(notice).encode()).decode()
+        expire = int(expire_ms / 1000) if expire_ms > 0 else 0
+        title = str(profile.get("name") or "").strip()
+        return body, {"upload": 0, "download": used, "total": total, "expire": expire, "title": title}
 
     nodes = await get_subscription_nodes(profile["id"])
     links = []
@@ -809,7 +858,9 @@ async def render_subscription(token: str) -> tuple[str, Dict[str, int]] | None:
 
     expire = int(expire_ms / 1000) if expire_ms > 0 else 0
     info_links = await _subscription_info_links(profile, used, total, active_count)
-    links = _dedupe_complete_links(links + info_links)
+    # Info/brand lines go FIRST so the usage + remaining-days summary sits at the
+    # top of the user's server list instead of being buried under the servers.
+    links = _dedupe_complete_links(info_links + links)
     body = base64.b64encode("\n".join(links).encode()).decode()
 
     # Keep data fresh without blocking the response.
@@ -833,6 +884,37 @@ async def ensure_subscription_profile_nodes(profile: Dict, force_refresh: bool =
     existing_nodes = await get_subscription_nodes(profile["id"])
     existing_by_email = {str(node.get("email") or ""): node for node in existing_nodes}
     configured_nodes = await get_subscription_node_configs(active_only=True)
+
+    # Orphan cleanup: a subscription node whose underlying node CONFIG was deleted
+    # from the panel must be removed from the user's sub entirely (remote client +
+    # local row). Each node email ends with `_n{config_id}`; if that config id no
+    # longer exists, it's an orphan. Without this, a "removed" server lingers in
+    # every sub link (just relabelled to its raw server name).
+    #
+    # SAFETY: only prune when at least one node config still exists. If the config
+    # table is empty (everything deleted, or a transient read), we must NOT wipe
+    # every user's servers — treat it as a misconfiguration and skip pruning.
+    all_config_ids = {int(c["id"]) for c in await get_subscription_node_configs(active_only=False)}
+    removed = 0
+    for node in (existing_nodes if all_config_ids else []):
+        email = str(node.get("email") or "")
+        m = re.search(r"_n(\d+)$", email)
+        cfg_id = int(m.group(1)) if m else 0
+        if cfg_id and cfg_id not in all_config_ids:
+            cli = XUIClient(node["server_url"], node["srv_user"], node["srv_pass"], node.get("sub_path") or "", node.get("srv_api_token", ""))
+            try:
+                await cli.delete_client(int(node.get("inbound_id") or 0), node.get("uuid") or "", email)
+            except Exception as e:
+                logger.warning("orphan node remote delete failed profile=%s node=%s: %s", profile.get("id"), node.get("id"), e)
+            finally:
+                await cli.close()
+            try:
+                await delete_subscription_node(int(node["id"]))
+                removed += 1
+                existing_by_email.pop(email, None)
+            except Exception as e:
+                logger.warning("orphan node db delete failed profile=%s node=%s: %s", profile.get("id"), node.get("id"), e)
+
     missing_nodes = []
     refresh_nodes = []
     move_nodes = []
@@ -846,7 +928,7 @@ async def ensure_subscription_profile_nodes(profile: Dict, force_refresh: bool =
         elif force_refresh or not existing.get("link") or not int(existing.get("is_active") or 0):
             refresh_nodes.append((node, existing))
     if not missing_nodes and not refresh_nodes and not move_nodes:
-        return {"created": 0, "refreshed": 0, "verified": 0, "moved": 0, "skipped": 0, "failed": 0}
+        return {"created": 0, "refreshed": 0, "verified": 0, "moved": 0, "removed": removed, "skipped": 0, "failed": 0}
 
     used = int(profile.get("used_bytes") or 0)
     total = total_bytes(profile.get("traffic_gb") or 0)
@@ -1031,7 +1113,7 @@ async def ensure_subscription_profile_nodes(profile: Dict, force_refresh: bool =
             len(refresh_nodes),
             len(move_nodes),
         )
-    return {"created": created, "refreshed": refreshed, "verified": verified, "moved": moved, "skipped": 0, "failed": failed, "errors": errors[:12]}
+    return {"created": created, "refreshed": refreshed, "verified": verified, "moved": moved, "removed": removed, "skipped": 0, "failed": failed, "errors": errors[:12]}
 
 
 async def repair_subscription_profile_expiry(profile: Dict) -> Dict:
@@ -1111,10 +1193,23 @@ async def set_nodes_enabled(profile_id: int, enabled: bool):
                 traffic_gb = float(profile.get("traffic_gb") or 0)
                 expire_ms = int(profile.get("expire_timestamp") or 0)
             ok = await cli.update_client(node["inbound_id"], node["uuid"], node["email"], traffic_gb, expire_ms, bool(enabled))
-            if ok:
-                await update_subscription_node(node["id"], is_active=1 if enabled else 0)
+            if enabled:
+                # Only mark active when the panel actually accepted the enable.
+                if ok:
+                    await update_subscription_node(node["id"], is_active=1)
+            else:
+                # When disabling we must NEVER leave a node marked active in our
+                # DB even if the remote write failed (server down, identity drift,
+                # …); otherwise render keeps serving it and a "finished" sub still
+                # shows live servers. The panel's own traffic/expiry caps remain
+                # the safety net for the remote side.
+                await update_subscription_node(node["id"], is_active=0)
         except Exception:
-            pass
+            if not enabled:
+                try:
+                    await update_subscription_node(node["id"], is_active=0)
+                except Exception:
+                    pass
         finally:
             await cli.close()
 
@@ -1129,13 +1224,33 @@ async def renew_subscription_profile(profile: Dict, traffic_gb: float, duration_
     for node in nodes:
         cli = XUIClient(node["server_url"], node["srv_user"], node["srv_pass"], node.get("sub_path") or "", node.get("srv_api_token", ""))
         try:
-            ok = await cli.update_client(node["inbound_id"], node["uuid"], node["email"], traffic_gb, new_expire_ms, True)
+            inbound_id = int(node.get("inbound_id") or 0)
+            node_uuid = node.get("uuid") or ""
+            node_email = node.get("email") or ""
+            ok = await cli.update_client(inbound_id, node_uuid, node_email, traffic_gb, new_expire_ms, True)
+            if not ok:
+                # Identity drift recovery: the cached uuid/inbound may be stale
+                # (client recreated on the panel). Re-resolve by email and retry,
+                # so a renew never silently no-ops and leaves the old volume/date.
+                resolved_inbound, resolved_uuid, _ = await _remote_identity_and_link(cli, inbound_id, node_email, node_uuid)
+                if resolved_uuid:
+                    inbound_id = resolved_inbound or inbound_id
+                    node_uuid = resolved_uuid
+                    ok = await cli.update_client(inbound_id, node_uuid, node_email, traffic_gb, new_expire_ms, True)
             if ok:
-                await cli.reset_client_traffic(node["inbound_id"], node["email"])
-                await update_subscription_node(node["id"], is_active=1, last_used_bytes=0)
+                await cli.reset_client_traffic(inbound_id, node_email)
+                # Refresh the cached link/identity so the served sub immediately
+                # reflects the renewed client.
+                fresh_inbound, fresh_uuid, fresh_link = await _remote_identity_and_link(cli, inbound_id, node_email, node_uuid)
+                update_kw = {"is_active": 1, "last_used_bytes": 0, "inbound_id": fresh_inbound or inbound_id, "uuid": fresh_uuid or node_uuid}
+                if _subscription_link_is_complete(fresh_link):
+                    update_kw["link"] = fresh_link
+                await update_subscription_node(node["id"], **update_kw)
                 ok_count += 1
             else:
                 failures.append(f"{node.get('server_name') or node.get('server_id')}#{node.get('inbound_id')}")
+        except Exception as e:
+            failures.append(f"{node.get('server_name') or node.get('server_id')}#{node.get('inbound_id')}:{type(e).__name__}")
         finally:
             await cli.close()
     if ok_count <= 0:
@@ -1237,11 +1352,18 @@ async def delete_subscription_profile_remote(profile_id: int) -> Dict:
     return {"ok": True, "deleted": deleted, "failed": failed}
 
 
-async def sync_active_profiles(limit: int = 100) -> int:
+async def sync_active_profiles(limit: int = 100, usage_only: bool = False) -> int:
+    """Reconcile active profiles.
+
+    `usage_only=True` does the cheap, frequent pass: just refresh usage and let
+    quota/expiry disable finished subs. The full pass also reconciles nodes
+    (create missing / remove orphaned / repair links) and is driven on a slower,
+    panel-configurable cadence by the worker.
+    """
     checked = 0
     for profile in await get_active_subscription_profiles(limit):
         result = await sync_profile_usage(profile)
-        if not result.get("disabled"):
+        if not usage_only and not result.get("disabled"):
             fresh = await get_subscription_profile_by_token(profile["token"]) or profile
             await ensure_subscription_profile_nodes(fresh)
         checked += 1
@@ -1249,7 +1371,7 @@ async def sync_active_profiles(limit: int = 100) -> int:
 
 
 async def sync_subscription_nodes_for_all(limit: int = 1000, force_refresh: bool = False) -> Dict:
-    checked = created = refreshed = verified = moved = failed = skipped = disabled = 0
+    checked = created = refreshed = verified = moved = removed = failed = skipped = disabled = 0
     errors: list[str] = []
     for profile in await get_active_subscription_profiles(limit):
         usage = await sync_profile_usage(profile)
@@ -1263,6 +1385,7 @@ async def sync_subscription_nodes_for_all(limit: int = 1000, force_refresh: bool
         refreshed += int(result.get("refreshed") or 0)
         verified += int(result.get("verified") or 0)
         moved += int(result.get("moved") or 0)
+        removed += int(result.get("removed") or 0)
         failed += int(result.get("failed") or 0)
         skipped += int(result.get("skipped") or 0)
         for err in result.get("errors") or []:
@@ -1274,6 +1397,7 @@ async def sync_subscription_nodes_for_all(limit: int = 1000, force_refresh: bool
         "refreshed": refreshed,
         "verified": verified,
         "moved": moved,
+        "removed": removed,
         "failed": failed,
         "skipped": skipped,
         "disabled": disabled,
@@ -1299,7 +1423,7 @@ async def sync_subscription_nodes_streamed(
     mode = "بازسازی کامل لینک‌ها" if force_refresh else "سریع (فقط نودهای ناقص/جدید)"
     log(f"🔎 {total} ساب فعال پیدا شد | حالت: {mode} | پردازش همزمان: {concurrency}")
     agg = {"checked": 0, "created": 0, "refreshed": 0, "verified": 0,
-           "moved": 0, "failed": 0, "skipped": 0, "disabled": 0}
+           "moved": 0, "removed": 0, "failed": 0, "skipped": 0, "disabled": 0}
     if not total:
         log("هیچ ساب فعالی برای همگام‌سازی وجود ندارد.")
         return agg
@@ -1323,13 +1447,14 @@ async def sync_subscription_nodes_streamed(
                     ensure_subscription_profile_nodes(fresh, force_refresh=force_refresh),
                     timeout=per_profile_timeout,
                 )
-                for k in ("created", "refreshed", "verified", "moved", "failed", "skipped"):
+                for k in ("created", "refreshed", "verified", "moved", "removed", "failed", "skipped"):
                     agg[k] += int(r.get(k) or 0)
                 state["done"] += 1
                 log(
                     f"[{state['done']}/{total}] ✅ {label}: "
                     f"ساخته={r.get('created', 0)} ترمیم={r.get('refreshed', 0)} "
-                    f"تایید={r.get('verified', 0)} انتقال={r.get('moved', 0)} خطا={r.get('failed', 0)}"
+                    f"تایید={r.get('verified', 0)} انتقال={r.get('moved', 0)} "
+                    f"حذف={r.get('removed', 0)} خطا={r.get('failed', 0)}"
                 )
                 for err in (r.get("errors") or [])[:2]:
                     log(f"    ↳ {err}")
@@ -1347,7 +1472,7 @@ async def sync_subscription_nodes_streamed(
     log(
         f"📊 خلاصه — بررسی: {agg['checked']} | ساخته: {agg['created']} | "
         f"ترمیم: {agg['refreshed']} | تایید: {agg['verified']} | انتقال: {agg['moved']} | "
-        f"غیرفعال: {agg['disabled']} | خطا: {agg['failed']}"
+        f"حذف: {agg['removed']} | غیرفعال: {agg['disabled']} | خطا: {agg['failed']}"
     )
     return agg
 

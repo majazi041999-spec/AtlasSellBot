@@ -29,6 +29,11 @@ class EditConfig(StatesGroup):
     expire = State()
 
 
+class EditSubProfile(StatesGroup):
+    traffic = State()
+    duration = State()
+
+
 class BuyService(StatesGroup):
     custom_name = State()
     waiting_receipt = State()

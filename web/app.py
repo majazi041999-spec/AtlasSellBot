@@ -30,6 +30,7 @@ from fastapi.templating import Jinja2Templates
 from jose import JWTError, jwt
 
 from core.config import (
+    ADMIN_IDS,
     CARD_BANK,
     CARD_HOLDER,
     CARD_NUMBER,
@@ -230,83 +231,119 @@ async def _render_sub_status_html(token: str, profile: dict) -> str:
     node_rows = ""
     for i, n in enumerate(active_nodes, 1):
         remark = _html.escape(str(n.get("node_label") or n.get("server_name") or f"سرور {i}"))
+        # The link lives in a data-attribute (no off-screen inputs) so it can be
+        # copied without creating horizontal overflow / a phantom scroll area.
         link = _html.escape(n.get("link") or "", quote=True)
         node_rows += f"""
         <div class="node">
           <div class="node-name">📍 {remark}</div>
-          <input class="hide-input" id="node{i}" value="{link}" readonly>
-          <button class="copy-btn" onclick="copyFrom(this,'node{i}')">کپی لینک</button>
+          <button class="copy-btn" type="button" data-link="{link}" onclick="copyText(this,this.dataset.link)">کپی لینک</button>
         </div>"""
     if not node_rows:
         node_rows = '<div class="muted">سروری برای نمایش موجود نیست.</div>'
 
     safe_brand = _html.escape(str(brand or "Atlas Account"))
-    safe_service = _html.escape(str(profile.get("email") or f"#{profile.get('id')}"))
     safe_sub = _html.escape(sub_url, quote=True)
+    renew_banner = (
+        '<div class="banner">⛔️ سرویس شما به پایان رسیده است. برای ادامه، از داخل ربات «تمدید» کنید.</div>'
+        if expired else ""
+    )
     return f"""<!doctype html>
 <html lang="fa" dir="rtl"><head>
-<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="robots" content="noindex,nofollow">
+<meta name="theme-color" content="#0b0f1a">
 <title>{safe_brand} — وضعیت اشتراک</title>
 <style>
 *{{box-sizing:border-box}}
-body{{margin:0;font-family:Tahoma,Vazirmatn,system-ui,sans-serif;background:linear-gradient(160deg,#0b0f1a,#131a2b);color:#e8edf6;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:18px}}
-.card{{width:100%;max-width:480px;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.08);border-radius:20px;padding:22px;box-shadow:0 24px 60px rgba(0,0,0,.45)}}
-.brand{{font-size:1.25rem;font-weight:800;text-align:center;margin-bottom:4px}}
-.sub-title{{text-align:center;color:#9aa6bd;font-size:.85rem;margin-bottom:18px}}
-.status{{display:inline-block;padding:4px 12px;border-radius:999px;font-size:.8rem;font-weight:700;color:{status_color};border:1px solid {status_color};background:rgba(255,255,255,.03)}}
-.row{{display:flex;justify-content:space-between;align-items:center;padding:11px 0;border-bottom:1px solid rgba(255,255,255,.06);font-size:.9rem}}
-.row:last-child{{border-bottom:none}}
-.row .k{{color:#9aa6bd}}
-.row .v{{font-weight:700}}
-.bar{{height:10px;border-radius:999px;background:rgba(255,255,255,.08);overflow:hidden;margin:6px 0 2px}}
-.bar > i{{display:block;height:100%;width:{pct}%;background:linear-gradient(90deg,#7c6fff,#00e5a0)}}
-.section-title{{margin:18px 0 8px;font-weight:700;font-size:.95rem}}
-.sub-box{{display:flex;gap:8px;align-items:center;background:#0a0e18;border:1px solid rgba(255,255,255,.08);border-radius:12px;padding:10px;margin-bottom:6px}}
-.sub-box input{{flex:1;background:transparent;border:none;color:#cfe;font-family:monospace;font-size:.72rem;direction:ltr;text-align:left;outline:none;min-width:0}}
-.copy-btn{{background:#7c6fff;border:none;color:#fff;border-radius:9px;padding:8px 12px;font-size:.78rem;font-weight:700;cursor:pointer;white-space:nowrap}}
-.copy-btn:active{{transform:scale(.96)}}
-.node{{display:flex;justify-content:space-between;align-items:center;background:#0a0e18;border:1px solid rgba(255,255,255,.06);border-radius:12px;padding:10px 12px;margin-bottom:8px}}
-.node-name{{font-size:.9rem;font-weight:600;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}
-.hide-input{{position:absolute;left:-9999px;opacity:0;width:1px;height:1px}}
+html,body{{max-width:100%;overflow-x:hidden}}
+body{{margin:0;font-family:Vazirmatn,Tahoma,system-ui,-apple-system,sans-serif;
+  background:radial-gradient(120% 80% at 80% -10%,rgba(124,111,255,.20),transparent 55%),
+             radial-gradient(120% 80% at 0% 110%,rgba(0,229,160,.14),transparent 55%),#0b0f1a;
+  color:#e8edf6;min-height:100vh;min-height:100dvh;display:flex;align-items:flex-start;justify-content:center;
+  padding:max(16px,env(safe-area-inset-top)) 16px calc(28px + env(safe-area-inset-bottom))}}
+.wrap{{width:100%;max-width:460px;margin:auto}}
+.card{{width:100%;background:rgba(255,255,255,.045);border:1px solid rgba(255,255,255,.09);
+  border-radius:22px;padding:22px;box-shadow:0 30px 70px rgba(0,0,0,.5);backdrop-filter:blur(8px)}}
+.head{{text-align:center;margin-bottom:16px}}
+.logo{{width:54px;height:54px;border-radius:16px;display:inline-flex;align-items:center;justify-content:center;
+  font-size:1.7rem;background:linear-gradient(135deg,#7c6fff,#00e5a0);box-shadow:0 10px 28px rgba(124,111,255,.4)}}
+.brand{{font-size:1.2rem;font-weight:800;margin-top:10px}}
+.sub-title{{color:#9aa6bd;font-size:.82rem;margin-top:2px}}
+.status{{display:inline-block;margin-top:12px;padding:5px 14px;border-radius:999px;font-size:.8rem;font-weight:800;
+  color:{status_color};border:1px solid {status_color};background:rgba(255,255,255,.04)}}
+.banner{{margin:14px 0 2px;padding:12px 14px;border-radius:14px;font-size:.83rem;font-weight:700;line-height:1.7;
+  background:rgba(255,76,106,.12);border:1px solid rgba(255,76,106,.4);color:#ffb3c0}}
+.usage{{margin:18px 0 8px}}
+.usage-top{{display:flex;justify-content:space-between;align-items:baseline;font-size:.84rem;margin-bottom:8px}}
+.usage-top b{{font-size:1.05rem}}
+.bar{{height:12px;border-radius:999px;background:rgba(255,255,255,.09);overflow:hidden}}
+.bar>i{{display:block;height:100%;width:{pct}%;border-radius:999px;background:linear-gradient(90deg,#7c6fff,#00e5a0)}}
+.grid{{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:16px}}
+.cell{{background:rgba(255,255,255,.035);border:1px solid rgba(255,255,255,.06);border-radius:14px;padding:12px}}
+.cell .k{{color:#9aa6bd;font-size:.74rem}}
+.cell .v{{font-weight:800;font-size:.96rem;margin-top:3px;word-break:break-word}}
+.section-title{{margin:20px 0 9px;font-weight:800;font-size:.92rem;display:flex;align-items:center;gap:6px}}
+.sub-box{{display:flex;gap:8px;align-items:center;background:#0a0e18;border:1px solid rgba(255,255,255,.09);
+  border-radius:14px;padding:8px 8px 8px 10px;overflow:hidden}}
+.sub-box input{{flex:1;background:transparent;border:none;color:#cfe;font-family:ui-monospace,Consolas,monospace;
+  font-size:.72rem;direction:ltr;text-align:left;outline:none;min-width:0}}
+.copy-btn{{background:#7c6fff;border:none;color:#fff;border-radius:11px;padding:9px 14px;font-size:.78rem;
+  font-weight:800;cursor:pointer;white-space:nowrap;flex-shrink:0;transition:transform .1s,background .15s}}
+.copy-btn:hover{{background:#6b5dff}}
+.copy-btn:active{{transform:scale(.95)}}
+.node{{display:flex;justify-content:space-between;align-items:center;gap:10px;background:#0a0e18;
+  border:1px solid rgba(255,255,255,.06);border-radius:14px;padding:11px 12px;margin-bottom:8px}}
+.node-name{{font-size:.88rem;font-weight:700;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}
 .muted{{color:#9aa6bd;font-size:.85rem}}
-.guide{{margin-top:16px;font-size:.78rem;color:#9aa6bd;line-height:1.9;background:rgba(255,255,255,.03);border-radius:12px;padding:12px}}
-.foot{{text-align:center;color:#5d6680;font-size:.72rem;margin-top:16px}}
+.guide{{margin-top:18px;font-size:.78rem;color:#9aa6bd;line-height:2;background:rgba(255,255,255,.03);
+  border:1px solid rgba(255,255,255,.05);border-radius:14px;padding:13px 15px}}
+.foot{{text-align:center;color:#5d6680;font-size:.72rem;margin-top:18px}}
+@media(max-width:480px){{.card{{padding:18px;border-radius:18px}}.grid{{gap:8px}}}}
 </style></head>
-<body><div class="card">
-  <div class="brand">{safe_brand}</div>
-  <div class="sub-title">صفحهٔ وضعیت اشتراک</div>
-  <div style="text-align:center;margin-bottom:16px"><span class="status">{status_label}</span></div>
+<body><div class="wrap"><div class="card">
+  <div class="head">
+    <div class="logo">🌐</div>
+    <div class="brand">{safe_brand}</div>
+    <div class="sub-title">صفحهٔ وضعیت اشتراک</div>
+    <div><span class="status">{status_label}</span></div>
+  </div>
 
-  <div class="row"><span class="k">سرویس</span><span class="v">{safe_service}</span></div>
-  <div class="row"><span class="k">مصرف</span><span class="v">{_fmt_bytes_web(used)} از {(_fmt_bytes_web(total) if total>0 else 'نامحدود')}</span></div>
-  <div class="bar"><i></i></div>
-  <div class="row"><span class="k">باقی‌مانده</span><span class="v">{(_fmt_bytes_web(remaining) if total>0 else 'نامحدود')} ({pct}%)</span></div>
-  <div class="row"><span class="k">زمان باقی‌مانده</span><span class="v">{days_text}</span></div>
-  <div class="row"><span class="k">تاریخ انقضا</span><span class="v">{expire_date}</span></div>
-  <div class="row"><span class="k">تعداد سرور</span><span class="v">{len(active_nodes)}</span></div>
+  {renew_banner}
+
+  <div class="usage">
+    <div class="usage-top"><span class="muted">مصرف</span>
+      <span><b>{_fmt_bytes_web(used)}</b> از {(_fmt_bytes_web(total) if total>0 else 'نامحدود')}</span></div>
+    <div class="bar"><i></i></div>
+  </div>
+
+  <div class="grid">
+    <div class="cell"><div class="k">باقی‌مانده</div><div class="v">{(_fmt_bytes_web(remaining) if total>0 else 'نامحدود')}</div></div>
+    <div class="cell"><div class="k">زمان باقی‌مانده</div><div class="v">{days_text}</div></div>
+    <div class="cell"><div class="k">تاریخ انقضا</div><div class="v">{expire_date}</div></div>
+    <div class="cell"><div class="k">تعداد سرور</div><div class="v">{len(active_nodes)}</div></div>
+  </div>
 
   <div class="section-title">🔗 لینک اشتراک</div>
   <div class="sub-box">
     <input id="suburl" value="{safe_sub}" readonly onclick="this.select()">
-    <button class="copy-btn" onclick="copyText(this,document.getElementById('suburl').value)">کپی</button>
+    <button class="copy-btn" type="button" onclick="copyText(this,document.getElementById('suburl').value)">کپی</button>
   </div>
 
   <div class="section-title">🖥 سرورها</div>
   {node_rows}
 
   <div class="guide">
-    📚 راهنما: لینک اشتراک بالا را کپی کنید و در برنامه‌هایی مثل v2rayNG، NekoBox، Streisand یا V2Box از بخش «افزودن از کلیپ‌بورد» اضافه کنید و آپدیت بزنید. اگر لینک اشتراک باز نشد، لینک هر سرور را جداگانه کپی و وارد کنید.
+    📚 راهنما: لینک اشتراک بالا را کپی کنید و در برنامه‌هایی مثل v2rayNG، NekoBox، Streisand یا V2Box از بخش «افزودن از کلیپ‌بورد» اضافه و آپدیت کنید. اگر لینک اشتراک باز نشد، لینک هر سرور را جداگانه کپی کنید.
   </div>
   <div class="foot">{safe_brand}</div>
-</div>
+</div></div>
 <script>
 function copyText(btn, text){{
   const done=()=>{{const o=btn.textContent;btn.textContent='✅ کپی شد';setTimeout(()=>btn.textContent=o,1500);}};
   if(navigator.clipboard&&window.isSecureContext){{navigator.clipboard.writeText(text).then(done).catch(()=>fallback(text,done));}}
   else fallback(text,done);
 }}
-function copyFrom(btn, id){{var el=document.getElementById(id); if(el) copyText(btn, el.value);}}
 function fallback(text,done){{const t=document.createElement('textarea');t.value=text;t.style.position='fixed';t.style.opacity='0';document.body.appendChild(t);t.select();try{{document.execCommand('copy');done();}}catch(e){{}}document.body.removeChild(t);}}
 </script>
 </body></html>"""
@@ -790,6 +827,10 @@ async def backups_page(request: Request):
                     "size": os.path.getsize(path),
                     "created": datetime.fromtimestamp(os.path.getmtime(path)).isoformat(),
                 })
+    backup_settings = {
+        "server_backup_enabled": await get_setting("server_backup_enabled", SETTINGS_DEFAULTS["server_backup_enabled"]),
+        "server_backup_interval_hours": await get_setting("server_backup_interval_hours", SETTINGS_DEFAULTS["server_backup_interval_hours"]),
+    }
     return _templates.TemplateResponse(
         "backups.html",
         await _ctx_ui(
@@ -798,6 +839,7 @@ async def backups_page(request: Request):
             result=request.query_params.get("result", ""),
             pre=request.query_params.get("pre", ""),
             backups=backups,
+            settings=backup_settings,
         ),
     )
 
@@ -820,6 +862,68 @@ async def backup_emergency_download(request: Request, name: str):
     if not os.path.isfile(path):
         return JSONResponse({"error": "not found"}, status_code=404)
     return FileResponse(path, media_type="application/zip", filename=clean)
+
+
+@app.get(f"/{S}/backups/servers/download")
+async def backups_servers_download(request: Request):
+    if not _auth(request):
+        return _redir_login()
+    from core.backup import build_servers_backup
+    fname, data = await build_servers_backup()
+    headers = {"Content-Disposition": f'attachment; filename="{fname}"'}
+    return StreamingResponse(iter([data]), media_type="application/zip", headers=headers)
+
+
+@app.post(f"/{S}/backups/servers/settings")
+async def backups_servers_settings(
+    request: Request,
+    server_backup_enabled: str = Form("0"),
+    server_backup_interval_hours: int = Form(6),
+):
+    if not _auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    await set_setting("server_backup_enabled", "1" if server_backup_enabled == "1" else "0")
+    await set_setting("server_backup_interval_hours", str(max(1, min(168, int(server_backup_interval_hours or 6)))))
+    return RedirectResponse(f"/{S}/backups", status_code=302)
+
+
+@app.post(f"/{S}/backups/servers/send")
+async def backups_servers_send(request: Request):
+    if not _auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    if not BOT_TOKEN or len(BOT_TOKEN) < 20:
+        return JSONResponse({"error": "توکن ربات تنظیم نشده است."}, status_code=400)
+    from core.backup import build_servers_backup
+    from core.database import get_all_admin_telegram_ids, get_servers
+
+    # Owner-level recipients only (backup is sensitive).
+    owner_id = int(await get_setting("owner_admin_id", "0") or 0)
+    targets = list(dict.fromkeys(list(ADMIN_IDS) + ([owner_id] if owner_id else [])))
+    if not targets:
+        return JSONResponse({"error": "هیچ ادمین کلی تنظیم نشده است."}, status_code=400)
+
+    try:
+        fname, data = await build_servers_backup()
+    except Exception as e:
+        return JSONResponse({"error": f"ساخت بکاپ ناموفق بود: {e}"}, status_code=500)
+
+    servers = await get_servers(active_only=False)
+    size_mb = len(data) / (1024 * 1024)
+    caption = f"🗄 بکاپ پنل‌ها (دستی) — {len(servers)} سرور | {size_mb:.2f} MB"
+    bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.MARKDOWN))
+    sent = 0
+    try:
+        for aid in targets:
+            try:
+                await bot.send_document(aid, BufferedInputFile(data, filename=fname), caption=caption, parse_mode=None)
+                sent += 1
+            except Exception as e:
+                logger.warning("manual server backup send to %s failed: %s", aid, e)
+    finally:
+        await bot.session.close()
+    if not sent:
+        return JSONResponse({"error": "ارسال به ادمین ناموفق بود (شاید ربات را استارت نکرده‌اید)."}, status_code=502)
+    return JSONResponse({"success": True, "sent": sent, "servers": len(servers)})
 
 
 @app.post(f"/{S}/backups/restore")
@@ -975,6 +1079,8 @@ async def subscriptions_page(request: Request):
         "multi_sub_enabled": await get_setting("multi_sub_enabled", SETTINGS_DEFAULTS["multi_sub_enabled"]),
         "multi_sub_node_count": await get_setting("multi_sub_node_count", SETTINGS_DEFAULTS["multi_sub_node_count"]),
         "multi_sub_min_nodes": await get_setting("multi_sub_min_nodes", SETTINGS_DEFAULTS["multi_sub_min_nodes"]),
+        "sub_auto_sync_enabled": await get_setting("sub_auto_sync_enabled", SETTINGS_DEFAULTS["sub_auto_sync_enabled"]),
+        "sub_auto_sync_interval_hours": await get_setting("sub_auto_sync_interval_hours", SETTINGS_DEFAULTS["sub_auto_sync_interval_hours"]),
         "public_base_url": await get_setting("public_base_url", ""),
         "sub_info_enabled": await get_setting("sub_info_enabled", SETTINGS_DEFAULTS["sub_info_enabled"]),
         "sub_info_sync_on_render": await get_setting("sub_info_sync_on_render", SETTINGS_DEFAULTS["sub_info_sync_on_render"]),
@@ -1076,9 +1182,10 @@ async def subscription_profile_delete(request: Request, profile_id: int):
 @app.post(f"/{S}/subs/settings")
 async def subscriptions_settings_save(
     request: Request,
-    multi_sub_enabled: str = Form("0"),
     multi_sub_node_count: int = Form(4),
     multi_sub_min_nodes: int = Form(2),
+    sub_auto_sync_enabled: str = Form("0"),
+    sub_auto_sync_interval_hours: int = Form(1),
     public_base_url: str = Form(""),
     sub_info_enabled: str = Form("0"),
     sub_info_sync_on_render: str = Form("0"),
@@ -1092,9 +1199,13 @@ async def subscriptions_settings_save(
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     node_count = max(2, min(8, int(multi_sub_node_count or 4)))
     min_nodes = max(2, min(node_count, int(multi_sub_min_nodes or 2)))
-    await set_setting("multi_sub_enabled", "1" if multi_sub_enabled == "1" else "0")
+    # Subscriptions are the only fulfilment model now, so multi_sub_enabled is kept
+    # pinned on rather than exposed as a toggle that could break the store.
+    await set_setting("multi_sub_enabled", "1")
     await set_setting("multi_sub_node_count", str(node_count))
     await set_setting("multi_sub_min_nodes", str(min_nodes))
+    await set_setting("sub_auto_sync_enabled", "1" if sub_auto_sync_enabled == "1" else "0")
+    await set_setting("sub_auto_sync_interval_hours", str(max(1, min(24, int(sub_auto_sync_interval_hours or 1)))))
     await set_setting("public_base_url", public_base_url.strip().rstrip("/"))
     await set_setting("sub_info_enabled", "1" if sub_info_enabled == "1" else "0")
     await set_setting("sub_info_sync_on_render", "1" if sub_info_sync_on_render == "1" else "0")
@@ -1456,139 +1567,74 @@ async def _order_approve_web_impl(request: Request, oid: int):
     bulk_count = int(order.get("bulk_count") or 1)
     each_gb = float(order.get("bulk_each_gb") or order["traffic_gb"])
     duration = int(order["duration_days"])
-    if await multi_sub_enabled_for_single_purchase(bulk_count=bulk_count, is_renewal=False):
-        sub_result = await create_profile_for_order(user, order, each_gb, duration)
-        if sub_result.get("ok"):
-            await update_order(
-                oid,
-                status="approved",
-                server_id=0,
-                config_email=sub_result["email"],
-                inbound_id=0,
-                approved_at=datetime.now().isoformat(),
-            )
-            if order.get("referred_by"):
-                referrer = await get_user_by_id(order["referred_by"])
-                if referrer:
-                    await update_user(
-                        referrer["id"],
-                        referral_bonus_gb=float(referrer.get("referral_bonus_gb") or 0) + REFERRAL_BONUS_GB,
-                    )
-            await _clear_review_buttons("order", oid)
-            if BOT_TOKEN and len(BOT_TOKEN) > 20:
-                bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.MARKDOWN))
-                try:
-                    sub_url = sub_result["url"]
-                    await bot.send_message(
-                        order["telegram_id"],
-                        "🎉 سرویس آزمایشی چندسروره شما فعال شد.\n\n"
-                        f"تعداد سرورها: {sub_result['nodes']}\n"
-                        f"حجم کل مشترک: {each_gb} GB\n"
-                        f"مدت: {duration} روز\n\n"
-                        f"لینک سابسکریپشن:\n{sub_url}",
-                        parse_mode=None,
-                        reply_markup=config_links_kb("", sub_url),
-                    )
-                    qr_label = sub_result.get("email") or "Subscription"
-                    qr = build_qr_image(sub_url, footer_text=qr_label)
-                    await bot.send_photo(order["telegram_id"], BufferedInputFile(qr.getvalue(), filename="atlas-sub.png"), caption=f"QR سابسکریپشن: {qr_label}", parse_mode=None)
-                finally:
-                    await bot.session.close()
-            return RedirectResponse(f"/{S}/orders", status_code=302)
-        notes = ((order.get("notes") or "") + f"\nmulti_sub_error={sub_result.get('error', '')}").strip()
-        await update_order(oid, status="receipt_submitted", notes=notes)
-        logger.warning("Multi-sub creation failed for order %s: %s", oid, subscription_error_message(sub_result.get("error", "")))
-        return RedirectResponse(f"/{S}/orders", status_code=302)
-
-    servers = [sv for sv in await get_servers() if await server_has_capacity(sv["id"])]
-    if not servers:
-        await update_order(oid, status="receipt_submitted")
-        return RedirectResponse(f"/{S}/orders", status_code=302)
-    suggested = await get_least_loaded_server() if await get_setting("auto_least_loaded_server", "0") == "1" else None
-    sid = int((suggested or servers[0])["id"])
-    server = await get_server(sid)
-
-    created = []
-    bonus_pending = 0.0
-    bonus_applied = 0.0
+    # Subscriptions are the only fulfilment model now (single-server retired).
+    # Bulk/reseller orders create one multi-server subscription per unit.
+    units = max(1, bulk_count)
+    bonus_gb = 0.0
     if not int(order.get("referral_bonus_applied") or 0):
-        bonus_pending = max(0.0, float(user.get("referral_bonus_gb") or 0))
-    is_first_purchase = not await has_previous_purchase(user["id"])
+        bonus_gb = max(0.0, float(user.get("referral_bonus_gb") or 0))
 
-    cli = XUIClient(server["url"], server["username"], server["password"], server["sub_path"], server.get("api_token", ""))
-    target_inbound = int(server.get("inbound_id") or 1)
-    suffix = "".join(ch for ch in (order.get("custom_config_name") or "").strip() if ch.isalnum() or ch in ("_", "-", "."))[:24]
-    for i in range(1, max(1, bulk_count) + 1):
-        base_email = f"u{order['telegram_id']}_{i}_{int(time.time())}" if bulk_count > 1 else f"u{order['telegram_id']}_{int(time.time())}"
-        email = f"{base_email}_{suffix}" if suffix else base_email
-        cuuid = str(uuid.uuid4())
-        config_gb = each_gb + bonus_pending if bonus_pending > 0 else each_gb
-        ok = await cli.add_client(target_inbound, cuuid, email, config_gb, duration, starts_on_first_use=False)
-        if not ok:
-            continue
-        if bonus_pending > 0:
-            bonus_applied = bonus_pending
-            bonus_pending = 0.0
-        link = await cli.get_client_link(target_inbound, email)
-        sub = await cli.get_subscription_link(target_inbound, email)
-        await save_config(user["id"], sid, cuuid, email, target_inbound, config_gb, duration, expiry_ms_from_days(duration), starts_on_first_use=0)
-        created.append((email, link, sub, config_gb))
-    await cli.close()
+    created_subs = []
+    last_error = ""
+    for idx in range(units):
+        unit_gb = each_gb + bonus_gb if (idx == 0 and bonus_gb > 0) else each_gb
+        sub_result = await create_profile_for_order(user, order, unit_gb, duration)
+        if sub_result.get("ok"):
+            created_subs.append(sub_result)
+        else:
+            last_error = sub_result.get("error", "")
+            break
 
-    if created:
-        await update_order(oid, status="approved", server_id=sid, config_email=created[0][0], inbound_id=target_inbound, approved_at=datetime.now().isoformat())
-        if bonus_applied > 0:
-            await update_user(user["id"], referral_bonus_gb=0)
-            await update_order(oid, referral_bonus_applied=1)
-        await _clear_review_buttons("order", oid)
-        if is_first_purchase and order.get("referred_by"):
-            referrer = await get_user_by_id(order["referred_by"])
-            if referrer:
-                await update_user(
-                    referrer["id"],
-                    referral_bonus_gb=float(referrer.get("referral_bonus_gb") or 0) + REFERRAL_BONUS_GB,
-                )
-        if BOT_TOKEN and len(BOT_TOKEN) > 20:
-            bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.MARKDOWN))
-            try:
+    if not created_subs:
+        notes = ((order.get("notes") or "") + f"\nsub_create_error={last_error}").strip()
+        await update_order(oid, status="receipt_submitted", notes=notes)
+        logger.warning("Subscription creation failed for order %s: %s", oid, subscription_error_message(last_error))
+        return RedirectResponse(f"/{S}/orders", status_code=302)
+
+    await update_order(
+        oid,
+        status="approved",
+        server_id=0,
+        config_email=created_subs[0]["email"],
+        inbound_id=0,
+        approved_at=datetime.now().isoformat(),
+    )
+    if bonus_gb > 0:
+        await update_user(user["id"], referral_bonus_gb=0)
+        await update_order(oid, referral_bonus_applied=1)
+    if order.get("referred_by") and not await has_previous_purchase(user["id"]):
+        referrer = await get_user_by_id(order["referred_by"])
+        if referrer:
+            await update_user(referrer["id"], referral_bonus_gb=float(referrer.get("referral_bonus_gb") or 0) + REFERRAL_BONUS_GB)
+    await _clear_review_buttons("order", oid)
+    if BOT_TOKEN and len(BOT_TOKEN) > 20:
+        bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.MARKDOWN))
+        try:
+            head = (
+                "🎉 سرویس شما فعال شد!\n\n"
+                f"سفارش: {order.get('pkg_name') or '—'}\n"
+                f"تعداد سابسکریپشن: {len(created_subs)}\n"
+                f"حجم هر سرویس: {each_gb} GB\n"
+                f"مدت: {duration} روز"
+            )
+            if bonus_gb > 0:
+                head += f"\n🎁 هدیه رفرال: {bonus_gb:g} GB روی سرویس اول"
+            await bot.send_message(order["telegram_id"], head, parse_mode=None)
+            for item in created_subs[:20]:
+                sub_url = item["url"]
                 await bot.send_message(
                     order["telegram_id"],
-                    f"🎉 *سرویس شما فعال شد!*\n\nسفارش: {order['pkg_name']}\nسرور: {server['name']}\nتعداد کانفیگ: `{len(created)}`",
+                    f"📡 لینک سابسکریپشن ({item.get('nodes', 0)} سرور):\n{sub_url}",
                     parse_mode=None,
+                    reply_markup=config_links_kb("", sub_url),
                 )
-                if bonus_applied > 0:
-                    await bot.send_message(
-                        order["telegram_id"],
-                        f"🎁 هدیه رفرال شما اعمال شد: {bonus_applied:g} GB روی اولین کانفیگ",
-                        parse_mode=None,
-                    )
-                for email, link, sub, _traffic_gb in created[:20]:
-                    txt = f"📧 `{email}`\n"
-                    if link:
-                        txt += f"🔗 `{link}`\n"
-                    if sub:
-                        txt += f"📡 Subscription:\n`{sub}`\n"
-                    await bot.send_message(
-                        order["telegram_id"],
-                        txt,
-                        parse_mode=None,
-                        reply_markup=config_links_kb(link or "", sub or ""),
-                    )
-                    if link:
-                        try:
-                            qr = build_qr_image(link, footer_text=await get_setting("channel_username", "AtlasChannel"))
-                            await bot.send_photo(
-                                order["telegram_id"],
-                                BufferedInputFile(qr.getvalue(), filename="atlas-qr.png"),
-                                caption=f"QR: {email}",
-                                parse_mode=None,
-                            )
-                        except Exception:
-                            pass
-            finally:
-                await bot.session.close()
-    else:
-        await update_order(oid, status="receipt_submitted")
+                try:
+                    qr = build_qr_image(sub_url, footer_text=item.get("email") or "Subscription")
+                    await bot.send_photo(order["telegram_id"], BufferedInputFile(qr.getvalue(), filename="atlas-sub.png"), caption="QR سابسکریپشن", parse_mode=None)
+                except Exception:
+                    pass
+        finally:
+            await bot.session.close()
     return RedirectResponse(f"/{S}/orders", status_code=302)
 
 
@@ -2218,7 +2264,8 @@ async def settings_save(
     await set_setting("legacy_sync_enabled", "1" if legacy_sync_enabled == "1" else "0")
     await set_setting("max_daily_migrations", str(max(0, int(max_daily_migrations or 0))))
     await set_setting("renewal_min_traffic_gb", str(max(0.1, float(renewal_min_traffic_gb or 1))))
-    await set_setting("multi_sub_enabled", "1" if multi_sub_enabled == "1" else "0")
+    # Subscriptions are the only fulfilment model now; keep it pinned on.
+    await set_setting("multi_sub_enabled", "1")
     await set_setting("multi_sub_node_count", str(max(2, min(8, int(multi_sub_node_count or 4)))))
     await set_setting("multi_sub_min_nodes", str(max(2, min(8, int(multi_sub_min_nodes or 2)))))
     await set_setting("public_base_url", public_base_url.strip().rstrip("/"))

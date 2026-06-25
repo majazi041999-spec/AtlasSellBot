@@ -24,8 +24,8 @@
 {% endif %}
 
 <div class="card" style="margin-bottom:14px;background:linear-gradient(135deg,rgba(124,111,255,.14),rgba(61,217,255,.08));border:1px solid rgba(124,111,255,.35)">
-  <div style="font-weight:800;font-size:1.03rem">ساب آزمایشی برای خریدهای جدید تکی</div>
-  <div style="color:var(--txt2);margin-top:4px">وقتی فعال باشد، خریدهای جدید تکی به جای کانفیگ معمولی، یک لینک سابسکریپشن با چند نود فعال دریافت می‌کنند. تمدید و خرید عمده وارد این مسیر نمی‌شوند.</div>
+  <div style="font-weight:800;font-size:1.03rem">سابسکریپشن چندسروره — مدل اصلی سرویس</div>
+  <div style="color:var(--txt2);margin-top:4px">همهٔ خریدها (تکی و عمده) و اکانت‌های تست به‌صورت یک لینک سابسکریپشن با چند نود فعال ارائه می‌شوند. سیستم سرور تکی کنار گذاشته شده است؛ کافی است حداقل یک نود فعال و دارای ظرفیت داشته باشید.</div>
   <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">
     <a class="btn btn-outline btn-sm" href="/{{ S }}/subs/profiles">📋 مدیریت ساب‌های ساخته‌شده</a>
     <button class="btn btn-primary btn-sm" type="button" onclick="syncSubNodes(this)">🔄 Sync نودها برای همه ساب‌ها</button>
@@ -37,12 +37,19 @@
     <h3>⚙️ تنظیمات اصلی</h3>
     <p class="sub-hint">برای اینکه لینک ساب درست ساخته شود، آدرس عمومی باید همان آدرسی باشد که کاربر بتواند به مسیر <code>/sub/token</code> روی همین ربات برسد.</p>
     <form action="/{{ S }}/subs/settings" method="POST" class="inline-form">
-      <div class="form-group">
-        <label>وضعیت ساب برای خریدهای جدید تکی</label>
-        <select class="form-control" name="multi_sub_enabled">
-          <option value="0" {% if settings.multi_sub_enabled != "1" %}selected{% endif %}>غیرفعال امن</option>
-          <option value="1" {% if settings.multi_sub_enabled == "1" %}selected{% endif %}>فعال آزمایشی</option>
-        </select>
+      <div class="form-row">
+        <div class="form-group">
+          <label>همگام‌سازی خودکار نودها</label>
+          <select class="form-control" name="sub_auto_sync_enabled">
+            <option value="1" {% if settings.sub_auto_sync_enabled == "1" %}selected{% endif %}>فعال (پیشنهادی)</option>
+            <option value="0" {% if settings.sub_auto_sync_enabled != "1" %}selected{% endif %}>غیرفعال</option>
+          </select>
+          <small style="color:var(--txt3)">نودهای جدید/حذف‌شده را خودکار با همهٔ ساب‌ها هماهنگ می‌کند.</small>
+        </div>
+        <div class="form-group">
+          <label>بازهٔ همگام‌سازی خودکار (ساعت)</label>
+          <input class="form-control" type="number" name="sub_auto_sync_interval_hours" value="{{ settings.sub_auto_sync_interval_hours }}" min="1" max="24">
+        </div>
       </div>
       <div class="form-row">
         <div class="form-group">

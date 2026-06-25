@@ -66,6 +66,7 @@ from core.multi_subscription import (
     sync_profile_usage,
     delete_subscription_profile_remote,
     create_profile_from_config,
+    create_test_subscription,
     subscription_error_message,
 )
 from bot.middlewares.channel_required import ChannelRequiredMiddleware
@@ -1202,84 +1203,39 @@ async def test_account(msg: Message):
     user = await get_or_create_user(msg.from_user.id, msg.from_user.username, msg.from_user.full_name)
     existing = await get_user_test_account(user["id"])
     if existing:
-        cfg = await get_config(int(existing["config_id"]))
-        if cfg:
-            cli = XUIClient(cfg["server_url"], cfg["srv_user"], cfg["srv_pass"], cfg["sub_path"], cfg.get("srv_api_token", ""))
-            link = await cli.get_client_link(cfg["inbound_id"], cfg["email"])
-            sub = await cli.get_subscription_link(cfg["inbound_id"], cfg["email"])
-            await cli.close()
-            text = (
-                "🧪 اکانت تست شما قبلاً ساخته شده است.\n\n"
-                f"کانفیگ: `{cfg['email']}`\n"
-                f"حجم: `{cfg['traffic_gb']} GB`\n"
-                f"مدت: `{cfg['duration_days']} روز`\n"
-            )
-            if link:
-                text += f"\nلینک اتصال:\n`{link}`\n"
-            if sub:
-                text += f"\nلینک سابسکریپشن:\n`{sub}`\n"
-            await msg.answer(text, parse_mode="Markdown", reply_markup=config_links_kb(link or "", sub or ""))
-            if link:
-                try:
-                    ch = await get_setting("channel_username", "AtlasChannel")
-                    await msg.answer_photo(_qr_input_file(link, ch), caption=f"QR تست: {cfg['email']}", parse_mode=None)
-                except Exception:
-                    pass
+        if existing.get("kind") == "sub" and existing.get("profile"):
+            await msg.answer("🧪 اکانت تست شما قبلاً ساخته شده است:", parse_mode=None)
+            await _send_subscription_status(msg, existing["profile"], send_qr=True)
             return
-
-    server = await _pick_test_server(int(settings["server_id"]))
-    if not server:
-        await msg.answer("⛔ فعلاً سرور دارای ظرفیت برای اکانت تست وجود ندارد.")
+        # A trial was already issued before (legacy single config, or it has since
+        # been removed). Don't hand out another one.
+        await msg.answer(
+            "🧪 شما قبلاً اکانت تست دریافت کرده‌اید.\n"
+            "برای ادامه می‌توانید از بخش «🛒 خرید سرویس» یک سرویس کامل تهیه کنید.",
+            parse_mode=None,
+        )
         return
 
-    inbound_id = int(server.get("inbound_id") or 1)
-    prefix = "".join(ch for ch in settings["prefix"] if ch.isalnum() or ch in ("_", "-")) or "test"
-    email = f"{prefix}_{msg.from_user.id}_{_uuid.uuid4().hex[:6]}"
-    cuuid = str(_uuid.uuid4())
+    result = await create_test_subscription(user, settings["traffic_gb"], settings["duration_days"])
+    if not result.get("ok"):
+        err = subscription_error_message(result.get("error", ""))
+        await msg.answer(
+            "❌ ساخت اکانت تست ناموفق بود.\n\n"
+            f"علت: {err}\n\n"
+            "لطفاً کمی بعد دوباره تلاش کنید یا با پشتیبانی در ارتباط باشید.",
+            parse_mode=None,
+        )
+        return
 
-    cli = XUIClient(server["url"], server["username"], server["password"], server["sub_path"], server.get("api_token", ""))
-    try:
-        ok = await cli.add_client(inbound_id, cuuid, email, settings["traffic_gb"], settings["duration_days"], starts_on_first_use=False)
-        if not ok:
-            await msg.answer("❌ ساخت اکانت تست روی سرور ناموفق بود. لطفاً کمی بعد دوباره تلاش کنید.")
-            return
-        link = await cli.get_client_link(inbound_id, email)
-        sub = await cli.get_subscription_link(inbound_id, email)
-    finally:
-        await cli.close()
-
-    expire_ms = expiry_ms_from_days(settings["duration_days"])
-    cfg_id = await save_config(
-        user["id"],
-        int(server["id"]),
-        cuuid,
-        email,
-        inbound_id,
-        settings["traffic_gb"],
-        settings["duration_days"],
-        expire_ms,
-        starts_on_first_use=0,
+    await add_user_test_account(user["id"], profile_id=int(result["profile_id"]))
+    await msg.answer(
+        "✅ اکانت تست چندسروره شما ساخته شد.\n"
+        f"حجم: {settings['traffic_gb']} GB | مدت: {settings['duration_days']} روز | سرورها: {result.get('nodes', 0)}",
+        parse_mode=None,
     )
-    await add_user_test_account(user["id"], cfg_id)
-
-    text = (
-        "✅ اکانت تست شما ساخته شد.\n\n"
-        f"کانفیگ: `{email}`\n"
-        f"حجم: `{settings['traffic_gb']} GB`\n"
-        f"مدت: `{settings['duration_days']} روز`\n"
-        f"سرور: `{server['name']}`\n"
-    )
-    if link:
-        text += f"\nلینک اتصال:\n`{link}`\n"
-    if sub:
-        text += f"\nلینک سابسکریپشن:\n`{sub}`\n"
-    await msg.answer(text, parse_mode="Markdown", reply_markup=config_links_kb(link or "", sub or ""))
-    if link:
-        try:
-            ch = await get_setting("channel_username", "AtlasChannel")
-            await msg.answer_photo(_qr_input_file(link, ch), caption=f"QR تست: {email}", parse_mode=None)
-        except Exception:
-            pass
+    profile = await get_subscription_profile(int(result["profile_id"]))
+    if profile:
+        await _send_subscription_status(msg, profile, send_qr=True)
 
 
 @router.message(F.text == "🛒 خرید سرویس")

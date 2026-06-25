@@ -165,6 +165,37 @@ class XUIClient:
         r = await self._req("GET", "/panel/api/inbounds/list")
         return r.get("obj", []) if r and r.get("success") else []
 
+    async def download_db(self) -> Optional[bytes]:
+        """Best-effort download of the panel's raw x-ui.db (the panel backup file).
+
+        Needs a panel session; returns the SQLite bytes or None if unavailable.
+        """
+        if not self._cookie and not await self._login():
+            return None
+        candidates = [
+            f"{self.panel_url}/server/getDb",
+            f"{self.base_url}/server/getDb",
+            f"{self.panel_url}/panel/server/getDb",
+        ]
+        for url in candidates:
+            try:
+                r = await self._http.get(url, headers={"Cookie": self._cookie or ""})
+            except Exception:
+                continue
+            if r.status_code == 200 and r.content[:15] == b"SQLite format 3":
+                return r.content
+            # session may have expired → re-login once and retry this url
+            if r.status_code in (401, 403):
+                self._cookie = None
+                if await self._login():
+                    try:
+                        r = await self._http.get(url, headers={"Cookie": self._cookie or ""})
+                        if r.status_code == 200 and r.content[:15] == b"SQLite format 3":
+                            return r.content
+                    except Exception:
+                        pass
+        return None
+
     async def get_inbound(self, iid: int) -> Optional[Dict]:
         r = await self._req("GET", f"/panel/api/inbounds/get/{iid}")
         return r.get("obj") if r and r.get("success") else None

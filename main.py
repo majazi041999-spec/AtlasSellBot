@@ -6,6 +6,7 @@ import asyncio
 import logging
 import os
 import sys
+import time
 import subprocess
 from datetime import datetime, timedelta
 
@@ -294,14 +295,37 @@ async def _daily_report_worker(bot):
 
 
 async def _multi_subscription_worker():
-    from core.multi_subscription import sync_active_profiles
+    from core.multi_subscription import sync_active_profiles, sync_subscription_nodes_for_all
+    from core.database import get_setting
 
     await asyncio.sleep(30)
+    last_full_sync = 0.0
     while True:
         try:
-            checked = await sync_active_profiles(100)
+            # Cheap frequent pass: enforce quota/expiry so finished subs are
+            # disabled fast and the sub link starts showing the renew notice.
+            checked = await sync_active_profiles(200, usage_only=True)
             if checked:
-                logger.info(f"multi-sub profiles checked={checked}")
+                logger.info(f"multi-sub usage checked={checked}")
+
+            # Full node reconcile (create missing / remove orphaned / repair
+            # links) on a panel-configurable cadence. This is the automatic
+            # "config sync" — toggleable and defaulting to hourly.
+            if await get_setting("sub_auto_sync_enabled", "1") == "1":
+                try:
+                    interval_h = float(await get_setting("sub_auto_sync_interval_hours", "1") or 1)
+                except (TypeError, ValueError):
+                    interval_h = 1.0
+                interval_s = max(900, int(interval_h * 3600))
+                now = time.time()
+                if now - last_full_sync >= interval_s - 30:
+                    last_full_sync = now
+                    result = await sync_subscription_nodes_for_all(5000, force_refresh=False)
+                    logger.info(
+                        "auto sub node-sync: checked=%s created=%s refreshed=%s moved=%s removed=%s failed=%s",
+                        result.get("checked"), result.get("created"), result.get("refreshed"),
+                        result.get("moved"), result.get("removed"), result.get("failed"),
+                    )
         except Exception as e:
             logger.exception("multi-sub worker failed: %s", e)
         await asyncio.sleep(180)
@@ -349,6 +373,89 @@ async def _single_to_sub_nudge_worker(bot):
         except Exception as e:
             logger.exception("single→sub nudge worker failed: %s", e)
         await asyncio.sleep(3600)
+
+
+async def _owner_targets() -> list[int]:
+    """Top-level admins who should receive sensitive panel backups."""
+    from core.config import ADMIN_IDS
+    from core.database import get_setting
+
+    ids = list(ADMIN_IDS)
+    try:
+        owner_id = int(await get_setting("owner_admin_id", "0") or 0)
+        if owner_id:
+            ids.append(owner_id)
+    except Exception:
+        pass
+    return list(dict.fromkeys(i for i in ids if i))
+
+
+async def _send_servers_backup(bot, reason: str = "scheduled") -> bool:
+    from aiogram.types import BufferedInputFile
+    from core.backup import build_servers_backup
+    from core.jalali import jalali_display
+    from core.database import get_servers
+
+    targets = await _owner_targets()
+    if not targets:
+        logger.warning("server backup: no owner targets configured")
+        return False
+    try:
+        fname, data = await build_servers_backup()
+    except Exception as e:
+        logger.exception("server backup build failed: %s", e)
+        for aid in targets:
+            try:
+                await bot.send_message(aid, f"❌ تهیهٔ بکاپ سرورها ناموفق بود:\n{str(e)[:300]}", parse_mode=None)
+            except Exception:
+                pass
+        return False
+
+    servers = await get_servers(active_only=False)
+    size_mb = len(data) / (1024 * 1024)
+    caption = (
+        f"🗄 بکاپ پنل‌ها — {jalali_display()}\n"
+        f"تعداد سرور: {len(servers)} | حجم: {size_mb:.2f} MB\n"
+        f"شامل دیتابیس هر پنل (در صورت دسترسی) + خروجی کامل اینباندها + دیتابیس ربات."
+    )
+    sent = 0
+    for aid in targets:
+        try:
+            await bot.send_document(aid, BufferedInputFile(data, filename=fname), caption=caption, parse_mode=None)
+            sent += 1
+            await asyncio.sleep(0.2)
+        except Exception as e:
+            logger.warning("server backup send to %s failed: %s", aid, e)
+    logger.info("server backup (%s) sent to %s owners | %.2f MB", reason, sent, size_mb)
+    return sent > 0
+
+
+async def _server_backup_worker(bot):
+    from core.database import get_setting
+
+    await asyncio.sleep(90)
+    while True:
+        try:
+            if await get_setting("server_backup_enabled", "1") == "1":
+                try:
+                    interval_h = float(await get_setting("server_backup_interval_hours", "6") or 6)
+                except (TypeError, ValueError):
+                    interval_h = 6.0
+                interval_s = max(3600, int(interval_h * 3600))
+                last = 0.0
+                try:
+                    last = float(await get_setting("server_backup_last_ts", "0") or 0)
+                except (TypeError, ValueError):
+                    last = 0.0
+                now = time.time()
+                if now - last >= interval_s - 60:
+                    from core.database import set_setting
+                    ok = await _send_servers_backup(bot, reason="scheduled")
+                    if ok:
+                        await set_setting("server_backup_last_ts", str(now))
+        except Exception as e:
+            logger.exception("server backup worker failed: %s", e)
+        await asyncio.sleep(900)  # re-check every 15 minutes
 
 
 async def _subscription_lifecycle_worker(bot):
@@ -416,6 +523,7 @@ async def run_bot():
     asyncio.create_task(_multi_subscription_worker())
     asyncio.create_task(_subscription_lifecycle_worker(bot))
     asyncio.create_task(_single_to_sub_nudge_worker(bot))
+    asyncio.create_task(_server_backup_worker(bot))
     await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
 

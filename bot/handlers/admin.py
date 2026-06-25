@@ -33,6 +33,7 @@ from core.database import (
     format_daily_report,
     get_subscription_profile,
     get_subscription_profile_by_token,
+    get_subscription_node_by_uuid,
     get_subscription_nodes,
     update_subscription_profile,
     find_user,
@@ -48,6 +49,7 @@ from core.multi_subscription import (
     multi_sub_enabled_for_single_purchase,
     subscription_error_message,
     renew_subscription_profile,
+    edit_subscription_profile,
     subscription_url,
     set_nodes_enabled,
     delete_subscription_profile_remote,
@@ -60,7 +62,7 @@ from bot.keyboards import (
     adm_user_card_kb, adm_user_services_kb, adm_sub_panel_kb,
 )
 from bot.states import (
-    AddPackage, CreateConfig, BulkConfig, EditConfig, Broadcast, PrivateMessage,
+    AddPackage, CreateConfig, BulkConfig, EditConfig, EditSubProfile, Broadcast, PrivateMessage,
     AdminUserSearch, AdminBalance,
 )
 
@@ -237,6 +239,14 @@ async def owner_config_link_lookup(msg: Message):
     if cfg:
         sent = await msg.answer("🔎 کانفیگ پیدا شد. در حال بارگذاری پنل مدیریت...", parse_mode=None)
         await _render_cfg_detail(sent, int(cfg["id"]))
+        return
+
+    # The link may belong to a multi-server subscription node (UUID is the key):
+    # open the sub management panel so it can be edited/renewed/toggled.
+    sub_node = await get_subscription_node_by_uuid(client_uuid) if client_uuid else None
+    if sub_node and int(sub_node.get("profile_id") or 0):
+        sent = await msg.answer("🔎 این لینک متعلق به یک سابسکریپشن است. در حال بارگذاری پنل ساب...", parse_mode=None)
+        await _render_sub_panel(sent, int(sub_node["profile_id"]))
         return
 
     # Slow path: search every registered server (for foreign/legacy configs).
@@ -430,52 +440,9 @@ async def approve_order_start(cb: CallbackQuery):
         await _do_approve(cb, oid, 0)
         return
 
-    servers = [sv for sv in await get_servers() if await server_has_capacity(sv["id"])]
-    if not servers:
-        await cb.answer("❌ هیچ سروری فعال نیست!", show_alert=True)
-        return
-
-    if await get_setting("auto_least_loaded_server", "0") == "1":
-        suggested = await get_least_loaded_server()
-        if suggested:
-            await _do_approve(cb, oid, int(suggested["id"]))
-            return
-
-    # اگر سرور پیش‌فرض تنظیم شده باشد، اولویت با همان است.
-    default_sid_raw = await get_setting("default_server_id", "0")
-    try:
-        default_sid = int(default_sid_raw or 0)
-    except (TypeError, ValueError):
-        default_sid = 0
-
-    if default_sid:
-        preferred = next((sv for sv in servers if sv["id"] == default_sid), None)
-        if preferred:
-            await _do_approve(cb, oid, preferred["id"])
-            return
-
-    if len(servers) == 1:
-        await _do_approve(cb, oid, servers[0]["id"])
-        return
-
-    try:
-        await cb.message.edit_reply_markup(reply_markup=None)
-    except Exception:
-        pass
-
-    try:
-        await cb.message.edit_text(
-            "🖥️ *انتخاب سرور برای کانفیگ:*",
-            reply_markup=order_server_select_kb(servers, oid),
-            parse_mode="Markdown"
-        )
-    except Exception:
-        # روی پیام فیش (photo) edit_text ممکن است fail شود؛ منو را به‌صورت پیام جدید بفرست.
-        await cb.message.answer(
-            "🖥️ *انتخاب سرور برای کانفیگ:*",
-            reply_markup=order_server_select_kb(servers, oid),
-            parse_mode="Markdown"
-        )
+    # Purchases are multi-server subscriptions now — there is no single server to
+    # choose. Approve straight away; the sub is built from the configured nodes.
+    await _do_approve(cb, oid, 0)
 
 
 @router.callback_query(F.data.startswith("assign:"))
@@ -722,134 +689,59 @@ async def _do_approve_impl(cb: CallbackQuery, oid: int, sid: int):
         await update_order(oid, status="receipt_submitted")
         return False
 
-    if await multi_sub_enabled_for_single_purchase(bulk_count=bulk_count, is_renewal=False):
-        sub_result = await create_profile_for_order(user, order, each_gb, duration)
+    # Subscriptions are the only fulfilment model now (single-server retired).
+    # Every purchased unit — including bulk/reseller orders — becomes its own
+    # multi-server subscription built from the configured nodes.
+    units = max(1, bulk_count)
+
+    # The buyer's accrued referral-bonus GB (if any) is added to the first unit.
+    bonus_gb = 0.0
+    if not int(order.get("referral_bonus_applied") or 0):
+        bonus_gb = max(0.0, float(user.get("referral_bonus_gb") or 0))
+
+    created_subs = []
+    last_error = ""
+    for idx in range(units):
+        unit_gb = each_gb + bonus_gb if (idx == 0 and bonus_gb > 0) else each_gb
+        sub_result = await create_profile_for_order(user, order, unit_gb, duration)
         if sub_result.get("ok"):
-            await update_order(
-                oid,
-                status="approved",
-                server_id=0,
-                config_email=sub_result["email"],
-                inbound_id=0,
-                approved_at=datetime.now().isoformat(),
-            )
-            if order.get("referred_by"):
-                from core.config import REFERRAL_BONUS_GB
-                referrer = await get_user_by_id(order["referred_by"])
-                if referrer:
-                    await update_user(
-                        referrer["id"],
-                        referral_bonus_gb=float(referrer.get("referral_bonus_gb") or 0) + REFERRAL_BONUS_GB,
-                    )
-            sub_url = sub_result["url"]
-            try:
-                await cb.bot.send_message(
-                    order["telegram_id"],
-                    "🎉 سرویس آزمایشی چندسروره شما فعال شد.\n\n"
-                    f"تعداد سرورها: {sub_result['nodes']}\n"
-                    f"حجم کل مشترک: {each_gb} GB\n"
-                    f"مدت: {duration} روز\n\n"
-                    f"لینک سابسکریپشن:\n{sub_url}",
-                    parse_mode=None,
-                    reply_markup=config_links_kb("", sub_url),
-                )
-                qr_label = sub_result.get("email") or "Subscription"
-                await cb.bot.send_photo(order["telegram_id"], _qr_input_file(sub_url, qr_label), caption=f"QR سابسکریپشن: {qr_label}", parse_mode=None)
-            except Exception:
-                pass
-            try:
-                await cb.message.edit_reply_markup(reply_markup=None)
-            except Exception:
-                pass
-            await cb.message.answer("✅ ساب چندسروره آزمایشی ساخته و برای کاربر ارسال شد.", parse_mode=None)
-            return True
-        err_text = subscription_error_message(sub_result.get("error", ""))
-        notes = ((order.get("notes") or "") + f"\nmulti_sub_error={sub_result.get('error', '')}").strip()
+            created_subs.append(sub_result)
+        else:
+            last_error = sub_result.get("error", "")
+            break
+
+    if not created_subs:
+        err_text = subscription_error_message(last_error)
+        notes = ((order.get("notes") or "") + f"\nsub_create_error={last_error}").strip()
         await update_order(oid, status="receipt_submitted", notes=notes)
         await cb.message.answer(
-            "❌ ساخت ساب چندسروره ناموفق بود و سفارش به کانفیگ معمولی تبدیل نشد.\n\n"
-            f"علت: {err_text}",
+            "❌ ساخت سابسکریپشن ناموفق بود و سفارش تایید نشد.\n\n"
+            f"علت: {err_text}\n\n"
+            "حداقل یک نود ساب فعال و دارای ظرفیت لازم است؛ وضعیت نودها را در پنل بررسی کنید.",
             parse_mode=None,
         )
         return False
 
-    if not await server_has_capacity(sid):
-        await update_order(oid, status="receipt_submitted")
-        await cb.message.answer("⛔ ظرفیت این سرور تکمیل شده است. سرور دیگری انتخاب کنید.")
-        return False
+    await update_order(
+        oid,
+        status="approved",
+        server_id=0,
+        config_email=created_subs[0]["email"],
+        inbound_id=0,
+        approved_at=datetime.now().isoformat(),
+    )
 
-    server = await get_server(sid)
-
-    created = []
-    bonus_pending = 0.0
-    bonus_applied = 0.0
-    if not int(order.get("referral_bonus_applied") or 0):
-        bonus_pending = max(0.0, float(user.get("referral_bonus_gb") or 0))
-    remaining_cap = (server.get("max_active_configs") or 0)
-    if remaining_cap:
-        used = await count_active_configs_by_server(sid)
-        remaining_cap = max(0, remaining_cap - used)
-        bulk_count = min(bulk_count, remaining_cap)
-
-    custom_prefix = ""
-    custom_start = 1
-    try:
-        if order.get("notes"):
-            n = json.loads(order["notes"])
-            custom_prefix = str(n.get("bulk_name_prefix", "")).strip()
-            custom_start = int(n.get("bulk_start_number", 1) or 1)
-    except Exception:
-        pass
-
-    available_inbounds = _server_inbound_choices(server)
-    package_iid = int(order.get("package_inbound_id") or 0)
-    target_inbound = package_iid if package_iid in available_inbounds else int(server["inbound_id"])
-    client = XUIClient(server["url"], server["username"], server["password"], server["sub_path"], server.get("api_token", ""))
-
-    for i in range(1, max(1, bulk_count) + 1):
-        if bulk_count > 1 and custom_prefix:
-            seq = custom_start + i - 1
-            email = f"{custom_prefix}-{seq} -{int(each_gb)}GB"
-        else:
-            email = await _build_config_name(order, i if bulk_count > 1 else 0)
-        cuuid = str(uuid.uuid4())
-        config_gb = each_gb + bonus_pending if bonus_pending > 0 else each_gb
-        ok = await client.add_client(target_inbound, cuuid, email, config_gb, duration, starts_on_first_use=False)
-        if not ok:
-            continue
-        if bonus_pending > 0:
-            bonus_applied = bonus_pending
-            bonus_pending = 0.0
-        expire_ms = expiry_ms_from_days(duration)
-        link = await client.get_client_link(target_inbound, email)
-        sub = await client.get_subscription_link(target_inbound, email)
-        await save_config(user["id"], sid, cuuid, email, target_inbound, config_gb, duration, expire_ms, starts_on_first_use=0)
-        created.append({"email": email, "link": link, "sub": sub, "traffic_gb": config_gb})
-
-    await client.close()
-    if not created:
-        await update_order(oid, status="receipt_submitted")
-        await cb.message.answer("❌ خطا در ساخت کانفیگ روی سرور! اتصال/ظرفیت سرور را بررسی کنید.")
-        return False
-
-    # referral: only first successful paid order
-    from core.database import has_previous_purchase
-    from core.config import REFERRAL_BONUS_GB
-    is_first_purchase = not await has_previous_purchase(user["id"])
-
-    await update_order(oid, status="approved", server_id=sid,
-                       config_email=created[0]["email"], inbound_id=target_inbound,
-                       approved_at=datetime.now().isoformat())
-
-    if bonus_applied > 0:
+    if bonus_gb > 0:
         await update_user(user["id"], referral_bonus_gb=0)
         await update_order(oid, referral_bonus_applied=1)
 
-    if is_first_purchase and order.get("referred_by"):
+    # Referral reward for the inviter (first paid purchase only).
+    from core.database import has_previous_purchase
+    from core.config import REFERRAL_BONUS_GB
+    if order.get("referred_by") and not await has_previous_purchase(user["id"]):
         referrer = await get_user_by_id(order["referred_by"])
         if referrer:
-            new_bonus = referrer.get("referral_bonus_gb", 0) + REFERRAL_BONUS_GB
-            await update_user(referrer["id"], referral_bonus_gb=new_bonus)
+            await update_user(referrer["id"], referral_bonus_gb=float(referrer.get("referral_bonus_gb") or 0) + REFERRAL_BONUS_GB)
             try:
                 await cb.bot.send_message(
                     referrer["telegram_id"],
@@ -860,36 +752,30 @@ async def _do_approve_impl(cb: CallbackQuery, oid: int, sid: int):
                 pass
 
     head = (
-        f"🎉 *سرویس شما فعال شد!*\n"
-        f"━━━━━━━━━━━━━━\n"
-        f"📦 سفارش: {order['pkg_name']}\n"
-        f"🖥️ سرور: {server['name']}\n"
-        f"📦 تعداد کانفیگ: `{len(created)}`\n"
-        f"📊 حجم هر کانفیگ: `{each_gb} GB`\n"
-        f"📅 مدت: `{duration}` روز\n"
+        "🎉 سرویس شما فعال شد!\n"
+        "━━━━━━━━━━━━━━\n"
+        f"📦 سفارش: {order.get('pkg_name') or '—'}\n"
+        f"🧬 تعداد سابسکریپشن: {len(created_subs)}\n"
+        f"📊 حجم هر سرویس: {each_gb} GB\n"
+        f"📅 مدت: {duration} روز\n"
     )
-    if bonus_applied > 0:
-        head += f"🎁 هدیه رفرال اعمال شد: `{bonus_applied:g} GB` روی اولین کانفیگ\n"
+    if bonus_gb > 0:
+        head += f"🎁 هدیه رفرال: {bonus_gb:g} GB روی سرویس اول اعمال شد\n"
     try:
         await cb.bot.send_message(order["telegram_id"], head, parse_mode=None)
-        for item in created[:20]:
-            txt = f"📧 `{item['email']}`\n"
-            if item['link']:
-                txt += f"🔗 `{item['link']}`\n"
-            if item['sub']:
-                txt += f"📡 سابسکریپشن:\n`{item['sub']}`\n"
+        for item in created_subs[:20]:
+            sub_url = item["url"]
             await cb.bot.send_message(
                 order["telegram_id"],
-                txt,
+                f"📡 لینک سابسکریپشن ({item.get('nodes', 0)} سرور):\n{sub_url}",
                 parse_mode=None,
-                reply_markup=config_links_kb(item.get("link") or "", item.get("sub") or ""),
+                reply_markup=config_links_kb("", sub_url),
             )
-            if item['link']:
-                try:
-                    ch = await get_setting("channel_username", "AtlasChannel")
-                    await cb.bot.send_photo(order["telegram_id"], _qr_input_file(item['link'], ch), caption=f"QR: {item['email']}", parse_mode=None)
-                except Exception:
-                    pass
+            try:
+                qr_label = item.get("email") or "Subscription"
+                await cb.bot.send_photo(order["telegram_id"], _qr_input_file(sub_url, qr_label), caption="QR سابسکریپشن", parse_mode=None)
+            except Exception:
+                pass
     except Exception:
         pass
 
@@ -902,7 +788,7 @@ async def _do_approve_impl(cb: CallbackQuery, oid: int, sid: int):
             await cb.message.edit_reply_markup(reply_markup=None)
     except Exception:
         pass
-    await cb.message.answer(f"✅ {len(created)} کانفیگ ساخته و برای کاربر ارسال شد.", parse_mode="Markdown")
+    await cb.message.answer(f"✅ {len(created_subs)} سابسکریپشن ساخته و برای کاربر ارسال شد.", parse_mode=None)
     try:
         uname = order.get("username") or ""
         display = ("@" + uname) if uname else (order.get("full_name") or "دوست عزیز")
@@ -1434,6 +1320,81 @@ async def adm_sub_renew(cb: CallbackQuery):
         await _render_sub_panel(cb.message, pid)
     else:
         await cb.message.answer("❌ تمدید ناموفق: " + str(result.get("error") or "-"), parse_mode=None)
+
+
+@router.callback_query(F.data.startswith("adm_sub_edit:"))
+async def adm_sub_edit_start(cb: CallbackQuery, state: FSMContext):
+    if not is_admin(cb.from_user.id):
+        return
+    pid = int(cb.data.split(":")[1])
+    profile = await get_subscription_profile(pid)
+    if not profile:
+        await cb.answer("یافت نشد", show_alert=True)
+        return
+    await state.set_state(EditSubProfile.traffic)
+    await state.update_data(pid=pid)
+    cur_gb = float(profile.get("traffic_gb") or 0)
+    cur_days = days_left(int(profile.get("expire_timestamp") or 0))
+    cur_days_txt = "نامحدود" if cur_days < 0 else f"{cur_days} روز"
+    await cb.message.answer(
+        "✏️ ویرایش ساب\n\n"
+        f"حجم فعلی: {cur_gb:g} GB | زمان باقی‌مانده: {cur_days_txt}\n\n"
+        "حجم کل جدید را به گیگابایت بفرست (عدد). برای نامحدود ۰ بفرست.",
+        parse_mode=None,
+        reply_markup=flow_cancel_kb(),
+    )
+    await cb.answer()
+
+
+@router.message(EditSubProfile.traffic)
+async def adm_sub_edit_traffic(msg: Message, state: FSMContext):
+    raw = (msg.text or "").strip().replace(",", ".")
+    try:
+        traffic_gb = max(0.0, float(raw))
+    except ValueError:
+        await msg.answer("عدد معتبر بفرست (مثلاً 50). برای نامحدود ۰.", parse_mode=None)
+        return
+    await state.update_data(traffic_gb=traffic_gb)
+    await state.set_state(EditSubProfile.duration)
+    await msg.answer(
+        "📅 مدت جدید را به روز بفرست (از همین الان محاسبه می‌شود). برای نامحدود ۰ بفرست.",
+        parse_mode=None,
+        reply_markup=flow_cancel_kb(),
+    )
+
+
+@router.message(EditSubProfile.duration)
+async def adm_sub_edit_duration(msg: Message, state: FSMContext):
+    raw = (msg.text or "").strip()
+    try:
+        duration_days = max(0, int(float(raw)))
+    except ValueError:
+        await msg.answer("عدد معتبر بفرست (مثلاً 30). برای نامحدود ۰.", parse_mode=None)
+        return
+    data = await state.get_data()
+    await state.clear()
+    pid = int(data.get("pid") or 0)
+    traffic_gb = float(data.get("traffic_gb") or 0)
+    profile = await get_subscription_profile(pid)
+    if not profile:
+        await msg.answer("❌ ساب پیدا نشد.", parse_mode=None)
+        return
+    expire_ms = int(time.time() * 1000) + duration_days * 86400000 if duration_days > 0 else 0
+    await msg.answer("⏳ در حال اعمال تغییرات روی همهٔ نودها...", parse_mode=None)
+    result = await edit_subscription_profile(profile, profile.get("email") or f"sub_{pid}", traffic_gb, expire_ms, is_active=True)
+    if not result.get("ok"):
+        await msg.answer("❌ ویرایش ناموفق: " + str(result.get("error") or "-"), parse_mode=None)
+        return
+    owner = await get_user_by_id(int(profile.get("user_id") or 0))
+    if owner:
+        gb_txt = "نامحدود" if traffic_gb <= 0 else f"{traffic_gb:g}GB"
+        days_txt = "نامحدود" if duration_days <= 0 else f"{duration_days} روز"
+        try:
+            await msg.bot.send_message(owner["telegram_id"], f"🛠 سرویس شما به‌روزرسانی شد.\nحجم: {gb_txt} | مدت: {days_txt}", parse_mode=None)
+        except Exception:
+            pass
+    sent = await msg.answer("✅ ساب ویرایش شد. در حال بارگذاری پنل...", parse_mode=None)
+    await _render_sub_panel(sent, pid)
 
 
 @router.callback_query(F.data.startswith("adm_sub_send:"))

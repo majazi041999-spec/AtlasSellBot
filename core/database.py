@@ -319,6 +319,9 @@ async def _ensure_columns(db):
             ("max_active_profiles", "INTEGER DEFAULT 0"),
             ("is_active", "INTEGER DEFAULT 1"),
         ],
+        "test_accounts": [
+            ("profile_id", "INTEGER DEFAULT 0"),
+        ],
     }
     for table, cols in migrations.items():
         async with db.execute(f"PRAGMA table_info({table})") as c:
@@ -1062,26 +1065,49 @@ async def save_config(user_id, server_id, uuid, email, inbound_id, traffic_gb, d
 
 
 async def get_user_test_account(user_id: int) -> Optional[Dict]:
+    """Return the user's trial record (if any).
+
+    Trials are subscriptions now (`profile_id`); legacy trials referenced a single
+    `config_id`. Either way we return one row tagged with `kind` so callers can
+    detect 'already used a trial' even if the underlying service was deleted."""
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
-        async with db.execute(
-            """SELECT ta.*, c.email, c.uuid, c.server_id, c.inbound_id, c.traffic_gb,
-                      c.duration_days, c.expire_timestamp, c.is_active
-               FROM test_accounts ta
-               JOIN configs c ON c.id=ta.config_id
-               WHERE ta.user_id=? LIMIT 1""",
-            (user_id,),
-        ) as c:
-            r = await c.fetchone()
-            return dict(r) if r else None
+        async with db.execute("SELECT * FROM test_accounts WHERE user_id=? LIMIT 1", (int(user_id),)) as c:
+            row = await c.fetchone()
+        if not row:
+            return None
+        ta = dict(row)
+        if int(ta.get("profile_id") or 0) > 0:
+            async with db.execute("SELECT * FROM subscription_profiles WHERE id=?", (int(ta["profile_id"]),)) as c:
+                p = await c.fetchone()
+            ta["kind"] = "sub" if p else "gone"
+            if p:
+                ta["profile"] = dict(p)
+            return ta
+        cid = int(ta.get("config_id") or 0)
+        if cid:
+            async with db.execute(
+                """SELECT email, uuid, server_id, inbound_id, traffic_gb,
+                          duration_days, expire_timestamp, is_active
+                   FROM configs WHERE id=?""",
+                (cid,),
+            ) as c:
+                cfg = await c.fetchone()
+            if cfg:
+                ta.update(dict(cfg))
+                ta["kind"] = "config"
+                return ta
+        ta["kind"] = "gone"
+        return ta
 
 
-async def add_user_test_account(user_id: int, config_id: int) -> int:
+async def add_user_test_account(user_id: int, config_id: int = 0, profile_id: int = 0) -> int:
     async with aiosqlite.connect(DB_PATH) as db:
         c = await db.execute(
-            """INSERT INTO test_accounts(user_id,config_id) VALUES(?,?)
-               ON CONFLICT(user_id) DO UPDATE SET config_id=excluded.config_id, created_at=datetime('now','localtime')""",
-            (int(user_id), int(config_id)),
+            """INSERT INTO test_accounts(user_id,config_id,profile_id) VALUES(?,?,?)
+               ON CONFLICT(user_id) DO UPDATE SET config_id=excluded.config_id,
+                   profile_id=excluded.profile_id, created_at=datetime('now','localtime')""",
+            (int(user_id), int(config_id or 0), int(profile_id or 0)),
         )
         await db.commit()
         return c.lastrowid or 0
@@ -1438,6 +1464,34 @@ async def update_subscription_node(nid: int, **kw):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(f"UPDATE subscription_nodes SET {fields} WHERE id=?", (*kw.values(), int(nid)))
         await db.commit()
+
+
+async def delete_subscription_node(nid: int):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("DELETE FROM subscription_nodes WHERE id=?", (int(nid),))
+        await db.commit()
+
+
+async def get_subscription_node_by_uuid(client_uuid: str) -> Optional[Dict]:
+    """Find a subscription node (and its owning profile) by client UUID.
+
+    Used to resolve a pasted config link back to the sub it belongs to."""
+    raw = (client_uuid or "").strip()
+    if not raw:
+        return None
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            """SELECT n.*, p.user_id AS profile_user_id
+               FROM subscription_nodes n
+               JOIN subscription_profiles p ON p.id = n.profile_id
+               WHERE n.uuid = ? COLLATE NOCASE
+               ORDER BY p.is_active DESC, n.id DESC
+               LIMIT 1""",
+            (raw,),
+        ) as c:
+            r = await c.fetchone()
+            return dict(r) if r else None
 
 
 async def delete_subscription_profile(pid: int):

@@ -500,6 +500,21 @@ html[data-theme="dark"] .settings-actions{background:linear-gradient(180deg,rgba
 .theme-toggle .dark-ico{display:none}
 html[data-theme="dark"] .theme-toggle .light-ico{display:none}
 html[data-theme="dark"] .theme-toggle .dark-ico{display:inline}
+
+/* ── responsive hardening ─────────────────────────── */
+img,svg,video,canvas{max-width:100%;height:auto}
+pre,code{white-space:pre-wrap;word-break:break-word;max-width:100%}
+.content{min-width:0;overflow-x:clip}
+/* Dimming backdrop behind the off-canvas sidebar on mobile */
+.sb-backdrop{display:none;position:fixed;inset:0;background:rgba(8,11,20,.5);z-index:150;backdrop-filter:blur(1px)}
+.sb-backdrop.show{display:block}
+@media(min-width:901px){.sb-backdrop{display:none !important}}
+@media(max-width:560px){
+  th,td{padding:8px 9px;font-size:.74rem}
+  .topbar h1{font-size:.86rem}
+  .sec-title{font-size:.92rem}
+  .modal{max-height:92vh}
+}
 </style>
 {% if ui is defined and ui.custom_css %}<style id="custom-ui-css">{{ ui.custom_css|safe }}</style>{% endif %}
 </head>
@@ -559,6 +574,8 @@ html[data-theme="dark"] .theme-toggle .dark-ico{display:inline}
     <a href="/{{ S }}/logout">🚪 خروج از پنل</a>
   </div>
 </aside>
+
+<div class="sb-backdrop" id="sb-backdrop"></div>
 
 <main class="main">
   <div class="topbar">
@@ -620,9 +637,17 @@ function filterTable(inputId, tableId){
 function confirmAction(msg, cb){ if(confirm(msg)) cb(); }
 
 const menuToggle = document.getElementById('menu-toggle');
-if(menuToggle){
-  menuToggle.addEventListener('click', ()=> document.getElementById('sidebar').classList.toggle('open'));
+const sbBackdrop = document.getElementById('sb-backdrop');
+function setSidebar(open){
+  document.getElementById('sidebar').classList.toggle('open', open);
+  if(sbBackdrop) sbBackdrop.classList.toggle('show', open);
 }
+if(menuToggle){
+  menuToggle.addEventListener('click', ()=> setSidebar(!document.getElementById('sidebar').classList.contains('open')));
+}
+if(sbBackdrop){ sbBackdrop.addEventListener('click', ()=> setSidebar(false)); }
+// Tapping a nav link on mobile should close the drawer.
+document.querySelectorAll('.sidebar .nav-item').forEach(a=>a.addEventListener('click', ()=>{ if(window.innerWidth<=900) setSidebar(false); }));
 
 const themeToggle = document.getElementById('theme-toggle');
 if(themeToggle){

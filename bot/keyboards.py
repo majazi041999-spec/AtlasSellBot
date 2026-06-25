@@ -444,12 +444,13 @@ def adm_sub_panel_kb(pid: int, is_active: bool, owner_uid: int = 0) -> InlineKey
     b = InlineKeyboardBuilder()
     _button(b, text="🔴 غیرفعال کردن" if is_active else "🟢 فعال کردن", callback_data=f"adm_sub_toggle:{pid}", style="danger" if is_active else "success")
     _button(b, text="♻️ تمدید (همان پلن)", callback_data=f"adm_sub_renew:{pid}", style="success")
+    _button(b, text="✏️ ویرایش (حجم/مدت)", callback_data=f"adm_sub_edit:{pid}", style="primary")
     _button(b, text="📤 ارسال لینک به کاربر", callback_data=f"adm_sub_send:{pid}", style="primary")
     _button(b, text="✉️ پیام به مالک", callback_data=f"adm_sub_msg:{pid}", style="primary")
     _button(b, text="🗑️ حذف کامل ساب", callback_data=f"adm_sub_del:{pid}", style="danger")
     if owner_uid:
         _button(b, text="🔙 سرویس‌های کاربر", callback_data=f"adm_usr_svcs:{owner_uid}", style="primary")
-    b.adjust(2, 2, 1, 1)
+    b.adjust(2, 1, 2, 1, 1)
     return b.as_markup()
 
 
