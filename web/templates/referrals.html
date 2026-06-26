@@ -3,35 +3,85 @@
 {% block topbar_title %}🎁 سیستم معرفی و هدایا{% endblock %}
 
 {% block content %}
+<style>
+.ref-grid{display:grid;grid-template-columns:1.15fr .85fr;gap:16px;align-items:start;margin-bottom:18px}
+@media(max-width:900px){.ref-grid{grid-template-columns:1fr}}
+.tg-phone{background:linear-gradient(160deg,#0c1320,#101a2e);border:1px solid var(--border);border-radius:18px;padding:16px;min-height:240px}
+.tg-head{display:flex;align-items:center;gap:8px;color:#cdd6e6;font-size:.82rem;font-weight:700;margin-bottom:12px}
+.tg-head .dot{width:26px;height:26px;border-radius:50%;background:linear-gradient(135deg,#7c6fff,#ff6b9d);display:inline-flex;align-items:center;justify-content:center;font-size:.8rem}
+.tg-bubble{background:#17243a;border-radius:14px;border-top-right-radius:4px;max-width:300px;margin-right:auto;overflow:hidden;box-shadow:0 8px 24px rgba(0,0,0,.3)}
+.tg-photo{width:100%;display:block;background:#0e1626;min-height:120px;object-fit:cover}
+.tg-photo-empty{width:100%;min-height:120px;display:flex;align-items:center;justify-content:center;color:#6b7894;font-size:.78rem;background:repeating-linear-gradient(45deg,#13203a,#13203a 12px,#16243f 12px,#16243f 24px)}
+.tg-cap{padding:10px 12px;color:#e8eef9;font-size:.84rem;line-height:1.9;white-space:pre-wrap;word-break:break-word}
+.tg-time{display:block;text-align:left;color:#7b88a3;font-size:.66rem;margin-top:6px}
+.tg-os{display:flex;gap:6px;margin-top:10px;justify-content:center}
+.tg-os button{background:var(--bg3);border:1px solid var(--border);color:var(--txt2);border-radius:20px;padding:3px 12px;font-size:.72rem;cursor:pointer;font-family:inherit}
+.tg-os button.active{background:var(--p);color:#fff;border-color:var(--p)}
+.banner-actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:8px}
+</style>
 
-<div class="card" style="margin-bottom:18px">
-  <div class="sec-hd"><span class="sec-title">⚙️ تنظیمات معرفی</span></div>
-  <form action="/{{ S }}/referrals/settings" method="POST">
-    <div class="form-row">
-      <div class="form-group">
-        <label>وضعیت سیستم معرفی</label>
-        <select name="referral_enabled" class="form-control">
-          <option value="1" {% if s.referral_enabled == '1' %}selected{% endif %}>🟢 فعال</option>
-          <option value="0" {% if s.referral_enabled != '1' %}selected{% endif %}>🔴 غیرفعال</option>
-        </select>
+<div class="ref-grid">
+  <div class="card">
+    <div class="sec-hd"><span class="sec-title">⚙️ تنظیمات معرفی</span></div>
+    <form action="/{{ S }}/referrals/settings" method="POST">
+      <div class="form-row">
+        <div class="form-group">
+          <label>وضعیت سیستم معرفی</label>
+          <select name="referral_enabled" class="form-control">
+            <option value="1" {% if s.referral_enabled == '1' %}selected{% endif %}>🟢 فعال</option>
+            <option value="0" {% if s.referral_enabled != '1' %}selected{% endif %}>🔴 غیرفعال</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>هدیهٔ ثابت هر معرفی موفق (GB) — ۰=غیرفعال</label>
+          <input type="number" step="0.5" min="0" name="referral_per_referral_gb" class="form-control" value="{{ s.referral_per_referral_gb }}">
+        </div>
       </div>
       <div class="form-group">
-        <label>هدیهٔ ثابت هر معرفی موفق (GB) — ۰=غیرفعال</label>
-        <input type="number" step="0.5" min="0" name="referral_per_referral_gb" class="form-control" value="{{ s.referral_per_referral_gb }}">
+        <label>کپشن قابل فوروارد — از <code>{brand}</code> و <code>{link}</code> استفاده کنید</label>
+        <textarea name="referral_caption" id="capInput" class="form-control" rows="5" oninput="renderPreview()">{{ s.referral_caption }}</textarea>
+        <small style="color:var(--txt3)">این متن همراه بنر برای کاربر فرستاده می‌شود تا فوروارد کند.</small>
+      </div>
+      <div style="display:flex;justify-content:flex-end">
+        <button type="submit" class="btn btn-primary">💾 ذخیره تنظیمات</button>
+      </div>
+    </form>
+
+    <hr style="border:none;border-top:1px solid var(--border);margin:16px 0">
+
+    <div class="form-group" style="margin-bottom:6px"><label>🖼 بنر معرفی</label></div>
+    {% if banner_status == 'ok' %}<div class="alert alert-success">بنر در تلگرام ذخیره شد و از سرور پاک شد.</div>
+    {% elif banner_status == 'sendfail' %}<div class="alert alert-danger">آپلود ناموفق بود؛ مطمئن شو ربات را استارت کرده‌ای.</div>
+    {% elif banner_status == 'notoken' %}<div class="alert alert-danger">توکن ربات تنظیم نشده است.</div>{% endif %}
+    <form action="/{{ S }}/referrals/banner" method="POST" enctype="multipart/form-data">
+      <input class="form-control" type="file" name="banner" accept="image/*" required>
+      <div class="banner-actions">
+        <button type="submit" class="btn btn-primary btn-sm">⬆️ آپلود بنر</button>
+        {% if banner_set %}<button type="button" class="btn btn-outline btn-sm" onclick="clearBanner()">🗑 حذف بنر</button>{% endif %}
+        <span style="color:var(--txt3);font-size:.74rem">بعد از آپلود روی سرورهای تلگرام، فایل از سرور ما پاک می‌شود.</span>
+      </div>
+    </form>
+  </div>
+
+  <div class="card">
+    <div class="sec-hd"><span class="sec-title">👁 پیش‌نمایش پیام</span></div>
+    <div class="tg-phone">
+      <div class="tg-head"><span class="dot">✈️</span> {{ brand }}</div>
+      <div class="tg-bubble">
+        {% if banner_set %}
+        <img class="tg-photo" src="/{{ S }}/referrals/banner/preview?ts={{ range(100000)|random }}" alt="banner" onerror="this.style.display='none'">
+        {% else %}
+        <div class="tg-photo-empty">بنری آپلود نشده</div>
+        {% endif %}
+        <div class="tg-cap"><span id="capPreview"></span><span class="tg-time">۲۰:۳۰ ✓✓</span></div>
+      </div>
+      <div class="tg-os">
+        <button type="button" class="active">Android</button>
+        <button type="button">iOS</button>
       </div>
     </div>
-    <div class="form-group">
-      <label>آدرس بنر (URL تصویر) — اختیاری</label>
-      <input type="text" name="referral_banner_url" class="form-control" value="{{ s.referral_banner_url }}" placeholder="https://...">
-    </div>
-    <div class="form-group">
-      <label>کپشن قابل فوروارد — از <code>{brand}</code> و <code>{link}</code> استفاده کنید</label>
-      <textarea name="referral_caption" class="form-control" rows="4">{{ s.referral_caption }}</textarea>
-    </div>
-    <div style="display:flex;justify-content:flex-end">
-      <button type="submit" class="btn btn-primary">💾 ذخیره تنظیمات</button>
-    </div>
-  </form>
+    <small style="color:var(--txt3);display:block;margin-top:8px">دقیقاً همین‌طور برای کاربر ارسال می‌شود (لینک با کد اختصاصی هر کاربر جایگزین می‌شود).</small>
+  </div>
 </div>
 
 <div class="sec-hd">
@@ -139,5 +189,23 @@ function openEdit(id, need, kind, gb, days, unlim, label){
   document.getElementById('editForm').action = `/${S}/referrals/tiers/${id}/edit`;
   openModal('editModal');
 }
+async function clearBanner(){
+  if(!confirm('بنر حذف شود؟')) return;
+  const r = await api(`/${S}/referrals/banner/clear`);
+  if(r.success){ toast('بنر حذف شد','success'); setTimeout(()=>location.reload(),600); } else toast('خطا!','error');
+}
+const BRAND = {{ brand|tojson }};
+const SAMPLE_LINK = "https://t.me/YourBot?start=AB12CD";
+function renderPreview(){
+  const raw = (document.getElementById('capInput')||{}).value || '';
+  const txt = raw.replace(/\{brand\}/g, BRAND).replace(/\{link\}/g, SAMPLE_LINK);
+  const esc = txt.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  document.getElementById('capPreview').innerHTML = esc + '\n';
+}
+document.querySelectorAll('.tg-os button').forEach(b=>b.addEventListener('click',()=>{
+  document.querySelectorAll('.tg-os button').forEach(x=>x.classList.remove('active'));
+  b.classList.add('active');
+}));
+renderPreview();
 </script>
 {% endblock %}

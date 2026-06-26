@@ -94,5 +94,12 @@ async function deleteCfg(id, btn){
     toast('خطا در حذف کانفیگ','error');
   }
 }
+// Deep-link from a user's page: ?q=<email> pre-filters + highlights the row.
+(function(){
+  const q = new URLSearchParams(location.search).get('q');
+  if(!q) return;
+  const el = document.getElementById('cfgSearch');
+  if(el){ el.value = q; filterTable('cfgSearch','cfgTable'); el.scrollIntoView({behavior:'smooth',block:'center'}); }
+})();
 </script>
 {% endblock %}

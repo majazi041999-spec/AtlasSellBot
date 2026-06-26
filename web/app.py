@@ -1644,15 +1644,22 @@ async def referrals_page(request: Request):
     if not _auth(request):
         return _redir_login()
     tiers = await get_referral_tiers(active_only=False)
+    banner_file_id = await get_setting("referral_banner_file_id", "")
+    banner_url = await get_setting("referral_banner_url", "")
     s = {
         "referral_enabled": await get_setting("referral_enabled", "1"),
         "referral_per_referral_gb": await get_setting("referral_per_referral_gb", "5"),
-        "referral_banner_url": await get_setting("referral_banner_url", ""),
+        "referral_banner_url": banner_url,
         "referral_caption": await get_setting("referral_caption", ""),
     }
     return _templates.TemplateResponse(
         "referrals.html",
-        await _ctx_ui(request, tiers=tiers, s=s, active="referrals"),
+        await _ctx_ui(
+            request, tiers=tiers, s=s, active="referrals",
+            brand=await get_setting("ui.brand_name", "Atlas Account"),
+            banner_set=bool((banner_file_id or "").strip() or (banner_url or "").strip()),
+            banner_status=request.query_params.get("banner", ""),
+        ),
     )
 
 
@@ -1729,6 +1736,82 @@ async def referral_tier_delete(request: Request, tid: int):
     if not _auth(request):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     await delete_referral_tier(tid)
+    return JSONResponse({"success": True})
+
+
+@app.post(f"/{S}/referrals/banner")
+async def referral_banner_upload(request: Request, banner: UploadFile = File(...)):
+    """Upload a banner: push it to Telegram once to obtain a reusable file_id,
+    then keep ONLY the file_id (the bytes never touch local disk)."""
+    if not _auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    if not BOT_TOKEN or len(BOT_TOKEN) < 20:
+        return RedirectResponse(f"/{S}/referrals?banner=notoken", status_code=302)
+    data = await banner.read()
+    if not data:
+        return RedirectResponse(f"/{S}/referrals?banner=empty", status_code=302)
+    owner = int(await get_setting("owner_admin_id", "0") or 0)
+    targets = list(dict.fromkeys(([owner] if owner else []) + list(ADMIN_IDS)))
+    bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.MARKDOWN))
+    file_id = ""
+    try:
+        for chat_id in targets:
+            if not chat_id:
+                continue
+            try:
+                m = await bot.send_photo(
+                    chat_id,
+                    BufferedInputFile(data, filename="referral-banner.jpg"),
+                    caption="🖼 بنر معرفی ذخیره شد (این پیام را می‌توانید پاک کنید).",
+                    parse_mode=None,
+                )
+                if m.photo:
+                    file_id = m.photo[-1].file_id
+                    break
+            except Exception as e:
+                logger.warning("banner upload to %s failed: %s", chat_id, e)
+                continue
+    finally:
+        await bot.session.close()
+    if not file_id:
+        return RedirectResponse(f"/{S}/referrals?banner=sendfail", status_code=302)
+    await set_setting("referral_banner_file_id", file_id)
+    await set_setting("referral_banner_url", "")
+    return RedirectResponse(f"/{S}/referrals?banner=ok", status_code=302)
+
+
+@app.get(f"/{S}/referrals/banner/preview")
+async def referral_banner_preview(request: Request):
+    """Stream the saved banner straight from Telegram (no local copy kept)."""
+    if not _auth(request):
+        return _redir_login()
+    fid = (await get_setting("referral_banner_file_id", "")).strip()
+    url = (await get_setting("referral_banner_url", "")).strip()
+    if not fid and url:
+        return RedirectResponse(url, status_code=302)
+    if not fid or not BOT_TOKEN or len(BOT_TOKEN) < 20:
+        return StreamingResponse(iter([b""]), media_type="image/png", status_code=404)
+    bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.MARKDOWN))
+    try:
+        f = await bot.get_file(fid)
+        buf = await bot.download_file(f.file_path)
+        data = buf.read() if hasattr(buf, "read") else bytes(buf)
+    except Exception as e:
+        logger.warning("banner preview fetch failed: %s", e)
+        data = b""
+    finally:
+        await bot.session.close()
+    if not data:
+        return StreamingResponse(iter([b""]), media_type="image/png", status_code=404)
+    return StreamingResponse(iter([data]), media_type="image/jpeg", headers={"Cache-Control": "no-store"})
+
+
+@app.post(f"/{S}/referrals/banner/clear")
+async def referral_banner_clear(request: Request):
+    if not _auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    await set_setting("referral_banner_file_id", "")
+    await set_setting("referral_banner_url", "")
     return JSONResponse({"success": True})
 
 

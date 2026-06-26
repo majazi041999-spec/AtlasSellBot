@@ -515,6 +515,81 @@ pre,code{white-space:pre-wrap;word-break:break-word;max-width:100%}
   .sec-title{font-size:.92rem}
   .modal{max-height:92vh}
 }
+
+/* ════════════════ PREMIUM REFINEMENT LAYER ════════════════ */
+/* Inputs — bigger, rounder, calm borders, clear accent focus ring. */
+.form-control{
+  min-height:44px;border-radius:12px;padding:11px 14px;font-size:.87rem;
+  background:var(--bg3);border:1.5px solid var(--border);color:var(--txt);
+  transition:border-color .16s, box-shadow .16s, background .16s;
+}
+.form-control::placeholder{color:var(--txt3);opacity:.9}
+.form-control:hover{border-color:var(--border2)}
+.form-control:focus{outline:none;border-color:var(--p);box-shadow:0 0 0 4px var(--p3);background:var(--card)}
+select.form-control{
+  appearance:none;-webkit-appearance:none;cursor:pointer;padding-left:40px;
+  background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%2394a3b8' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'><polyline points='6 9 12 15 18 9'/></svg>");
+  background-repeat:no-repeat;background-position:left 13px center;background-size:15px;
+}
+textarea.form-control{min-height:108px;line-height:1.9;resize:vertical}
+input[type=file].form-control{padding:7px 8px;cursor:pointer;display:flex;align-items:center}
+input[type=file].form-control::file-selector-button{
+  margin-left:12px;border:none;border-radius:9px;padding:9px 16px;
+  background:var(--p);color:#fff;font-family:inherit;font-weight:700;font-size:.8rem;cursor:pointer;transition:background .16s;
+}
+input[type=file].form-control::file-selector-button:hover{background:var(--p2)}
+input[type=checkbox]{accent-color:var(--p);width:17px;height:17px;cursor:pointer}
+.form-group label{font-size:.8rem;margin-bottom:7px;color:var(--txt2);font-weight:700;letter-spacing:.01em}
+.form-group small{display:block;margin-top:6px;font-size:.74rem;color:var(--txt3);line-height:1.7}
+
+/* Cards — softer corners, layered shadow, gentle hover lift. */
+.card{border-radius:18px;border:1px solid var(--border);box-shadow:var(--shadow2)}
+.card:hover{transform:translateY(-2px);box-shadow:var(--shadow);border-color:var(--border2)}
+
+/* Stat cards — icon tile + big value + optional trend badge / gradient hero. */
+.stat-card{border-radius:18px;padding:18px 18px 16px;display:flex;flex-direction:column;gap:4px;min-height:0}
+.stat-icon{
+  width:44px;height:44px;border-radius:13px;font-size:1.25rem;margin-bottom:10px;
+  display:inline-flex;align-items:center;justify-content:center;
+  background:linear-gradient(135deg,var(--p),var(--acc));color:#fff;box-shadow:0 10px 22px var(--p3);
+}
+.stat-val{font-size:1.95rem;font-weight:800;letter-spacing:-.01em;line-height:1.05}
+.stat-lbl{font-size:.76rem;color:var(--txt2);font-weight:700}
+.stat-trend{position:absolute;top:16px;left:16px;font-size:.72rem;font-weight:800;padding:3px 9px;border-radius:999px;display:inline-flex;align-items:center;gap:3px}
+.stat-trend.up{background:rgba(16,185,129,.15);color:var(--g)}
+.stat-trend.down{background:rgba(239,68,68,.15);color:var(--r)}
+.stat-card.grad{background:linear-gradient(135deg,var(--p),var(--acc));border:none;color:#fff;box-shadow:0 18px 40px var(--p3)}
+.stat-card.grad .stat-val,.stat-card.grad .stat-lbl{color:#fff}
+.stat-card.grad .stat-lbl{opacity:.92}
+.stat-card.grad .stat-icon{background:rgba(255,255,255,.22);box-shadow:none}
+
+/* Segmented pill toggle (Days / Weeks / Months …) like the references. */
+.seg{display:inline-flex;background:var(--bg3);border:1px solid var(--border);border-radius:999px;padding:3px;gap:2px}
+.seg a,.seg button{padding:6px 15px;border-radius:999px;font-size:.78rem;font-weight:700;color:var(--txt2);border:none;background:none;cursor:pointer;font-family:inherit;transition:all .15s}
+.seg a:hover,.seg button:hover{color:var(--txt)}
+.seg a.active,.seg button.active{background:var(--p);color:#fff;box-shadow:0 6px 16px var(--p3)}
+
+/* Buttons — slightly rounder, primary gets a soft glow. */
+.btn{border-radius:11px;font-weight:700}
+.btn-primary{box-shadow:0 6px 18px var(--p3)}
+.btn-sm{border-radius:9px}.btn-xs{border-radius:8px}
+
+/* Tables — more air, lighter dividers, rounded container. */
+.table-wrap{border-radius:16px}
+th{padding:12px 16px;text-transform:uppercase;letter-spacing:.04em;font-size:.7rem}
+td{padding:12px 16px}
+tbody tr{transition:background .12s}
+
+/* Pretty thin scrollbars everywhere. */
+::-webkit-scrollbar{width:8px;height:8px}
+::-webkit-scrollbar-thumb{background:var(--border2);border-radius:10px;border:2px solid transparent;background-clip:padding-box}
+::-webkit-scrollbar-thumb:hover{background:var(--p);background-clip:padding-box}
+
+/* Small helpers reused across redesigned pages. */
+.muted{color:var(--txt3)}
+.chip{display:inline-flex;align-items:center;gap:5px;padding:4px 10px;border-radius:999px;background:var(--p3);color:var(--p);font-size:.74rem;font-weight:700}
+.link-accent{color:var(--p);font-weight:700}
+.link-accent:hover{text-decoration:underline}
 </style>
 {% if ui is defined and ui.custom_css %}<style id="custom-ui-css">{{ ui.custom_css|safe }}</style>{% endif %}
 </head>

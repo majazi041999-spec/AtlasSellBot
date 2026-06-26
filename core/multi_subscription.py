@@ -284,18 +284,18 @@ def _clean_display_part(value: str, max_len: int = 32) -> str:
 
 
 async def _subscription_node_display_label(profile: Dict, node: Dict, index: int) -> str:
-    brand = _clean_display_part(await get_setting("ui.brand_name", "Atlas Account"), 22)
-    custom_name = _clean_display_part(profile.get("name") or "", 26)
+    custom_name = _clean_display_part(profile.get("name") or "", 30)
     node_name = _clean_display_part(
         node.get("node_label") or node.get("server_name") or f"Node {index}",
         28,
     )
-    # Lead with the user's chosen name so it's the first thing they see in their
-    # app's server list; then the server name so they can tell servers apart.
-    # When there's no custom name, fall back to brand + server.
+    # The remark per server must stay short: lead with the user's chosen name
+    # (so it's the first thing they see in v2rayNG's server list), then the
+    # server name to tell servers apart. The brand never goes here — it lives
+    # only in the dedicated info config so remarks don't get long/cluttered.
     if custom_name:
-        return " | ".join(part for part in (custom_name, node_name) if part)[:90]
-    return " | ".join(part for part in (brand, node_name) if part)[:90]
+        return f"{custom_name} | {node_name}"[:90]
+    return node_name[:90]
 
 
 def _decode_b64_json(value: str) -> Dict | None:
@@ -1583,11 +1583,21 @@ async def run_subscription_lifecycle(bot, limit: int = 300) -> Dict:
                 expired_at = now_ms
                 await update_subscription_profile(pid, expired_at=expired_at, is_active=0)
 
-            # Step 1: ensure the user is informed exactly once.
+            # Step 1: ensure the user is informed exactly once, with a one-tap
+            # "quick renew" button so the user can start renewal immediately.
             if not int(profile.get("expiry_notified") or 0):
                 if telegram_id and notice_tpl.strip():
                     try:
-                        await bot.send_message(telegram_id, _format_lifecycle_template(notice_tpl, values), parse_mode=None)
+                        from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+                        renew_kb = InlineKeyboardMarkup(inline_keyboard=[[
+                            InlineKeyboardButton(text="♻️ تمدید سریع", callback_data=f"sub_renew:{pid}")
+                        ]])
+                        await bot.send_message(
+                            telegram_id,
+                            _format_lifecycle_template(notice_tpl, values),
+                            parse_mode=None,
+                            reply_markup=renew_kb,
+                        )
                         notified += 1
                         await asyncio.sleep(0.1)
                     except Exception:

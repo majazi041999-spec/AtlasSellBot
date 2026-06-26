@@ -4,36 +4,36 @@
 
 {% block content %}
 <div class="stat-grid">
-  <div class="stat-card" style="--glow:rgba(124,111,255,.08)">
-    <span class="stat-icon">👥</span>
-    <div class="stat-val" style="--stat-color:#7c6fff">{{ stats.total_users }}</div>
-    <div class="stat-lbl">کل کاربران</div>
-  </div>
-  <div class="stat-card" style="--glow:rgba(0,229,160,.06)">
-    <span class="stat-icon">🔑</span>
-    <div class="stat-val" style="--stat-color:#00e5a0">{{ stats.active_configs }}</div>
-    <div class="stat-lbl">کانفیگ فعال</div>
-  </div>
-  <div class="stat-card" style="--glow:rgba(61,217,255,.06)">
-    <span class="stat-icon">✅</span>
-    <div class="stat-val" style="--stat-color:#3dd9ff">{{ stats.total_orders }}</div>
-    <div class="stat-lbl">سفارش تأییدشده</div>
-  </div>
-  <div class="stat-card" style="--glow:rgba(255,179,71,.06)">
-    <span class="stat-icon">⏳</span>
-    <div class="stat-val" style="--stat-color:#ffb347">{{ stats.pending_orders }}</div>
-    <div class="stat-lbl">در انتظار بررسی</div>
-  </div>
-  <div class="stat-card" style="--glow:rgba(0,229,160,.06)">
+  <div class="stat-card grad">
     <span class="stat-icon">💰</span>
-    <div class="stat-val" style="--stat-color:#00e5a0;font-size:1.2rem">{{ "{:,}".format(stats.total_revenue) }}</div>
-    <div class="stat-lbl">کل درآمد (تومن)</div>
+    <div class="stat-val" style="font-size:1.5rem">{{ "{:,}".format(stats.total_revenue) }}</div>
+    <div class="stat-lbl">کل درآمد (تومان)</div>
   </div>
   <div class="stat-card">
-    <span class="stat-icon">🖥️</span>
+    <span class="stat-icon" style="background:linear-gradient(135deg,#7c6fff,#a78bfa)">👥</span>
+    <div class="stat-val">{{ stats.total_users }}</div>
+    <div class="stat-lbl">کل کاربران</div>
+  </div>
+  <div class="stat-card">
+    <span class="stat-icon" style="background:linear-gradient(135deg,#10b981,#34d399)">🔑</span>
+    <div class="stat-val">{{ stats.active_configs }}</div>
+    <div class="stat-lbl">کانفیگ فعال</div>
+  </div>
+  <div class="stat-card">
+    <span class="stat-icon" style="background:linear-gradient(135deg,#0891b2,#22d3ee)">✅</span>
+    <div class="stat-val">{{ stats.total_orders }}</div>
+    <div class="stat-lbl">سفارش تأییدشده</div>
+  </div>
+  <a class="stat-card" href="/{{ S }}/orders" style="text-decoration:none">
+    <span class="stat-icon" style="background:linear-gradient(135deg,#f59e0b,#fbbf24)">⏳</span>
+    <div class="stat-val">{{ stats.pending_orders }}</div>
+    <div class="stat-lbl">در انتظار بررسی</div>
+  </a>
+  <a class="stat-card" href="/{{ S }}/servers" style="text-decoration:none">
+    <span class="stat-icon" style="background:linear-gradient(135deg,#ef4444,#fb7185)">🖥️</span>
     <div class="stat-val">{{ stats.active_servers }}<span style="font-size:.9rem;color:var(--txt3)">/{{ stats.total_servers }}</span></div>
     <div class="stat-lbl">سرورهای فعال</div>
-  </div>
+  </a>
 </div>
 
 <div class="card" style="margin:18px 0 24px 0">

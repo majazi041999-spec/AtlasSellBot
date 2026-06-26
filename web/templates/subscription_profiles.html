@@ -148,5 +148,12 @@ async function deleteSub(id){
   if(r.success){ toast(`حذف شد | نود موفق: ${r.deleted || 0} | خطا: ${r.failed || 0}`,'success'); setTimeout(()=>location.reload(),900); }
   else toast('خطا در حذف ساب','error');
 }
+// Deep-link from a user's page: ?q=<email> pre-filters the table.
+(function(){
+  const q = new URLSearchParams(location.search).get('q');
+  if(!q) return;
+  const el = document.getElementById('subSearch');
+  if(el){ el.value = q; filterTable('subSearch','subTable'); el.scrollIntoView({behavior:'smooth',block:'center'}); }
+})();
 </script>
 {% endblock %}
