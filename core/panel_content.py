@@ -74,6 +74,16 @@ SETTINGS_DEFAULTS: Dict[str, str] = {
     "test_account_duration_days": "1",
     "test_account_server_id": "0",
     "test_account_prefix": "test",
+    "sub_prewarn_enabled": "1",
+    "sub_prewarn_days": "3",
+    "sub_prewarn_percent": "15",
+    "sub_prewarn_template": (
+        "⏳ سرویس شما رو به اتمام است.\n\n"
+        "سرویس: {service}\n"
+        "حجم باقی‌مانده: {remaining} از {total}\n"
+        "زمان باقی‌مانده: حدود {days_left} روز\n\n"
+        "برای جلوگیری از قطعی، همین حالا تمدید کنید 👇"
+    ),
     "discount_enabled": "1",
     "referral_enabled": "1",
     "referral_per_referral_gb": "5",

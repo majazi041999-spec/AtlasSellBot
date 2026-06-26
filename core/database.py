@@ -205,6 +205,7 @@ CREATE TABLE IF NOT EXISTS subscription_profiles (
     used_bytes INTEGER DEFAULT 0,
     expired_at INTEGER DEFAULT 0,
     expiry_notified INTEGER DEFAULT 0,
+    prewarn_sent INTEGER DEFAULT 0,
     starts_on_first_use INTEGER DEFAULT 0,
     first_use_at INTEGER DEFAULT 0,
     created_at TEXT DEFAULT (datetime('now','localtime')),
@@ -367,6 +368,7 @@ async def _ensure_columns(db):
             ("name", "TEXT DEFAULT ''"),
             ("starts_on_first_use", "INTEGER DEFAULT 0"),
             ("first_use_at", "INTEGER DEFAULT 0"),
+            ("prewarn_sent", "INTEGER DEFAULT 0"),
         ],
         "subscription_node_configs": [
             ("label", "TEXT DEFAULT ''"),
@@ -1741,6 +1743,31 @@ async def get_expired_subscription_profiles(now_ms: int, limit: int = 300) -> Li
                ORDER BY sp.id
                LIMIT ?""",
             (int(now_ms), max(1, int(limit or 300))),
+        ) as c:
+            return [dict(r) for r in await c.fetchall()]
+
+
+async def get_subscription_profiles_for_prewarn(now_ms: int, within_ms: int, used_fraction: float, limit: int = 300) -> List[Dict]:
+    """Active profiles that are *about to* end (not yet ended), not warned yet.
+
+    Triggers when expiry is within `within_ms`, OR usage has crossed
+    `used_fraction` of the quota (e.g. 0.85 = 85% used / 15% left)."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            """SELECT sp.*, u.telegram_id, u.full_name
+               FROM subscription_profiles sp
+               JOIN users u ON u.id = sp.user_id
+               WHERE sp.is_active = 1 AND COALESCE(sp.prewarn_sent,0) = 0
+                 AND (sp.expire_timestamp = 0 OR sp.expire_timestamp > ?)
+                 AND (sp.traffic_gb <= 0 OR sp.used_bytes < sp.traffic_gb * 1073741824)
+                 AND (
+                       (sp.expire_timestamp > 0 AND sp.expire_timestamp <= ?)
+                    OR (sp.traffic_gb > 0 AND sp.used_bytes >= sp.traffic_gb * 1073741824 * ?)
+                 )
+               ORDER BY sp.id
+               LIMIT ?""",
+            (int(now_ms), int(now_ms + within_ms), float(used_fraction), max(1, int(limit or 300))),
         ) as c:
             return [dict(r) for r in await c.fetchall()]
 

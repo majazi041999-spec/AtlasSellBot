@@ -461,11 +461,14 @@ async def _server_backup_worker(bot):
 async def _subscription_lifecycle_worker(bot):
     """Notify users about ended subscriptions and delete them after the grace period."""
     from core.database import get_setting
-    from core.multi_subscription import run_subscription_lifecycle
+    from core.multi_subscription import run_subscription_lifecycle, run_subscription_expiry_warnings
 
     await asyncio.sleep(60)
     while True:
         try:
+            # Warn BEFORE the service ends (with a quick-renew button), then
+            # handle the ones that already ended.
+            await run_subscription_expiry_warnings(bot)
             await run_subscription_lifecycle(bot)
         except Exception as e:
             logger.exception("subscription lifecycle worker failed: %s", e)

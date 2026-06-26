@@ -8,8 +8,8 @@
 <link href="https://fonts.googleapis.com/css2?family=Vazirmatn:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
 <script>
 (function(){
-  const saved = localStorage.getItem('atlas-theme') || 'light';
-  document.documentElement.dataset.theme = saved === 'dark' ? 'dark' : 'light';
+  const saved = localStorage.getItem('atlas-theme') || 'dark';
+  document.documentElement.dataset.theme = saved === 'light' ? 'light' : 'dark';
 })();
 </script>
 <style>
@@ -590,6 +590,76 @@ tbody tr{transition:background .12s}
 .chip{display:inline-flex;align-items:center;gap:5px;padding:4px 10px;border-radius:999px;background:var(--p3);color:var(--p);font-size:.74rem;font-weight:700}
 .link-accent{color:var(--p);font-weight:700}
 .link-accent:hover{text-decoration:underline}
+
+/* ════════════════ GLASSMORPHISM (per reference dashboards) ════════════════ */
+/* Vibrant ambient light behind the translucent UI — this is what makes the
+   frosted glass read as glass. */
+body::after{
+  content:"";position:fixed;inset:-15% -10% auto -10%;height:90vh;z-index:-1;pointer-events:none;
+  background:
+    radial-gradient(38% 50% at 16% 8%, rgba(124,111,255,.45), transparent 70%),
+    radial-gradient(34% 46% at 88% 6%, rgba(244,63,94,.34), transparent 72%),
+    radial-gradient(42% 52% at 72% 82%, rgba(34,211,238,.30), transparent 74%);
+  filter:saturate(135%);
+}
+/* Frost every surface. */
+.sidebar,.topbar,.card,.stat-card,.settings-card,.sub-card,.node-row,.table-wrap,.modal,.toast,.profile-stat,.backup-card,.backup-hero,.detail-section{
+  backdrop-filter:blur(22px) saturate(150%);
+  -webkit-backdrop-filter:blur(22px) saturate(150%);
+}
+.card,.stat-card{border-radius:20px}
+
+/* ── Light glass ── */
+.card,.settings-card,.sub-card,.node-row,.profile-stat,.backup-card,.detail-section{
+  background:rgba(255,255,255,.66);border:1px solid rgba(255,255,255,.75);box-shadow:0 16px 40px rgba(31,38,75,.10)}
+.stat-card{background:rgba(255,255,255,.60);border:1px solid rgba(255,255,255,.7)}
+.table-wrap{background:rgba(255,255,255,.72);border:1px solid rgba(255,255,255,.7)}
+.sidebar{background:rgba(255,255,255,.62);border-left:1px solid rgba(255,255,255,.6)}
+.topbar{background:rgba(255,255,255,.6);border:1px solid rgba(255,255,255,.6)}
+th{background:rgba(248,250,252,.7)}
+.modal{background:rgba(255,255,255,.86)}
+
+/* ── Dark glass (the showcase look) ── */
+html[data-theme="dark"] body{
+  background:
+    radial-gradient(circle at 50% -10%, #1a1f3a, transparent 60%),
+    linear-gradient(180deg,#080a12,#0a0d18);
+}
+html[data-theme="dark"] body::after{
+  background:
+    radial-gradient(36% 48% at 14% 6%, rgba(139,92,246,.50), transparent 70%),
+    radial-gradient(32% 44% at 90% 4%, rgba(251,113,133,.34), transparent 72%),
+    radial-gradient(42% 52% at 74% 86%, rgba(34,211,238,.30), transparent 74%);
+}
+html[data-theme="dark"] .card,
+html[data-theme="dark"] .settings-card,
+html[data-theme="dark"] .sub-card,
+html[data-theme="dark"] .node-row,
+html[data-theme="dark"] .profile-stat,
+html[data-theme="dark"] .backup-card,
+html[data-theme="dark"] .detail-section,
+html[data-theme="dark"] .stat-card{
+  background:rgba(255,255,255,.055);border:1px solid rgba(255,255,255,.10);box-shadow:0 20px 50px rgba(0,0,0,.40)}
+html[data-theme="dark"] .table-wrap{background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.09)}
+html[data-theme="dark"] .sidebar{background:rgba(13,16,28,.62);border-left:1px solid rgba(255,255,255,.07)}
+html[data-theme="dark"] .topbar{background:rgba(17,22,38,.55);border:1px solid rgba(255,255,255,.08)}
+html[data-theme="dark"] th{background:rgba(255,255,255,.04)}
+html[data-theme="dark"] td{border-color:rgba(255,255,255,.06)}
+html[data-theme="dark"] .modal{background:rgba(20,26,44,.92)}
+html[data-theme="dark"] .form-control{background:rgba(255,255,255,.05);border-color:rgba(255,255,255,.12);color:var(--txt)}
+html[data-theme="dark"] .form-control:focus{background:rgba(255,255,255,.08)}
+html[data-theme="dark"] select.form-control option{background:#141a2c}
+html[data-theme="dark"] .nav-item.active{background:linear-gradient(135deg,var(--p),var(--acc));color:#fff;border-color:transparent;box-shadow:0 12px 28px var(--p3)}
+html[data-theme="dark"] .nav-item.active .ni{background:rgba(255,255,255,.2)}
+html[data-theme="dark"] .btn-primary{background:linear-gradient(135deg,var(--p),var(--acc));color:#fff}
+
+/* Sidebar brand + active polish for both themes. */
+.nav-item{border-radius:12px}
+.card:hover{box-shadow:0 22px 54px rgba(31,38,75,.16)}
+html[data-theme="dark"] .card:hover{box-shadow:0 26px 60px rgba(0,0,0,.5)}
+@media(max-width:560px){
+  .sidebar,.topbar,.card,.stat-card{backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px)}
+}
 </style>
 {% if ui is defined and ui.custom_css %}<style id="custom-ui-css">{{ ui.custom_css|safe }}</style>{% endif %}
 </head>
