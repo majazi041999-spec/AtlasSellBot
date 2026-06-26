@@ -58,6 +58,9 @@
               data-active="{{ 1 if p.is_active else 0 }}"
               onclick="openEditSubFromButton(this)">ویرایش</button>
       <button class="btn btn-xs btn-outline" onclick="toggleSub({{ p.id }})">{{ 'غیرفعال' if p.is_active else 'فعال' }}</button>
+      <button class="btn btn-xs btn-outline" title="صفر کردن حجم مصرفی" onclick="resetUsage({{ p.id }})">🔄 ریست حجم</button>
+      <button class="btn btn-xs btn-outline" title="شروع دوبارهٔ زمان از الان" onclick="resetTime({{ p.id }})">⏱ ریست زمان</button>
+      <button class="btn btn-xs btn-warn" title="بازگردانی کامل به حالت اولیه (همهٔ سرورها)" onclick="rebuildSub({{ p.id }})">♻️ ریست کامل</button>
       <button class="btn btn-xs btn-danger" onclick="deleteSub({{ p.id }})">حذف</button>
     </td>
   </tr>
@@ -147,6 +150,25 @@ async function deleteSub(id){
   const r = await api(`/${S}/subs/profiles/${id}/delete`);
   if(r.success){ toast(`حذف شد | نود موفق: ${r.deleted || 0} | خطا: ${r.failed || 0}`,'success'); setTimeout(()=>location.reload(),900); }
   else toast('خطا در حذف ساب','error');
+}
+async function resetUsage(id){
+  if(!confirm('حجم مصرفی این سرویس صفر شود؟')) return;
+  const r = await api(`/${S}/subs/profiles/${id}/reset-usage`);
+  if(r.success){ toast('حجم مصرفی صفر شد','success'); setTimeout(()=>location.reload(),800); }
+  else toast('خطا در ریست حجم','error');
+}
+async function resetTime(id){
+  if(!confirm('زمان سرویس از همین الان دوباره شروع شود؟')) return;
+  const r = await api(`/${S}/subs/profiles/${id}/reset-time`);
+  if(r.success){ toast('زمان سرویس ریست شد','success'); setTimeout(()=>location.reload(),800); }
+  else toast('خطا در ریست زمان','error');
+}
+async function rebuildSub(id){
+  if(!confirm('سرویس به حالت اولیه برگردد؟ همهٔ سرورها دوباره ساخته/فعال، زمان از نو و حجم مصرفی صفر می‌شود.')) return;
+  toast('در حال بازسازی روی همهٔ سرورها...','info');
+  const r = await api(`/${S}/subs/profiles/${id}/rebuild`);
+  if(r.success){ toast('سرویس کامل بازسازی شد','success'); setTimeout(()=>location.reload(),1000); }
+  else toast('خطا در بازسازی','error');
 }
 // Deep-link from a user's page: ?q=<email> pre-filters the table.
 (function(){

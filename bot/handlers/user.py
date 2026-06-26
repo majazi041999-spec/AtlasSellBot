@@ -2328,9 +2328,7 @@ async def referral_menu(msg: Message):
         info += "_جایزه پس از رسیدن به هر پله و تأیید پشتیبانی، به کیف پولت اضافه می‌شود._\n"
 
     info += f"\n🔗 *لینک اختصاصی شما:*\n`{ref_link}`\n\n👇 با یک کلیک برای دوستانت بفرست:"
-    await msg.answer(info, parse_mode="Markdown")
 
-    # The forwardable banner + caption (customizable from the panel) + 1-tap share.
     caption_tpl = await get_setting(
         "referral_caption",
         "🎁 با لینک اختصاصی من به {brand} بپیوند!\n\n👇 برای شروع:\n{link}",
@@ -2342,18 +2340,25 @@ async def referral_menu(msg: Message):
         share_text = f"{caption_tpl}\n{ref_link}"
         caption_no_link = caption_tpl
 
+    # Convenience share buttons on the MENU message (not forwarded).
     share_kb = InlineKeyboardMarkup(inline_keyboard=[[
         InlineKeyboardButton(text="📤 ارسال در تلگرام", url=f"https://t.me/share/url?url={quote(ref_link, safe='')}&text={quote(caption_no_link, safe='')}"),
         InlineKeyboardButton(text="🟢 ارسال در واتساپ", url=f"https://wa.me/?text={quote(share_text, safe='')}"),
     ]])
+    await msg.answer(info, parse_mode="Markdown", reply_markup=share_kb)
+
+    # The forwardable banner + caption carries a catchy start-bot CTA button that
+    # travels WITH the message when the user forwards it to friends.
+    cta_text = (await get_setting("referral_cta_text", "🚀 شروع و دریافت تست رایگان")).strip() or "🚀 شروع رایگان"
+    cta_kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=cta_text, url=ref_link)]])
     banner = (await get_setting("referral_banner_file_id", "")).strip() or (await get_setting("referral_banner_url", "")).strip()
     if banner:
         try:
-            await msg.answer_photo(banner, caption=share_text, parse_mode=None, reply_markup=share_kb)
+            await msg.answer_photo(banner, caption=share_text, parse_mode=None, reply_markup=cta_kb)
             return
         except Exception:
             pass
-    await msg.answer(share_text, parse_mode=None, reply_markup=share_kb)
+    await msg.answer(share_text, parse_mode=None, reply_markup=cta_kb)
 
 
 # ─── SUPPORT ─────────────────────────────────────────────────────

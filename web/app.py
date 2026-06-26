@@ -145,6 +145,9 @@ from core.multi_subscription import (
     subscription_url,
     delete_subscription_profile_remote,
     edit_subscription_profile,
+    reset_subscription_usage,
+    reset_subscription_time,
+    rebuild_subscription_profile,
     sync_subscription_nodes_for_all,
     sync_subscription_nodes_streamed,
 )
@@ -1249,8 +1252,15 @@ async def subscription_profile_toggle(request: Request, profile_id: int):
     if not profile:
         return JSONResponse({"success": False, "error": "not found"}, status_code=404)
     from core.database import update_subscription_profile
+    from core.multi_subscription import set_nodes_enabled
     next_active = 0 if int(profile.get("is_active") or 0) else 1
     await update_subscription_profile(profile_id, is_active=next_active)
+    # Actually enable/disable every server (re-creating any client that was
+    # removed after expiry) — not just flip the DB flag.
+    try:
+        await set_nodes_enabled(profile_id, bool(next_active))
+    except Exception as e:
+        logger.warning("toggle set_nodes_enabled failed pid=%s: %s", profile_id, e)
     return JSONResponse({"success": True, "is_active": bool(next_active)})
 
 
@@ -1282,6 +1292,30 @@ async def subscription_profile_edit(
     if not result.get("ok"):
         return RedirectResponse(f"/{S}/subs/profiles?saved=edit_error", status_code=302)
     return RedirectResponse(f"/{S}/subs/profiles?saved=edited", status_code=302)
+
+
+@app.post(f"/{S}/subs/profiles/{{profile_id}}/reset-usage")
+async def subscription_profile_reset_usage(request: Request, profile_id: int):
+    if not _auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    res = await reset_subscription_usage(profile_id)
+    return JSONResponse({"success": bool(res.get("ok")), **res})
+
+
+@app.post(f"/{S}/subs/profiles/{{profile_id}}/reset-time")
+async def subscription_profile_reset_time(request: Request, profile_id: int):
+    if not _auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    res = await reset_subscription_time(profile_id)
+    return JSONResponse({"success": bool(res.get("ok")), **res})
+
+
+@app.post(f"/{S}/subs/profiles/{{profile_id}}/rebuild")
+async def subscription_profile_rebuild(request: Request, profile_id: int):
+    if not _auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    res = await rebuild_subscription_profile(profile_id)
+    return JSONResponse({"success": bool(res.get("ok")), **res})
 
 
 @app.post(f"/{S}/subs/profiles/{{profile_id}}/delete")

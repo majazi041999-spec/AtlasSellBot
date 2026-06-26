@@ -1183,32 +1183,60 @@ async def sync_profile_usage(profile: Dict) -> Dict:
 
 
 async def set_nodes_enabled(profile_id: int, enabled: bool):
+    """Enable/disable EVERY node of a profile on the panels — robustly.
+
+    The hard cases this must get right:
+      * Re-enable after expiry: the remote client was usually deleted on most
+        servers, so a plain updateClient fails and only the few survivors come
+        back. We RE-CREATE the missing client so ALL servers reactivate.
+      * Disable: we must never leave a node marked active in our DB even if the
+        remote write fails, and we try hard (identity re-resolve) to actually
+        disable the remote client so a finished sub can't keep working.
+    """
     nodes = await get_subscription_nodes(profile_id)
-    profile = None
+    from core.database import get_subscription_profile
+    profile = await get_subscription_profile(profile_id)
+    traffic_gb = float(profile.get("traffic_gb") or 0) if profile else 0
+    expire_ms = int(profile.get("expire_timestamp") or 0) if profile else 0
+    now_ms = int(time.time() * 1000)
+    duration_days = _days_remaining(expire_ms, now_ms) if expire_ms > 0 else 0
+
     for node in nodes:
         cli = XUIClient(node["server_url"], node["srv_user"], node["srv_pass"], node.get("sub_path") or "", node.get("srv_api_token", ""))
         try:
-            traffic_gb = 1
-            expire_ms = 0
-            if profile is None:
-                from core.database import get_subscription_profile
-                profile = await get_subscription_profile(profile_id)
-            if profile:
-                traffic_gb = float(profile.get("traffic_gb") or 0)
-                expire_ms = int(profile.get("expire_timestamp") or 0)
-            ok = await cli.update_client(node["inbound_id"], node["uuid"], node["email"], traffic_gb, expire_ms, bool(enabled))
+            inbound_id = int(node.get("inbound_id") or 1)
+            node_uuid = node.get("uuid") or ""
+            node_email = node.get("email") or ""
+            ok = await cli.update_client(inbound_id, node_uuid, node_email, traffic_gb, expire_ms, bool(enabled))
+            if not ok:
+                # Identity drift: cached uuid/inbound may be stale → re-resolve.
+                r_in, r_uuid, _ = await _remote_identity_and_link(cli, inbound_id, node_email, node_uuid)
+                if r_uuid:
+                    inbound_id, node_uuid = (r_in or inbound_id), r_uuid
+                    ok = await cli.update_client(inbound_id, node_uuid, node_email, traffic_gb, expire_ms, bool(enabled))
             if enabled:
-                # Only mark active when the panel actually accepted the enable.
+                if not ok:
+                    # Client is genuinely gone → re-create so this server comes back.
+                    new_uuid = node_uuid or str(uuid.uuid4())
+                    added = await cli.add_client(inbound_id, new_uuid, node_email, traffic_gb, duration_days, starts_on_first_use=False)
+                    if added:
+                        node_uuid = new_uuid
+                        if expire_ms > 0:
+                            await cli.update_client(inbound_id, node_uuid, node_email, traffic_gb, expire_ms, True)
+                        ok = True
                 if ok:
-                    await update_subscription_node(node["id"], is_active=1)
+                    r_in, r_uuid, link = await _remote_identity_and_link(cli, inbound_id, node_email, node_uuid)
+                    upd = {"is_active": 1, "inbound_id": r_in or inbound_id, "uuid": r_uuid or node_uuid}
+                    if _subscription_link_is_complete(link):
+                        upd["link"] = link
+                    await update_subscription_node(node["id"], **upd)
+                else:
+                    logger.warning("set_nodes_enabled: could not re-enable node id=%s profile=%s", node.get("id"), profile_id)
             else:
-                # When disabling we must NEVER leave a node marked active in our
-                # DB even if the remote write failed (server down, identity drift,
-                # …); otherwise render keeps serving it and a "finished" sub still
-                # shows live servers. The panel's own traffic/expiry caps remain
-                # the safety net for the remote side.
+                # Disable: always drop the DB flag (render must stop serving it).
                 await update_subscription_node(node["id"], is_active=0)
-        except Exception:
+        except Exception as e:
+            logger.warning("set_nodes_enabled node id=%s failed: %s", node.get("id"), e)
             if not enabled:
                 try:
                     await update_subscription_node(node["id"], is_active=0)
@@ -1343,6 +1371,16 @@ async def edit_subscription_profile(profile: Dict, email: str, traffic_gb: float
                 bool(is_active),
                 new_email=new_node_email,
             )
+            if not ok and is_active:
+                # Client was removed on this server (typical after expiry) →
+                # re-create it so reactivation restores EVERY server, not just
+                # the few whose client happened to survive.
+                new_uuid = node.get("uuid") or str(uuid.uuid4())
+                duration = _days_remaining(int(expire_ms or 0), int(time.time() * 1000)) if int(expire_ms or 0) > 0 else 0
+                added = await cli.add_client(node["inbound_id"], new_uuid, new_node_email, traffic_gb, duration, starts_on_first_use=False)
+                if added and int(expire_ms or 0) > 0:
+                    await cli.update_client(node["inbound_id"], new_uuid, new_node_email, traffic_gb, int(expire_ms or 0), True)
+                ok = added
             if ok:
                 inbound_id, client_uuid, link = await _remote_identity_and_link(
                     cli,
@@ -1373,7 +1411,7 @@ async def edit_subscription_profile(profile: Dict, email: str, traffic_gb: float
     duration_days = int((int(expire_ms or 0) - now_ms + 86399999) // 86400000) if int(expire_ms or 0) > 0 else 0
     reset_lifecycle = {}
     if is_active:
-        reset_lifecycle = {"expired_at": 0, "expiry_notified": 0}
+        reset_lifecycle = {"expired_at": 0, "expiry_notified": 0, "prewarn_sent": 0}
     await update_subscription_profile(
         profile["id"],
         email=email,
@@ -1384,6 +1422,68 @@ async def edit_subscription_profile(profile: Dict, email: str, traffic_gb: float
         **reset_lifecycle,
     )
     return {"ok": True, "nodes": ok_count, "expire_ms": int(expire_ms or 0)}
+
+
+async def reset_subscription_usage(profile_id: int) -> Dict:
+    """Admin: zero the consumed volume (reset traffic counter) on every server."""
+    profile = await get_subscription_profile(profile_id)
+    if not profile:
+        return {"ok": False, "error": "not_found"}
+    nodes = await get_subscription_nodes(profile_id)
+    done = 0
+    for node in nodes:
+        cli = XUIClient(node["server_url"], node["srv_user"], node["srv_pass"], node.get("sub_path") or "", node.get("srv_api_token", ""))
+        try:
+            if await cli.reset_client_traffic(int(node.get("inbound_id") or 0), node.get("email") or ""):
+                done += 1
+            await update_subscription_node(node["id"], last_used_bytes=0)
+        except Exception:
+            pass
+        finally:
+            await cli.close()
+    await update_subscription_profile(profile_id, used_bytes=0, is_active=1, expired_at=0, expiry_notified=0, prewarn_sent=0)
+    await set_nodes_enabled(profile_id, True)
+    return {"ok": True, "nodes": done}
+
+
+async def reset_subscription_time(profile_id: int) -> Dict:
+    """Admin: re-arm the timer — a fresh full duration counted from now."""
+    profile = await get_subscription_profile(profile_id)
+    if not profile:
+        return {"ok": False, "error": "not_found"}
+    duration = int(profile.get("duration_days") or 0)
+    now_ms = int(time.time() * 1000)
+    new_expire = now_ms + duration * 86400000 if duration > 0 else 0
+    traffic_gb = float(profile.get("traffic_gb") or 0)
+    for node in await get_subscription_nodes(profile_id):
+        cli = XUIClient(node["server_url"], node["srv_user"], node["srv_pass"], node.get("sub_path") or "", node.get("srv_api_token", ""))
+        try:
+            await cli.update_client(int(node.get("inbound_id") or 0), node.get("uuid") or "", node.get("email") or "", traffic_gb, new_expire, True)
+        except Exception:
+            pass
+        finally:
+            await cli.close()
+    await update_subscription_profile(
+        profile_id, expire_timestamp=new_expire, is_active=1,
+        expired_at=0, expiry_notified=0, prewarn_sent=0,
+        starts_on_first_use=0, first_use_at=now_ms,
+    )
+    await set_nodes_enabled(profile_id, True)
+    return {"ok": True, "expire_ms": new_expire}
+
+
+async def rebuild_subscription_profile(profile_id: int) -> Dict:
+    """Admin: return a sub to a clean working state — re-create/enable every
+    server (even ones deleted after expiry), re-arm the timer and zero usage."""
+    await reset_subscription_time(profile_id)
+    await reset_subscription_usage(profile_id)
+    profile = await get_subscription_profile(profile_id)
+    if profile and int(profile.get("is_active") or 0):
+        try:
+            await ensure_subscription_profile_nodes(profile, force_refresh=True)
+        except Exception as e:
+            logger.warning("rebuild ensure failed pid=%s: %s", profile_id, e)
+    return {"ok": True}
 
 
 async def delete_subscription_profile_remote(profile_id: int) -> Dict:

@@ -88,6 +88,7 @@ SETTINGS_DEFAULTS: Dict[str, str] = {
     "referral_enabled": "1",
     "referral_per_referral_amount": "0",
     "referral_per_referral_gb": "0",
+    "referral_cta_text": "🚀 شروع و دریافت تست رایگان",
     "referral_reminder_enabled": "1",
     "referral_reminder_code": "",
     "referral_reminder_template": (
