@@ -271,8 +271,9 @@ CREATE TABLE IF NOT EXISTS discount_redemptions (
 CREATE TABLE IF NOT EXISTS referral_tiers (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     referrals_needed INTEGER NOT NULL,
-    reward_kind TEXT DEFAULT 'gb',        -- 'gb' | 'service'
-    reward_gb REAL DEFAULT 0,             -- for 'gb', or service traffic for 'service'
+    reward_kind TEXT DEFAULT 'wallet',    -- 'wallet' | 'service' | 'gb' (legacy)
+    reward_amount INTEGER DEFAULT 0,      -- toman credited to wallet (for 'wallet')
+    reward_gb REAL DEFAULT 0,             -- service traffic ('service') or legacy 'gb'
     duration_days INTEGER DEFAULT 0,      -- for 'service'
     is_unlimited INTEGER DEFAULT 0,       -- service with unlimited volume
     label TEXT DEFAULT '',
@@ -329,6 +330,7 @@ async def _ensure_columns(db):
             ("wholesale_request_pending", "INTEGER DEFAULT 0"),
             ("admin_role", "TEXT DEFAULT 'none'"),
             ("balance_toman", "INTEGER DEFAULT 0"),
+            ("referral_reminder_sent", "INTEGER DEFAULT 0"),
         ],
         "configs": [
             ("starts_on_first_use", "INTEGER DEFAULT 0"),
@@ -378,6 +380,9 @@ async def _ensure_columns(db):
         ],
         "test_accounts": [
             ("profile_id", "INTEGER DEFAULT 0"),
+        ],
+        "referral_tiers": [
+            ("reward_amount", "INTEGER DEFAULT 0"),
         ],
     }
     for table, cols in migrations.items():
@@ -918,6 +923,56 @@ async def count_converted_referrals(user_id: int) -> int:
             return int((await c.fetchone())[0] or 0)
 
 
+async def get_referral_invitees(user_id: int, limit: int = 50) -> List[Dict]:
+    """The people this user invited + whether each has bought yet (transparency)."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            """SELECT u.full_name, u.username, u.created_at,
+                      EXISTS(SELECT 1 FROM orders o WHERE o.user_id=u.id AND o.status='approved') AS bought
+               FROM users u WHERE u.referred_by=?
+               ORDER BY u.id DESC LIMIT ?""",
+            (int(user_id), max(1, int(limit or 50))),
+        ) as c:
+            return [dict(r) for r in await c.fetchall()]
+
+
+async def get_referral_earned_total(user_id: int) -> int:
+    """Total toman this user has earned into their wallet from referrals."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT COALESCE(SUM(amount),0) FROM wallet_transactions WHERE user_id=? AND kind='referral' AND amount>0",
+            (int(user_id),),
+        ) as c:
+            return int((await c.fetchone())[0] or 0)
+
+
+async def get_pending_referral_reminders(before_dt: str, limit: int = 200) -> List[Dict]:
+    """Invited users who joined before `before_dt` (e.g. 24h ago), haven't bought,
+    and whose inviter hasn't been reminded yet. Returns the inviter's chat id +
+    code so we can nudge the inviter to send a discount to that friend."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            """SELECT u.id AS invitee_id, u.full_name AS invitee_name, u.username AS invitee_username,
+                      ref.telegram_id AS referrer_tid, ref.referral_code AS referrer_code
+               FROM users u JOIN users ref ON ref.id = u.referred_by
+               WHERE COALESCE(u.referred_by,0) > 0
+                 AND COALESCE(u.referral_reminder_sent,0) = 0
+                 AND u.created_at <= ?
+                 AND NOT EXISTS(SELECT 1 FROM orders o WHERE o.user_id=u.id AND o.status='approved')
+               ORDER BY u.id LIMIT ?""",
+            (str(before_dt), max(1, int(limit or 200))),
+        ) as c:
+            return [dict(r) for r in await c.fetchall()]
+
+
+async def mark_referral_reminder_sent(invitee_id: int):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE users SET referral_reminder_sent=1 WHERE id=?", (int(invitee_id),))
+        await db.commit()
+
+
 # ══════════════════ DISCOUNT CODES ══════════════════
 
 async def get_discount_codes() -> List[Dict]:
@@ -1065,13 +1120,15 @@ async def get_referral_tier(tid: int) -> Optional[Dict]:
 
 
 async def add_referral_tier(referrals_needed: int, reward_kind: str, reward_gb: float = 0,
-                            duration_days: int = 0, is_unlimited: int = 0, label: str = "") -> int:
+                            duration_days: int = 0, is_unlimited: int = 0, label: str = "",
+                            reward_amount: int = 0) -> int:
     async with aiosqlite.connect(DB_PATH) as db:
         c = await db.execute(
-            """INSERT INTO referral_tiers(referrals_needed,reward_kind,reward_gb,duration_days,is_unlimited,label)
-               VALUES(?,?,?,?,?,?)""",
-            (int(referrals_needed or 0), reward_kind if reward_kind in ("gb", "service") else "gb",
-             float(reward_gb or 0), int(duration_days or 0), 1 if int(is_unlimited or 0) else 0, (label or "").strip()),
+            """INSERT INTO referral_tiers(referrals_needed,reward_kind,reward_amount,reward_gb,duration_days,is_unlimited,label)
+               VALUES(?,?,?,?,?,?,?)""",
+            (int(referrals_needed or 0), reward_kind if reward_kind in ("wallet", "gb", "service") else "wallet",
+             int(reward_amount or 0), float(reward_gb or 0), int(duration_days or 0),
+             1 if int(is_unlimited or 0) else 0, (label or "").strip()),
         )
         await db.commit()
         return int(c.lastrowid)
@@ -1121,7 +1178,7 @@ async def get_referral_claim(claim_id: int) -> Optional[Dict]:
         db.row_factory = aiosqlite.Row
         async with db.execute(
             """SELECT rc.*, u.telegram_id, u.full_name, u.username,
-                      t.referrals_needed, t.reward_kind, t.reward_gb, t.duration_days, t.is_unlimited, t.label
+                      t.referrals_needed, t.reward_kind, t.reward_amount, t.reward_gb, t.duration_days, t.is_unlimited, t.label
                FROM referral_claims rc
                JOIN users u ON u.id=rc.user_id
                JOIN referral_tiers t ON t.id=rc.tier_id

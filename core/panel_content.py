@@ -86,7 +86,16 @@ SETTINGS_DEFAULTS: Dict[str, str] = {
     ),
     "discount_enabled": "1",
     "referral_enabled": "1",
-    "referral_per_referral_gb": "5",
+    "referral_per_referral_amount": "0",
+    "referral_per_referral_gb": "0",
+    "referral_reminder_enabled": "1",
+    "referral_reminder_code": "",
+    "referral_reminder_template": (
+        "👋 سلام! یکی از دوستانت که با لینک تو وارد {brand} شد، هنوز خرید نکرده.\n\n"
+        "این کد تخفیف ویژه رو براش بفرست تا ترغیب بشه و تو هم جایزه‌ات رو بگیری:\n"
+        "🎟️ کد: {code}\n\n"
+        "لینک دعوت تو:\n{link}"
+    ),
     "referral_banner_url": "",
     "referral_banner_file_id": "",
     "referral_caption": (

@@ -2534,6 +2534,21 @@ async def referral_claim_approve(cb: CallbackQuery, bot: Bot):
             )
         except Exception:
             pass
+    elif str(claim.get("reward_kind")) == "wallet":
+        amount = int(claim.get("reward_amount") or 0)
+        new_bal = await add_user_balance(reward_user["id"], amount, kind="referral",
+                                         note=f"referral_tier:{claim_id}", actor_telegram_id=cb.from_user.id)
+        await update_referral_claim(claim_id, status="approved", reviewed_at=datetime.now().isoformat())
+        try:
+            await bot.send_message(
+                reward_user["telegram_id"],
+                f"🎉 جایزهٔ معرفی شما اعطا شد!\n💰 {_fmt_toman(amount)} تومان به کیف پولت اضافه شد.\n"
+                f"موجودی فعلی: {_fmt_toman(int(new_bal or 0))} تومان\n"
+                "از همین موجودی می‌تونی برای خرید یا تمدید استفاده کنی.",
+                parse_mode=None,
+            )
+        except Exception:
+            pass
     else:
         gb = float(claim.get("reward_gb") or 0)
         await update_user(reward_user["id"], referral_bonus_gb=float(reward_user.get("referral_bonus_gb") or 0) + gb)

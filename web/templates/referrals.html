@@ -33,14 +33,34 @@
           </select>
         </div>
         <div class="form-group">
-          <label>هدیهٔ ثابت هر معرفی موفق (GB) — ۰=غیرفعال</label>
-          <input type="number" step="0.5" min="0" name="referral_per_referral_gb" class="form-control" value="{{ s.referral_per_referral_gb }}">
+          <label>جایزهٔ هر معرفی موفق (تومان به کیف پول) — ۰=غیرفعال</label>
+          <input type="number" step="1000" min="0" name="referral_per_referral_amount" class="form-control" value="{{ s.referral_per_referral_amount }}">
         </div>
       </div>
       <div class="form-group">
         <label>کپشن قابل فوروارد — از <code>{brand}</code> و <code>{link}</code> استفاده کنید</label>
         <textarea name="referral_caption" id="capInput" class="form-control" rows="5" oninput="renderPreview()">{{ s.referral_caption }}</textarea>
         <small style="color:var(--txt3)">این متن همراه بنر برای کاربر فرستاده می‌شود تا فوروارد کند.</small>
+      </div>
+      <hr style="border:none;border-top:1px solid var(--border);margin:14px 0">
+      <div class="form-group" style="margin-bottom:6px"><label>⏰ یادآوری هوشمند ۲۴ ساعته</label>
+        <small style="color:var(--txt3)">اگر دعوت‌شده تا ۲۴ ساعت خرید نکرد، به دعوت‌کننده پیام می‌رود تا یک کد تخفیف برایش بفرستد.</small>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>وضعیت یادآوری</label>
+          <select name="referral_reminder_enabled" class="form-control">
+            <option value="1" {% if s.referral_reminder_enabled == '1' %}selected{% endif %}>🟢 فعال</option>
+            <option value="0" {% if s.referral_reminder_enabled != '1' %}selected{% endif %}>🔴 غیرفعال</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>کد تخفیف پیشنهادی برای دعوت‌شده</label>
+          <select name="referral_reminder_code" class="form-control">
+            <option value="">— بدون کد —</option>
+            {% for code in codes %}<option value="{{ code }}" {% if s.referral_reminder_code == code %}selected{% endif %}>{{ code }}</option>{% endfor %}
+          </select>
+        </div>
       </div>
       <div style="display:flex;justify-content:flex-end">
         <button type="submit" class="btn btn-primary">💾 ذخیره تنظیمات</button>
@@ -103,14 +123,14 @@
   <tr>
     <td>{{ t.id }}</td>
     <td><strong>{{ t.referrals_needed }}</strong> معرفی</td>
-    <td>{% if t.reward_kind == 'service' %}<span class="badge b-blue">سرویس هدیه</span>{% else %}<span class="badge b-purple">حجم هدیه</span>{% endif %}</td>
-    <td>{% if t.reward_kind == 'service' and t.is_unlimited %}نامحدود{% else %}{{ t.reward_gb }} GB{% endif %}</td>
+    <td>{% if t.reward_kind == 'service' %}<span class="badge b-blue">سرویس هدیه</span>{% elif t.reward_kind == 'gb' %}<span class="badge b-purple">حجم هدیه</span>{% else %}<span class="badge b-green">شارژ کیف پول</span>{% endif %}</td>
+    <td>{% if t.reward_kind == 'wallet' %}{{ "{:,}".format(t.reward_amount or 0) }} تومان{% elif t.reward_kind == 'service' and t.is_unlimited %}نامحدود{% else %}{{ t.reward_gb }} GB{% endif %}</td>
     <td>{% if t.reward_kind == 'service' %}{{ t.duration_days if t.duration_days else '∞' }} روز{% else %}—{% endif %}</td>
     <td style="color:var(--txt2)">{{ t.label or '—' }}</td>
     <td>{% if t.is_active %}<span class="badge b-green">🟢 فعال</span>{% else %}<span class="badge b-red">🔴 غیرفعال</span>{% endif %}</td>
     <td style="white-space:nowrap">
       <button class="btn btn-outline btn-xs"
-        onclick='openEdit({{ t.id }}, {{ t.referrals_needed }}, {{ t.reward_kind|tojson }}, {{ t.reward_gb }}, {{ t.duration_days }}, {{ t.is_unlimited }}, {{ (t.label or "")|tojson }})'>✏️</button>
+        onclick='openEdit({{ t.id }}, {{ t.referrals_needed }}, {{ t.reward_kind|tojson }}, {{ t.reward_amount or 0 }}, {{ t.reward_gb }}, {{ t.duration_days }}, {{ t.is_unlimited }}, {{ (t.label or "")|tojson }})'>✏️</button>
       <button class="btn btn-outline btn-xs" onclick="toggleTier({{ t.id }})">{{ '🔴' if t.is_active else '🟢' }}</button>
       <button class="btn btn-danger btn-xs" onclick="deleteTier({{ t.id }})">🗑️</button>
     </td>
@@ -129,14 +149,15 @@
     <div class="form-group">
       <label>نوع هدیه</label>
       <select name="reward_kind" id="{{ prefix }}_kind" class="form-control">
-        <option value="gb">حجم هدیه (به اعتبار کاربر)</option>
+        <option value="wallet">شارژ کیف پول (تومان)</option>
         <option value="service">سرویس هدیه (ساب جدید)</option>
       </select>
     </div>
   </div>
+  <div class="form-group"><label>مبلغ شارژ کیف پول (تومان) — فقط برای «شارژ کیف پول»</label><input type="number" step="1000" min="0" name="reward_amount" id="{{ prefix }}_amount" class="form-control" value="0"></div>
   <div class="form-row">
-    <div class="form-group"><label>حجم (GB) — برای «حجم هدیه» یا حجم سرویس</label><input type="number" step="0.5" min="0" name="reward_gb" id="{{ prefix }}_gb" class="form-control" value="0"></div>
-    <div class="form-group"><label>مدت سرویس (روز) — فقط برای سرویس هدیه</label><input type="number" min="0" name="duration_days" id="{{ prefix }}_days" class="form-control" value="0"></div>
+    <div class="form-group"><label>حجم سرویس (GB) — فقط برای «سرویس هدیه»</label><input type="number" step="0.5" min="0" name="reward_gb" id="{{ prefix }}_gb" class="form-control" value="0"></div>
+    <div class="form-group"><label>مدت سرویس (روز) — فقط برای «سرویس هدیه»</label><input type="number" min="0" name="duration_days" id="{{ prefix }}_days" class="form-control" value="0"></div>
   </div>
   <div class="form-group">
     <label class="toggle"><input type="checkbox" name="is_unlimited" id="{{ prefix }}_unlim" value="1"><span class="toggle-track"></span> سرویس هدیه با حجم نامحدود</label>
@@ -179,9 +200,10 @@ async function deleteTier(id){
   const r = await api(`/${S}/referrals/tiers/${id}/delete`);
   if(r.success){ toast('حذف شد','success'); setTimeout(()=>location.reload(),700); } else toast('خطا!','error');
 }
-function openEdit(id, need, kind, gb, days, unlim, label){
+function openEdit(id, need, kind, amount, gb, days, unlim, label){
   document.getElementById('e_need').value = need;
-  document.getElementById('e_kind').value = kind;
+  document.getElementById('e_kind').value = (kind === 'gb') ? 'wallet' : kind;
+  document.getElementById('e_amount').value = amount || 0;
   document.getElementById('e_gb').value = gb;
   document.getElementById('e_days').value = days;
   document.getElementById('e_unlim').checked = !!unlim;

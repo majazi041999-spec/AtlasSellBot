@@ -1648,14 +1648,16 @@ async def referrals_page(request: Request):
     banner_url = await get_setting("referral_banner_url", "")
     s = {
         "referral_enabled": await get_setting("referral_enabled", "1"),
-        "referral_per_referral_gb": await get_setting("referral_per_referral_gb", "5"),
-        "referral_banner_url": banner_url,
+        "referral_per_referral_amount": await get_setting("referral_per_referral_amount", "0"),
         "referral_caption": await get_setting("referral_caption", ""),
+        "referral_reminder_enabled": await get_setting("referral_reminder_enabled", "1"),
+        "referral_reminder_code": await get_setting("referral_reminder_code", ""),
     }
+    codes = [c["code"] for c in await get_discount_codes() if int(c.get("is_active") or 0)]
     return _templates.TemplateResponse(
         "referrals.html",
         await _ctx_ui(
-            request, tiers=tiers, s=s, active="referrals",
+            request, tiers=tiers, s=s, active="referrals", codes=codes,
             brand=await get_setting("ui.brand_name", "Atlas Account"),
             banner_set=bool((banner_file_id or "").strip() or (banner_url or "").strip()),
             banner_status=request.query_params.get("banner", ""),
@@ -1667,16 +1669,23 @@ async def referrals_page(request: Request):
 async def referrals_settings(
     request: Request,
     referral_enabled: str = Form("1"),
-    referral_per_referral_gb: str = Form("0"),
-    referral_banner_url: str = Form(""),
+    referral_per_referral_amount: str = Form("0"),
     referral_caption: str = Form(""),
+    referral_reminder_enabled: str = Form("0"),
+    referral_reminder_code: str = Form(""),
 ):
     if not _auth(request):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     await set_setting("referral_enabled", "1" if referral_enabled == "1" else "0")
-    await set_setting("referral_per_referral_gb", str(referral_per_referral_gb or "0"))
-    await set_setting("referral_banner_url", (referral_banner_url or "").strip())
+    try:
+        amount = max(0, int(float(referral_per_referral_amount or 0)))
+    except (TypeError, ValueError):
+        amount = 0
+    await set_setting("referral_per_referral_amount", str(amount))
+    await set_setting("referral_per_referral_gb", "0")  # wallet model supersedes GB
     await set_setting("referral_caption", referral_caption or "")
+    await set_setting("referral_reminder_enabled", "1" if referral_reminder_enabled == "1" else "0")
+    await set_setting("referral_reminder_code", (referral_reminder_code or "").strip())
     return RedirectResponse(f"/{S}/referrals", status_code=302)
 
 
@@ -1684,7 +1693,8 @@ async def referrals_settings(
 async def referral_tier_add(
     request: Request,
     referrals_needed: int = Form(...),
-    reward_kind: str = Form("gb"),
+    reward_kind: str = Form("wallet"),
+    reward_amount: int = Form(0),
     reward_gb: float = Form(0),
     duration_days: int = Form(0),
     is_unlimited: str = Form("0"),
@@ -1694,7 +1704,7 @@ async def referral_tier_add(
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     await add_referral_tier(
         referrals_needed, reward_kind, reward_gb=reward_gb, duration_days=duration_days,
-        is_unlimited=1 if is_unlimited == "1" else 0, label=label,
+        is_unlimited=1 if is_unlimited == "1" else 0, label=label, reward_amount=reward_amount,
     )
     return RedirectResponse(f"/{S}/referrals", status_code=302)
 
@@ -1704,7 +1714,8 @@ async def referral_tier_edit(
     request: Request,
     tid: int,
     referrals_needed: int = Form(...),
-    reward_kind: str = Form("gb"),
+    reward_kind: str = Form("wallet"),
+    reward_amount: int = Form(0),
     reward_gb: float = Form(0),
     duration_days: int = Form(0),
     is_unlimited: str = Form("0"),
@@ -1714,7 +1725,8 @@ async def referral_tier_edit(
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     await update_referral_tier(
         tid, referrals_needed=int(referrals_needed or 0),
-        reward_kind=reward_kind if reward_kind in ("gb", "service") else "gb",
+        reward_kind=reward_kind if reward_kind in ("wallet", "gb", "service") else "wallet",
+        reward_amount=int(reward_amount or 0),
         reward_gb=float(reward_gb or 0), duration_days=int(duration_days or 0),
         is_unlimited=1 if is_unlimited == "1" else 0, label=(label or "").strip(),
     )

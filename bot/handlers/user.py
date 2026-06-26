@@ -2287,6 +2287,9 @@ async def referral_menu(msg: Message):
         return
 
     from core.rewards import referral_tier_reward_text
+    from core.database import get_referral_invitees, get_referral_earned_total
+    from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+    from urllib.parse import quote
 
     user = await get_or_create_user(msg.from_user.id)
     stats = await get_referral_stats(user["id"])
@@ -2294,6 +2297,7 @@ async def referral_menu(msg: Message):
     bot_info = await msg.bot.get_me()
     ref_link = f"https://t.me/{bot_info.username}?start={code}"
     brand = await get_setting("ui.brand_name", "Atlas Account")
+    earned = await get_referral_earned_total(user["id"])
 
     converted = await count_converted_referrals(user["id"])
     tiers = await get_referral_tiers(active_only=True)
@@ -2301,37 +2305,55 @@ async def referral_menu(msg: Message):
     for t in tiers:
         need = int(t.get("referrals_needed") or 0)
         mark = "✅" if converted >= need else f"⏳ {converted}/{need}"
-        tier_lines.append(f"{mark} {need} معرفی → {referral_tier_reward_text(t)}")
+        tier_lines.append(f"{mark} {need} دعوت → {referral_tier_reward_text(t)}")
 
     info = (
-        "🎁 *دعوت دوستان*\n"
+        "🎁 *دعوت از دوستان و دریافت جایزه*\n"
         "━━━━━━━━━━━━━━\n"
-        f"👥 دعوت‌شدگان: `{stats['invited']}` | 🛒 خریداران: `{stats['converted']}`\n"
-        f"💎 اعتبار هدیه: `{stats['bonus_gb']} GB`\n"
+        f"💰 جایزهٔ دریافتی شما: *{_fmt_toman(earned)} تومان* (در کیف پول)\n"
+        f"👥 دعوت‌شده‌ها: `{stats['invited']}` | 🛒 خریدار: `{stats['converted']}`\n"
     )
+
+    # Full transparency: who the user invited + who has bought.
+    invitees = await get_referral_invitees(user["id"], 12)
+    if invitees:
+        info += "\n👤 *دوستان دعوت‌شدهٔ شما:*\n"
+        for inv in invitees:
+            nm = (inv.get("full_name") or "").strip() or (("@" + inv["username"]) if inv.get("username") else "کاربر")
+            nm = nm[:18]
+            info += f"{'✅ خرید کرد' if inv.get('bought') else '⏳ هنوز خرید نکرده'} — {nm}\n"
+
     if tier_lines:
-        info += "\n🏆 *پله‌های هدیه:*\n" + "\n".join(tier_lines) + "\n"
-        info += "\n_هدایا پس از رسیدن به هر پله و تأیید پشتیبانی فعال می‌شوند._\n"
-    info += f"\n🔗 *لینک اختصاصی شما:*\n`{ref_link}`\n\n👇 پیام زیر را برای دوستانتان فوروارد کنید:"
+        info += "\n🏆 *پله‌های جایزه:*\n" + "\n".join(tier_lines) + "\n"
+        info += "_جایزه پس از رسیدن به هر پله و تأیید پشتیبانی، به کیف پولت اضافه می‌شود._\n"
+
+    info += f"\n🔗 *لینک اختصاصی شما:*\n`{ref_link}`\n\n👇 با یک کلیک برای دوستانت بفرست:"
     await msg.answer(info, parse_mode="Markdown")
 
-    # The forwardable banner + caption (customizable from the panel).
+    # The forwardable banner + caption (customizable from the panel) + 1-tap share.
     caption_tpl = await get_setting(
         "referral_caption",
         "🎁 با لینک اختصاصی من به {brand} بپیوند!\n\n👇 برای شروع:\n{link}",
     )
     try:
         share_text = caption_tpl.format(brand=brand, link=ref_link)
+        caption_no_link = caption_tpl.format(brand=brand, link="").strip()
     except Exception:
         share_text = f"{caption_tpl}\n{ref_link}"
+        caption_no_link = caption_tpl
+
+    share_kb = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="📤 ارسال در تلگرام", url=f"https://t.me/share/url?url={quote(ref_link, safe='')}&text={quote(caption_no_link, safe='')}"),
+        InlineKeyboardButton(text="🟢 ارسال در واتساپ", url=f"https://wa.me/?text={quote(share_text, safe='')}"),
+    ]])
     banner = (await get_setting("referral_banner_file_id", "")).strip() or (await get_setting("referral_banner_url", "")).strip()
     if banner:
         try:
-            await msg.answer_photo(banner, caption=share_text, parse_mode=None)
+            await msg.answer_photo(banner, caption=share_text, parse_mode=None, reply_markup=share_kb)
             return
         except Exception:
             pass
-    await msg.answer(share_text, parse_mode=None)
+    await msg.answer(share_text, parse_mode=None, reply_markup=share_kb)
 
 
 # ─── SUPPORT ─────────────────────────────────────────────────────

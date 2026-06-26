@@ -462,6 +462,7 @@ async def _subscription_lifecycle_worker(bot):
     """Notify users about ended subscriptions and delete them after the grace period."""
     from core.database import get_setting
     from core.multi_subscription import run_subscription_lifecycle, run_subscription_expiry_warnings
+    from core.rewards import run_referral_reminders
 
     await asyncio.sleep(60)
     while True:
@@ -470,6 +471,8 @@ async def _subscription_lifecycle_worker(bot):
             # handle the ones that already ended.
             await run_subscription_expiry_warnings(bot)
             await run_subscription_lifecycle(bot)
+            # Smart 24h referral nudge (ask inviters to send a discount code).
+            await run_referral_reminders(bot)
         except Exception as e:
             logger.exception("subscription lifecycle worker failed: %s", e)
         try:

@@ -16,6 +16,7 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from core.config import ADMIN_IDS, REFERRAL_BONUS_GB
 from core.database import (
+    add_user_balance,
     count_converted_referrals,
     count_user_code_redemptions,
     create_referral_claim,
@@ -32,12 +33,24 @@ from core.database import (
 logger = logging.getLogger(__name__)
 
 
-async def referral_per_referral_gb() -> float:
-    """The fixed GB credited to the inviter per first-time converted referral."""
+def _fmt_toman(n: int) -> str:
+    return f"{int(n or 0):,}"
+
+
+async def referral_per_referral_amount() -> int:
+    """Toman credited to the inviter's WALLET per first-time converted referral."""
     try:
-        return max(0.0, float(await get_setting("referral_per_referral_gb", str(REFERRAL_BONUS_GB))))
+        return max(0, int(float(await get_setting("referral_per_referral_amount", "0"))))
     except (TypeError, ValueError):
-        return float(REFERRAL_BONUS_GB)
+        return 0
+
+
+async def referral_per_referral_gb() -> float:
+    """Legacy GB-per-referral (kept for back-compat; defaults to 0/off)."""
+    try:
+        return max(0.0, float(await get_setting("referral_per_referral_gb", "0")))
+    except (TypeError, ValueError):
+        return 0.0
 
 
 async def _admin_targets() -> list[int]:
@@ -53,7 +66,8 @@ async def _admin_targets() -> list[int]:
 
 def referral_tier_reward_text(tier: Dict) -> str:
     """Human label of what a tier grants."""
-    if str(tier.get("reward_kind")) == "service":
+    kind = str(tier.get("reward_kind"))
+    if kind == "service":
         if int(tier.get("is_unlimited") or 0) or float(tier.get("reward_gb") or 0) <= 0:
             vol = "نامحدود"
         else:
@@ -61,7 +75,9 @@ def referral_tier_reward_text(tier: Dict) -> str:
         days = int(tier.get("duration_days") or 0)
         days_txt = f"{days} روزه" if days > 0 else "بدون محدودیت زمان"
         return f"سرویس هدیه ({vol} / {days_txt})"
-    return f"{float(tier.get('reward_gb') or 0):g}GB حجم هدیه"
+    if kind == "gb":
+        return f"{float(tier.get('reward_gb') or 0):g}GB حجم هدیه"
+    return f"{_fmt_toman(int(tier.get('reward_amount') or 0))} تومان به کیف پول"
 
 
 async def record_order_discount(order: Dict) -> None:
@@ -129,6 +145,56 @@ async def check_referral_tiers(bot, referrer_id: int) -> int:
     return created
 
 
+async def run_referral_reminders(bot, limit: int = 200) -> Dict:
+    """Smart 24h nudge: if an invited friend hasn't bought after a day, ask the
+    inviter to send them a special discount code (encourages the conversion)."""
+    import asyncio
+    from datetime import datetime, timedelta
+    from core.database import get_pending_referral_reminders, mark_referral_reminder_sent
+
+    if await get_setting("referral_enabled", "1") != "1":
+        return {"sent": 0}
+    if await get_setting("referral_reminder_enabled", "1") != "1":
+        return {"sent": 0}
+    code = (await get_setting("referral_reminder_code", "")).strip()
+    if not code:
+        return {"sent": 0}  # nothing to offer yet — don't burn the reminder flag
+
+    brand = await get_setting("ui.brand_name", "Atlas Account")
+    template = await get_setting(
+        "referral_reminder_template",
+        "👋 سلام! یکی از دوستانت که با لینک تو وارد {brand} شد، هنوز خرید نکرده.\n\n"
+        "این کد تخفیف ویژه رو براش بفرست تا ترغیب بشه:\n🎟️ کد: {code}\n\nلینک دعوت تو:\n{link}",
+    )
+    try:
+        me = await bot.get_me()
+        username = me.username
+    except Exception:
+        username = ""
+    cutoff = (datetime.now() - timedelta(hours=24)).strftime("%Y-%m-%d %H:%M:%S")
+    sent = 0
+    for row in await get_pending_referral_reminders(cutoff, limit):
+        tid = int(row.get("referrer_tid") or 0)
+        link = f"https://t.me/{username}?start={row.get('referrer_code') or ''}" if username else ""
+        name = (row.get("invitee_name") or "").strip() or (("@" + row["invitee_username"]) if row.get("invitee_username") else "دوستت")
+        values = {"brand": brand, "code": code, "link": link, "name": name[:20]}
+        try:
+            text = template.format(**values)
+        except Exception:
+            text = template
+        if tid:
+            try:
+                await bot.send_message(tid, text, parse_mode=None)
+                sent += 1
+                await asyncio.sleep(0.1)
+            except Exception:
+                pass
+        await mark_referral_reminder_sent(int(row["invitee_id"]))
+    if sent:
+        logger.info("referral 24h reminders sent=%s", sent)
+    return {"sent": sent}
+
+
 async def apply_post_approval_rewards(bot, buyer: Dict, order: Dict, first_purchase: bool) -> None:
     """Run all reward side-effects after an order is approved.
 
@@ -145,18 +211,27 @@ async def apply_post_approval_rewards(bot, buyer: Dict, order: Dict, first_purch
     if not referrer or int(referrer["id"]) == int(buyer["id"]):
         return
 
-    per = await referral_per_referral_gb()
-    if per > 0:
-        await update_user(referrer["id"], referral_bonus_gb=float(referrer.get("referral_bonus_gb") or 0) + per)
+    # Primary reward model: cash into the inviter's WALLET (usable in the bot).
+    amount = await referral_per_referral_amount()
+    if amount > 0:
+        await add_user_balance(referrer["id"], amount, kind="referral",
+                               note=f"referral:{buyer.get('id')}", actor_telegram_id=0)
         if bot:
             try:
                 await bot.send_message(
                     referrer["telegram_id"],
-                    f"🎁 یکی از دعوت‌شده‌های شما خرید کرد!\n{per:g}GB به اعتبار هدیهٔ شما اضافه شد.",
+                    "🎉 یکی از دوستانی که دعوت کردی خرید کرد!\n"
+                    f"💰 {_fmt_toman(amount)} تومان جایزه به کیف پولت اضافه شد.\n"
+                    "می‌تونی برای خرید یا تمدید سرویس از همین موجودی استفاده کنی.",
                     parse_mode=None,
                 )
             except Exception:
                 pass
+
+    # Legacy GB bonus (only if explicitly configured; off by default).
+    per = await referral_per_referral_gb()
+    if per > 0:
+        await update_user(referrer["id"], referral_bonus_gb=float(referrer.get("referral_bonus_gb") or 0) + per)
 
     try:
         await check_referral_tiers(bot, int(referrer["id"]))
