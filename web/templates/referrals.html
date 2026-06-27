@@ -18,7 +18,91 @@
 .tg-os button{background:var(--bg3);border:1px solid var(--border);color:var(--txt2);border-radius:20px;padding:3px 12px;font-size:.72rem;cursor:pointer;font-family:inherit}
 .tg-os button.active{background:var(--p);color:#fff;border-color:var(--p)}
 .banner-actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:8px}
+.an-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:14px}
+.an-card{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:14px 16px;box-shadow:var(--shadow2)}
+.an-val{font-size:1.5rem;font-weight:800;line-height:1.1}
+.an-lbl{font-size:.74rem;color:var(--txt2);margin-top:3px;font-weight:600}
+.an-card.hero{background:linear-gradient(135deg,var(--p),var(--acc));color:#fff;border:none}
+.an-card.hero .an-lbl{color:#fff;opacity:.9}
+.an-card.pos{border-color:rgba(16,185,129,.4)} .an-card.pos .an-val{color:var(--g)}
+.an-card.neg{border-color:rgba(239,68,68,.4)} .an-card.neg .an-val{color:var(--r)}
+.chain-box{display:flex;gap:14px;flex-wrap:wrap;align-items:center;padding:14px 16px;border-radius:14px;margin-bottom:14px;border:1px solid var(--border)}
+.chain-on{background:rgba(16,185,129,.10)} .chain-off{background:rgba(245,158,11,.10)}
+.bars{display:flex;align-items:flex-end;gap:4px;height:60px;margin-top:8px}
+.bars .b{flex:1;background:linear-gradient(180deg,var(--p),var(--p2,#a78bfa));border-radius:4px 4px 0 0;min-height:3px;opacity:.85}
 </style>
+
+{% if analytics %}
+<div class="sec-hd"><span class="sec-title">📊 آمار کامل دعوت‌ها</span></div>
+<div class="an-grid">
+  <div class="an-card hero"><div class="an-val">{{ "{:,}".format(analytics.revenue) }}</div><div class="an-lbl">💰 درآمد از دعوت‌شده‌ها (تومان)</div></div>
+  <div class="an-card {{ 'pos' if analytics.profitable else 'neg' }}"><div class="an-val">{{ "{:,}".format(analytics.net) }}</div><div class="an-lbl">{{ '✅ سود خالص' if analytics.profitable else '⚠️ خالص' }} (درآمد − جایزه)</div></div>
+  <div class="an-card"><div class="an-val">{{ "{:,}".format(analytics.rewards_paid) }}</div><div class="an-lbl">🎁 جایزهٔ پرداختی (تومان)</div></div>
+  <div class="an-card"><div class="an-val">{{ analytics.total_referred }}</div><div class="an-lbl">👥 کل دعوت‌شده‌ها</div></div>
+  <div class="an-card"><div class="an-val">{{ analytics.converted }} <span style="font-size:.8rem;color:var(--txt3)">({{ analytics.conversion_rate }}%)</span></div><div class="an-lbl">🛒 تبدیل به خریدار</div></div>
+  <div class="an-card"><div class="an-val">{{ analytics.active_referrers }}</div><div class="an-lbl">📣 دعوت‌کنندهٔ فعال</div></div>
+  <div class="an-card"><div class="an-val">{{ analytics.pending_claims }}</div><div class="an-lbl">⏳ هدیهٔ در انتظار تأیید</div></div>
+  <div class="an-card"><div class="an-val">{{ analytics.service_gifts }}</div><div class="an-lbl">🎁 سرویس هدیهٔ داده‌شده</div></div>
+</div>
+
+<div class="chain-box {{ 'chain-on' if analytics.chain_forms else 'chain-off' }}">
+  <div style="font-size:1.6rem">{{ '🔗' if analytics.chain_forms else '🧩' }}</div>
+  <div style="flex:1">
+    <b>زنجیرهٔ دعوت {{ 'تشکیل شده ✅' if analytics.chain_forms else 'هنوز تشکیل نشده' }}</b>
+    <div style="color:var(--txt2);font-size:.82rem;margin-top:3px">
+      طول بلندترین زنجیره: <b>{{ analytics.max_chain }}</b> سطح ·
+      <b>{{ analytics.chain_referrers }}</b> نفر از دعوت‌شده‌ها خودشان هم کسی را دعوت کرده‌اند
+      {% if not analytics.chain_forms %}<br><span style="color:var(--txt3)">یعنی دعوت‌ها هنوز آبشاری/ویروسی نشده‌اند؛ با جایزهٔ جذاب‌تر تشویقشان کن.</span>{% endif %}
+    </div>
+  </div>
+</div>
+
+<div class="card" style="margin-bottom:14px">
+  <div class="list-title" style="font-weight:800;margin-bottom:6px">📈 دعوت‌های ۱۴ روز اخیر</div>
+  <div class="bars" id="refBars"></div>
+</div>
+
+{% if analytics.top %}
+<div class="table-wrap" style="margin-bottom:14px">
+<table>
+  <thead><tr><th>#</th><th>دعوت‌کننده</th><th>دعوت</th><th>خریدار</th><th>جایزهٔ گرفته (تومان)</th></tr></thead>
+  <tbody>
+  {% for t in analytics.top %}
+  <tr>
+    <td>{{ loop.index }}</td>
+    <td>{{ t.full_name or '—' }}{% if t.username %} <span style="color:var(--txt3)">@{{ t.username }}</span>{% endif %}</td>
+    <td>{{ t.invited }}</td>
+    <td><b style="color:var(--g)">{{ t.converted }}</b></td>
+    <td>{{ "{:,}".format(t.earned or 0) }}</td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endif %}
+
+{% if pending_claims %}
+<div class="sec-hd"><span class="sec-title">⏳ هدایای در انتظار تأیید ({{ pending_claims|length }})</span></div>
+<div class="table-wrap" style="margin-bottom:18px">
+<table>
+  <thead><tr><th>کاربر</th><th>پله</th><th>هدیه</th><th>عملیات</th></tr></thead>
+  <tbody>
+  {% for c in pending_claims %}
+  <tr id="claim-{{ c.id }}">
+    <td>{{ c.full_name or '—' }}{% if c.username %} <span style="color:var(--txt3)">@{{ c.username }}</span>{% endif %}</td>
+    <td>{{ c.referrals_needed }} دعوت</td>
+    <td>{{ c.reward_text }}</td>
+    <td style="white-space:nowrap">
+      <button class="btn btn-success btn-xs" onclick="claimAct({{ c.id }},'approve')">✅ اعطا</button>
+      <button class="btn btn-danger btn-xs" onclick="claimAct({{ c.id }},'reject')">❌ رد</button>
+    </td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endif %}
+{% endif %}
 
 <div class="ref-grid">
   <div class="card">
@@ -194,6 +278,22 @@
 
 {% block scripts %}
 <script>
+// Referrals-over-time mini bar chart
+(function(){
+  const series = {{ (analytics.series if analytics else [])|tojson }};
+  const el = document.getElementById('refBars');
+  if(!el || !series.length) return;
+  const max = Math.max(1, ...series.map(s=>s.count));
+  el.innerHTML = series.map(s=>`<div class="b" style="height:${Math.round(s.count/max*100)}%" title="${s.date}: ${s.count}"></div>`).join('');
+})();
+async function claimAct(id, act){
+  if(act==='reject' && !confirm('این درخواست هدیه رد شود؟')) return;
+  const r = await api(`/${S}/referrals/claims/${id}/${act}`);
+  if(r.success){
+    toast(act==='approve' ? 'هدیه اعطا شد' : 'رد شد', 'success');
+    const row=document.getElementById('claim-'+id); if(row) row.remove();
+  } else toast((r.error||'خطا'), 'error');
+}
 async function toggleTier(id){ const r = await api(`/${S}/referrals/tiers/${id}/toggle`); if(r.success) location.reload(); else toast('خطا!','error'); }
 async function deleteTier(id){
   if(!confirm('این پله حذف شود؟')) return;

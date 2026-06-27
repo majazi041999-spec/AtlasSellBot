@@ -1001,6 +1001,107 @@ async def mark_referral_reminder_sent(invitee_id: int):
         await db.commit()
 
 
+async def get_pending_referral_claims(limit: int = 100) -> List[Dict]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            """SELECT rc.id, rc.referrals_at_claim, rc.created_at,
+                      u.full_name, u.username, u.telegram_id,
+                      t.referrals_needed, t.reward_kind, t.reward_amount, t.reward_gb, t.duration_days, t.is_unlimited, t.label
+               FROM referral_claims rc
+               JOIN users u ON u.id = rc.user_id
+               JOIN referral_tiers t ON t.id = rc.tier_id
+               WHERE rc.status='pending'
+               ORDER BY rc.id DESC LIMIT ?""",
+            (max(1, int(limit or 100)),),
+        ) as c:
+            return [dict(r) for r in await c.fetchall()]
+
+
+async def get_referral_analytics(days: int = 14) -> Dict:
+    """Complete referral KPIs: reach, conversion, money in vs reward out (net),
+    whether referral chains are forming, and a top-referrers leaderboard."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+
+        async def scalar(q, args=()):
+            async with db.execute(q, args) as c:
+                r = await c.fetchone()
+                return (r[0] if r else 0) or 0
+
+        total_referred = int(await scalar("SELECT COUNT(*) FROM users WHERE COALESCE(referred_by,0)>0"))
+        active_referrers = int(await scalar("SELECT COUNT(DISTINCT referred_by) FROM users WHERE COALESCE(referred_by,0)>0"))
+        converted = int(await scalar(
+            "SELECT COUNT(DISTINCT u.id) FROM users u JOIN orders o ON o.user_id=u.id "
+            "WHERE COALESCE(u.referred_by,0)>0 AND o.status='approved'"))
+        revenue = int(await scalar(
+            "SELECT COALESCE(SUM(COALESCE(NULLIF(o.custom_price,0), p.price)),0) "
+            "FROM orders o JOIN users u ON u.id=o.user_id LEFT JOIN packages p ON p.id=o.package_id "
+            "WHERE COALESCE(u.referred_by,0)>0 AND o.status='approved'"))
+        rewards_paid = int(await scalar(
+            "SELECT COALESCE(SUM(amount),0) FROM wallet_transactions WHERE kind='referral' AND amount>0"))
+        pending_claims = int(await scalar("SELECT COUNT(*) FROM referral_claims WHERE status='pending'"))
+        approved_claims = int(await scalar("SELECT COUNT(*) FROM referral_claims WHERE status='approved'"))
+        service_gifts = int(await scalar(
+            "SELECT COUNT(*) FROM referral_claims rc JOIN referral_tiers t ON t.id=rc.tier_id "
+            "WHERE rc.status='approved' AND t.reward_kind='service'"))
+        chain_referrers = int(await scalar(
+            "SELECT COUNT(DISTINCT u.id) FROM users u WHERE COALESCE(u.referred_by,0)>0 "
+            "AND EXISTS(SELECT 1 FROM users c WHERE c.referred_by=u.id)"))
+        try:
+            max_chain = int(await scalar(
+                "WITH RECURSIVE chain(id,depth) AS ("
+                " SELECT id,1 FROM users WHERE COALESCE(referred_by,0)=0"
+                " UNION ALL SELECT u.id,c.depth+1 FROM users u JOIN chain c ON u.referred_by=c.id WHERE c.depth<40)"
+                " SELECT COALESCE(MAX(depth),1) FROM chain"))
+        except Exception:
+            max_chain = 1
+
+        top = []
+        async with db.execute(
+            """SELECT ref.id AS id, ref.full_name AS full_name, ref.username AS username,
+                      COUNT(u.id) AS invited,
+                      SUM(CASE WHEN EXISTS(SELECT 1 FROM orders o WHERE o.user_id=u.id AND o.status='approved') THEN 1 ELSE 0 END) AS converted,
+                      (SELECT COALESCE(SUM(amount),0) FROM wallet_transactions wt WHERE wt.user_id=ref.id AND wt.kind='referral' AND wt.amount>0) AS earned
+               FROM users ref JOIN users u ON u.referred_by=ref.id
+               GROUP BY ref.id ORDER BY converted DESC, invited DESC LIMIT 20"""
+        ) as c:
+            top = [dict(r) for r in await c.fetchall()]
+
+        async with db.execute(
+            "SELECT date(created_at) d, COUNT(*) c FROM users "
+            "WHERE COALESCE(referred_by,0)>0 AND date(created_at) >= date('now', ?, 'localtime') "
+            "GROUP BY date(created_at)",
+            (f"-{max(1, int(days)) - 1} days",),
+        ) as c:
+            ts = {r["d"]: int(r["c"]) for r in await c.fetchall()}
+
+    series = []
+    today = datetime.now()
+    for i in range(max(1, int(days)) - 1, -1, -1):
+        d = (today - timedelta(days=i)).strftime("%Y-%m-%d")
+        series.append({"date": d, "count": ts.get(d, 0)})
+
+    return {
+        "total_referred": total_referred,
+        "active_referrers": active_referrers,
+        "converted": converted,
+        "conversion_rate": round(converted / total_referred * 100, 1) if total_referred else 0.0,
+        "revenue": revenue,
+        "rewards_paid": rewards_paid,
+        "net": revenue - rewards_paid,
+        "profitable": (revenue - rewards_paid) > 0,
+        "pending_claims": pending_claims,
+        "approved_claims": approved_claims,
+        "service_gifts": service_gifts,
+        "chain_referrers": chain_referrers,
+        "max_chain": max_chain,
+        "chain_forms": max_chain >= 3 or chain_referrers > 0,
+        "top": top,
+        "series": series,
+    }
+
+
 # ══════════════════ CAMPAIGNS / ANALYTICS ══════════════════
 
 async def log_campaign_event(campaign: str, kind: str = "sent", user_id: int = 0, order_id: int = 0, amount: int = 0):

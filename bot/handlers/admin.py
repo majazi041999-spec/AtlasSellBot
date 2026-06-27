@@ -2503,65 +2503,18 @@ async def referral_claim_approve(cb: CallbackQuery, bot: Bot):
     if not is_admin(cb.from_user.id):
         await cb.answer("اجازه ندارید.", show_alert=True)
         return
-    from core.database import get_referral_claim, update_referral_claim
-    from core.rewards import referral_tier_reward_text
+    from core.rewards import grant_referral_claim
     claim_id = int(cb.data.split(":")[1])
-    claim = await get_referral_claim(claim_id)
-    if not claim or str(claim.get("status")) != "pending":
-        await cb.answer("این درخواست قبلاً بررسی شده است.", show_alert=True)
+    res = await grant_referral_claim(claim_id, bot=bot, reviewer_id=cb.from_user.id)
+    if not res.get("ok"):
+        err = str(res.get("error") or "")
+        if err == "already_reviewed":
+            await cb.answer("این درخواست قبلاً بررسی شده است.", show_alert=True)
+        elif err.startswith("service_failed"):
+            await cb.answer("ساخت سرویس هدیه ناموفق بود: " + subscription_error_message(err.split(":", 1)[-1]), show_alert=True)
+        else:
+            await cb.answer("خطا در اعطای هدیه.", show_alert=True)
         return
-    reward_user = await get_user_by_id(int(claim["user_id"]))
-    if not reward_user:
-        await cb.answer("کاربر یافت نشد.", show_alert=True)
-        return
-    reward = referral_tier_reward_text(claim)
-    if str(claim.get("reward_kind")) == "service":
-        traffic_gb = 0.0 if int(claim.get("is_unlimited") or 0) else float(claim.get("reward_gb") or 0)
-        days = int(claim.get("duration_days") or 0)
-        synthetic_order = {"id": 0, "custom_config_name": "🎁 هدیه معرفی"}
-        res = await create_profile_for_order(reward_user, synthetic_order, traffic_gb, days)
-        if not res.get("ok"):
-            await cb.answer("ساخت سرویس هدیه ناموفق بود: " + subscription_error_message(res.get("error")), show_alert=True)
-            return
-        await update_referral_claim(claim_id, status="approved", reviewed_at=datetime.now().isoformat())
-        try:
-            await bot.send_message(
-                reward_user["telegram_id"],
-                "🎁 هدیهٔ معرفی شما فعال شد!\n"
-                f"{reward}\n\n"
-                f"لینک اشتراک:\n{res['url']}",
-                parse_mode=None,
-            )
-        except Exception:
-            pass
-    elif str(claim.get("reward_kind")) == "wallet":
-        amount = int(claim.get("reward_amount") or 0)
-        new_bal = await add_user_balance(reward_user["id"], amount, kind="referral",
-                                         note=f"referral_tier:{claim_id}", actor_telegram_id=cb.from_user.id)
-        await update_referral_claim(claim_id, status="approved", reviewed_at=datetime.now().isoformat())
-        try:
-            await bot.send_message(
-                reward_user["telegram_id"],
-                f"🎉 جایزهٔ معرفی شما اعطا شد!\n💰 {_fmt_toman(amount)} تومان به کیف پولت اضافه شد.\n"
-                f"موجودی فعلی: {_fmt_toman(int(new_bal or 0))} تومان\n"
-                "از همین موجودی می‌تونی برای خرید یا تمدید استفاده کنی.",
-                parse_mode=None,
-            )
-        except Exception:
-            pass
-    else:
-        gb = float(claim.get("reward_gb") or 0)
-        await update_user(reward_user["id"], referral_bonus_gb=float(reward_user.get("referral_bonus_gb") or 0) + gb)
-        await update_referral_claim(claim_id, status="approved", reviewed_at=datetime.now().isoformat())
-        try:
-            await bot.send_message(
-                reward_user["telegram_id"],
-                f"🎁 هدیهٔ معرفی شما اعطا شد: {gb:g}GB به اعتبار هدیهٔ شما اضافه شد.\n"
-                "هنگام خرید بعدی، روی سرویس اعمال می‌شود.",
-                parse_mode=None,
-            )
-        except Exception:
-            pass
     try:
         await cb.message.edit_text((cb.message.text or "") + "\n\n✅ اعطا شد.", parse_mode=None)
     except Exception:
@@ -2574,13 +2527,12 @@ async def referral_claim_reject(cb: CallbackQuery):
     if not is_admin(cb.from_user.id):
         await cb.answer("اجازه ندارید.", show_alert=True)
         return
-    from core.database import get_referral_claim, update_referral_claim
+    from core.rewards import reject_referral_claim
     claim_id = int(cb.data.split(":")[1])
-    claim = await get_referral_claim(claim_id)
-    if not claim or str(claim.get("status")) != "pending":
+    res = await reject_referral_claim(claim_id)
+    if not res.get("ok"):
         await cb.answer("این درخواست قبلاً بررسی شده است.", show_alert=True)
         return
-    await update_referral_claim(claim_id, status="rejected", reviewed_at=datetime.now().isoformat())
     try:
         await cb.message.edit_text((cb.message.text or "") + "\n\n❌ رد شد.", parse_mode=None)
     except Exception:

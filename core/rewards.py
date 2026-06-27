@@ -10,6 +10,7 @@ panel) so the logic stays identical. Referral has two layers:
     claim from the bot, which then actually grants the GB/service.
 """
 import logging
+from datetime import datetime
 from typing import Dict, Optional
 
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
@@ -78,6 +79,66 @@ def referral_tier_reward_text(tier: Dict) -> str:
     if kind == "gb":
         return f"{float(tier.get('reward_gb') or 0):g}GB حجم هدیه"
     return f"{_fmt_toman(int(tier.get('reward_amount') or 0))} تومان به کیف پول"
+
+
+async def grant_referral_claim(claim_id: int, bot=None, reviewer_id: int = 0) -> Dict:
+    """Grant a pending referral-tier claim (wallet / gb / gift service) and notify
+    the user. Shared by the bot admin handler and the panel."""
+    from core.database import get_referral_claim, update_referral_claim, get_user_by_id
+    claim = await get_referral_claim(claim_id)
+    if not claim or str(claim.get("status")) != "pending":
+        return {"ok": False, "error": "already_reviewed"}
+    user = await get_user_by_id(int(claim["user_id"]))
+    if not user:
+        return {"ok": False, "error": "user_not_found"}
+    reward = referral_tier_reward_text(claim)
+    kind = str(claim.get("reward_kind"))
+    now_iso = datetime.now().isoformat()
+
+    if kind == "service":
+        from core.multi_subscription import create_profile_for_order
+        traffic_gb = 0.0 if int(claim.get("is_unlimited") or 0) else float(claim.get("reward_gb") or 0)
+        days = int(claim.get("duration_days") or 0)
+        res = await create_profile_for_order(user, {"id": 0, "custom_config_name": "🎁 هدیه معرفی"}, traffic_gb, days)
+        if not res.get("ok"):
+            return {"ok": False, "error": "service_failed:" + str(res.get("error"))}
+        await update_referral_claim(claim_id, status="approved", reviewed_at=now_iso)
+        if bot:
+            try:
+                await bot.send_message(user["telegram_id"], f"🎁 هدیهٔ معرفی شما فعال شد!\n{reward}\n\nلینک اشتراک:\n{res['url']}", parse_mode=None)
+            except Exception:
+                pass
+        return {"ok": True, "reward": reward, "url": res.get("url")}
+
+    if kind == "wallet":
+        amount = int(claim.get("reward_amount") or 0)
+        new_bal = await add_user_balance(user["id"], amount, kind="referral", note=f"referral_tier:{claim_id}", actor_telegram_id=reviewer_id)
+        await update_referral_claim(claim_id, status="approved", reviewed_at=now_iso)
+        if bot:
+            try:
+                await bot.send_message(user["telegram_id"], f"🎉 جایزهٔ معرفی شما اعطا شد!\n💰 {_fmt_toman(amount)} تومان به کیف پولت اضافه شد.\nموجودی فعلی: {_fmt_toman(int(new_bal or 0))} تومان", parse_mode=None)
+            except Exception:
+                pass
+        return {"ok": True, "reward": reward}
+
+    gb = float(claim.get("reward_gb") or 0)
+    await update_user(user["id"], referral_bonus_gb=float(user.get("referral_bonus_gb") or 0) + gb)
+    await update_referral_claim(claim_id, status="approved", reviewed_at=now_iso)
+    if bot:
+        try:
+            await bot.send_message(user["telegram_id"], f"🎁 هدیهٔ معرفی شما اعطا شد: {gb:g}GB به اعتبار هدیه‌تان اضافه شد.", parse_mode=None)
+        except Exception:
+            pass
+    return {"ok": True, "reward": reward}
+
+
+async def reject_referral_claim(claim_id: int, bot=None) -> Dict:
+    from core.database import get_referral_claim, update_referral_claim, get_user_by_id
+    claim = await get_referral_claim(claim_id)
+    if not claim or str(claim.get("status")) != "pending":
+        return {"ok": False, "error": "already_reviewed"}
+    await update_referral_claim(claim_id, status="rejected", reviewed_at=datetime.now().isoformat())
+    return {"ok": True}
 
 
 async def record_order_discount(order: Dict) -> None:

@@ -2226,15 +2226,45 @@ async def referrals_page(request: Request):
         "referral_reminder_code": await get_setting("referral_reminder_code", ""),
     }
     codes = [c["code"] for c in await get_discount_codes() if int(c.get("is_active") or 0)]
+    from core.database import get_referral_analytics, get_pending_referral_claims
+    from core.rewards import referral_tier_reward_text
+    analytics = await get_referral_analytics(14)
+    pending = await get_pending_referral_claims(50)
+    for cl in pending:
+        cl["reward_text"] = referral_tier_reward_text(cl)
     return _templates.TemplateResponse(
         "referrals.html",
         await _ctx_ui(
             request, tiers=tiers, s=s, active="referrals", codes=codes,
+            analytics=analytics, pending_claims=pending,
             brand=await get_setting("ui.brand_name", "Atlas Account"),
             banner_set=bool((banner_file_id or "").strip() or (banner_url or "").strip()),
             banner_status=request.query_params.get("banner", ""),
         ),
     )
+
+
+@app.post(f"/{S}/referrals/claims/{{cid}}/approve")
+async def referral_claim_approve_web(request: Request, cid: int):
+    if not _auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    from core.rewards import grant_referral_claim
+    rbot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.MARKDOWN)) if (BOT_TOKEN and len(BOT_TOKEN) > 20) else None
+    try:
+        res = await grant_referral_claim(cid, bot=rbot, reviewer_id=0)
+    finally:
+        if rbot:
+            await rbot.session.close()
+    return JSONResponse({"success": bool(res.get("ok")), **res})
+
+
+@app.post(f"/{S}/referrals/claims/{{cid}}/reject")
+async def referral_claim_reject_web(request: Request, cid: int):
+    if not _auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    from core.rewards import reject_referral_claim
+    res = await reject_referral_claim(cid)
+    return JSONResponse({"success": bool(res.get("ok")), **res})
 
 
 @app.post(f"/{S}/referrals/settings")
