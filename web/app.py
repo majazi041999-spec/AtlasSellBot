@@ -1914,6 +1914,51 @@ async def miniapp_referral(request: Request):
     })
 
 
+async def _miniapp_jitter(base: int) -> int:
+    """Same tiny unique-amount jitter the bot applies (for card-receipt matching)."""
+    base = int(base or 0)
+    if base <= 0 or await get_setting("random_price_enabled", "1") != "1":
+        return base
+    try:
+        max_off = max(0, int(await get_setting("random_price_max", "990") or 990))
+    except (TypeError, ValueError):
+        max_off = 990
+    if max_off < 10:
+        return base
+    import random as _rnd
+    return base + _rnd.randint(1, max_off // 10) * 10
+
+
+async def _miniapp_card() -> dict:
+    from core.config import CARD_NUMBER, CARD_HOLDER, CARD_BANK
+    return {
+        "card": await get_setting("card_number", CARD_NUMBER),
+        "holder": await get_setting("card_holder", CARD_HOLDER),
+        "bank": await get_setting("card_bank", CARD_BANK),
+    }
+
+
+async def _miniapp_price(user: dict, pkg: dict, code: str) -> dict:
+    """Final price = base (user per-GB / package) − user% − code, then jitter."""
+    from core.database import get_user_pricing, validate_discount_code
+    pricing = await get_user_pricing(user["id"])
+    ppg = int(pricing.get("price_per_gb") or 0)
+    discount = float(pricing.get("discount_percent") or 0)
+    base = int(ppg * float(pkg["traffic_gb"])) if ppg > 0 else int(pkg["price"])
+    final = max(0, int(base * (100 - discount) / 100))
+    code = (code or "").strip()
+    code_amount = 0
+    applied = ""
+    if code:
+        v = await validate_discount_code(code, user["id"], int(pkg["id"]), final)
+        if not v.get("ok"):
+            return {"error": v.get("error") or "code_invalid"}
+        code_amount = int(v["discount_amount"])
+        applied = v["code"]
+    net = await _miniapp_jitter(max(0, final - code_amount))
+    return {"base": final, "code": applied, "code_amount": code_amount, "net": net}
+
+
 @app.post("/app/api/buy")
 async def miniapp_buy(request: Request):
     if await get_setting("miniapp_enabled", "0") != "1":
@@ -1929,19 +1974,170 @@ async def miniapp_buy(request: Request):
     pkg = await get_package(pid)
     if not pkg or not int(pkg.get("is_active") or 0):
         return JSONResponse({"error": "package_unavailable"}, status_code=400)
-    from core.database import create_order, get_order
-    from core.config import CARD_NUMBER, CARD_HOLDER, CARD_BANK
-    oid = await create_order(user["id"], pid)
-    order = await get_order(oid)
+    from core.database import create_order, update_order
+    name = re.sub(r"[^A-Za-z0-9_-]+", "", str(body.get("name") or "").strip())[:24]
+    priced = await _miniapp_price(user, pkg, str(body.get("discount_code") or ""))
+    if priced.get("error"):
+        return JSONResponse({"error": priced["error"], "code_error": True}, status_code=400)
+    oid = await create_order(user["id"], pid, custom_config_name=name, custom_price=priced["net"])
+    if priced["code"] and priced["code_amount"] > 0:
+        await update_order(oid, discount_code=priced["code"], discount_amount=priced["code_amount"])
     return JSONResponse({
         "ok": True, "order_id": oid,
-        "payment": {
-            "amount": int(order.get("price") or 0),
-            "card": await get_setting("card_number", CARD_NUMBER),
-            "holder": await get_setting("card_holder", CARD_HOLDER),
-            "bank": await get_setting("card_bank", CARD_BANK),
-        },
+        "payment": {"amount": priced["net"], "base": priced["base"],
+                    "code_amount": priced["code_amount"], **await _miniapp_card()},
     })
+
+
+@app.post("/app/api/wallet/topup")
+async def miniapp_wallet_topup(request: Request):
+    if await get_setting("miniapp_enabled", "0") != "1":
+        return JSONResponse({"error": "disabled"}, status_code=403)
+    user = await _miniapp_user(request)
+    if not user:
+        return JSONResponse({"error": "invalid_init_data"}, status_code=401)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    amount = int(float(body.get("amount") or 0))
+    if amount < 1000:
+        return JSONResponse({"error": "amount_too_small"}, status_code=400)
+    amount = await _miniapp_jitter(amount)
+    return JSONResponse({"ok": True, "amount": amount, **await _miniapp_card()})
+
+
+@app.post("/app/api/services/rename")
+async def miniapp_service_rename(request: Request):
+    if await get_setting("miniapp_enabled", "0") != "1":
+        return JSONResponse({"error": "disabled"}, status_code=403)
+    user = await _miniapp_user(request)
+    if not user:
+        return JSONResponse({"error": "invalid_init_data"}, status_code=401)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    from core.database import get_subscription_profile, update_subscription_profile
+    profile = await get_subscription_profile(int(body.get("profile_id") or 0))
+    if not profile or int(profile.get("user_id") or 0) != int(user["id"]):
+        return JSONResponse({"error": "not_your_service"}, status_code=403)
+    name = re.sub(r"[^\w \-]+", "", str(body.get("name") or ""), flags=re.UNICODE).strip()[:40]
+    await update_subscription_profile(int(profile["id"]), name=name)
+    return JSONResponse({"ok": True, "name": name})
+
+
+@app.post("/app/api/services/renew")
+async def miniapp_service_renew(request: Request):
+    if await get_setting("miniapp_enabled", "0") != "1":
+        return JSONResponse({"error": "disabled"}, status_code=403)
+    user = await _miniapp_user(request)
+    if not user:
+        return JSONResponse({"error": "invalid_init_data"}, status_code=401)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    from core.database import get_subscription_profile, create_custom_order, update_order
+    profile = await get_subscription_profile(int(body.get("profile_id") or 0))
+    if not profile or int(profile.get("user_id") or 0) != int(user["id"]):
+        return JSONResponse({"error": "not_your_service"}, status_code=403)
+    traffic_gb = float(profile.get("traffic_gb") or 0)
+    duration = max(1, int(profile.get("duration_days") or 0))
+    price = 0
+    for pkg in await get_packages(active_only=True):
+        if abs(float(pkg.get("traffic_gb") or 0) - traffic_gb) < 0.001 and int(pkg.get("duration_days") or 0) == duration:
+            price = int(pkg.get("price") or 0)
+            break
+    if price <= 0:
+        return JSONResponse({"error": "no_matching_package"}, status_code=400)
+    price = await _miniapp_jitter(price)
+    oid = await create_custom_order(user["id"], f"تمدید {profile.get('name') or profile['id']}",
+                                    traffic_gb, duration, price, notes=f"renew_sub:{profile['id']}")
+    await update_order(oid, renew_sub_profile_id=int(profile["id"]))
+    return JSONResponse({"ok": True, "order_id": oid, "payment": {"amount": price, **await _miniapp_card()}})
+
+
+@app.post("/app/api/receipt")
+async def miniapp_receipt(
+    request: Request,
+    photo: UploadFile = File(...),
+    kind: str = Form("order"),
+    id: int = Form(0),
+    amount: int = Form(0),
+):
+    if await get_setting("miniapp_enabled", "0") != "1":
+        return JSONResponse({"error": "disabled"}, status_code=403)
+    user = await _miniapp_user(request)
+    if not user:
+        return JSONResponse({"error": "invalid_init_data"}, status_code=401)
+    if not BOT_TOKEN or len(BOT_TOKEN) < 20:
+        return JSONResponse({"error": "bot_unavailable"}, status_code=503)
+    data = await photo.read()
+    if not data or len(data) > 6 * 1024 * 1024:
+        return JSONResponse({"error": "bad_image"}, status_code=400)
+    if data[:3] != b"\xff\xd8\xff" and data[:8] != b"\x89PNG\r\n\x1a\n":
+        return JSONResponse({"error": "not_an_image"}, status_code=400)
+
+    from core.database import (get_order, update_order, add_review_message,
+                               get_all_admin_telegram_ids, create_topup_request)
+    from bot.keyboards import order_review_kb, topup_review_kb
+    bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.MARKDOWN))
+    admin_targets = list(dict.fromkeys(list(ADMIN_IDS) + await get_all_admin_telegram_ids()))
+    uname = user.get("username") or "—"
+    fname = user.get("full_name") or "کاربر"
+    try:
+        if kind == "order":
+            order = await get_order(int(id))
+            if not order or int(order.get("user_id") or 0) != int(user["id"]):
+                return JSONResponse({"error": "not_your_order"}, status_code=403)
+            file_id = ""
+            caption = (f"🧾 فیش جدید (مینی‌اپ)\nسفارش: #{order['id']}\n{fname} (@{uname})\n"
+                       f"{order.get('pkg_name') or '-'}\n{int(order.get('price') or 0):,} تومان")
+            for aid in admin_targets:
+                try:
+                    sent = await bot.send_photo(aid, BufferedInputFile(data, "receipt.jpg"), caption=caption,
+                                                reply_markup=order_review_kb(int(order["id"])), parse_mode=None)
+                    file_id = file_id or (sent.photo[-1].file_id if sent.photo else "")
+                    await add_review_message("order", int(order["id"]), sent.chat.id, sent.message_id)
+                except Exception:
+                    pass
+            await update_order(int(order["id"]), status="receipt_submitted", receipt_file_id=file_id)
+            return JSONResponse({"ok": True})
+        elif kind == "topup":
+            amt = int(amount or 0)
+            if amt < 1000:
+                return JSONResponse({"error": "amount_too_small"}, status_code=400)
+            file_id = ""
+            for aid in admin_targets:  # first send gives us a reusable file_id
+                try:
+                    tmp = await bot.send_photo(aid, BufferedInputFile(data, "topup.jpg"),
+                                               caption="در حال ثبت…", parse_mode=None)
+                    file_id = tmp.photo[-1].file_id if tmp.photo else ""
+                    try:
+                        await bot.delete_message(aid, tmp.message_id)
+                    except Exception:
+                        pass
+                    break
+                except Exception:
+                    continue
+            req_id = await create_topup_request(int(user["id"]), amt, file_id)
+            caption = (f"💳 درخواست شارژ کیف پول (مینی‌اپ)\n#Topup_{req_id}\n{fname} (@{uname})\n"
+                       f"🆔 {user.get('telegram_id')}\nمبلغ: {amt:,} تومان")
+            for aid in admin_targets:
+                try:
+                    if file_id:
+                        sent = await bot.send_photo(aid, file_id, caption=caption,
+                                                    reply_markup=topup_review_kb(req_id), parse_mode=None)
+                    else:
+                        sent = await bot.send_message(aid, caption, reply_markup=topup_review_kb(req_id), parse_mode=None)
+                    await add_review_message("topup", req_id, sent.chat.id, sent.message_id)
+                except Exception:
+                    pass
+            return JSONResponse({"ok": True})
+        return JSONResponse({"error": "bad_kind"}, status_code=400)
+    finally:
+        await bot.session.close()
 
 
 # ── Mini App management (admin-only, behind the secret path) ──
