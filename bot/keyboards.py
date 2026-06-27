@@ -60,14 +60,14 @@ def admin_menu(finance_only: bool = False) -> ReplyKeyboardMarkup:
 def user_menu(include_wholesale: bool = True) -> ReplyKeyboardMarkup:
     b = ReplyKeyboardBuilder()
     b.row(KeyboardButton(text="📡 وضعیت سرویس"), KeyboardButton(text="🛒 خرید سرویس"))
-    b.row(KeyboardButton(text="🧪 دریافت اکانت تست"))
+    b.row(KeyboardButton(text="🧪 تست رایگان"))
     b.row(KeyboardButton(text="🔄 انتقال سرور"), KeyboardButton(text="📋 سفارش‌های من"))
     b.row(KeyboardButton(text="🔄 شروع مجدد"))
     b.row(KeyboardButton(text="💳 کیف پول"), KeyboardButton(text="🎁 دعوت دوستان"))
     b.row(KeyboardButton(text="📞 پشتیبانی"), KeyboardButton(text="🕊️ پیام ناشناس"))
     if include_wholesale:
         b.row(KeyboardButton(text="🏷️ خرید عمده"))
-    b.row(KeyboardButton(text="🔗 سینک کانفیگ قبلی"))
+    b.row(KeyboardButton(text="🔗 افزودن سرویس قبلی"))
     return b.as_markup(resize_keyboard=True)
 
 

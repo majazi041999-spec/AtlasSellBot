@@ -1243,7 +1243,7 @@ async def cfg_qr(cb: CallbackQuery):
         await cb.answer("❌ ارسال QR Code ناموفق بود.", show_alert=True)
 
 
-@router.message(F.text == "🧪 دریافت اکانت تست")
+@router.message(F.text == "🧪 تست رایگان")
 async def test_account(msg: Message):
     if not await _ensure_channel_membership(msg):
         return
@@ -1328,10 +1328,8 @@ async def buy_pkg_selected(cb: CallbackQuery, state: FSMContext):
     await state.set_state(BuyService.custom_name)
     await state.update_data(package_id=pid)
     await cb.message.edit_text(
-        "✍️ اگر می‌خواهید انتهای اسم کانفیگ یک نام دلخواه اضافه شود، همینجا بفرستید.\n\n"
-        "مثال: `mobile` یا `ali`\n"
-        "اگر نمی‌خواهید، `-` را بفرستید.\n\n"
-        "اسم اصلی ربات حفظ می‌شود و نام دلخواه شما بعد از آن می‌آید.",
+        "✍️ می‌خوای روی سرویست یک اسم دلخواه باشه؟ (مثلاً «موبایل» یا اسم خودت)\n\n"
+        "بنویس و بفرست، یا برای رد شدن دکمهٔ زیر را بزن.",
         parse_mode="Markdown",
         reply_markup=custom_name_kb(),
     )
@@ -1895,7 +1893,7 @@ async def user_config_link_lookup(msg: Message):
 
     await msg.answer(
         "❌ این کانفیگ داخل حساب شما پیدا نشد.\n\n"
-        "اگر این سرویس را قبلاً خارج از ربات گرفته‌اید، از گزینه «🔗 سینک کانفیگ قبلی» استفاده کنید.",
+        "اگر این سرویس را قبلاً خارج از ربات گرفته‌اید، از گزینه «🔗 افزودن سرویس قبلی» استفاده کنید.",
         parse_mode=None,
     )
 
@@ -1929,7 +1927,7 @@ async def _notify_admins_plain(bot: Bot, text: str):
             pass
 
 
-@router.message(F.text == "🔗 سینک کانفیگ قبلی")
+@router.message(F.text == "🔗 افزودن سرویس قبلی")
 async def legacy_sync_start(msg: Message, state: FSMContext):
     if not await _ensure_channel_membership(msg):
         return
