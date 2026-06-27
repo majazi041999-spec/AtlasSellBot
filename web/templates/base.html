@@ -690,6 +690,9 @@ html[data-theme="dark"] .card:hover{box-shadow:0 26px 60px rgba(0,0,0,.5)}
     <a class="nav-item {% if active=='discounts' %}active{% endif %}" href="/{{ S }}/discounts">
       <span class="ni">🎟️</span> کد تخفیف
     </a>
+    <a class="nav-item {% if active=='campaigns' %}active{% endif %}" href="/{{ S }}/campaigns">
+      <span class="ni">📣</span> کمپین و آمار
+    </a>
     <a class="nav-item {% if active=='orders' %}active{% endif %}" href="/{{ S }}/orders">
       <span class="ni">💰</span> سفارش‌ها
       {% if pending_badge is defined and pending_badge > 0 %}

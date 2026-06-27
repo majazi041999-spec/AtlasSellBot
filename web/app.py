@@ -59,6 +59,9 @@ from core.database import (
     add_discount_code,
     update_discount_code,
     delete_discount_code,
+    get_campaign_overview,
+    get_revenue_timeseries,
+    reset_campaign_flag,
     get_referral_tiers,
     get_referral_tier,
     add_referral_tier,
@@ -1616,6 +1619,7 @@ async def discount_add(
     package_id: int = Form(0),
     expires: str = Form(""),
     note: str = Form(""),
+    campaign: str = Form(""),
 ):
     if not _auth(request):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
@@ -1623,7 +1627,8 @@ async def discount_add(
     if code:
         await add_discount_code(
             code, kind, value, max_uses=max_uses, per_user_limit=per_user_limit,
-            min_amount=min_amount, package_id=package_id, expires_at=_date_to_ms(expires), note=note,
+            min_amount=min_amount, package_id=package_id, expires_at=_date_to_ms(expires),
+            note=note, campaign=(campaign or "").strip(),
         )
     return RedirectResponse(f"/{S}/discounts", status_code=302)
 
@@ -1641,6 +1646,7 @@ async def discount_edit(
     package_id: int = Form(0),
     expires: str = Form(""),
     note: str = Form(""),
+    campaign: str = Form(""),
 ):
     if not _auth(request):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
@@ -1649,7 +1655,8 @@ async def discount_edit(
         kind=kind if kind in ("percent", "fixed") else "percent",
         value=float(value or 0), max_uses=int(max_uses or 0),
         per_user_limit=int(per_user_limit or 0), min_amount=int(min_amount or 0),
-        package_id=int(package_id or 0), expires_at=_date_to_ms(expires), note=(note or "").strip(),
+        package_id=int(package_id or 0), expires_at=_date_to_ms(expires),
+        note=(note or "").strip(), campaign=(campaign or "").strip(),
     )
     return RedirectResponse(f"/{S}/discounts", status_code=302)
 
@@ -1670,6 +1677,101 @@ async def discount_delete(request: Request, cid: int):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     await delete_discount_code(cid)
     return JSONResponse({"success": True})
+
+
+# ═══════════════════════════════ CAMPAIGNS ══════════════════════════
+_CAMPAIGN_LABELS = {
+    "trial2paid": "تبدیل تست به خرید",
+    "winback": "بازگشت مشتری",
+    "referral": "معرفی دوستان",
+    "renewal": "مشوق تمدید",
+    "general": "عمومی",
+}
+
+
+@app.get(f"/{S}/campaigns", response_class=HTMLResponse)
+async def campaigns_page(request: Request):
+    if not _auth(request):
+        return _redir_login()
+    overview = await get_campaign_overview()
+    for c in overview:
+        c["label"] = _CAMPAIGN_LABELS.get(c["campaign"], c["campaign"])
+    series = await get_revenue_timeseries(14)
+    codes = [c["code"] for c in await get_discount_codes() if int(c.get("is_active") or 0)]
+    s = {
+        "campaign_trial_enabled": await get_setting("campaign_trial_enabled", "1"),
+        "campaign_trial_code": await get_setting("campaign_trial_code", ""),
+        "campaign_trial_template": await get_setting("campaign_trial_template", ""),
+        "campaign_winback_enabled": await get_setting("campaign_winback_enabled", "1"),
+        "campaign_winback_code": await get_setting("campaign_winback_code", ""),
+        "campaign_winback_days": await get_setting("campaign_winback_days", "14"),
+        "campaign_winback_template": await get_setting("campaign_winback_template", ""),
+    }
+    kpi = {
+        "revenue": sum(c["revenue"] for c in overview),
+        "conversions": sum(c["conversions"] for c in overview),
+        "discount": sum(c["discount"] for c in overview),
+        "sent": sum(c["sent"] for c in overview),
+    }
+    return _templates.TemplateResponse(
+        "campaigns.html",
+        await _ctx_ui(request, overview=overview, series=series, codes=codes, s=s, kpi=kpi, active="campaigns"),
+    )
+
+
+@app.post(f"/{S}/campaigns/settings")
+async def campaigns_settings(
+    request: Request,
+    campaign_trial_enabled: str = Form("0"),
+    campaign_trial_code: str = Form(""),
+    campaign_trial_template: str = Form(""),
+    campaign_winback_enabled: str = Form("0"),
+    campaign_winback_code: str = Form(""),
+    campaign_winback_days: str = Form("14"),
+    campaign_winback_template: str = Form(""),
+):
+    if not _auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    await set_setting("campaign_trial_enabled", "1" if campaign_trial_enabled == "1" else "0")
+    await set_setting("campaign_trial_code", (campaign_trial_code or "").strip())
+    await set_setting("campaign_trial_template", campaign_trial_template or "")
+    await set_setting("campaign_winback_enabled", "1" if campaign_winback_enabled == "1" else "0")
+    await set_setting("campaign_winback_code", (campaign_winback_code or "").strip())
+    try:
+        wd = max(1, int(float(campaign_winback_days or 14)))
+    except (TypeError, ValueError):
+        wd = 14
+    await set_setting("campaign_winback_days", str(wd))
+    await set_setting("campaign_winback_template", campaign_winback_template or "")
+    return RedirectResponse(f"/{S}/campaigns", status_code=302)
+
+
+@app.post(f"/{S}/campaigns/{{name}}/run")
+async def campaigns_run(request: Request, name: str):
+    if not _auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    if not BOT_TOKEN or len(BOT_TOKEN) < 20:
+        return JSONResponse({"error": "توکن ربات تنظیم نشده است."}, status_code=400)
+    from core.campaigns import run_trial_to_paid, run_winback
+    bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.MARKDOWN))
+    try:
+        if name == "trial2paid":
+            res = await run_trial_to_paid(bot)
+        elif name == "winback":
+            res = await run_winback(bot)
+        else:
+            return JSONResponse({"error": "campaign unknown"}, status_code=400)
+    finally:
+        await bot.session.close()
+    return JSONResponse({"success": True, "sent": res.get("sent", 0)})
+
+
+@app.post(f"/{S}/campaigns/{{name}}/reset")
+async def campaigns_reset(request: Request, name: str):
+    if not _auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    cleared = await reset_campaign_flag(name)
+    return JSONResponse({"success": True, "cleared": cleared})
 
 
 # ═══════════════════════════════ REFERRALS ══════════════════════════

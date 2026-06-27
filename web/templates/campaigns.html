@@ -1,0 +1,185 @@
+{% extends "base.html" %}
+{% block title %}کمپین‌ها{% endblock %}
+{% block topbar_title %}📣 کمپین‌های فروش و آمار{% endblock %}
+
+{% block content %}
+<style>
+.cmp-chart-card{padding:18px 18px 8px}
+.cmp-chart-wrap{position:relative;width:100%;height:240px}
+#revChart{width:100%;height:100%;display:block}
+.cmp-legend{display:flex;gap:14px;flex-wrap:wrap;color:var(--txt2);font-size:.78rem;margin-top:4px}
+.cmp-grid2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+@media(max-width:760px){.cmp-grid2{grid-template-columns:1fr}}
+.cmp-run{display:flex;gap:8px;flex-wrap:wrap;margin-top:6px}
+</style>
+
+<div class="stat-grid">
+  <div class="stat-card grad">
+    <span class="stat-icon">💸</span>
+    <div class="stat-val" style="font-size:1.5rem">{{ "{:,}".format(kpi.revenue) }}</div>
+    <div class="stat-lbl">درآمد از کمپین‌ها (تومان)</div>
+  </div>
+  <div class="stat-card">
+    <span class="stat-icon" style="background:linear-gradient(135deg,#10b981,#34d399)">✅</span>
+    <div class="stat-val">{{ kpi.conversions }}</div>
+    <div class="stat-lbl">تبدیل (استفاده از کد)</div>
+  </div>
+  <div class="stat-card">
+    <span class="stat-icon" style="background:linear-gradient(135deg,#f59e0b,#fbbf24)">📤</span>
+    <div class="stat-val">{{ kpi.sent }}</div>
+    <div class="stat-lbl">پیام ارسال‌شده</div>
+  </div>
+  <div class="stat-card">
+    <span class="stat-icon" style="background:linear-gradient(135deg,#ef4444,#fb7185)">🏷️</span>
+    <div class="stat-val" style="font-size:1.4rem">{{ "{:,}".format(kpi.discount) }}</div>
+    <div class="stat-lbl">تخفیف اعطا‌شده (تومان)</div>
+  </div>
+</div>
+
+<div class="card cmp-chart-card" style="margin-bottom:16px">
+  <div class="sec-hd" style="margin-bottom:10px"><span class="sec-title">📈 درآمد ۱۴ روز اخیر</span></div>
+  <div class="cmp-chart-wrap"><svg id="revChart" viewBox="0 0 720 240" preserveAspectRatio="none"></svg></div>
+  <div class="cmp-legend"><span>● فروش روزانه (تومان)</span></div>
+</div>
+
+<div class="sec-hd"><span class="sec-title">📊 عملکرد هر کمپین</span></div>
+<div class="table-wrap" style="margin-bottom:18px">
+  <table>
+    <thead><tr><th>کمپین</th><th>ارسال</th><th>تبدیل</th><th>نرخ تبدیل</th><th>درآمد (تومان)</th><th>تخفیف (تومان)</th></tr></thead>
+    <tbody>
+    {% for c in overview %}
+    <tr>
+      <td><strong>{{ c.label }}</strong></td>
+      <td>{{ c.sent }}</td>
+      <td>{{ c.conversions }}</td>
+      <td>{% if c.sent %}<span class="badge {{ 'b-green' if c.rate >= 10 else 'b-yellow' }}">{{ c.rate }}%</span>{% else %}—{% endif %}</td>
+      <td>{{ "{:,}".format(c.revenue) }}</td>
+      <td>{{ "{:,}".format(c.discount) }}</td>
+    </tr>
+    {% endfor %}
+    {% if not overview %}
+    <tr><td colspan="6" style="text-align:center;color:var(--txt3);padding:24px">هنوز داده‌ای ثبت نشده. کد تخفیف‌ها را به یک کمپین وصل کنید و کمپین‌ها را فعال کنید.</td></tr>
+    {% endif %}
+    </tbody>
+  </table>
+</div>
+
+<div class="cmp-grid2">
+  <!-- Trial -> Paid -->
+  <div class="card">
+    <div class="sec-hd"><span class="sec-title">🎯 تبدیل تست به خرید</span></div>
+    <p class="muted" style="font-size:.8rem;margin-bottom:12px">وقتی تست رایگان کاربر تمام شد و خرید نکرد، خودکار یک کد تخفیف اولین خرید برایش ارسال می‌شود.</p>
+    <form action="/{{ S }}/campaigns/settings" method="POST">
+      <input type="hidden" name="campaign_winback_enabled" value="{{ s.campaign_winback_enabled }}">
+      <input type="hidden" name="campaign_winback_code" value="{{ s.campaign_winback_code }}">
+      <input type="hidden" name="campaign_winback_days" value="{{ s.campaign_winback_days }}">
+      <input type="hidden" name="campaign_winback_template" value="{{ s.campaign_winback_template|e }}">
+      <div class="form-row">
+        <div class="form-group">
+          <label>وضعیت</label>
+          <select name="campaign_trial_enabled" class="form-control">
+            <option value="1" {% if s.campaign_trial_enabled == '1' %}selected{% endif %}>🟢 فعال</option>
+            <option value="0" {% if s.campaign_trial_enabled != '1' %}selected{% endif %}>🔴 غیرفعال</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>کد تخفیف اولین خرید</label>
+          <select name="campaign_trial_code" class="form-control">
+            <option value="">— انتخاب کد —</option>
+            {% for code in codes %}<option value="{{ code }}" {% if s.campaign_trial_code == code %}selected{% endif %}>{{ code }}</option>{% endfor %}
+          </select>
+        </div>
+      </div>
+      <div class="form-group"><label>متن پیام — <code>{brand}</code> و <code>{code}</code> و <code>{name}</code></label>
+        <textarea name="campaign_trial_template" class="form-control" rows="4">{{ s.campaign_trial_template }}</textarea></div>
+      <div style="display:flex;justify-content:flex-end"><button class="btn btn-primary">💾 ذخیره</button></div>
+    </form>
+    <div class="cmp-run">
+      <button class="btn btn-outline btn-sm" onclick="runCampaign('trial2paid',this)">▶️ اجرای دستی الان</button>
+      <button class="btn btn-ghost btn-sm" onclick="resetCampaign('trial2paid')">♻️ ریست (ارسال دوباره)</button>
+    </div>
+  </div>
+
+  <!-- Win-back -->
+  <div class="card">
+    <div class="sec-hd"><span class="sec-title">🔁 بازگشت مشتری</span></div>
+    <p class="muted" style="font-size:.8rem;margin-bottom:12px">برای کسانی که سرویسشان مدتی است تمام شده و دیگر سرویس فعالی ندارند، یک کد بازگشت ارسال می‌شود.</p>
+    <form action="/{{ S }}/campaigns/settings" method="POST">
+      <input type="hidden" name="campaign_trial_enabled" value="{{ s.campaign_trial_enabled }}">
+      <input type="hidden" name="campaign_trial_code" value="{{ s.campaign_trial_code }}">
+      <input type="hidden" name="campaign_trial_template" value="{{ s.campaign_trial_template|e }}">
+      <div class="form-row">
+        <div class="form-group">
+          <label>وضعیت</label>
+          <select name="campaign_winback_enabled" class="form-control">
+            <option value="1" {% if s.campaign_winback_enabled == '1' %}selected{% endif %}>🟢 فعال</option>
+            <option value="0" {% if s.campaign_winback_enabled != '1' %}selected{% endif %}>🔴 غیرفعال</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>کد تخفیف بازگشت</label>
+          <select name="campaign_winback_code" class="form-control">
+            <option value="">— انتخاب کد —</option>
+            {% for code in codes %}<option value="{{ code }}" {% if s.campaign_winback_code == code %}selected{% endif %}>{{ code }}</option>{% endfor %}
+          </select>
+        </div>
+      </div>
+      <div class="form-group"><label>بعد از چند روز از پایان سرویس؟</label>
+        <input type="number" min="1" name="campaign_winback_days" class="form-control" value="{{ s.campaign_winback_days }}"></div>
+      <div class="form-group"><label>متن پیام — <code>{brand}</code> و <code>{code}</code> و <code>{name}</code></label>
+        <textarea name="campaign_winback_template" class="form-control" rows="4">{{ s.campaign_winback_template }}</textarea></div>
+      <div style="display:flex;justify-content:flex-end"><button class="btn btn-primary">💾 ذخیره</button></div>
+    </form>
+    <div class="cmp-run">
+      <button class="btn btn-outline btn-sm" onclick="runCampaign('winback',this)">▶️ اجرای دستی الان</button>
+      <button class="btn btn-ghost btn-sm" onclick="resetCampaign('winback')">♻️ ریست (ارسال دوباره)</button>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const SERIES = {{ series|tojson }};
+function drawChart(){
+  const svg = document.getElementById('revChart');
+  if(!svg || !SERIES.length) return;
+  const W=720,H=240,pad=28;
+  const max = Math.max(1, ...SERIES.map(d=>d.revenue));
+  const stepX = (W - pad*2) / Math.max(1, SERIES.length-1);
+  const x = i => pad + i*stepX;
+  const y = v => H - pad - (v/max)*(H - pad*2);
+  let line='', area='';
+  SERIES.forEach((d,i)=>{ const px=x(i), py=y(d.revenue); line += (i?'L':'M')+px+' '+py+' '; });
+  area = line + `L${x(SERIES.length-1)} ${H-pad} L${x(0)} ${H-pad} Z`;
+  let grid='';
+  for(let g=0; g<=3; g++){ const gy = pad + g*((H-pad*2)/3); grid += `<line x1="${pad}" y1="${gy}" x2="${W-pad}" y2="${gy}" stroke="var(--border)" stroke-width="1" stroke-dasharray="3 4"/>`; }
+  let dots='';
+  SERIES.forEach((d,i)=>{ dots += `<circle cx="${x(i)}" cy="${y(d.revenue)}" r="3.5" fill="var(--p)"><title>${d.date}: ${d.revenue.toLocaleString()} تومان</title></circle>`; });
+  svg.innerHTML = `
+    <defs><linearGradient id="rg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="var(--p)" stop-opacity="0.35"/>
+      <stop offset="100%" stop-color="var(--p)" stop-opacity="0"/>
+    </linearGradient></defs>
+    ${grid}
+    <path d="${area}" fill="url(#rg)"/>
+    <path d="${line}" fill="none" stroke="var(--p)" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
+    ${dots}`;
+}
+drawChart();
+window.addEventListener('resize', drawChart);
+async function runCampaign(name, btn){
+  const old = btn.innerHTML; btn.disabled=true; btn.innerHTML='⏳ در حال ارسال...';
+  const r = await api(`/${S}/campaigns/${name}/run`);
+  btn.disabled=false; btn.innerHTML=old;
+  if(r && r.success){ toast(`ارسال شد به ${r.sent} کاربر`,'success'); }
+  else { toast((r && r.error) || 'خطا','error'); }
+}
+async function resetCampaign(name){
+  if(!confirm('فلگ ارسال این کمپین صفر شود تا دوباره برای همه ارسال شود؟')) return;
+  const r = await api(`/${S}/campaigns/${name}/reset`);
+  if(r && r.success){ toast(`ریست شد (${r.cleared} کاربر)`,'success'); }
+  else toast('خطا','error');
+}
+</script>
+{% endblock %}

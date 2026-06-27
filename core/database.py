@@ -2,7 +2,7 @@ import aiosqlite
 import secrets
 import string
 import time
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from typing import Optional, List, Dict
 from core.config import DB_PATH
 from core.jalali import jalali_date_key, jalali_display, tehran_now
@@ -241,10 +241,21 @@ CREATE TABLE IF NOT EXISTS subscription_node_configs (
     FOREIGN KEY(server_id) REFERENCES servers(id)
 );
 
+CREATE TABLE IF NOT EXISTS campaign_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    campaign TEXT NOT NULL,               -- 'trial2paid' | 'winback' | 'renewal' | 'referral' | ...
+    kind TEXT DEFAULT 'sent',             -- 'sent' | 'converted'
+    user_id INTEGER DEFAULT 0,
+    order_id INTEGER DEFAULT 0,
+    amount INTEGER DEFAULT 0,
+    created_at TEXT DEFAULT (datetime('now','localtime'))
+);
+
 CREATE TABLE IF NOT EXISTS discount_codes (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     code TEXT NOT NULL UNIQUE,
     kind TEXT DEFAULT 'percent',          -- 'percent' | 'fixed'
+    campaign TEXT DEFAULT '',             -- groups a code under a sales campaign
     value REAL DEFAULT 0,                 -- percent (0-100) or toman amount
     max_uses INTEGER DEFAULT 0,           -- 0 = unlimited (total)
     per_user_limit INTEGER DEFAULT 1,     -- 0 = unlimited per user
@@ -331,6 +342,11 @@ async def _ensure_columns(db):
             ("admin_role", "TEXT DEFAULT 'none'"),
             ("balance_toman", "INTEGER DEFAULT 0"),
             ("referral_reminder_sent", "INTEGER DEFAULT 0"),
+            ("trial_followup_sent", "INTEGER DEFAULT 0"),
+            ("winback_sent", "INTEGER DEFAULT 0"),
+        ],
+        "discount_codes": [
+            ("campaign", "TEXT DEFAULT ''"),
         ],
         "configs": [
             ("starts_on_first_use", "INTEGER DEFAULT 0"),
@@ -973,6 +989,136 @@ async def mark_referral_reminder_sent(invitee_id: int):
         await db.commit()
 
 
+# ══════════════════ CAMPAIGNS / ANALYTICS ══════════════════
+
+async def log_campaign_event(campaign: str, kind: str = "sent", user_id: int = 0, order_id: int = 0, amount: int = 0):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "INSERT INTO campaign_events(campaign,kind,user_id,order_id,amount) VALUES(?,?,?,?,?)",
+            ((campaign or "").strip(), kind, int(user_id or 0), int(order_id or 0), int(amount or 0)),
+        )
+        await db.commit()
+
+
+async def get_campaign_overview() -> List[Dict]:
+    """Per-campaign performance: sends, conversions (code redemptions), revenue,
+    discount given, conversion rate."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        sends: Dict[str, int] = {}
+        async with db.execute("SELECT campaign, COUNT(*) c FROM campaign_events WHERE kind='sent' GROUP BY campaign") as c:
+            for r in await c.fetchall():
+                sends[r["campaign"]] = int(r["c"])
+        agg: Dict[str, Dict] = {}
+        async with db.execute(
+            """SELECT dc.campaign AS campaign, COUNT(dr.id) AS conv,
+                      COALESCE(SUM(dr.amount),0) AS discount,
+                      COALESCE(SUM(o.custom_price),0) AS revenue
+               FROM discount_redemptions dr
+               JOIN discount_codes dc ON dc.id = dr.code_id
+               LEFT JOIN orders o ON o.id = dr.order_id AND o.status='approved'
+               WHERE COALESCE(dc.campaign,'') != ''
+               GROUP BY dc.campaign"""
+        ) as c:
+            for r in await c.fetchall():
+                agg[r["campaign"]] = {"conversions": int(r["conv"]), "discount": int(r["discount"]), "revenue": int(r["revenue"])}
+        out = []
+        for name in sorted(set(list(sends.keys()) + list(agg.keys()))):
+            a = agg.get(name, {})
+            sent = sends.get(name, 0)
+            conv = int(a.get("conversions", 0))
+            out.append({
+                "campaign": name,
+                "sent": sent,
+                "conversions": conv,
+                "revenue": int(a.get("revenue", 0)),
+                "discount": int(a.get("discount", 0)),
+                "rate": round(conv / sent * 100, 1) if sent else 0.0,
+            })
+        out.sort(key=lambda x: x["revenue"], reverse=True)
+        return out
+
+
+async def get_revenue_timeseries(days: int = 14) -> List[Dict]:
+    """Daily approved-order revenue for the last N days (gaps filled with zero)."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            """SELECT date(o.approved_at) AS d,
+                      COALESCE(SUM(COALESCE(NULLIF(o.custom_price,0), p.price)),0) AS rev,
+                      COUNT(*) AS cnt
+               FROM orders o LEFT JOIN packages p ON p.id = o.package_id
+               WHERE o.status='approved' AND o.approved_at IS NOT NULL
+                 AND date(o.approved_at) >= date('now', ?, 'localtime')
+               GROUP BY date(o.approved_at)""",
+            (f"-{max(1, int(days)) - 1} days",),
+        ) as c:
+            rows = {r["d"]: {"rev": int(r["rev"]), "cnt": int(r["cnt"])} for r in await c.fetchall()}
+    out = []
+    today = datetime.now()
+    for i in range(max(1, int(days)) - 1, -1, -1):
+        d = (today - timedelta(days=i)).strftime("%Y-%m-%d")
+        v = rows.get(d, {"rev": 0, "cnt": 0})
+        out.append({"date": d, "revenue": v["rev"], "orders": v["cnt"]})
+    return out
+
+
+async def get_lapsed_users_for_winback(expired_before_ms: int, limit: int = 200) -> List[Dict]:
+    """Users whose newest service ended before `expired_before_ms`, have nothing
+    active now, and haven't been win-backed yet."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            """SELECT u.id, u.telegram_id, u.full_name FROM users u
+               WHERE COALESCE(u.winback_sent,0)=0 AND u.telegram_id>0 AND COALESCE(u.is_blocked,0)=0
+                 AND EXISTS(SELECT 1 FROM subscription_profiles sp WHERE sp.user_id=u.id AND sp.expire_timestamp>0 AND sp.expire_timestamp<=?)
+                 AND NOT EXISTS(SELECT 1 FROM subscription_profiles s2 WHERE s2.user_id=u.id AND s2.is_active=1)
+               ORDER BY u.id LIMIT ?""",
+            (int(expired_before_ms), max(1, int(limit or 200))),
+        ) as c:
+            return [dict(r) for r in await c.fetchall()]
+
+
+async def mark_winback_sent(user_id: int):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE users SET winback_sent=1 WHERE id=?", (int(user_id),))
+        await db.commit()
+
+
+async def get_trial_followups(created_before: str, limit: int = 200) -> List[Dict]:
+    """Users whose free trial has ended (created before cutoff), no approved
+    purchase yet, not yet nudged."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            """SELECT u.id, u.telegram_id, u.full_name FROM test_accounts ta
+               JOIN users u ON u.id = ta.user_id
+               WHERE COALESCE(u.trial_followup_sent,0)=0 AND u.telegram_id>0 AND COALESCE(u.is_blocked,0)=0
+                 AND ta.created_at <= ?
+                 AND NOT EXISTS(SELECT 1 FROM orders o WHERE o.user_id=u.id AND o.status='approved')
+               ORDER BY u.id LIMIT ?""",
+            (str(created_before), max(1, int(limit or 200))),
+        ) as c:
+            return [dict(r) for r in await c.fetchall()]
+
+
+async def mark_trial_followup_sent(user_id: int):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE users SET trial_followup_sent=1 WHERE id=?", (int(user_id),))
+        await db.commit()
+
+
+async def reset_campaign_flag(flag: str) -> int:
+    """Admin: clear a campaign's per-user 'sent' flag to allow a fresh run."""
+    col = {"winback": "winback_sent", "trial2paid": "trial_followup_sent"}.get(flag)
+    if not col:
+        return 0
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute(f"UPDATE users SET {col}=0 WHERE {col}=1")
+        await db.commit()
+        return cur.rowcount or 0
+
+
 # ══════════════════ DISCOUNT CODES ══════════════════
 
 async def get_discount_codes() -> List[Dict]:
@@ -1003,14 +1149,14 @@ async def get_discount_code_by_code(code: str) -> Optional[Dict]:
 
 async def add_discount_code(code: str, kind: str, value: float, max_uses: int = 0,
                             per_user_limit: int = 1, min_amount: int = 0, package_id: int = 0,
-                            expires_at: int = 0, note: str = "") -> int:
+                            expires_at: int = 0, note: str = "", campaign: str = "") -> int:
     async with aiosqlite.connect(DB_PATH) as db:
         c = await db.execute(
-            """INSERT INTO discount_codes(code,kind,value,max_uses,per_user_limit,min_amount,package_id,expires_at,note)
-               VALUES(?,?,?,?,?,?,?,?,?)""",
+            """INSERT INTO discount_codes(code,kind,value,max_uses,per_user_limit,min_amount,package_id,expires_at,note,campaign)
+               VALUES(?,?,?,?,?,?,?,?,?,?)""",
             ((code or "").strip(), kind if kind in ("percent", "fixed") else "percent",
              float(value or 0), int(max_uses or 0), int(per_user_limit or 0),
-             int(min_amount or 0), int(package_id or 0), int(expires_at or 0), (note or "").strip()),
+             int(min_amount or 0), int(package_id or 0), int(expires_at or 0), (note or "").strip(), (campaign or "").strip()),
         )
         await db.commit()
         return int(c.lastrowid)

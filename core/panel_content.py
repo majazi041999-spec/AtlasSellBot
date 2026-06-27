@@ -85,6 +85,23 @@ SETTINGS_DEFAULTS: Dict[str, str] = {
         "برای جلوگیری از قطعی، همین حالا تمدید کنید 👇"
     ),
     "discount_enabled": "1",
+    "campaign_trial_enabled": "1",
+    "campaign_trial_code": "",
+    "campaign_trial_template": (
+        "👋 سلام! امیدوارم از تست رایگان {brand} راضی بوده باشی.\n\n"
+        "برای اولین خریدت یک هدیه برات گذاشتیم:\n"
+        "🎟️ کد تخفیف: {code}\n\n"
+        "همین حالا سرویس کامل با سرعت بالا و چند سرور پشتیبان بگیر. 🚀"
+    ),
+    "campaign_winback_enabled": "1",
+    "campaign_winback_code": "",
+    "campaign_winback_days": "14",
+    "campaign_winback_template": (
+        "سلام 👋 جای تو توی {brand} خالیه!\n\n"
+        "یک کد تخفیف ویژه برای بازگشتت آماده کردیم:\n"
+        "🎟️ کد: {code}\n\n"
+        "با همون سرعت و کیفیت قبل، دوباره وصل شو. منتظرتیم 🌟"
+    ),
     "referral_enabled": "1",
     "referral_per_referral_amount": "0",
     "referral_per_referral_gb": "0",

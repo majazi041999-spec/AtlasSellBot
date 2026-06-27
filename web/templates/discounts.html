@@ -28,7 +28,7 @@
     <td>{% if c.is_active %}<span class="badge b-green">🟢 فعال</span>{% else %}<span class="badge b-red">🔴 غیرفعال</span>{% endif %}</td>
     <td style="white-space:nowrap">
       <button class="btn btn-outline btn-xs"
-        onclick='openEdit({{ c.id }}, {{ c.code|tojson }}, {{ c.kind|tojson }}, {{ c.value }}, {{ c.max_uses }}, {{ c.per_user_limit }}, {{ c.min_amount }}, {{ c.package_id }}, {{ (c.expires_input or "")|tojson }}, {{ (c.note or "")|tojson }})'>✏️</button>
+        onclick='openEdit({{ c.id }}, {{ c.code|tojson }}, {{ c.kind|tojson }}, {{ c.value }}, {{ c.max_uses }}, {{ c.per_user_limit }}, {{ c.min_amount }}, {{ c.package_id }}, {{ (c.expires_input or "")|tojson }}, {{ (c.note or "")|tojson }}, {{ (c.campaign or "")|tojson }})'>✏️</button>
       <button class="btn btn-outline btn-xs" onclick="toggleCode({{ c.id }})">{{ '🔴' if c.is_active else '🟢' }}</button>
       <button class="btn btn-danger btn-xs" onclick="deleteCode({{ c.id }}, {{ c.code|tojson }})">🗑️</button>
     </td>
@@ -67,7 +67,19 @@
       </select>
     </div>
   </div>
-  <div class="form-group"><label>تاریخ انقضا (اختیاری)</label><input type="date" name="expires" id="{{ prefix }}_expires" class="form-control"></div>
+  <div class="form-row">
+    <div class="form-group"><label>تاریخ انقضا (اختیاری)</label><input type="date" name="expires" id="{{ prefix }}_expires" class="form-control"></div>
+    <div class="form-group">
+      <label>کمپین (برای آمار)</label>
+      <select name="campaign" id="{{ prefix }}_campaign" class="form-control">
+        <option value="">— بدون کمپین —</option>
+        <option value="trial2paid">تبدیل تست به خرید</option>
+        <option value="winback">بازگشت مشتری</option>
+        <option value="renewal">مشوق تمدید</option>
+        <option value="general">عمومی</option>
+      </select>
+    </div>
+  </div>
   <div class="form-group"><label>یادداشت (اختیاری)</label><input type="text" name="note" id="{{ prefix }}_note" class="form-control"></div>
 {% endmacro %}
 
@@ -106,7 +118,7 @@ async function deleteCode(id, code){
   const r = await api(`/${S}/discounts/${id}/delete`);
   if(r.success){ toast('حذف شد','success'); setTimeout(()=>location.reload(),700); } else toast('خطا!','error');
 }
-function openEdit(id, code, kind, value, maxUses, perUser, minAmount, pkgId, expires, note){
+function openEdit(id, code, kind, value, maxUses, perUser, minAmount, pkgId, expires, note, campaign){
   document.getElementById('e_code').value = code;
   document.getElementById('e_kind').value = kind;
   document.getElementById('e_value').value = value;
@@ -116,6 +128,7 @@ function openEdit(id, code, kind, value, maxUses, perUser, minAmount, pkgId, exp
   document.getElementById('e_package_id').value = pkgId;
   document.getElementById('e_expires').value = expires || '';
   document.getElementById('e_note').value = note || '';
+  document.getElementById('e_campaign').value = campaign || '';
   document.getElementById('editForm').action = `/${S}/discounts/${id}/edit`;
   openModal('editModal');
 }
