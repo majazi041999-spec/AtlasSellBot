@@ -1,0 +1,86 @@
+{% extends "base.html" %}
+{% block title %}مینی‌اپ{% endblock %}
+{% block topbar_title %}📱 مینی‌اپ تلگرام{% endblock %}
+
+{% block content %}
+<div class="card" style="margin-bottom:16px">
+  <div class="sec-hd"><span class="sec-title">وضعیت</span></div>
+  <div style="display:flex;gap:10px;flex-wrap:wrap">
+    <span class="badge {{ 'b-green' if s.miniapp_enabled == '1' else 'b-red' }}">{{ '🟢 فعال' if s.miniapp_enabled == '1' else '🔴 غیرفعال' }}</span>
+    <span class="badge {{ 'b-green' if built else 'b-yellow' }}">{{ '✅ ساخته‌شده' if built else '⚠️ هنوز build نشده' }}</span>
+    {% if app_url %}<span class="badge b-blue">{{ app_url }}</span>{% endif %}
+  </div>
+  {% if not built %}<p class="muted" style="margin-top:10px">خروجی مینی‌اپ در ریپو موجود نیست؛ روی سرور <code>git pull</code> بزن.</p>{% endif %}
+</div>
+
+<div class="card" style="margin-bottom:16px">
+  <div class="sec-hd"><span class="sec-title">⚙️ تنظیمات</span></div>
+  <form action="/{{ S }}/miniapp/settings" method="POST">
+    <div class="form-row">
+      <div class="form-group">
+        <label>وضعیت مینی‌اپ</label>
+        <select name="miniapp_enabled" class="form-control">
+          <option value="1" {% if s.miniapp_enabled == '1' %}selected{% endif %}>🟢 فعال</option>
+          <option value="0" {% if s.miniapp_enabled != '1' %}selected{% endif %}>🔴 غیرفعال</option>
+        </select>
+      </div>
+      <div class="form-group"><label>لوگو (ایموجی)</label><input type="text" name="miniapp_logo" class="form-control" value="{{ s.miniapp_logo }}" maxlength="4"></div>
+    </div>
+    <div class="form-group"><label>عنوان (خالی = اسم برند)</label><input type="text" name="miniapp_title" class="form-control" value="{{ s.miniapp_title }}" placeholder="Atlas"></div>
+    <div class="form-group"><label>دامنهٔ مینی‌اپ (روی پورت ۴۴۳)</label><input type="text" name="miniapp_domain" class="form-control" value="{{ s.miniapp_domain }}" placeholder="app.example.com" dir="ltr"></div>
+    <div style="display:flex;justify-content:flex-end"><button class="btn btn-primary">💾 ذخیره</button></div>
+  </form>
+</div>
+
+<div class="card" style="margin-bottom:16px">
+  <div class="sec-hd"><span class="sec-title">🔒 گواهی SSL مینی‌اپ (دامنهٔ مجزا، پورت ۴۴۳)</span></div>
+  <p class="muted" style="margin-bottom:12px">برای دامنهٔ مینی‌اپ یک گواهی جداگانه روی پورت ۴۴۳ گرفته و nginx آن به همین برنامه پراکسی می‌شود؛ یعنی <code>https://دامنه/app</code> مینی‌اپ را سرو می‌کند. اول مطمئن شو رکورد DNS دامنه به IP این سرور اشاره می‌کند.</p>
+  <div class="form-row">
+    <div class="form-group"><label>دامنه</label><input type="text" id="ma_domain" class="form-control" value="{{ s.miniapp_domain }}" placeholder="app.example.com" dir="ltr"></div>
+    <div class="form-group"><label>ایمیل (برای Let's Encrypt)</label><input type="text" id="ma_email" class="form-control" value="{{ s.cert_email }}" placeholder="you@example.com" dir="ltr"></div>
+  </div>
+  <button class="btn btn-primary" type="button" onclick="startCert(this)">🔒 گرفتن گواهی SSL</button>
+  <pre id="certLog" style="display:none;margin-top:12px;max-height:280px;overflow:auto;background:rgba(0,0,0,.25);border:1px solid var(--border);border-radius:10px;padding:12px;font-size:.78rem;direction:ltr;text-align:left"></pre>
+</div>
+
+<div class="card">
+  <div class="sec-hd"><span class="sec-title">📋 اتصال در BotFather</span></div>
+  <ol class="muted" style="padding-right:18px;line-height:2.1">
+    <li>در <b>@BotFather</b> دستور <code>/mybots</code> → ربات خودت را انتخاب کن.</li>
+    <li><b>Bot Settings → Menu Button → Edit menu button URL</b> و این آدرس را وارد کن:
+      <br><code dir="ltr">{{ app_url or 'https://دامنهٔ‌مینی‌اپ/app' }}</code></li>
+    <li>عنوان دکمهٔ منو را مثلاً «🚀 اپلیکیشن» بگذار.</li>
+    <li>وضعیت مینی‌اپ را در همین صفحه «فعال» کن.</li>
+  </ol>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let certTimer = null;
+async function startCert(btn){
+  const domain = document.getElementById('ma_domain').value.trim();
+  const email = document.getElementById('ma_email').value.trim();
+  if(!domain){ toast('دامنه را وارد کن','error'); return; }
+  const log = document.getElementById('certLog');
+  log.style.display='block'; log.textContent='⏳ شروع...';
+  btn.disabled=true;
+  const fd = new FormData(); fd.append('miniapp_domain',domain); fd.append('cert_email',email);
+  let r;
+  try{ r = await (await fetch(`/${S}/miniapp/cert/start`,{method:'POST',body:fd})).json(); }
+  catch(e){ r = {error:e.message}; }
+  if(r.error){ log.textContent='❌ '+r.error; btn.disabled=false; return; }
+  if(certTimer) clearInterval(certTimer);
+  certTimer = setInterval(async ()=>{
+    let d; try{ d = await (await fetch(`/${S}/miniapp/cert/log`)).json(); }catch(e){ return; }
+    log.textContent = (d.log || '').slice(-6000);
+    log.scrollTop = log.scrollHeight;
+    if(d.status === 'ok' || d.status === 'error'){
+      clearInterval(certTimer); btn.disabled=false;
+      if(d.status==='ok'){ toast('گواهی صادر شد ✓','success'); }
+      else toast('عملیات گواهی ناموفق بود','error');
+    }
+  }, 2000);
+}
+</script>
+{% endblock %}

@@ -62,6 +62,8 @@ from core.database import (
     get_campaign_overview,
     get_revenue_timeseries,
     reset_campaign_flag,
+    get_user_subscription_profiles,
+    get_user_balance,
     get_referral_tiers,
     get_referral_tier,
     add_referral_tier,
@@ -1772,6 +1774,241 @@ async def campaigns_reset(request: Request, name: str):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     cleared = await reset_campaign_flag(name)
     return JSONResponse({"success": True, "cleared": cleared})
+
+
+# ═══════════════════════════════ MINI APP ═══════════════════════════
+_miniapp_dist = os.path.join(_dir, "miniapp", "dist")
+try:
+    from fastapi.staticfiles import StaticFiles
+    if os.path.isdir(os.path.join(_miniapp_dist, "assets")):
+        app.mount("/app/assets", StaticFiles(directory=os.path.join(_miniapp_dist, "assets")), name="miniapp_assets")
+except Exception as _e:  # pragma: no cover
+    logger.warning("mini app static mount skipped: %s", _e)
+
+
+async def _miniapp_brand() -> dict:
+    title = (await get_setting("miniapp_title", "")).strip() or await get_setting("ui.brand_name", "Atlas")
+    return {"title": title, "logo": (await get_setting("miniapp_logo", "🌐")).strip() or "🌐"}
+
+
+async def _miniapp_user(request: Request):
+    """Validate Telegram initData and return the matching DB user (or None)."""
+    from core.miniapp import validate_init_data
+    from core.database import get_or_create_user
+    res = validate_init_data(request.headers.get("X-Telegram-Init-Data", ""))
+    if not res:
+        return None
+    tg = res["user"]
+    name = (str(tg.get("first_name", "")) + " " + str(tg.get("last_name", ""))).strip()
+    return await get_or_create_user(int(tg["id"]), tg.get("username") or "", name)
+
+
+@app.get("/app")
+@app.get("/app/")
+async def miniapp_index():
+    idx = os.path.join(_miniapp_dist, "index.html")
+    if not os.path.isfile(idx):
+        return HTMLResponse("<h3 style='font-family:sans-serif'>Mini app not built yet.</h3>", status_code=503)
+    return FileResponse(idx, media_type="text/html")
+
+
+@app.post("/app/api/bootstrap")
+async def miniapp_bootstrap(request: Request):
+    brand = await _miniapp_brand()
+    if await get_setting("miniapp_enabled", "0") != "1":
+        return JSONResponse({"enabled": False, "brand": brand})
+    user = await _miniapp_user(request)
+    if not user:
+        return JSONResponse({"error": "invalid_init_data"}, status_code=401)
+    bal = await get_user_balance(user["id"])
+    profiles = await get_user_subscription_profiles(user["id"])
+    active = sum(1 for p in profiles if int(p.get("is_active") or 0))
+    return JSONResponse({
+        "enabled": True,
+        "brand": brand,
+        "user": {"name": ((user.get("full_name") or "").split(" ")[0] if user.get("full_name") else ""), "balance": bal},
+        "stats": {"active_services": active, "total_services": len(profiles)},
+        "support": (await get_setting("support_username", "")).lstrip("@"),
+    })
+
+
+@app.post("/app/api/services")
+async def miniapp_services(request: Request):
+    if await get_setting("miniapp_enabled", "0") != "1":
+        return JSONResponse({"error": "disabled"}, status_code=403)
+    user = await _miniapp_user(request)
+    if not user:
+        return JSONResponse({"error": "invalid_init_data"}, status_code=401)
+    out = []
+    for p in await get_user_subscription_profiles(user["id"]):
+        nodes = await _get_sub_nodes(p["id"])
+        try:
+            sub_url = await subscription_url(p["token"])
+        except Exception:
+            sub_url = ""
+        out.append({
+            "id": p["id"], "name": p.get("name") or p.get("email"),
+            "traffic_gb": p.get("traffic_gb"), "used_bytes": p.get("used_bytes"),
+            "expire_ts": int(p.get("expire_timestamp") or 0), "is_active": int(p.get("is_active") or 0),
+            "sub_url": sub_url,
+            "nodes": [{"label": n.get("node_label") or n.get("server_name"), "is_active": int(n.get("is_active") or 0)} for n in nodes],
+        })
+    return JSONResponse({"services": out})
+
+
+@app.post("/app/api/packages")
+async def miniapp_packages(request: Request):
+    if await get_setting("miniapp_enabled", "0") != "1":
+        return JSONResponse({"error": "disabled"}, status_code=403)
+    user = await _miniapp_user(request)
+    if not user:
+        return JSONResponse({"error": "invalid_init_data"}, status_code=401)
+    pkgs = await get_packages(active_only=True)
+    return JSONResponse({"packages": [
+        {"id": p["id"], "name": p["name"], "traffic_gb": p["traffic_gb"], "duration_days": p["duration_days"], "price": p["price"]}
+        for p in pkgs
+    ]})
+
+
+@app.post("/app/api/wallet")
+async def miniapp_wallet(request: Request):
+    if await get_setting("miniapp_enabled", "0") != "1":
+        return JSONResponse({"error": "disabled"}, status_code=403)
+    user = await _miniapp_user(request)
+    if not user:
+        return JSONResponse({"error": "invalid_init_data"}, status_code=401)
+    from core.database import get_wallet_transactions
+    bal = await get_user_balance(user["id"])
+    txs = await get_wallet_transactions(user["id"], 12)
+    return JSONResponse({"balance": bal, "transactions": [{"amount": t["amount"], "kind": t["kind"], "note": t["note"]} for t in txs]})
+
+
+@app.post("/app/api/referral")
+async def miniapp_referral(request: Request):
+    if await get_setting("miniapp_enabled", "0") != "1":
+        return JSONResponse({"error": "disabled"}, status_code=403)
+    user = await _miniapp_user(request)
+    if not user:
+        return JSONResponse({"error": "invalid_init_data"}, status_code=401)
+    from core.miniapp import get_bot_username
+    from core.rewards import referral_tier_reward_text
+    from core.database import get_referral_earned_total, get_referral_stats, count_converted_referrals, get_referral_tiers
+    uname = await get_bot_username()
+    code = user.get("referral_code", "")
+    link = f"https://t.me/{uname}?start={code}" if uname else ""
+    brand = await get_setting("ui.brand_name", "Atlas")
+    caption = (await get_setting("referral_caption", "")).replace("{brand}", brand)
+    stats = await get_referral_stats(user["id"])
+    converted = await count_converted_referrals(user["id"])
+    tiers = await get_referral_tiers(active_only=True)
+    return JSONResponse({
+        "link": link,
+        "earned": await get_referral_earned_total(user["id"]),
+        "invited": stats["invited"], "converted": converted,
+        "caption": caption.replace("{link}", link),
+        "caption_no_link": caption.replace("{link}", "").strip(),
+        "tiers": [{"referrals_needed": int(t["referrals_needed"]), "reward": referral_tier_reward_text(t), "reached": converted >= int(t["referrals_needed"])} for t in tiers],
+    })
+
+
+@app.post("/app/api/buy")
+async def miniapp_buy(request: Request):
+    if await get_setting("miniapp_enabled", "0") != "1":
+        return JSONResponse({"error": "disabled"}, status_code=403)
+    user = await _miniapp_user(request)
+    if not user:
+        return JSONResponse({"error": "invalid_init_data"}, status_code=401)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    pid = int(body.get("package_id") or 0)
+    pkg = await get_package(pid)
+    if not pkg or not int(pkg.get("is_active") or 0):
+        return JSONResponse({"error": "package_unavailable"}, status_code=400)
+    from core.database import create_order, get_order
+    from core.config import CARD_NUMBER, CARD_HOLDER, CARD_BANK
+    oid = await create_order(user["id"], pid)
+    order = await get_order(oid)
+    return JSONResponse({
+        "ok": True, "order_id": oid,
+        "payment": {
+            "amount": int(order.get("price") or 0),
+            "card": await get_setting("card_number", CARD_NUMBER),
+            "holder": await get_setting("card_holder", CARD_HOLDER),
+            "bank": await get_setting("card_bank", CARD_BANK),
+        },
+    })
+
+
+# ── Mini App management (admin-only, behind the secret path) ──
+@app.get(f"/{S}/miniapp", response_class=HTMLResponse)
+async def miniapp_admin_page(request: Request):
+    if not _auth(request):
+        return _redir_login()
+    domain = await get_setting("miniapp_domain", "")
+    built = os.path.isfile(os.path.join(_miniapp_dist, "index.html"))
+    app_url = f"https://{domain}/app" if domain else ""
+    s = {
+        "miniapp_enabled": await get_setting("miniapp_enabled", "0"),
+        "miniapp_title": await get_setting("miniapp_title", ""),
+        "miniapp_logo": await get_setting("miniapp_logo", "🌐"),
+        "miniapp_domain": domain,
+        "cert_email": await get_setting("cert_email", ""),
+    }
+    return _templates.TemplateResponse(
+        "miniapp.html",
+        await _ctx_ui(request, s=s, built=built, app_url=app_url, active="miniapp"),
+    )
+
+
+@app.post(f"/{S}/miniapp/settings")
+async def miniapp_admin_settings(
+    request: Request,
+    miniapp_enabled: str = Form("0"),
+    miniapp_title: str = Form(""),
+    miniapp_logo: str = Form("🌐"),
+    miniapp_domain: str = Form(""),
+):
+    if not _auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    await set_setting("miniapp_enabled", "1" if miniapp_enabled == "1" else "0")
+    await set_setting("miniapp_title", (miniapp_title or "").strip())
+    await set_setting("miniapp_logo", (miniapp_logo or "🌐").strip() or "🌐")
+    await set_setting("miniapp_domain", _clean_domain(miniapp_domain))
+    return RedirectResponse(f"/{S}/miniapp", status_code=302)
+
+
+@app.post(f"/{S}/miniapp/cert/start")
+async def miniapp_cert_start(request: Request):
+    """Issue an SSL cert + nginx vhost for the mini-app's OWN domain on 443,
+    proxying to this same app (so https://<domain>/app serves the mini app)."""
+    if not _auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    form = await request.form()
+    domain = _clean_domain(str(form.get("miniapp_domain") or await get_setting("miniapp_domain", "")))
+    email = str(form.get("cert_email") or await get_setting("cert_email", "")).strip().lower()
+    if not domain:
+        return JSONResponse({"error": "دامنهٔ مینی‌اپ معتبر نیست. مثال: app.example.com"}, status_code=400)
+    if _read_job_log("miniapp_cert").get("running"):
+        return JSONResponse({"error": "یک عملیات گواهی مینی‌اپ در حال اجراست. صبر کنید."}, status_code=409)
+    await set_setting("miniapp_domain", domain)
+    if email:
+        await set_setting("cert_email", email)
+    script = _atlas_tls_proxy_script(domain, email, WEB_PORT, 443)
+    _asyncio.create_task(_run_logged_job("miniapp_cert", script))
+    return JSONResponse({"success": True, "domain": domain, "app_url": f"https://{domain}/app"})
+
+
+@app.get(f"/{S}/miniapp/cert/log")
+async def miniapp_cert_log(request: Request):
+    if not _auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    data = _read_job_log("miniapp_cert")
+    if data.get("status") == "ok":
+        domain = _clean_domain(await get_setting("miniapp_domain", ""))
+        data["app_url"] = f"https://{domain}/app" if domain else ""
+    return JSONResponse(data)
 
 
 # ═══════════════════════════════ REFERRALS ══════════════════════════

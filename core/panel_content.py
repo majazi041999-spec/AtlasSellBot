@@ -84,6 +84,10 @@ SETTINGS_DEFAULTS: Dict[str, str] = {
         "زمان باقی‌مانده: حدود {days_left} روز\n\n"
         "برای جلوگیری از قطعی، همین حالا تمدید کنید 👇"
     ),
+    "miniapp_enabled": "0",
+    "miniapp_title": "",
+    "miniapp_logo": "🌐",
+    "miniapp_domain": "",
     "discount_enabled": "1",
     "campaign_trial_enabled": "1",
     "campaign_trial_code": "",

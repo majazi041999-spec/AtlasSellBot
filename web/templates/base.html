@@ -693,6 +693,9 @@ html[data-theme="dark"] .card:hover{box-shadow:0 26px 60px rgba(0,0,0,.5)}
     <a class="nav-item {% if active=='campaigns' %}active{% endif %}" href="/{{ S }}/campaigns">
       <span class="ni">📣</span> کمپین و آمار
     </a>
+    <a class="nav-item {% if active=='miniapp' %}active{% endif %}" href="/{{ S }}/miniapp">
+      <span class="ni">📱</span> مینی‌اپ
+    </a>
     <a class="nav-item {% if active=='orders' %}active{% endif %}" href="/{{ S }}/orders">
       <span class="ni">💰</span> سفارش‌ها
       {% if pending_badge is defined and pending_badge > 0 %}

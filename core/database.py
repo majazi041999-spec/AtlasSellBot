@@ -763,6 +763,16 @@ async def get_user_balance(user_id: int) -> int:
             return int((row[0] if row else 0) or 0)
 
 
+async def get_wallet_transactions(user_id: int, limit: int = 12) -> List[Dict]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT amount, kind, note, created_at FROM wallet_transactions WHERE user_id=? ORDER BY id DESC LIMIT ?",
+            (int(user_id), max(1, int(limit or 12))),
+        ) as c:
+            return [dict(r) for r in await c.fetchall()]
+
+
 async def add_user_balance(user_id: int, amount: int, kind: str = "manual", note: str = "", actor_telegram_id: int = 0) -> int:
     amount = int(amount or 0)
     async with aiosqlite.connect(DB_PATH) as db:
