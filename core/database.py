@@ -264,6 +264,7 @@ CREATE TABLE IF NOT EXISTS discount_codes (
     package_id INTEGER DEFAULT 0,         -- 0 = all packages
     expires_at INTEGER DEFAULT 0,         -- epoch ms, 0 = never
     is_active INTEGER DEFAULT 1,
+    targeted INTEGER DEFAULT 0,           -- 1 = only users targeted by the campaign may redeem
     note TEXT DEFAULT '',
     created_at TEXT DEFAULT (datetime('now','localtime'))
 );
@@ -347,6 +348,7 @@ async def _ensure_columns(db):
         ],
         "discount_codes": [
             ("campaign", "TEXT DEFAULT ''"),
+            ("targeted", "INTEGER DEFAULT 0"),
         ],
         "configs": [
             ("starts_on_first_use", "INTEGER DEFAULT 0"),
@@ -1159,17 +1161,28 @@ async def get_discount_code_by_code(code: str) -> Optional[Dict]:
 
 async def add_discount_code(code: str, kind: str, value: float, max_uses: int = 0,
                             per_user_limit: int = 1, min_amount: int = 0, package_id: int = 0,
-                            expires_at: int = 0, note: str = "", campaign: str = "") -> int:
+                            expires_at: int = 0, note: str = "", campaign: str = "", targeted: int = 0) -> int:
     async with aiosqlite.connect(DB_PATH) as db:
         c = await db.execute(
-            """INSERT INTO discount_codes(code,kind,value,max_uses,per_user_limit,min_amount,package_id,expires_at,note,campaign)
-               VALUES(?,?,?,?,?,?,?,?,?,?)""",
+            """INSERT INTO discount_codes(code,kind,value,max_uses,per_user_limit,min_amount,package_id,expires_at,note,campaign,targeted)
+               VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
             ((code or "").strip(), kind if kind in ("percent", "fixed") else "percent",
              float(value or 0), int(max_uses or 0), int(per_user_limit or 0),
-             int(min_amount or 0), int(package_id or 0), int(expires_at or 0), (note or "").strip(), (campaign or "").strip()),
+             int(min_amount or 0), int(package_id or 0), int(expires_at or 0), (note or "").strip(),
+             (campaign or "").strip(), 1 if int(targeted or 0) else 0),
         )
         await db.commit()
         return int(c.lastrowid)
+
+
+async def user_has_campaign_event(campaign: str, user_id: int, kind: str = "sent") -> bool:
+    """True if the user was targeted by a campaign (e.g. received its message)."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT 1 FROM campaign_events WHERE campaign=? AND user_id=? AND kind=? LIMIT 1",
+            ((campaign or "").strip(), int(user_id), kind),
+        ) as c:
+            return await c.fetchone() is not None
 
 
 async def update_discount_code(cid: int, **kw):
@@ -1236,6 +1249,10 @@ async def validate_discount_code(code: str, user_id: int, package_id: int, amoun
     pkg = int(row.get("package_id") or 0)
     if pkg and pkg != int(package_id or 0):
         return {"ok": False, "error": "wrong_package"}
+    # Campaign-locked code: only the users the campaign actually targeted may use it.
+    if int(row.get("targeted") or 0) and str(row.get("campaign") or "").strip():
+        if not await user_has_campaign_event(str(row["campaign"]).strip(), int(user_id), "sent"):
+            return {"ok": False, "error": "not_eligible"}
     if int(amount or 0) < int(row.get("min_amount") or 0):
         return {"ok": False, "error": "min_amount", "min_amount": int(row.get("min_amount") or 0)}
     per_user = int(row.get("per_user_limit") or 0)

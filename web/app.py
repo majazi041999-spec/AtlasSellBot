@@ -1622,6 +1622,7 @@ async def discount_add(
     expires: str = Form(""),
     note: str = Form(""),
     campaign: str = Form(""),
+    targeted: str = Form("0"),
 ):
     if not _auth(request):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
@@ -1630,7 +1631,7 @@ async def discount_add(
         await add_discount_code(
             code, kind, value, max_uses=max_uses, per_user_limit=per_user_limit,
             min_amount=min_amount, package_id=package_id, expires_at=_date_to_ms(expires),
-            note=note, campaign=(campaign or "").strip(),
+            note=note, campaign=(campaign or "").strip(), targeted=1 if targeted == "1" else 0,
         )
     return RedirectResponse(f"/{S}/discounts", status_code=302)
 
@@ -1649,6 +1650,7 @@ async def discount_edit(
     expires: str = Form(""),
     note: str = Form(""),
     campaign: str = Form(""),
+    targeted: str = Form("0"),
 ):
     if not _auth(request):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
@@ -1659,6 +1661,7 @@ async def discount_edit(
         per_user_limit=int(per_user_limit or 0), min_amount=int(min_amount or 0),
         package_id=int(package_id or 0), expires_at=_date_to_ms(expires),
         note=(note or "").strip(), campaign=(campaign or "").strip(),
+        targeted=1 if targeted == "1" else 0,
     )
     return RedirectResponse(f"/{S}/discounts", status_code=302)
 

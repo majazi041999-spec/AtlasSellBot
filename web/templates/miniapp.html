@@ -73,11 +73,12 @@ async function startCert(btn){
   if(certTimer) clearInterval(certTimer);
   certTimer = setInterval(async ()=>{
     let d; try{ d = await (await fetch(`/${S}/miniapp/cert/log`)).json(); }catch(e){ return; }
-    log.textContent = (d.log || '').slice(-6000);
+    const text = Array.isArray(d.lines) ? d.lines.join('\n') : (d.log || '');
+    if(text) log.textContent = text.slice(-8000);
     log.scrollTop = log.scrollHeight;
     if(d.status === 'ok' || d.status === 'error'){
       clearInterval(certTimer); btn.disabled=false;
-      if(d.status==='ok'){ toast('گواهی صادر شد ✓','success'); }
+      if(d.status==='ok'){ toast('گواهی صادر شد ✓','success'); if(d.app_url){ log.textContent += `\n\n✅ آدرس مینی‌اپ: ${d.app_url}`; } }
       else toast('عملیات گواهی ناموفق بود','error');
     }
   }, 2000);

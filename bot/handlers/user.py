@@ -4,6 +4,7 @@ import time
 import json
 import base64
 import binascii
+import random
 import aiosqlite
 from urllib.parse import urlparse, parse_qs, unquote
 from datetime import datetime, timedelta, date
@@ -427,12 +428,13 @@ async def wallet_topup_amount(msg: Message, state: FSMContext):
     if not raw.isdigit() or int(raw) <= 0:
         await msg.answer("❌ مبلغ نامعتبر است. فقط عدد تومان بفرستید.")
         return
-    amount = int(raw)
+    amount = await _jitter_price(int(raw))
     await state.update_data(topup_amount=amount)
     await state.set_state(WalletTopup.waiting_receipt)
     card_bank, card_number, card_holder = await _get_card_info()
     await msg.answer(
-        f"✅ مبلغ: *{_fmt_toman(amount)} تومان*\n\n"
+        f"✅ مبلغ دقیق پرداخت: *{_fmt_toman(amount)} تومان*\n"
+        f"_لطفاً دقیقاً همین مبلغ را واریز کنید تا پرداختتان سریع شناسایی شود._\n\n"
         f"لطفاً واریز را انجام دهید و تصویر فیش را ارسال کنید.\n\n"
         f"🏦 {card_bank}\n`{card_number}`\n👤 {card_holder}",
         parse_mode="Markdown",
@@ -1336,6 +1338,23 @@ async def buy_pkg_selected(cb: CallbackQuery, state: FSMContext):
     await cb.answer()
 
 
+async def _jitter_price(base: int) -> int:
+    """Add a tiny random offset so each transaction has a unique, barely
+    noticeable amount the admin can match to a card receipt. e.g. 199000 -> 199050."""
+    base = int(base or 0)
+    if base <= 0:
+        return base
+    if await get_setting("random_price_enabled", "1") != "1":
+        return base
+    try:
+        max_off = max(0, int(await get_setting("random_price_max", "990") or 990))
+    except (TypeError, ValueError):
+        max_off = 990
+    if max_off < 10:
+        return base
+    return base + random.randint(1, max_off // 10) * 10
+
+
 async def _finalize_buy_payment(from_user, state: FSMContext):
     data = await state.get_data()
     pid = int(data.get("package_id") or 0)
@@ -1358,6 +1377,7 @@ async def _finalize_buy_payment(from_user, state: FSMContext):
         if not v.get("ok"):
             code = ""
     net_price = max(0, final_price - code_amount)
+    net_price = await _jitter_price(net_price)
 
     oid = await create_order(user["id"], pid, custom_config_name=custom_name, custom_price=net_price)
     if code and code_amount > 0:
@@ -1424,6 +1444,7 @@ def _discount_error_text(v: dict) -> str:
         "min_amount": f"❌ این کد فقط برای سفارش‌های بالای {_fmt_toman(int(v.get('min_amount') or 0))} تومان است.",
         "user_limit": "❌ شما قبلاً از این کد استفاده کرده‌اید.",
         "zero_discount": "❌ این کد برای این سفارش تخفیفی ندارد.",
+        "not_eligible": "❌ این کد فقط برای کاربرانی است که از طرف ما دریافتش کرده‌اند.",
     }.get(v.get("error"), "❌ کد تخفیف معتبر نیست.")
 
 

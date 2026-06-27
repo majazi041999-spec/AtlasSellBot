@@ -88,6 +88,8 @@ SETTINGS_DEFAULTS: Dict[str, str] = {
     "miniapp_title": "",
     "miniapp_logo": "🌐",
     "miniapp_domain": "",
+    "random_price_enabled": "1",
+    "random_price_max": "990",
     "discount_enabled": "1",
     "campaign_trial_enabled": "1",
     "campaign_trial_code": "",
