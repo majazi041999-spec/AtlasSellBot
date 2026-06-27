@@ -90,8 +90,17 @@
           </select>
         </div>
       </div>
+      <div class="form-group">
+        <label>متن آماده (پریست)</label>
+        <select class="form-control" onchange="applyPreset('trial', this.value)">
+          <option value="">— انتخاب متن آماده —</option>
+          <option value="0">دوستانه</option>
+          <option value="1">فوریت / تخفیف محدود</option>
+          <option value="2">مزایا‌محور</option>
+        </select>
+      </div>
       <div class="form-group"><label>متن پیام — <code>{brand}</code> و <code>{code}</code> و <code>{name}</code></label>
-        <textarea name="campaign_trial_template" class="form-control" rows="4">{{ s.campaign_trial_template }}</textarea></div>
+        <textarea name="campaign_trial_template" id="trialTpl" class="form-control" rows="5">{{ s.campaign_trial_template }}</textarea></div>
       <div style="display:flex;justify-content:flex-end"><button class="btn btn-primary">💾 ذخیره</button></div>
     </form>
     <div class="cmp-run">
@@ -126,8 +135,17 @@
       </div>
       <div class="form-group"><label>بعد از چند روز از پایان سرویس؟</label>
         <input type="number" min="1" name="campaign_winback_days" class="form-control" value="{{ s.campaign_winback_days }}"></div>
+      <div class="form-group">
+        <label>متن آماده (پریست)</label>
+        <select class="form-control" onchange="applyPreset('winback', this.value)">
+          <option value="">— انتخاب متن آماده —</option>
+          <option value="0">دلتنگی</option>
+          <option value="1">تخفیف ویژهٔ بازگشت</option>
+          <option value="2">یادآوری کیفیت</option>
+        </select>
+      </div>
       <div class="form-group"><label>متن پیام — <code>{brand}</code> و <code>{code}</code> و <code>{name}</code></label>
-        <textarea name="campaign_winback_template" class="form-control" rows="4">{{ s.campaign_winback_template }}</textarea></div>
+        <textarea name="campaign_winback_template" id="winbackTpl" class="form-control" rows="5">{{ s.campaign_winback_template }}</textarea></div>
       <div style="display:flex;justify-content:flex-end"><button class="btn btn-primary">💾 ذخیره</button></div>
     </form>
     <div class="cmp-run">
@@ -140,6 +158,23 @@
 
 {% block scripts %}
 <script>
+const PRESETS = {
+  trial: [
+    "👋 سلام! امیدوارم از تست رایگان {brand} راضی بوده باشی.\n\nبرای اولین خریدت یک هدیه برات گذاشتیم:\n🎟️ کد تخفیف: {code}\n\nهمین حالا سرویس کامل با سرعت بالا و چند سرور پشتیبان بگیر. 🚀",
+    "⏳ {name} عزیز، فرصت محدوده!\n\nتست رایگانت تموم شد و یک کد تخفیف ویژه فقط تا امشب برات فعاله:\n🎟️ {code}\n\nقبل از اینکه منقضی شه، سرویس کاملت رو بگیر 👇",
+    "✅ چرا {brand}؟\n⚡️ سرعت بالا برای اینستا، یوتیوب و گیم\n🛡 چند سرور پشتیبان؛ همیشه وصل\n☎️ پشتیبانی واقعی\n\nو برای شروع، این هدیه برای توئه:\n🎟️ {code}",
+  ],
+  winback: [
+    "سلام 👋 جای تو توی {brand} خالیه!\n\nیک کد تخفیف ویژه برای بازگشتت آماده کردیم:\n🎟️ کد: {code}\n\nبا همون سرعت و کیفیت قبل، دوباره وصل شو. منتظرتیم 🌟",
+    "🎁 {name} عزیز، دلمون برات تنگ شده!\n\nبه‌خاطر بازگشتت یک تخفیف ویژه گذاشتیم:\n🎟️ {code}\n\nهمین حالا سرویست رو دوباره فعال کن 👇",
+    "🔌 سرویست قطع شده؟\n\n{brand} حالا سرورهای بیشتر و پایدارتر داره. با این کد دوباره امتحان کن:\n🎟️ {code}\n\nمطمئنیم این بار راضی‌تر می‌مونی 🌟",
+  ],
+};
+function applyPreset(which, idx){
+  if(idx === '') return;
+  const el = document.getElementById(which === 'trial' ? 'trialTpl' : 'winbackTpl');
+  if(el && PRESETS[which] && PRESETS[which][idx] !== undefined){ el.value = PRESETS[which][idx]; }
+}
 const SERIES = {{ series|tojson }};
 function drawChart(){
   const svg = document.getElementById('revChart');
