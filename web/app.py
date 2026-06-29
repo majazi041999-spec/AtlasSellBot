@@ -1866,11 +1866,18 @@ async def miniapp_packages(request: Request):
     user = await _miniapp_user(request)
     if not user:
         return JSONResponse({"error": "invalid_init_data"}, status_code=401)
+    from core.pricing import package_price_for_user
     pkgs = await get_packages(active_only=True)
-    return JSONResponse({"packages": [
-        {"id": p["id"], "name": p["name"], "traffic_gb": p["traffic_gb"], "duration_days": p["duration_days"], "price": p["price"]}
-        for p in pkgs
-    ]})
+    out = []
+    for p in pkgs:
+        priced = await package_price_for_user(user["id"], p)
+        out.append({
+            "id": p["id"], "name": p["name"], "traffic_gb": p["traffic_gb"],
+            "duration_days": p["duration_days"],
+            "price": priced["final"],
+            "base": priced["base"] if priced["final"] != priced["base"] else 0,
+        })
+    return JSONResponse({"packages": out})
 
 
 @app.post("/app/api/wallet")
@@ -1939,13 +1946,10 @@ async def _miniapp_card() -> dict:
 
 
 async def _miniapp_price(user: dict, pkg: dict, code: str) -> dict:
-    """Final price = base (user per-GB / package) − user% − code, then jitter."""
-    from core.database import get_user_pricing, validate_discount_code
-    pricing = await get_user_pricing(user["id"])
-    ppg = int(pricing.get("price_per_gb") or 0)
-    discount = float(pricing.get("discount_percent") or 0)
-    base = int(ppg * float(pkg["traffic_gb"])) if ppg > 0 else int(pkg["price"])
-    final = max(0, int(base * (100 - discount) / 100))
+    """Final price = base (user per-GB / unlimited / package) − user% − code, then jitter."""
+    from core.database import validate_discount_code
+    from core.pricing import package_price_for_user
+    final = (await package_price_for_user(user["id"], pkg))["final"]
     code = (code or "").strip()
     code_amount = 0
     applied = ""
@@ -2038,24 +2042,93 @@ async def miniapp_service_renew(request: Request):
         body = await request.json()
     except Exception:
         body = {}
-    from core.database import get_subscription_profile, create_custom_order, update_order
+    from core.database import get_subscription_profile, create_custom_order, update_order, get_package
+    from core.pricing import package_price_for_user
     profile = await get_subscription_profile(int(body.get("profile_id") or 0))
     if not profile or int(profile.get("user_id") or 0) != int(user["id"]):
         return JSONResponse({"error": "not_your_service"}, status_code=403)
-    traffic_gb = float(profile.get("traffic_gb") or 0)
-    duration = max(1, int(profile.get("duration_days") or 0))
-    price = 0
-    for pkg in await get_packages(active_only=True):
-        if abs(float(pkg.get("traffic_gb") or 0) - traffic_gb) < 0.001 and int(pkg.get("duration_days") or 0) == duration:
-            price = int(pkg.get("price") or 0)
-            break
-    if price <= 0:
-        return JSONResponse({"error": "no_matching_package"}, status_code=400)
-    price = await _miniapp_jitter(price)
+    pkg = await get_package(int(body.get("package_id") or 0))
+    if not pkg or not int(pkg.get("is_active") or 0):
+        return JSONResponse({"error": "package_unavailable"}, status_code=400)
+    # Renewal follows our plans, not the service's current volume.
+    traffic_gb = float(pkg.get("traffic_gb") or 0)
+    duration = int(pkg.get("duration_days") or 0)
+    price = await _miniapp_jitter((await package_price_for_user(user["id"], pkg))["final"])
     oid = await create_custom_order(user["id"], f"تمدید {profile.get('name') or profile['id']}",
-                                    traffic_gb, duration, price, notes=f"renew_sub:{profile['id']}")
+                                    traffic_gb, duration, price, notes=f"renew_sub:{profile['id']};plan:{pkg['id']}",
+                                    package_id=int(pkg["id"]))
     await update_order(oid, renew_sub_profile_id=int(profile["id"]))
     return JSONResponse({"ok": True, "order_id": oid, "payment": {"amount": price, **await _miniapp_card()}})
+
+
+@app.post("/app/api/wallet/pay")
+async def miniapp_wallet_pay(request: Request):
+    """Pay a pending order (new purchase OR renewal) from the wallet balance and
+    fulfil it instantly. Mirrors the bot's `pay_wallet` flow."""
+    if await get_setting("miniapp_enabled", "0") != "1":
+        return JSONResponse({"error": "disabled"}, status_code=403)
+    user = await _miniapp_user(request)
+    if not user:
+        return JSONResponse({"error": "invalid_init_data"}, status_code=401)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    from core.database import get_order, update_order
+    oid = int(body.get("order_id") or 0)
+    order = await get_order(oid)
+    if not order or int(order.get("user_id") or 0) != int(user["id"]):
+        return JSONResponse({"error": "not_your_order"}, status_code=403)
+    if str(order.get("status")) not in ("pending_payment", "pending_receipt"):
+        return JSONResponse({"error": "not_payable"}, status_code=400)
+
+    price = int(order.get("price") or 0)
+    balance = await get_user_balance(user["id"])
+    if balance < price:
+        return JSONResponse({"error": "insufficient_balance", "balance": balance, "price": price}, status_code=400)
+
+    await add_user_balance(user["id"], -price, kind="purchase", note=f"order:{oid}", actor_telegram_id=int(user.get("telegram_id") or 0))
+    await update_order(oid, status="receipt_submitted", notes=((order.get("notes") or "") + "\nwallet_payment=1;source=miniapp").strip())
+
+    try:
+        result = await _fulfill_order(oid)
+    except Exception as e:
+        logger.exception("miniapp wallet fulfilment failed oid=%s: %s", oid, e)
+        result = {"ok": False, "error": "exception"}
+
+    if not result.get("ok"):
+        await add_user_balance(user["id"], price, kind="refund", note=f"order_failed:{oid}", actor_telegram_id=0)
+        await update_order(oid, status="pending_payment")
+        return JSONResponse({"error": "fulfilment_failed"}, status_code=502)
+
+    await _notify_admins_wallet_purchase(user, order, price)
+    return JSONResponse({"ok": True, "order_id": oid, "balance": await get_user_balance(user["id"])})
+
+
+async def _notify_admins_wallet_purchase(user: dict, order: dict, price: int):
+    if not BOT_TOKEN or len(BOT_TOKEN) < 20:
+        return
+    from core.database import get_all_admin_telegram_ids
+    try:
+        bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.MARKDOWN))
+        admin_targets = list(dict.fromkeys(list(ADMIN_IDS) + await get_all_admin_telegram_ids()))
+        text = (
+            "💳 خرید با کیف پول (مینی‌اپ)\n\n"
+            f"کاربر: {user.get('full_name') or '-'} (@{user.get('username') or '-'})\n"
+            f"Telegram ID: {user.get('telegram_id')}\n"
+            f"سفارش: #{order['id']} | {order.get('pkg_name') or order.get('custom_name') or '-'}\n"
+            f"مبلغ: {price:,} تومان"
+        )
+        try:
+            for aid in admin_targets:
+                try:
+                    await bot.send_message(aid, text, parse_mode=None)
+                except Exception:
+                    pass
+        finally:
+            await bot.session.close()
+    except Exception as e:
+        logger.warning("wallet purchase admin notify failed: %s", e)
 
 
 @app.post("/app/api/receipt")
@@ -2463,39 +2536,46 @@ async def order_reject_web(request: Request, oid: int):
 
 @app.post(f"/{S}/orders/{{oid}}/approve")
 async def order_approve_web(request: Request, oid: int):
+    if not _auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
     try:
-        return await _order_approve_web_impl(request, oid)
+        await _fulfill_order(oid)
     except Exception as e:
         logger.exception("order approve failed oid=%s: %s", oid, e)
         await release_order_processing(oid)
-        return RedirectResponse(f"/{S}/orders", status_code=302)
+    return RedirectResponse(f"/{S}/orders", status_code=302)
 
 
-async def _order_approve_web_impl(request: Request, oid: int):
-    if not _auth(request):
-        return JSONResponse({"error": "unauthorized"}, status_code=401)
-    order = await get_order(oid)
+async def _fulfill_order(oid: int, order: dict | None = None) -> dict:
+    """Shared fulfilment for a *paid* order — used by both admin receipt
+    approval and instant wallet payment. Performs the renew/create and notifies
+    the user. Returns ``{"ok": bool, "error": str}``; on failure the order is
+    left in ``receipt_submitted`` so it can be retried/refunded by the caller."""
+    if order is None:
+        order = await get_order(oid)
     if not order:
-        return RedirectResponse(f"/{S}/orders", status_code=302)
+        return {"ok": False, "error": "order_missing"}
     if order.get("status") == "approved":
-        return RedirectResponse(f"/{S}/orders", status_code=302)
+        return {"ok": True}
     if order.get("status") not in ("receipt_submitted", "processing"):
-        return RedirectResponse(f"/{S}/orders", status_code=302)
+        return {"ok": False, "error": "bad_status"}
     if not await claim_order_for_approval(oid):
-        return RedirectResponse(f"/{S}/orders", status_code=302)
+        return {"ok": False, "error": "claim_failed"}
 
     if int(order.get("renew_config_id") or 0) > 0:
         cfg = await get_config(int(order["renew_config_id"]))
         if not cfg:
             await update_order(oid, status="receipt_submitted")
-            return RedirectResponse(f"/{S}/orders", status_code=302)
+            return {"ok": False, "error": "config_missing"}
 
-        duration = int(order.get("duration_days") or cfg.get("duration_days") or 0)
-        traffic_gb = float(order.get("traffic_gb") or cfg.get("traffic_gb") or 0)
+        # Trust the order's plan values (0 = unlimited); don't fall back to the
+        # config's old volume/duration or an unlimited renewal would be lost.
+        duration = int(order.get("duration_days") or 0)
+        traffic_gb = float(order.get("traffic_gb") or 0)
         result = await find_and_renew_config(cfg, traffic_gb, duration)
         if not result.get("ok"):
             await update_order(oid, status="receipt_submitted")
-            return RedirectResponse(f"/{S}/orders", status_code=302)
+            return {"ok": False, "error": "renew_failed"}
 
         server = result["server"]
         link = result.get("link")
@@ -2531,19 +2611,20 @@ async def _order_approve_web_impl(request: Request, oid: int):
                         pass
             finally:
                 await bot.session.close()
-        return RedirectResponse(f"/{S}/orders", status_code=302)
+        return {"ok": True}
 
     if int(order.get("renew_sub_profile_id") or 0) > 0:
         profile = await get_subscription_profile(int(order["renew_sub_profile_id"]))
         if not profile:
             await update_order(oid, status="receipt_submitted")
-            return RedirectResponse(f"/{S}/orders", status_code=302)
-        duration = int(order.get("duration_days") or profile.get("duration_days") or 0)
-        traffic_gb = float(order.get("traffic_gb") or profile.get("traffic_gb") or 0)
+            return {"ok": False, "error": "profile_missing"}
+        # Trust the order's plan values (0 = unlimited) rather than the sub's old ones.
+        duration = int(order.get("duration_days") or 0)
+        traffic_gb = float(order.get("traffic_gb") or 0)
         result = await renew_subscription_profile(profile, traffic_gb, duration)
         if not result.get("ok"):
             await update_order(oid, status="receipt_submitted", notes=((order.get("notes") or "") + f"\nsub_renew_error={result.get('error') or ''}").strip())
-            return RedirectResponse(f"/{S}/orders", status_code=302)
+            return {"ok": False, "error": "sub_renew_failed"}
         sub_url = await subscription_url(profile["token"])
         await update_order(
             oid,
@@ -2569,12 +2650,12 @@ async def _order_approve_web_impl(request: Request, oid: int):
                 )
             finally:
                 await bot.session.close()
-        return RedirectResponse(f"/{S}/orders", status_code=302)
+        return {"ok": True}
 
     user = await get_user_by_telegram(order["telegram_id"])
     if not user:
         await update_order(oid, status="receipt_submitted")
-        return RedirectResponse(f"/{S}/orders", status_code=302)
+        return {"ok": False, "error": "no_user"}
 
     bulk_count = int(order.get("bulk_count") or 1)
     each_gb = float(order.get("bulk_each_gb") or order["traffic_gb"])
@@ -2601,7 +2682,7 @@ async def _order_approve_web_impl(request: Request, oid: int):
         notes = ((order.get("notes") or "") + f"\nsub_create_error={last_error}").strip()
         await update_order(oid, status="receipt_submitted", notes=notes)
         logger.warning("Subscription creation failed for order %s: %s", oid, subscription_error_message(last_error))
-        return RedirectResponse(f"/{S}/orders", status_code=302)
+        return {"ok": False, "error": "create_failed"}
 
     # Capture BEFORE flipping to approved so "first purchase" is accurate.
     first_purchase = not await has_previous_purchase(user["id"])
@@ -2649,7 +2730,7 @@ async def _order_approve_web_impl(request: Request, oid: int):
                     pass
         finally:
             await bot.session.close()
-    return RedirectResponse(f"/{S}/orders", status_code=302)
+    return {"ok": True}
 
 
 # ═══════════════════════════════ CONFIGS ════════════════════════════
@@ -2961,16 +3042,19 @@ async def user_set_pricing(request: Request, uid: int):
         data = await request.json()
         discount_percent = float(data.get("discount_percent", 0) or 0)
         price_per_gb = int(str(data.get("price_per_gb", 0) or 0).replace(",", ""))
+        unlimited_price = int(str(data.get("unlimited_price", 0) or 0).replace(",", ""))
         is_ajax = True
     else:
         form = await request.form()
         discount_percent = float(form.get("discount_percent", 0) or 0)
         price_per_gb = int(str(form.get("price_per_gb", 0) or 0).replace(",", ""))
+        unlimited_price = int(str(form.get("unlimited_price", 0) or 0).replace(",", ""))
         is_ajax = False
     discount_percent = max(0, min(100, discount_percent))
     price_per_gb = max(0, price_per_gb)
+    unlimited_price = max(0, unlimited_price)
     from core.database import update_user
-    await update_user(uid, discount_percent=discount_percent, price_per_gb=price_per_gb)
+    await update_user(uid, discount_percent=discount_percent, price_per_gb=price_per_gb, unlimited_price=unlimited_price)
     if is_ajax:
         return JSONResponse({"success": True})
     return RedirectResponse(f"/{S}/users", status_code=302)

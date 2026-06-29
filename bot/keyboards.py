@@ -258,11 +258,26 @@ def config_delete_confirm_kb(cid: int) -> InlineKeyboardMarkup:
     return b.as_markup()
 
 
-def renew_options_kb(cid: int) -> InlineKeyboardMarkup:
+def _renew_pkg_label(pkg: Dict) -> str:
+    gb = float(pkg.get("traffic_gb") or 0)
+    days = int(pkg.get("duration_days") or 0)
+    gb_txt = "نامحدود" if gb <= 0 else f"{gb:g}GB"
+    days_txt = "نامحدود" if days <= 0 else f"{days} روز"
+    price = int(pkg.get("price") or 0)
+    return f"{pkg.get('name') or 'پکیج'} — {gb_txt}/{days_txt} · {price:,} ت"
+
+
+def renew_packages_kb(target_type: str, target_id: int, packages: List[Dict], back_cb: str) -> InlineKeyboardMarkup:
+    """Renewal is plan-based: the user picks one of our active packages."""
     b = InlineKeyboardBuilder()
-    _button(b, text="♻️ تمدید با همین حجم و مدت", callback_data=f"renew_same:{cid}", style="success")
-    _button(b, text="✏️ انتخاب حجم و مدت جدید", callback_data=f"renew_custom:{cid}", style="primary")
-    _button(b, text="🔙 بازگشت", callback_data=f"cfg:{cid}", style="primary")
+    for pkg in packages:
+        _button(
+            b,
+            text=_renew_pkg_label(pkg),
+            callback_data=f"rnwpkg:{target_type}:{target_id}:{pkg['id']}",
+            style="primary",
+        )
+    _button(b, text="🔙 بازگشت", callback_data=back_cb, style="primary")
     b.adjust(1)
     return b.as_markup()
 

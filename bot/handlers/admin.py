@@ -499,8 +499,10 @@ async def _do_renew(cb: CallbackQuery, order: dict) -> bool:
         await cb.message.answer("❌ سرویس برای تمدید پیدا نشد.")
         return False
 
-    duration = int(order.get("duration_days") or cfg.get("duration_days") or 0)
-    traffic_gb = float(order.get("traffic_gb") or cfg.get("traffic_gb") or 0)
+    # Trust the order's plan values (0 = unlimited); falling back to the config's
+    # old volume/duration would silently break unlimited-plan renewals.
+    duration = int(order.get("duration_days") or 0)
+    traffic_gb = float(order.get("traffic_gb") or 0)
     result = await find_and_renew_config(cfg, traffic_gb, duration)
     if not result.get("ok"):
         await update_order(order["id"], status="receipt_submitted")
@@ -599,8 +601,9 @@ async def _do_renew_subscription(cb: CallbackQuery, order: dict) -> bool:
         await cb.message.answer("❌ سابسکریپشن برای تمدید پیدا نشد.", parse_mode=None)
         return False
 
-    duration = int(order.get("duration_days") or profile.get("duration_days") or 0)
-    traffic_gb = float(order.get("traffic_gb") or profile.get("traffic_gb") or 0)
+    # Trust the order's plan values (0 = unlimited) rather than the sub's old ones.
+    duration = int(order.get("duration_days") or 0)
+    traffic_gb = float(order.get("traffic_gb") or 0)
     result = await renew_subscription_profile(profile, traffic_gb, duration)
     if not result.get("ok"):
         await update_order(order["id"], status="receipt_submitted")

@@ -99,7 +99,12 @@
               <input type="text" class="form-control num-input" id="wpgb-{{ u.id }}"
                      value="{{ '{:,}'.format(u.price_per_gb or 0) }}" oninput="liveFormatNum(this)" style="width:130px">
             </div>
-            <button class="btn btn-xs btn-outline" style="align-self:flex-end" onclick="savePricing({{ u.id }},'wdis-{{ u.id }}','wpgb-{{ u.id }}')">💾</button>
+            <div>
+              <label style="font-size:.72rem;color:var(--txt3)">نامحدود</label>
+              <input type="text" class="form-control num-input" id="wupl-{{ u.id }}"
+                     value="{{ '{:,}'.format(u.unlimited_price or 0) }}" oninput="liveFormatNum(this)" style="width:130px">
+            </div>
+            <button class="btn btn-xs btn-outline" style="align-self:flex-end" onclick="savePricing({{ u.id }},'wdis-{{ u.id }}','wpgb-{{ u.id }}','wupl-{{ u.id }}')">💾</button>
           </div>
         </td>
         <td><button class="btn btn-xs btn-outline" onclick="toggleWholesaleRow({{ u.id }}, this)">{{ 'برداشتن عمده' if u.is_wholesale else 'تایید عمده' }}</button></td>
@@ -155,14 +160,16 @@
     <td>
       <div style="display:flex;gap:6px;align-items:center">
         <input type="number" id="dis-{{ u.id }}" class="form-control form-control-wide" value="{{ u.discount_percent or 0 }}" min="0" max="100" step="0.5" style="width:90px">
-        <button class="btn btn-xs btn-outline" onclick="savePricing({{ u.id }},'dis-{{ u.id }}','pgb-{{ u.id }}')">💾</button>
+        <button class="btn btn-xs btn-outline" onclick="savePricing({{ u.id }},'dis-{{ u.id }}','pgb-{{ u.id }}','upl-{{ u.id }}')">💾</button>
       </div>
     </td>
     <td>
-      <div style="display:flex;gap:6px;align-items:center">
-        <input type="text" id="pgb-{{ u.id }}" class="form-control num-input"
-               value="{{ '{:,}'.format(u.price_per_gb or 0) }}" oninput="liveFormatNum(this)" style="width:130px">
-        <button class="btn btn-xs btn-outline" onclick="savePricing({{ u.id }},'dis-{{ u.id }}','pgb-{{ u.id }}')">💾</button>
+      <div style="display:flex;flex-direction:column;gap:6px">
+        <input type="text" id="pgb-{{ u.id }}" class="form-control num-input" placeholder="قیمت/GB"
+               value="{{ '{:,}'.format(u.price_per_gb or 0) }}" oninput="liveFormatNum(this)" style="width:140px">
+        <input type="text" id="upl-{{ u.id }}" class="form-control num-input" placeholder="نامحدود"
+               value="{{ '{:,}'.format(u.unlimited_price or 0) }}" oninput="liveFormatNum(this)" style="width:140px">
+        <button class="btn btn-xs btn-outline" onclick="savePricing({{ u.id }},'dis-{{ u.id }}','pgb-{{ u.id }}','upl-{{ u.id }}')">💾 ذخیره</button>
       </div>
     </td>
     <td>{% if u.is_blocked %}<span class="badge b-red">🔴 بلاک</span>{% else %}<span class="badge b-green">🟢 فعال</span>{% endif %}</td>
@@ -268,13 +275,15 @@ async function saveBalance(id){
 }
 
 /* ── pricing save ── */
-async function savePricing(id, disId, pgbId){
-  // disId/pgbId: explicit element IDs to read from (avoids conflict when user appears in both tables)
+async function savePricing(id, disId, pgbId, uplId){
+  // disId/pgbId/uplId: explicit element IDs to read from (avoids conflict when user appears in both tables)
   const discount_percent = parseFloat(document.getElementById(disId||`dis-${id}`)?.value||0);
   const price_per_gb = rawNum(pgbId||`pgb-${id}`);
+  const unlimited_price = rawNum(uplId||`upl-${id}`);
   const r = await api(`/${S}/users/${id}/pricing`,'POST',{
     discount_percent: isNaN(discount_percent)?0:discount_percent,
-    price_per_gb
+    price_per_gb,
+    unlimited_price
   });
   if(r.success) toast('قیمت‌گذاری ذخیره شد ✅','success');
   else toast('خطا','error');

@@ -338,6 +338,7 @@ async def _ensure_columns(db):
         "users": [
             ("discount_percent", "REAL DEFAULT 0"),
             ("price_per_gb", "INTEGER DEFAULT 0"),
+            ("unlimited_price", "INTEGER DEFAULT 0"),
             ("is_wholesale", "INTEGER DEFAULT 0"),
             ("wholesale_request_pending", "INTEGER DEFAULT 0"),
             ("admin_role", "TEXT DEFAULT 'none'"),
@@ -1516,19 +1517,32 @@ async def delete_package(pid: int):
 async def get_user_pricing(user_id: int) -> Dict:
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
-        async with db.execute("SELECT discount_percent, price_per_gb FROM users WHERE id=?", (user_id,)) as c:
+        async with db.execute("SELECT discount_percent, price_per_gb, unlimited_price FROM users WHERE id=?", (user_id,)) as c:
             r = await c.fetchone()
             if not r:
-                return {"discount_percent": 0, "price_per_gb": 0}
-            return {"discount_percent": float(r["discount_percent"] or 0), "price_per_gb": int(r["price_per_gb"] or 0)}
+                return {"discount_percent": 0, "price_per_gb": 0, "unlimited_price": 0}
+            return {
+                "discount_percent": float(r["discount_percent"] or 0),
+                "price_per_gb": int(r["price_per_gb"] or 0),
+                "unlimited_price": int(r["unlimited_price"] or 0),
+            }
 
 
 async def create_custom_order(user_id: int, name: str, total_traffic_gb: float, duration_days: int,
-                              price: int, bulk_count: int = 1, bulk_each_gb: float = 0, notes: str = "") -> int:
+                              price: int, bulk_count: int = 1, bulk_each_gb: float = 0, notes: str = "",
+                              package_id: int = 0) -> int:
     async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute("SELECT id FROM packages ORDER BY id LIMIT 1") as c0:
-            row = await c0.fetchone()
-        package_id = row[0] if row else None
+        # Prefer an explicit plan (so get_order's COALESCE falls back to the
+        # right traffic/duration — important for unlimited plans where the
+        # custom value is 0 and NULLIF would otherwise drop it).
+        if package_id:
+            async with db.execute("SELECT id FROM packages WHERE id=?", (int(package_id),)) as cp:
+                if not await cp.fetchone():
+                    package_id = 0
+        if not package_id:
+            async with db.execute("SELECT id FROM packages ORDER BY id LIMIT 1") as c0:
+                row = await c0.fetchone()
+            package_id = row[0] if row else None
         if package_id is None:
             c1 = await db.execute("INSERT INTO packages(name,traffic_gb,duration_days,price,description,is_active) VALUES(?,?,?,?,?,0)",
                                   ("پکیج سیستمی", 1, 30, 0, "system"))

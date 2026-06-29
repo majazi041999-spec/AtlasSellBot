@@ -128,6 +128,12 @@
                value="{{ '{:,}'.format(user.price_per_gb or 0) }}"
                oninput="liveFormatNum(this)" style="min-width:160px;min-height:42px">
       </div>
+      <div>
+        <label style="font-size:.78rem;color:var(--txt3);display:block;margin-bottom:4px">قیمت سرویس نامحدود (تومان)</label>
+        <input type="text" id="ud-unlimited-price" class="form-control"
+               value="{{ '{:,}'.format(user.unlimited_price or 0) }}"
+               oninput="liveFormatNum(this)" style="min-width:170px;min-height:42px">
+      </div>
       <div style="align-self:flex-end">
         <button class="btn btn-sm btn-outline" onclick="applyPricing({{ user.id }})">💾 ذخیره قیمت‌گذاری</button>
       </div>
@@ -303,9 +309,10 @@ async function toggleWholesale(id, btn){
 async function applyPricing(id){
   const discount_percent = parseFloat(document.getElementById('ud-discount').value || 0);
   const price_per_gb = rawNum(document.getElementById('ud-price-gb'));
+  const unlimited_price = rawNum(document.getElementById('ud-unlimited-price'));
   const btn = event.currentTarget;
   btn.disabled = true;
-  const r = await api(`/${S}/users/${id}/pricing`, 'POST', {discount_percent, price_per_gb});
+  const r = await api(`/${S}/users/${id}/pricing`, 'POST', {discount_percent, price_per_gb, unlimited_price});
   btn.disabled = false;
   if(r.success) toast('قیمت‌گذاری ذخیره شد ✅','success');
   else toast('خطا در ذخیره','error');

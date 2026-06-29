@@ -58,30 +58,69 @@ const DISCOUNT_ERR = {
   zero_discount: "تخفیفی ندارد", not_eligible: "این کد مخصوص شما نیست",
 };
 
-/* ── Reusable: card-to-card payment + in-app receipt upload ── */
-function PayCard({ title, payment, kind, id, amount, onDone }) {
+/* ── Reusable: card-to-card payment + in-app receipt upload + wallet pay ── */
+function PayCard({ title, payment, kind, id, amount, onDone, walletBalance, onWalletPaid }) {
   const [stage, setStage] = useState("pay"); // pay | sending | done
+  const [doneKind, setDoneKind] = useState("receipt"); // receipt | wallet
   const fileRef = useRef(null);
   const pick = () => fileRef.current?.click();
+  const payAmount = payment.amount ?? amount ?? 0;
+  // Wallet payment is only offered for real orders (not wallet top-ups).
+  const canWallet = kind === "order" && id && walletBalance != null;
+  const enoughBalance = (walletBalance || 0) >= payAmount;
+
   const onFile = async (e) => {
     const f = e.target.files?.[0];
     if (!f) return;
     setStage("sending");
-    try { await uploadReceipt(f, kind, id, amount); haptic("success"); setStage("done"); }
+    try { await uploadReceipt(f, kind, id, amount); haptic("success"); setDoneKind("receipt"); setStage("done"); }
     catch (err) { haptic("error"); tg?.showAlert?.("ارسال رسید ناموفق بود. دوباره تلاش کنید."); setStage("pay"); }
   };
+  const payFromWallet = async () => {
+    if (!enoughBalance) { tg?.showAlert?.("موجودی کیف پول کافی نیست. ابتدا شارژ کنید."); return; }
+    setStage("sending");
+    try {
+      const d = await api("wallet/pay", { order_id: id });
+      haptic("success");
+      onWalletPaid?.(d.balance);
+      setDoneKind("wallet"); setStage("done");
+    } catch (err) {
+      haptic("error");
+      tg?.showAlert?.(err.data?.error === "insufficient_balance" ? "موجودی کافی نیست" : "پرداخت از کیف پول ناموفق بود.");
+      setStage("pay");
+    }
+  };
+
   if (stage === "done") return (
     <div className="card pay done">
       <div className="done-emoji">✅</div>
-      <b>رسید شما ارسال شد</b>
-      <p className="muted">پس از تأیید ادمین (معمولاً تا ۳۰ دقیقه) سرویس/شارژ شما فعال می‌شود.</p>
+      {doneKind === "wallet" ? (
+        <>
+          <b>پرداخت از کیف پول انجام شد</b>
+          <p className="muted">سرویس شما فعال/تمدید شد. از بخش «سرویس‌های من» لینک را دریافت کنید.</p>
+        </>
+      ) : (
+        <>
+          <b>رسید شما ارسال شد</b>
+          <p className="muted">پس از تأیید ادمین (معمولاً تا ۳۰ دقیقه) سرویس/شارژ شما فعال می‌شود.</p>
+        </>
+      )}
       <button className="btn-primary" onClick={onDone}>باشه</button>
     </div>
   );
   return (
     <div className="card pay">
       {title && <div className="pay-title">{title}</div>}
-      <div className="pay-amount">{fmt(payment.amount ?? amount)} <small>تومان</small></div>
+      <div className="pay-amount">{fmt(payAmount)} <small>تومان</small></div>
+      {canWallet && (
+        <div className="wallet-pay-box">
+          <button className="btn-primary" disabled={stage === "sending" || !enoughBalance} onClick={payFromWallet}>
+            {stage === "sending" ? "در حال پرداخت…" : `💳 پرداخت از کیف پول (موجودی: ${fmt(walletBalance)})`}
+          </button>
+          {!enoughBalance && <p className="muted tiny">موجودی کیف پول برای این خرید کافی نیست — می‌توانید کارت‌به‌کارت پرداخت کنید.</p>}
+          <div className="pay-or">یا پرداخت کارت‌به‌کارت</div>
+        </div>
+      )}
       <p className="muted tiny">لطفاً دقیقاً همین مبلغ را واریز کنید تا سریع شناسایی شود.</p>
       <div className="pay-row card-num" onClick={() => copy(payment.card)}>
         <span>شماره کارت (لمس=کپی)</span><b dir="ltr">{payment.card}</b>
@@ -142,9 +181,11 @@ function Home({ data, go }) {
   );
 }
 
-function Services({ go }) {
+function Services({ go, balance, onBalance }) {
   const [list, setList] = useState(null);
-  const [renew, setRenew] = useState(null);   // {order_id, payment}
+  const [renew, setRenew] = useState(null);   // {order_id, payment, name}
+  const [planFor, setPlanFor] = useState(null); // service awaiting plan choice
+  const [pkgs, setPkgs] = useState(null);       // packages for renewal
   const [editing, setEditing] = useState(null); // service id
   const [busy, setBusy] = useState(0);
   const reload = () => api("services").then((d) => setList(d.services || [])).catch(() => setList([]));
@@ -156,17 +197,47 @@ function Services({ go }) {
     try { await api("services/rename", { profile_id: s.id, name }); haptic(); setEditing(null); reload(); }
     catch (e) { tg?.showAlert?.("تغییر نام ناموفق بود"); } finally { setBusy(0); }
   };
-  const doRenew = async (s) => {
-    setBusy(s.id);
-    try { const d = await api("services/renew", { profile_id: s.id }); setRenew({ ...d, name: s.name }); }
-    catch (e) { tg?.showAlert?.(e.message === "no_matching_package" ? "پکیج متناظر برای تمدید پیدا نشد" : "خطا در تمدید"); }
+  // Renewal is plan-based: open a package picker for this service.
+  const openRenew = async (s) => {
+    setPlanFor(s); haptic();
+    if (pkgs === null) {
+      try { const d = await api("packages"); setPkgs(d.packages || []); }
+      catch (e) { setPkgs([]); }
+    }
+  };
+  const pickPlan = async (p) => {
+    setBusy(p.id);
+    try { const d = await api("services/renew", { profile_id: planFor.id, package_id: p.id }); setRenew({ ...d, name: planFor.name }); setPlanFor(null); }
+    catch (e) { tg?.showAlert?.("خطا در تمدید"); }
     finally { setBusy(0); }
   };
 
   if (renew) return (
     <div className="screen">
       <h2 className="screen-title">تمدید سرویس</h2>
-      <PayCard title={renew.name} payment={renew.payment} kind="order" id={renew.order_id} onDone={() => { setRenew(null); reload(); }} />
+      <PayCard title={renew.name} payment={renew.payment} kind="order" id={renew.order_id}
+               walletBalance={balance} onWalletPaid={onBalance}
+               onDone={() => { setRenew(null); reload(); }} />
+    </div>
+  );
+  if (planFor) return (
+    <div className="screen">
+      <h2 className="screen-title">تمدید «{planFor.name || "سرویس"}»</h2>
+      <p className="muted" style={{ margin: "0 0 10px" }}>با کدام پلن تمدید می‌کنید؟</p>
+      {pkgs === null ? <div className="center"><Spinner /></div> : (
+        <div className="pkg-grid">
+          {pkgs.map((p) => (
+            <button className="card pkg" key={p.id} disabled={busy === p.id} onClick={() => pickPlan(p)}>
+              <div className="pkg-name">{p.name}</div>
+              <div className="pkg-spec">{p.traffic_gb > 0 ? `${p.traffic_gb} GB` : "نامحدود"} · {p.duration_days > 0 ? `${p.duration_days} روز` : "نامحدود"}</div>
+              <div className="pkg-price">{fmt(p.price)} <small>تومان</small></div>
+              <span className="pkg-cta">{busy === p.id ? "…" : "تمدید"}</span>
+            </button>
+          ))}
+          {!pkgs.length && <p className="muted">فعلاً پلنی برای تمدید موجود نیست.</p>}
+        </div>
+      )}
+      <button className="btn-ghost" onClick={() => setPlanFor(null)}>برگشت</button>
     </div>
   );
   if (list === null) return <div className="screen center"><Spinner /></div>;
@@ -202,7 +273,7 @@ function Services({ go }) {
               <div className="svc-actions">
                 <button className="btn-soft sm" onClick={() => copy(s.sub_url)}>📋 کپی لینک</button>
                 <button className="btn-soft sm" onClick={() => setEditing(s.id)}>✏️ نام</button>
-                <button className="btn-primary sm" disabled={busy === s.id} onClick={() => doRenew(s)}>♻️ تمدید</button>
+                <button className="btn-primary sm" disabled={busy === s.id} onClick={() => openRenew(s)}>♻️ تمدید</button>
               </div>
             )}
           </div>
@@ -212,7 +283,7 @@ function Services({ go }) {
   );
 }
 
-function Buy() {
+function Buy({ balance, onBalance }) {
   const [pkgs, setPkgs] = useState(null);
   const [sel, setSel] = useState(null);   // selected package
   const [code, setCode] = useState("");
@@ -233,7 +304,9 @@ function Buy() {
   if (order) return (
     <div className="screen">
       <h2 className="screen-title">پرداخت سفارش #{order.order_id}</h2>
-      <PayCard payment={order.payment} kind="order" id={order.order_id} onDone={() => { setOrder(null); setSel(null); setCode(""); }} />
+      <PayCard payment={order.payment} kind="order" id={order.order_id}
+               walletBalance={balance} onWalletPaid={onBalance}
+               onDone={() => { setOrder(null); setSel(null); setCode(""); }} />
     </div>
   );
   if (sel) return (
@@ -241,8 +314,10 @@ function Buy() {
       <h2 className="screen-title">تأیید سفارش</h2>
       <div className="card confirm">
         <div className="confirm-name">{sel.name}</div>
-        <div className="confirm-spec">{sel.traffic_gb} GB · {sel.duration_days} روز</div>
-        <div className="confirm-price">{fmt(sel.price)} <small>تومان</small></div>
+        <div className="confirm-spec">{sel.traffic_gb > 0 ? `${sel.traffic_gb} GB` : "نامحدود"} · {sel.duration_days > 0 ? `${sel.duration_days} روز` : "نامحدود"}</div>
+        <div className="confirm-price">
+          {sel.base > 0 && <s className="price-base">{fmt(sel.base)}</s>} {fmt(sel.price)} <small>تومان</small>
+        </div>
         <div className="code-row">
           <input className="inp" value={code} onChange={(e) => { setCode(e.target.value); setCodeErr(""); }} placeholder="کد تخفیف (اختیاری)" dir="ltr" />
         </div>
@@ -260,8 +335,8 @@ function Buy() {
         {pkgs.map((p) => (
           <button className="card pkg" key={p.id} onClick={() => { haptic(); setSel(p); }}>
             <div className="pkg-name">{p.name}</div>
-            <div className="pkg-spec">{p.traffic_gb} GB · {p.duration_days} روز</div>
-            <div className="pkg-price">{fmt(p.price)} <small>تومان</small></div>
+            <div className="pkg-spec">{p.traffic_gb > 0 ? `${p.traffic_gb} GB` : "نامحدود"} · {p.duration_days > 0 ? `${p.duration_days} روز` : "نامحدود"}</div>
+            <div className="pkg-price">{p.base > 0 && <s className="price-base">{fmt(p.base)}</s>} {fmt(p.price)} <small>تومان</small></div>
             <span className="pkg-cta">انتخاب</span>
           </button>
         ))}
@@ -367,6 +442,11 @@ export default function App() {
   const [err, setErr] = useState("");
   const load = useCallback(() => { api("bootstrap").then(setBoot).catch((e) => setErr(String(e.message || e))); }, []);
   useEffect(() => { load(); }, [load]);
+  const balance = boot?.user?.balance ?? 0;
+  const setBalance = useCallback((newBal) => {
+    if (newBal == null) return;
+    setBoot((b) => (b ? { ...b, user: { ...b.user, balance: newBal } } : b));
+  }, []);
 
   if (err) return (
     <div className="fullscreen center">
@@ -385,8 +465,8 @@ export default function App() {
       <Header brand={boot.brand} user={boot.user} />
       <main className="body">
         {tab === "home" && <Home data={boot} go={setTab} />}
-        {tab === "services" && <Services go={setTab} />}
-        {tab === "buy" && <Buy />}
+        {tab === "services" && <Services go={setTab} balance={balance} onBalance={setBalance} />}
+        {tab === "buy" && <Buy balance={balance} onBalance={setBalance} />}
         {tab === "wallet" && <Wallet />}
         {tab === "referral" && <Referral />}
       </main>
