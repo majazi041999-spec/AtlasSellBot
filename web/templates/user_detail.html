@@ -113,6 +113,21 @@
     </div>
   </div>
 
+  <!-- Hide brand -->
+  <div class="action-card">
+    <h4>🏷️ حذف برند از لینک سابسکریپشن</h4>
+    <div id="ud-hidebrand-status" style="margin-bottom:8px;font-size:.85rem">
+      {% if user.hide_brand %}<span class="badge b-green">✅ برند مخفی است</span>
+      {% else %}<span class="badge b-yellow">— برند نمایش داده می‌شود</span>{% endif %}
+    </div>
+    <p style="font-size:.75rem;color:var(--txt3);margin:0 0 8px">برای مشتری عمده — نام برند شما در لینک سابسکریپشن او نمایش داده نمی‌شود.</p>
+    <div class="field-row">
+      <button class="btn btn-sm btn-outline" id="ud-hidebrand-btn" onclick="toggleHideBrand({{ user.id }}, this)">
+        {% if user.hide_brand %}نمایش برند{% else %}حذف برند{% endif %}
+      </button>
+    </div>
+  </div>
+
   <!-- Pricing -->
   <div class="action-card" style="grid-column:span 2">
     <h4>💲 قیمت‌گذاری اختصاصی</h4>
@@ -303,6 +318,20 @@ async function toggleWholesale(id, btn){
       : '<span class="badge b-yellow">— کاربر عادی</span>';
     btn.textContent = isW ? 'برداشتن عمده' : 'تایید / پروموت';
     toast(isW ? 'کاربر عمده‌فروش شد' : 'عمده حذف شد','success');
+  } else toast('خطا','error');
+}
+
+async function toggleHideBrand(id, btn){
+  btn.disabled = true;
+  const r = await api(`/${S}/users/${id}/toggle_hide_brand`);
+  btn.disabled = false;
+  if(r.success){
+    const h = r.hide_brand;
+    document.getElementById('ud-hidebrand-status').innerHTML = h
+      ? '<span class="badge b-green">✅ برند مخفی است</span>'
+      : '<span class="badge b-yellow">— برند نمایش داده می‌شود</span>';
+    btn.textContent = h ? 'نمایش برند' : 'حذف برند';
+    toast(h ? 'برند از لینک سابسکریپشن حذف شد' : 'برند دوباره نمایش داده می‌شود','success');
   } else toast('خطا','error');
 }
 
