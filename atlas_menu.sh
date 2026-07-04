@@ -23,6 +23,43 @@ run_root_cmd(){
 
 pause(){ read -r -p "\nPress Enter to continue..." _; }
 
+# Read a KEY=value from the project's .env, stripping surrounding quotes/CR.
+env_get(){
+  local key="$1" file="$DIR/.env" val=""
+  [[ -f "$file" ]] || return 0
+  val="$(sed -n "s/^${key}=//p" "$file" | tail -n1)"
+  val="${val%$'\r'}"
+  val="${val%\"}"; val="${val#\"}"
+  val="${val%\'}"; val="${val#\'}"
+  printf '%s' "$val"
+}
+
+# Best-effort public IPv4 detection.
+public_ipv4(){
+  local ip=""
+  ip="$(curl -s4 --max-time 6 https://api.ipify.org 2>/dev/null || true)"
+  [[ -z "$ip" ]] && ip="$(curl -s4 --max-time 6 https://ifconfig.me 2>/dev/null || true)"
+  [[ -z "$ip" ]] && ip="$(curl -s4 --max-time 6 https://ipv4.icanhazip.com 2>/dev/null | tr -d '\r\n' || true)"
+  [[ -z "$ip" ]] && ip="$(hostname -I 2>/dev/null | tr ' ' '\n' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | head -n1 || true)"
+  printf '%s' "$ip"
+}
+
+show_panel_link(){
+  local secret port ip
+  secret="$(env_get WEB_SECRET_PATH)"; secret="${secret:-AtlasPanel2024}"
+  secret="${secret#/}"; secret="${secret%/}"
+  port="$(env_get WEB_PORT)"; port="${port:-8000}"
+  ip="$(public_ipv4)"; ip="${ip:-<SERVER-IP>}"
+  echo ""
+  echo -e "${BLUE}────────────── Panel links (IPv4) ──────────────${NC}"
+  ok "New panel (v2 / React):"
+  echo -e "   ${GREEN}http://${ip}:${port}/${secret}/v2/${NC}"
+  echo ""
+  info "Old panel (classic):"
+  echo -e "   ${YELLOW}http://${ip}:${port}/${secret}/${NC}"
+  echo -e "${BLUE}────────────────────────────────────────────────${NC}"
+}
+
 run_action(){
   local action="${1:-}"
   case "$action" in
@@ -66,6 +103,9 @@ run_action(){
     uninstall-full)
       run_root_cmd "cd '$DIR' && bash uninstall.sh --purge-self --force"
       ;;
+    panel-link|panel|link)
+      show_panel_link
+      ;;
     help|-h|--help)
       cat <<USAGE
 Usage: atlas [command]
@@ -77,6 +117,7 @@ Commands:
   logs              Follow service logs
   update            Safe update (pull mode)
   update-hard       Force update (hard reset)
+  panel-link        Show admin panel links (new v2 + classic) with IPv4
   reinstall-service Recreate systemd service file
   install           Run installer
   configure         Configure .env (token/admin/password)
@@ -115,6 +156,7 @@ show_menu(){
   echo "10) Configure .env (token/admin/password)"
   echo "11) Uninstall"
   echo "12) Full reset uninstall (remove project dir)"
+  echo "13) Show panel links (new v2 + classic)"
   echo " 0) Exit"
   echo ""
 }
@@ -140,6 +182,7 @@ while true; do
     10) run_action configure; pause ;;
     11) run_action uninstall; pause ;;
     12) run_action uninstall-full; exit 0 ;;
+    13) show_panel_link; pause ;;
     0) ok "Bye"; exit 0 ;;
     *) warn "Invalid option"; pause ;;
   esac
