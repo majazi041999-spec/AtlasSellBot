@@ -862,6 +862,284 @@ async def logout():
     return r
 
 
+# ═══════════════════ REACT ADMIN PANEL v2 — JSON API + SPA ═══════════════════
+# A parallel React panel served at /<secret>/v2/. Data flows through JSON
+# endpoints under /<secret>/api/*; the existing server-rendered panel is
+# untouched and keeps working during the migration.
+_admin_dist = os.path.join(_dir, "admin", "dist")
+try:
+    from fastapi.staticfiles import StaticFiles as _StaticFiles
+    if os.path.isdir(os.path.join(_admin_dist, "assets")):
+        app.mount(f"/{S}/v2/assets", _StaticFiles(directory=os.path.join(_admin_dist, "assets")), name="admin_assets")
+except Exception as _e:  # pragma: no cover
+    logger.warning("admin v2 static mount skipped: %s", _e)
+
+
+def _admin_index_html() -> str:
+    idx = os.path.join(_admin_dist, "index.html")
+    if not os.path.isfile(idx):
+        return ""
+    with open(idx, "r", encoding="utf-8") as f:
+        html = f.read()
+    # Inject the secret prefix at serve time so it's never committed in the bundle.
+    return html.replace("<head>", f'<head><script>window.__PANEL_BASE__="/{S}";</script>', 1)
+
+
+@app.get(f"/{S}/v2")
+async def admin_v2_redirect():
+    return RedirectResponse(f"/{S}/v2/", status_code=307)
+
+
+@app.get(f"/{S}/v2/")
+async def admin_v2_index():
+    html = _admin_index_html()
+    if not html:
+        return HTMLResponse("<h3 style='font-family:sans-serif'>پنل نسخه ۲ هنوز build نشده است.</h3>", status_code=503)
+    return HTMLResponse(html)
+
+
+def _api_guard(request: Request):
+    return _auth(request)
+
+
+@app.post(f"/{S}/api/login")
+async def api_login(request: Request):
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    username = str(body.get("username") or "")
+    password = str(body.get("password") or "")
+    if username == WEB_ADMIN_USERNAME and password == WEB_ADMIN_PASSWORD:
+        token = _make_token(username)
+        r = JSONResponse({"ok": True, "username": username})
+        r.set_cookie("_atlas_t", token, httponly=True, max_age=JWT_EXPIRE_HOURS * 3600, samesite="lax")
+        return r
+    return JSONResponse({"error": "invalid_credentials"}, status_code=401)
+
+
+@app.post(f"/{S}/api/logout")
+async def api_logout():
+    r = JSONResponse({"ok": True})
+    r.delete_cookie("_atlas_t")
+    return r
+
+
+@app.get(f"/{S}/api/me")
+async def api_me(request: Request):
+    user = _api_guard(request)
+    if not user:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    return JSONResponse({"ok": True, "username": user})
+
+
+@app.get(f"/{S}/api/dashboard")
+async def api_dashboard(request: Request):
+    if not _api_guard(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    from core.database import build_daily_report
+    stats = await get_stats()
+    pending = await get_pending_orders()
+    try:
+        report = await build_daily_report()
+    except Exception:
+        report = {}
+    def _slim(o):
+        return {
+            "id": o["id"], "pkg_name": o.get("pkg_name"), "price": int(o.get("price") or 0),
+            "full_name": o.get("full_name"), "username": o.get("username"), "telegram_id": o.get("telegram_id"),
+            "traffic_gb": o.get("traffic_gb"), "duration_days": o.get("duration_days"),
+            "created_at": o.get("created_at"),
+            "is_renew": bool(int(o.get("renew_config_id") or 0) or int(o.get("renew_sub_profile_id") or 0)),
+        }
+    return JSONResponse({
+        "stats": stats,
+        "pending": [_slim(o) for o in pending[:8]],
+        "pending_total": len(pending),
+        "report": {
+            "sales_amount": int(report.get("sales_amount") or 0),
+            "orders_approved": int(report.get("orders_approved") or 0),
+            "renewals": int(report.get("renewals") or 0),
+            "new_users": int(report.get("new_users") or 0),
+            "wallet_topup_amount": int(report.get("wallet_topup_amount") or 0),
+            "jalali_display": report.get("jalali_display") or "",
+        },
+    })
+
+
+def _slim_order(o: dict) -> dict:
+    return {
+        "id": o["id"], "status": o.get("status"), "pkg_name": o.get("pkg_name"),
+        "price": int(o.get("price") or 0), "full_name": o.get("full_name"),
+        "username": o.get("username"), "telegram_id": o.get("telegram_id"),
+        "created_at": o.get("created_at"), "approved_at": o.get("approved_at"),
+        "is_renew": bool(int(o.get("renew_config_id") or 0) or int(o.get("renew_sub_profile_id") or 0)),
+    }
+
+
+@app.get(f"/{S}/api/orders")
+async def api_orders(request: Request):
+    if not _api_guard(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    page = max(1, int(request.query_params.get("page", "1") or 1))
+    status = (request.query_params.get("status") or "").strip()
+    per_page = 30
+    orders_all = await get_all_orders(1000)
+    if status:
+        orders_all = [o for o in orders_all if str(o.get("status")) == status]
+    total = len(orders_all)
+    total_pages = max(1, (total + per_page - 1) // per_page)
+    page = min(page, total_pages)
+    start = (page - 1) * per_page
+    rows = orders_all[start:start + per_page]
+    pending = await get_pending_orders()
+    return JSONResponse({
+        "orders": [_slim_order(o) for o in rows],
+        "total": total, "page": page, "total_pages": total_pages,
+        "pending_count": len(pending),
+    })
+
+
+@app.post(f"/{S}/api/orders/{{oid}}/approve")
+async def api_order_approve(request: Request, oid: int):
+    if not _api_guard(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    try:
+        res = await _fulfill_order(oid)
+    except Exception as e:
+        logger.exception("api order approve failed oid=%s: %s", oid, e)
+        await release_order_processing(oid)
+        res = {"ok": False, "error": "exception"}
+    if res.get("ok"):
+        return JSONResponse({"ok": True})
+    return JSONResponse({"error": res.get("error") or "failed"}, status_code=400)
+
+
+@app.post(f"/{S}/api/orders/{{oid}}/reject")
+async def api_order_reject(request: Request, oid: int):
+    if not _api_guard(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    order = await get_order(oid)
+    if order:
+        await update_order(oid, status="rejected")
+        await _clear_review_buttons("order", oid)
+    return JSONResponse({"ok": True})
+
+
+@app.get(f"/{S}/api/users")
+async def api_users(request: Request):
+    if not _api_guard(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    q = (request.query_params.get("q") or "").strip()
+    page = max(1, int(request.query_params.get("page", "1") or 1))
+    per_page = 40
+
+    def _slim_user(u: dict) -> dict:
+        return {
+            "id": u["id"], "telegram_id": u.get("telegram_id"), "username": u.get("username"),
+            "full_name": u.get("full_name"), "is_blocked": int(u.get("is_blocked") or 0),
+            "is_wholesale": int(u.get("is_wholesale") or 0),
+            "wholesale_request_pending": int(u.get("wholesale_request_pending") or 0),
+            "hide_brand": int(u.get("hide_brand") or 0),
+            "admin_role": u.get("admin_role") or "none", "is_admin": int(u.get("is_admin") or 0),
+            "balance_toman": int(u.get("balance_toman") or 0),
+            "discount_percent": float(u.get("discount_percent") or 0),
+            "price_per_gb": int(u.get("price_per_gb") or 0),
+            "unlimited_price": int(u.get("unlimited_price") or 0),
+            "created_at": u.get("created_at"),
+            "business": u.get("business") or {},
+        }
+
+    if q and len(q) >= 2:
+        results = await search_users(q, limit=50)
+        for u in results:
+            u["business"] = await get_user_business_stats(u["id"])
+        return JSONResponse({"users": [_slim_user(u) for u in results], "total": len(results), "page": 1, "total_pages": 1, "query": q})
+
+    total = await count_users()
+    total_pages = max(1, (total + per_page - 1) // per_page)
+    page = min(page, total_pages)
+    users = await get_all_users((page - 1) * per_page, per_page)
+    for u in users:
+        u["business"] = await get_user_business_stats(u["id"])
+    wholesale = await get_wholesale_users(200)
+    for u in wholesale:
+        u["business"] = await get_user_business_stats(u["id"])
+    pending_topups = await get_pending_topup_requests(200)
+    return JSONResponse({
+        "users": [_slim_user(u) for u in users],
+        "total": total, "page": page, "total_pages": total_pages,
+        "wholesale": [_slim_user(u) for u in wholesale],
+        "pending_topups": [{
+            "id": t.get("id"), "user_id": t.get("user_id"), "amount": int(t.get("amount") or 0),
+            "full_name": t.get("full_name"), "username": t.get("username"), "telegram_id": t.get("telegram_id"),
+            "created_at": t.get("created_at"),
+        } for t in pending_topups],
+    })
+
+
+@app.post(f"/{S}/api/topups/{{rid}}/approve")
+async def api_topup_approve(request: Request, rid: int):
+    if not _api_guard(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    req = await get_topup_request(rid)
+    if req and req.get("status") == "pending":
+        await add_user_balance(req["user_id"], int(req["amount"]), kind="topup", note=f"topup_request:{rid}", actor_telegram_id=0)
+        await update_topup_request(rid, status="approved", reviewer_telegram_id=0, reviewed_at=datetime.now().isoformat())
+        await _clear_review_buttons("topup", rid)
+    return JSONResponse({"ok": True})
+
+
+@app.post(f"/{S}/api/topups/{{rid}}/reject")
+async def api_topup_reject(request: Request, rid: int):
+    if not _api_guard(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    req = await get_topup_request(rid)
+    if req and req.get("status") == "pending":
+        await update_topup_request(rid, status="rejected", reviewer_telegram_id=0, reviewed_at=datetime.now().isoformat(), admin_note="rejected_web")
+        await _clear_review_buttons("topup", rid)
+    return JSONResponse({"ok": True})
+
+
+@app.get(f"/{S}/api/users/{{uid}}")
+async def api_user_detail(request: Request, uid: int):
+    if not _api_guard(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    u = await get_user_by_id(uid)
+    if not u:
+        return JSONResponse({"error": "not_found"}, status_code=404)
+    business = await get_user_business_stats(uid)
+    orders = await get_user_orders_full(uid, 100)
+    profiles = await get_subscription_profiles_full(uid, 100)
+    return JSONResponse({
+        "user": {
+            "id": u["id"], "telegram_id": u.get("telegram_id"), "username": u.get("username"),
+            "full_name": u.get("full_name"), "is_blocked": int(u.get("is_blocked") or 0),
+            "is_wholesale": int(u.get("is_wholesale") or 0),
+            "wholesale_request_pending": int(u.get("wholesale_request_pending") or 0),
+            "hide_brand": int(u.get("hide_brand") or 0),
+            "admin_role": u.get("admin_role") or "none", "is_admin": int(u.get("is_admin") or 0),
+            "balance_toman": int(u.get("balance_toman") or 0),
+            "discount_percent": float(u.get("discount_percent") or 0),
+            "price_per_gb": int(u.get("price_per_gb") or 0),
+            "unlimited_price": int(u.get("unlimited_price") or 0),
+            "created_at": u.get("created_at"),
+        },
+        "business": business,
+        "orders": [{
+            "id": o["id"], "status": o.get("status"), "pkg_name": o.get("pkg_name"),
+            "price": int(o.get("price") or 0), "traffic_gb": o.get("traffic_gb"),
+            "duration_days": o.get("duration_days"), "created_at": o.get("created_at"),
+            "server_name": o.get("server_name"),
+        } for o in orders],
+        "profiles": [{
+            "id": p["id"], "name": p.get("name") or p.get("email"), "traffic_gb": p.get("traffic_gb"),
+            "used_bytes": p.get("used_bytes"), "expire_timestamp": int(p.get("expire_timestamp") or 0),
+            "is_active": int(p.get("is_active") or 0),
+        } for p in profiles],
+    })
+
+
 # ═══════════════════════════════ DASHBOARD ══════════════════════════
 @app.get(f"/{S}/", response_class=HTMLResponse)
 @app.get(f"/{S}/dashboard", response_class=HTMLResponse)
@@ -2946,6 +3224,20 @@ async def user_toggle_wholesale(request: Request, uid: int):
     next_status = 0 if u.get("is_wholesale", 0) else 1
     await update_user(uid, is_wholesale=next_status, wholesale_request_pending=0 if next_status else u.get("wholesale_request_pending", 0))
     return JSONResponse({"success": True, "is_wholesale": bool(next_status)})
+
+
+@app.post(f"/{S}/users/{{uid}}/toggle_hide_brand")
+async def user_toggle_hide_brand(request: Request, uid: int):
+    if not _auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    from core.database import get_user_by_id, update_user
+
+    u = await get_user_by_id(uid)
+    if not u:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    next_status = 0 if u.get("hide_brand", 0) else 1
+    await update_user(uid, hide_brand=next_status)
+    return JSONResponse({"success": True, "hide_brand": bool(next_status)})
 
 
 @app.post(f"/{S}/users/{{uid}}/admin_role")

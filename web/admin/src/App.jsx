@@ -1,0 +1,44 @@
+import React, { useEffect, useState, useCallback } from "react";
+import { api } from "./api.js";
+import { useRoute } from "./router.js";
+import { Loading, ToastHost } from "./components/ui.jsx";
+import Shell from "./components/Shell.jsx";
+import Login from "./pages/Login.jsx";
+import Dashboard from "./pages/Dashboard.jsx";
+import Users from "./pages/Users.jsx";
+import Orders from "./pages/Orders.jsx";
+
+export default function App() {
+  const [authed, setAuthed] = useState(null); // null=checking, false=login, true=in
+  const [path, go] = useRoute();
+  const [badges, setBadges] = useState({});
+
+  const check = useCallback(() => {
+    api.get("/api/me").then(() => setAuthed(true)).catch(() => setAuthed(false));
+  }, []);
+  useEffect(() => { check(); }, [check]);
+
+  const onBadges = useCallback((b) => setBadges((s) => ({ ...s, ...b })), []);
+  const logout = async () => { try { await api.post("/api/logout"); } catch (e) {} setAuthed(false); };
+
+  if (authed === null) return <ToastWrap><Loading /></ToastWrap>;
+  if (!authed) return <ToastWrap><Login onAuthed={() => { setAuthed(true); go("/dashboard"); }} /></ToastWrap>;
+
+  const base = "/" + path.split("/").filter(Boolean)[0];
+  let page;
+  if (base === "/users") page = <Users />;
+  else if (base === "/orders") page = <Orders onBadges={onBadges} />;
+  else page = <Dashboard onBadges={onBadges} go={go} />;
+
+  return (
+    <ToastWrap>
+      <Shell path={path} go={go} badges={badges} onLogout={logout}>
+        {page}
+      </Shell>
+    </ToastWrap>
+  );
+}
+
+function ToastWrap({ children }) {
+  return (<>{children}<ToastHost /></>);
+}

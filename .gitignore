@@ -29,6 +29,8 @@ Thumbs.db
 .idea/
 .vscode/
 
-# Mini app (commit dist, not node_modules)
+# Mini app & admin panel (commit dist, not node_modules)
 web/miniapp/node_modules/
 web/miniapp/.vite/
+web/admin/node_modules/
+web/admin/.vite/

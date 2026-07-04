@@ -341,6 +341,7 @@ async def _ensure_columns(db):
             ("unlimited_price", "INTEGER DEFAULT 0"),
             ("is_wholesale", "INTEGER DEFAULT 0"),
             ("wholesale_request_pending", "INTEGER DEFAULT 0"),
+            ("hide_brand", "INTEGER DEFAULT 0"),
             ("admin_role", "TEXT DEFAULT 'none'"),
             ("balance_toman", "INTEGER DEFAULT 0"),
             ("referral_reminder_sent", "INTEGER DEFAULT 0"),

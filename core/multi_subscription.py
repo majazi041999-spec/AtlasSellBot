@@ -27,6 +27,7 @@ from core.database import (
     get_subscription_nodes,
     get_subscription_profile,
     get_subscription_profile_by_token,
+    get_user_by_id,
     update_config,
     update_subscription_node,
     update_subscription_profile,
@@ -483,9 +484,26 @@ async def _subscription_info_links(profile: Dict, used: int, total: int, active_
         "sub_info_template",
         "📊 حجم کل: {traffic_gb}GB | مصرف: {used} | باقی: {remaining}\n📅 باقی‌مانده: {days_left} روز | سپری‌شده: {days_elapsed} روز",
     )
-    brand_template = await get_setting("sub_brand_template", "📣 {brand}")
-    labels = _format_info_template(template, values) + _format_info_template(brand_template, values)
+    labels = _format_info_template(template, values)
+    # Wholesale customers can opt to hide our brand from their subscription link,
+    # so they can resell it under their own name. Skip the brand line entirely
+    # when the owning user has that flag set.
+    if not await _user_hide_brand(profile):
+        brand_template = await get_setting("sub_brand_template", "📣 {brand}")
+        labels = labels + _format_info_template(brand_template, values)
     return [_fake_info_link(label, i + 1) for i, label in enumerate(labels) if label]
+
+
+async def _user_hide_brand(profile: Dict) -> bool:
+    """True when the subscription's owner asked to hide our brand from their link."""
+    uid = profile.get("user_id")
+    if not uid:
+        return False
+    try:
+        u = await get_user_by_id(int(uid))
+    except Exception:
+        return False
+    return bool(u and int(u.get("hide_brand") or 0))
 
 
 async def _subscription_expired_notice_links(profile: Dict) -> list[str]:
