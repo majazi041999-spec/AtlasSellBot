@@ -102,6 +102,7 @@ from core.database import (
     get_user_by_telegram,
     has_previous_purchase,
     save_config,
+    count_active_configs_by_server,
     get_server,
     get_servers,
     get_setting,
@@ -1464,6 +1465,29 @@ async def server_test(request: Request, sid: int):
     ok = await cli.test_connection()
     await cli.close()
     return JSONResponse({"success": ok})
+
+
+@app.get(f"/{S}/api/servers")
+async def api_servers(request: Request):
+    """Server list for the React panel (secrets omitted, presence flagged)."""
+    if not _api_guard(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    servers = await get_servers(active_only=False)
+    out = []
+    for s in servers:
+        out.append({
+            "id": s["id"], "name": s.get("name"), "url": s.get("url"),
+            "username": s.get("username"), "sub_path": s.get("sub_path") or "",
+            "inbound_id": int(s.get("inbound_id") or 1),
+            "inbound_ids": s.get("inbound_ids") or "",
+            "note": s.get("note") or "",
+            "max_active_configs": int(s.get("max_active_configs") or 0),
+            "is_active": int(s.get("is_active") or 0),
+            "has_api_token": bool((s.get("api_token") or "").strip()),
+            "has_password": bool((s.get("password") or "").strip()),
+            "active_configs": await count_active_configs_by_server(int(s["id"])),
+        })
+    return JSONResponse({"servers": out})
 
 
 # ═════════════════════════════ SUBSCRIPTIONS ═══════════════════════
