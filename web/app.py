@@ -864,17 +864,22 @@ async def logout():
     return r
 
 
-# ═══════════════════ REACT ADMIN PANEL v2 — JSON API + SPA ═══════════════════
-# A parallel React panel served at /<secret>/v2/. Data flows through JSON
-# endpoints under /<secret>/api/*; the existing server-rendered panel is
-# untouched and keeps working during the migration.
+# ═══════════════════ REACT ADMIN PANEL — JSON API + SPA ═══════════════════
+# React is the MAIN panel, served at the secret root /<secret>/. Data flows
+# through JSON endpoints under /<secret>/api/*. Pages not yet ported still exist
+# as server-rendered routes (e.g. /<secret>/configs) and are deep-linked from the
+# React nav; /<secret>/dashboard also stays as a legacy fallback. The old /v2
+# path now just redirects to the root.
 _admin_dist = os.path.join(_dir, "admin", "dist")
 try:
     from fastapi.staticfiles import StaticFiles as _StaticFiles
     if os.path.isdir(os.path.join(_admin_dist, "assets")):
-        app.mount(f"/{S}/v2/assets", _StaticFiles(directory=os.path.join(_admin_dist, "assets")), name="admin_assets")
+        # Bundle uses a relative base ("./assets/…") → served at /<secret>/assets.
+        # Keep the /v2/assets mount too so any still-open v2 tab keeps working.
+        app.mount(f"/{S}/assets", _StaticFiles(directory=os.path.join(_admin_dist, "assets")), name="admin_assets")
+        app.mount(f"/{S}/v2/assets", _StaticFiles(directory=os.path.join(_admin_dist, "assets")), name="admin_assets_v2")
 except Exception as _e:  # pragma: no cover
-    logger.warning("admin v2 static mount skipped: %s", _e)
+    logger.warning("admin static mount skipped: %s", _e)
 
 
 def _admin_index_html() -> str:
@@ -887,17 +892,35 @@ def _admin_index_html() -> str:
     return html.replace("<head>", f'<head><script>window.__PANEL_BASE__="/{S}";</script>', 1)
 
 
+async def _serve_admin_spa():
+    html = _admin_index_html()
+    if not html:
+        # Build missing → don't strand the admin: bounce to the legacy dashboard.
+        return RedirectResponse(f"/{S}/dashboard", status_code=302)
+    return HTMLResponse(html)
+
+
+@app.get(f"/{S}")
+async def admin_root_noslash():
+    return RedirectResponse(f"/{S}/", status_code=307)
+
+
+@app.get(f"/{S}/")
+async def admin_root_index():
+    # React SPA is the main panel. Auth is handled client-side via /api/me, so the
+    # shell HTML itself is public (same as the old v2 behaviour).
+    return await _serve_admin_spa()
+
+
+# Legacy /v2 links now land on the main (root) React panel.
 @app.get(f"/{S}/v2")
 async def admin_v2_redirect():
-    return RedirectResponse(f"/{S}/v2/", status_code=307)
+    return RedirectResponse(f"/{S}/", status_code=307)
 
 
 @app.get(f"/{S}/v2/")
 async def admin_v2_index():
-    html = _admin_index_html()
-    if not html:
-        return HTMLResponse("<h3 style='font-family:sans-serif'>پنل نسخه ۲ هنوز build نشده است.</h3>", status_code=503)
-    return HTMLResponse(html)
+    return RedirectResponse(f"/{S}/", status_code=307)
 
 
 def _api_guard(request: Request):
@@ -1142,8 +1165,8 @@ async def api_user_detail(request: Request, uid: int):
     })
 
 
-# ═══════════════════════════════ DASHBOARD ══════════════════════════
-@app.get(f"/{S}/", response_class=HTMLResponse)
+# ═══════════════════════════════ DASHBOARD (legacy fallback) ═════════════════
+# Root /<secret>/ now serves the React SPA; this stays as a legacy fallback.
 @app.get(f"/{S}/dashboard", response_class=HTMLResponse)
 async def dashboard(request: Request):
     if not _auth(request):

@@ -52,11 +52,11 @@ show_panel_link(){
   ip="$(public_ipv4)"; ip="${ip:-<SERVER-IP>}"
   echo ""
   echo -e "${BLUE}────────────── Panel links (IPv4) ──────────────${NC}"
-  ok "New panel (v2 / React):"
-  echo -e "   ${GREEN}http://${ip}:${port}/${secret}/v2/${NC}"
+  ok "Main panel (React):"
+  echo -e "   ${GREEN}http://${ip}:${port}/${secret}/${NC}"
   echo ""
-  info "Old panel (classic):"
-  echo -e "   ${YELLOW}http://${ip}:${port}/${secret}/${NC}"
+  info "Legacy panel (classic fallback):"
+  echo -e "   ${YELLOW}http://${ip}:${port}/${secret}/dashboard${NC}"
   echo -e "${BLUE}────────────────────────────────────────────────${NC}"
 }
 

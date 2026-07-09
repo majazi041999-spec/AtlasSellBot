@@ -38,7 +38,7 @@ export default function Shell({ path, go, badges = {}, children, onLogout }) {
           <div className="brand-logo">🛡️</div>
           <div>
             <div className="brand-name">Atlas Panel</div>
-            <div className="brand-sub">پنل مدیریت نسخه ۲</div>
+            <div className="brand-sub">پنل مدیریت</div>
           </div>
         </div>
 
@@ -50,7 +50,7 @@ export default function Shell({ path, go, badges = {}, children, onLogout }) {
           </div>
         ))}
 
-        <div className="nav-group-label">پنل قدیم</div>
+        <div className="nav-group-label">هنوز در پنل قدیم</div>
         {LEGACY.map((n) => (
           <a key={n.path} className="nav-item" href={`${BASE}${n.path}`}>
             <span className="nav-ico">{n.icon}</span><span>{n.label}</span>
@@ -73,7 +73,7 @@ export default function Shell({ path, go, badges = {}, children, onLogout }) {
             <div className="crumb">Atlas · مدیریت</div>
           </div>
           <div className="topbar-spacer" />
-          <a className="btn sm ghost" href={`${BASE}/`}>پنل قدیم</a>
+          <a className="btn sm ghost" href={`${BASE}/dashboard`}>پنل قدیم</a>
         </header>
         <main className="content">{children}</main>
       </div>
