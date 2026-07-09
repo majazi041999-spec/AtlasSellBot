@@ -7,6 +7,7 @@ import Login from "./pages/Login.jsx";
 import Dashboard from "./pages/Dashboard.jsx";
 import Users from "./pages/Users.jsx";
 import Orders from "./pages/Orders.jsx";
+import Subscriptions from "./pages/Subscriptions.jsx";
 
 export default function App() {
   const [authed, setAuthed] = useState(null); // null=checking, false=login, true=in
@@ -28,6 +29,7 @@ export default function App() {
   let page;
   if (base === "/users") page = <Users />;
   else if (base === "/orders") page = <Orders onBadges={onBadges} />;
+  else if (base === "/subs") page = <Subscriptions />;
   else page = <Dashboard onBadges={onBadges} go={go} />;
 
   return (

@@ -1705,42 +1705,43 @@ def _start_nodeops(node_id: int, remove: bool = False, force_refresh: bool = Fal
     return True
 
 
+async def _node_form_body(request: Request) -> dict:
+    """Read a node add/edit body from either JSON (React) or a form post (legacy)."""
+    if "application/json" in request.headers.get("content-type", ""):
+        return await request.json()
+    form = await request.form()
+    return dict(form)
+
+
 @app.post(f"/{S}/subs/nodes/add")
-async def subscription_node_add(
-    request: Request,
-    server_id: int = Form(...),
-    inbound_id: int = Form(...),
-    label: str = Form(""),
-    priority: int = Form(100),
-    max_active_profiles: int = Form(0),
-    connect_host: str = Form(""),
-):
+async def subscription_node_add(request: Request):
     if not _auth(request):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
+    d = await _node_form_body(request)
     node_id = await add_subscription_node_config(
-        server_id, inbound_id, label.strip(), priority, max_active_profiles, connect_host.strip(),
+        int(d.get("server_id")), int(d.get("inbound_id")),
+        str(d.get("label") or "").strip(), int(d.get("priority") or 100),
+        int(d.get("max_active_profiles") or 0), str(d.get("connect_host") or "").strip(),
     )
     # Immediately provision this node onto every active subscription (background,
     # observable via the node-ops log). Adding a node now shows up in all links.
     started = _start_nodeops(node_id, remove=False, force_refresh=False)
-    if request.headers.get("accept", "").startswith("application/json"):
+    if "application/json" in request.headers.get("content-type", ""):
         return JSONResponse({"success": True, "node_id": node_id, "job_started": started})
     return RedirectResponse(f"/{S}/subs?saved=1", status_code=302)
 
 
 @app.post(f"/{S}/subs/nodes/{{node_id}}/edit")
-async def subscription_node_edit(
-    request: Request,
-    node_id: int,
-    server_id: int = Form(...),
-    inbound_id: int = Form(...),
-    label: str = Form(""),
-    priority: int = Form(100),
-    max_active_profiles: int = Form(0),
-    connect_host: str = Form(""),
-):
+async def subscription_node_edit(request: Request, node_id: int):
     if not _auth(request):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
+    d = await _node_form_body(request)
+    server_id = int(d.get("server_id"))
+    inbound_id = int(d.get("inbound_id"))
+    label = str(d.get("label") or "")
+    priority = int(d.get("priority") or 100)
+    max_active_profiles = int(d.get("max_active_profiles") or 0)
+    connect_host = str(d.get("connect_host") or "")
     before = await get_subscription_node_config(node_id)
     await update_subscription_node_config(
         node_id,
@@ -1762,7 +1763,7 @@ async def subscription_node_edit(
     started = False
     if target_changed:
         started = _start_nodeops(node_id, remove=False, force_refresh=True)
-    if request.headers.get("accept", "").startswith("application/json"):
+    if "application/json" in request.headers.get("content-type", ""):
         return JSONResponse({"success": True, "job_started": started})
     return RedirectResponse(f"/{S}/subs?saved=1", status_code=302)
 
@@ -1811,6 +1812,44 @@ async def subscription_nodeops_log(request: Request):
     if not _auth(request):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     return JSONResponse(_read_job_log("nodeops"))
+
+
+@app.get(f"/{S}/api/subs")
+async def api_subs(request: Request):
+    """Everything the React Subscriptions page needs: nodes, servers, settings."""
+    if not _api_guard(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    nodes = await get_subscription_node_configs(active_only=False)
+    out_nodes = []
+    for node in nodes:
+        status = await subscription_node_config_status(node)
+        out_nodes.append({
+            "id": node["id"],
+            "server_id": node["server_id"],
+            "server_name": node.get("server_name"),
+            "server_url": node.get("server_url"),
+            "server_active": int(node.get("server_active") or 0),
+            "inbound_id": node["inbound_id"],
+            "label": node.get("label") or "",
+            "priority": int(node.get("priority") or 100),
+            "max_active_profiles": int(node.get("max_active_profiles") or 0),
+            "connect_host": node.get("connect_host") or "",
+            "is_active": int(node.get("is_active") or 0),
+            "active_profiles": await count_active_subscription_nodes_by_target(node["server_id"], node["inbound_id"]),
+            "usable": status["usable"],
+            "usable_label": status["label"],
+            "usable_reason": status["reason"],
+        })
+    servers = await get_servers(active_only=False)
+    return JSONResponse({
+        "nodes": out_nodes,
+        "servers": [{"id": s["id"], "name": s.get("name"), "is_active": int(s.get("is_active") or 0)} for s in servers],
+        "settings": {
+            "public_base_url": await get_setting("public_base_url", ""),
+            "sub_auto_sync_enabled": await get_setting("sub_auto_sync_enabled", "0"),
+            "sub_auto_sync_interval_hours": await get_setting("sub_auto_sync_interval_hours", "1"),
+        },
+    })
 
 
 @app.get(f"/{S}/subs/nodes/{{node_id}}/inbound")

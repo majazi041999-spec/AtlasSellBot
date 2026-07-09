@@ -32,6 +32,12 @@ export const api = {
   post: (path, body) => request(path, { method: "POST", body }),
   // legacy action endpoints (existing panel) — JSON in, {success:true} out
   action: (path, body) => request(path, { method: "POST", body }),
+  // form-encoded post for endpoints that read request.form() (e.g. sync start)
+  form: (path, obj = {}) => {
+    const fd = new FormData();
+    Object.entries(obj).forEach(([k, v]) => fd.append(k, v));
+    return request(path, { method: "POST", form: fd });
+  },
 };
 
 export const fmt = (n) => Number(n || 0).toLocaleString("en-US");
