@@ -22,6 +22,7 @@ from core.database import (
     count_active_subscription_nodes_by_target,
     delete_subscription_node,
     get_available_subscription_node_configs,
+    get_subscription_node_config,
     get_subscription_node_configs,
     get_setting,
     get_subscription_nodes,
@@ -273,6 +274,44 @@ def _label_subscription_link(link: str, label: str) -> str:
         if not parts.scheme:
             return link
         return urlunsplit((parts.scheme, parts.netloc, parts.path, parts.query, quote(label, safe="")))
+    except Exception:
+        return link
+
+
+def _apply_host_override(link: str, host: str) -> str:
+    """Swap ONLY the connection address (host after `@`, before `:port`) in a link.
+
+    Per-node override: an admin can point a node at a custom domain/CDN while the
+    inbound on the panel keeps its own address. Everything else — port, SNI, host
+    header, path, uuid — is left exactly as the panel generated it.
+    """
+    host = (host or "").strip()
+    link = (link or "").strip()
+    if not host or not link or "://" not in link:
+        return link
+    scheme = link.split("://", 1)[0].lower()
+    if scheme == "vmess":
+        obj = _decode_b64_json(link[8:])
+        if not obj:
+            return link
+        obj["add"] = host
+        encoded = base64.b64encode(
+            json.dumps(obj, ensure_ascii=False, separators=(",", ":")).encode()
+        ).decode()
+        return f"vmess://{encoded}"
+    try:
+        parts = urlsplit(link)
+        if not parts.hostname:
+            return link
+        userinfo = ""
+        if parts.username:
+            userinfo = parts.username
+            if parts.password:
+                userinfo += f":{parts.password}"
+            userinfo += "@"
+        port = f":{parts.port}" if parts.port else ""
+        netloc = f"{userinfo}{host}{port}"
+        return urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment))
     except Exception:
         return link
 
@@ -562,13 +601,13 @@ async def pick_subscription_nodes(count: int) -> List[Dict]:
 
 
 async def create_profile_for_order(user: Dict, order: Dict, traffic_gb: float, duration_days: int) -> Dict:
-    node_count = max(2, min(8, int(await get_setting("multi_sub_node_count", "4") or 4)))
-    nodes = await pick_subscription_nodes(node_count)
-    min_nodes = max(2, min(node_count, int(await get_setting("multi_sub_min_nodes", "2") or 2)))
+    # No min/max node cap: every subscription is provisioned on ALL usable nodes.
+    # A single successful node is enough to hand the customer a working link; the
+    # background/real-time reconciler fills in any node that was momentarily down.
+    nodes = await get_available_subscription_node_configs()
+    min_nodes = 1
     if not nodes:
         return {"ok": False, "error": "no_subscription_nodes_configured"}
-    if len(nodes) < min_nodes:
-        return {"ok": False, "error": f"not_enough_subscription_nodes:{len(nodes)}/{min_nodes}"}
 
     token = secrets.token_urlsafe(24)
     sub_url = await subscription_url(token)
@@ -688,13 +727,11 @@ async def create_profile_from_config(user: Dict, cfg: Dict) -> Dict:
         return {"ok": False, "error": "config_expiry_unknown"}
     remaining_days = _days_remaining(expire_ms, now_ms)
 
-    node_count = max(2, min(8, int(await get_setting("multi_sub_node_count", "4") or 4)))
-    nodes = await pick_subscription_nodes(node_count)
-    min_nodes = max(2, min(node_count, int(await get_setting("multi_sub_min_nodes", "2") or 2)))
+    # Use ALL usable nodes (no min/max cap); one working node is enough to migrate.
+    nodes = await get_available_subscription_node_configs()
+    min_nodes = 1
     if not nodes:
         return {"ok": False, "error": "no_subscription_nodes_configured"}
-    if len(nodes) < min_nodes:
-        return {"ok": False, "error": f"not_enough_subscription_nodes:{len(nodes)}/{min_nodes}"}
 
     token = secrets.token_urlsafe(24)
     sub_url = await subscription_url(token)
@@ -872,6 +909,12 @@ async def render_subscription(token: str) -> tuple[str, Dict[str, int]] | None:
                 raw_link = ""
         if not raw_link:
             continue
+        # Per-node custom domain: rewrite ONLY the address on the cached link at
+        # render time. This is HTTP-free, so changing a node's domain in the panel
+        # reflects in every user's link on the very next fetch — no re-sync needed.
+        host_override = (n.get("connect_host") or "").strip()
+        if host_override:
+            raw_link = _apply_host_override(raw_link, host_override)
         label = await _subscription_node_display_label(profile, n, active_count + 1)
         link = _label_subscription_link(raw_link, label)
         if _subscription_link_is_complete(link):
@@ -893,8 +936,15 @@ async def render_subscription(token: str) -> tuple[str, Dict[str, int]] | None:
     return body, {"upload": 0, "download": used, "total": total, "expire": expire, "title": title}
 
 
-async def ensure_subscription_profile_nodes(profile: Dict, force_refresh: bool = False) -> Dict:
-    """Create missing clients for newly configured subscription nodes."""
+async def ensure_subscription_profile_nodes(profile: Dict, force_refresh: bool = False,
+                                            only_config_ids: set | None = None) -> Dict:
+    """Create missing clients for newly configured subscription nodes.
+
+    `only_config_ids`: when given, restrict the whole pass to just those node
+    config ids (used by the real-time per-node reconciler so a single node action
+    doesn't touch — or risk breaking — every other node). Orphan pruning is also
+    skipped in that mode, since we're deliberately looking at one node only.
+    """
     if not profile or not int(profile.get("is_active") or 0):
         return {"created": 0, "skipped": 0, "failed": 0}
 
@@ -906,6 +956,8 @@ async def ensure_subscription_profile_nodes(profile: Dict, force_refresh: bool =
     existing_nodes = await get_subscription_nodes(profile["id"])
     existing_by_email = {str(node.get("email") or ""): node for node in existing_nodes}
     configured_nodes = await get_subscription_node_configs(active_only=True)
+    if only_config_ids is not None:
+        configured_nodes = [n for n in configured_nodes if int(n["id"]) in only_config_ids]
 
     # Orphan cleanup: a subscription node whose underlying node CONFIG was deleted
     # from the panel must be removed from the user's sub entirely (remote client +
@@ -918,7 +970,7 @@ async def ensure_subscription_profile_nodes(profile: Dict, force_refresh: bool =
     # every user's servers — treat it as a misconfiguration and skip pruning.
     all_config_ids = {int(c["id"]) for c in await get_subscription_node_configs(active_only=False)}
     removed = 0
-    for node in (existing_nodes if all_config_ids else []):
+    for node in (existing_nodes if (all_config_ids and only_config_ids is None) else []):
         email = str(node.get("email") or "")
         m = re.search(r"_n(\d+)$", email)
         cfg_id = int(m.group(1)) if m else 0
@@ -1642,6 +1694,109 @@ async def sync_subscription_nodes_streamed(
         f"📊 خلاصه — بررسی: {agg['checked']} | ساخته: {agg['created']} | "
         f"ترمیم: {agg['refreshed']} | تایید: {agg['verified']} | انتقال: {agg['moved']} | "
         f"حذف: {agg['removed']} | غیرفعال: {agg['disabled']} | خطا: {agg['failed']}"
+    )
+    return agg
+
+
+async def _remove_node_config_from_profile(profile: Dict, node_id: int) -> Dict:
+    """Drop one node config's client from a single profile: remote client + local row.
+
+    Used when a node is disabled or deleted so it disappears from that user's link
+    immediately, instead of lingering until the next full sweep.
+    """
+    nodes = await get_subscription_nodes(profile["id"])
+    suffix = f"_n{int(node_id)}"
+    targets = [n for n in nodes if str(n.get("email") or "").endswith(suffix)]
+    removed = 0
+    for n in targets:
+        cli = XUIClient(n["server_url"], n["srv_user"], n["srv_pass"], n.get("sub_path") or "", n.get("srv_api_token", ""))
+        try:
+            await cli.delete_client(int(n.get("inbound_id") or 0), n.get("uuid") or "", n.get("email") or "")
+        except Exception as e:
+            logger.warning("node remove: remote delete failed profile=%s node=%s: %s", profile.get("id"), n.get("id"), e)
+        finally:
+            await cli.close()
+        try:
+            await delete_subscription_node(int(n["id"]))
+            removed += 1
+        except Exception as e:
+            logger.warning("node remove: db delete failed profile=%s node=%s: %s", profile.get("id"), n.get("id"), e)
+    return {"removed": removed, "targets": len(targets)}
+
+
+async def reconcile_node_config_streamed(
+    log,
+    node_id: int,
+    remove: bool = False,
+    force_refresh: bool = False,
+    limit: int = 5000,
+    concurrency: int = 6,
+    per_profile_timeout: int = 120,
+) -> Dict:
+    """Real-time reconciliation of ONE node config across every active profile.
+
+    - remove=True  → delete that node from all subscriptions (disable/delete).
+    - remove=False → create/refresh that node on all subscriptions (add/enable/edit).
+
+    Only the targeted node is touched (via `only_config_ids`), so it's fast and can
+    show live progress right when the admin makes the change.
+    """
+    node = await get_subscription_node_config(int(node_id))
+    label = (node or {}).get("label") or (node or {}).get("server_name") or f"#{node_id}"
+    profiles = await get_active_subscription_profiles(limit)
+    total = len(profiles)
+    verb = "حذف نود از لینک‌ها" if remove else ("بازسازی کامل لینک نود" if force_refresh else "افزودن/به‌روزرسانی نود")
+    log(f"🔧 نود «{label}» | عملیات: {verb} | {total} ساب فعال | پردازش همزمان: {concurrency}")
+    agg = {"checked": 0, "created": 0, "refreshed": 0, "verified": 0, "removed": 0, "failed": 0}
+    if not total:
+        log("هیچ ساب فعالی برای اعمال تغییر وجود ندارد.")
+        return agg
+
+    sem = asyncio.Semaphore(max(1, int(concurrency)))
+    state = {"done": 0}
+
+    async def worker(p: Dict):
+        async with sem:
+            lbl = str(p.get("email") or f"#{p.get('id')}")[-28:]
+            try:
+                if remove:
+                    r = await asyncio.wait_for(_remove_node_config_from_profile(p, node_id), timeout=per_profile_timeout)
+                    agg["removed"] += int(r.get("removed") or 0)
+                    agg["checked"] += 1
+                    state["done"] += 1
+                    log(f"[{state['done']}/{total}] 🗑 {lbl}: حذف‌شده={r.get('removed', 0)}")
+                else:
+                    fresh = await get_subscription_profile_by_token(p["token"]) or p
+                    r = await asyncio.wait_for(
+                        ensure_subscription_profile_nodes(fresh, force_refresh=force_refresh, only_config_ids={int(node_id)}),
+                        timeout=per_profile_timeout,
+                    )
+                    for k in ("created", "refreshed", "verified", "failed"):
+                        agg[k] += int(r.get(k) or 0)
+                    agg["checked"] += 1
+                    state["done"] += 1
+                    log(
+                        f"[{state['done']}/{total}] ✅ {lbl}: "
+                        f"ساخته={r.get('created', 0)} ترمیم={r.get('refreshed', 0)} "
+                        f"تایید={r.get('verified', 0)} خطا={r.get('failed', 0)}"
+                    )
+                    for err in (r.get("errors") or [])[:2]:
+                        log(f"    ↳ {err}")
+            except asyncio.TimeoutError:
+                agg["failed"] += 1
+                state["done"] += 1
+                log(f"[{state['done']}/{total}] ⌛️ {lbl}: طول کشید و رد شد (سرور کند یا در دسترس نیست)")
+            except Exception as e:
+                agg["failed"] += 1
+                state["done"] += 1
+                log(f"[{state['done']}/{total}] ❌ {lbl}: {str(e)[:140]}")
+
+    await asyncio.gather(*(worker(p) for p in profiles))
+    log("")
+    log(
+        f"📊 خلاصه — بررسی: {agg['checked']} | ساخته: {agg['created']} | "
+        f"ترمیم: {agg['refreshed']} | تایید: {agg['verified']} | "
+        f"حذف: {agg['removed']} | خطا: {agg['failed']}"
     )
     return agg
 

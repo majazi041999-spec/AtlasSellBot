@@ -397,6 +397,7 @@ async def _ensure_columns(db):
             ("priority", "INTEGER DEFAULT 100"),
             ("max_active_profiles", "INTEGER DEFAULT 0"),
             ("is_active", "INTEGER DEFAULT 1"),
+            ("connect_host", "TEXT DEFAULT ''"),
         ],
         "test_accounts": [
             ("profile_id", "INTEGER DEFAULT 0"),
@@ -544,7 +545,8 @@ async def get_subscription_node_config(node_id: int) -> Optional[Dict]:
 
 
 async def add_subscription_node_config(server_id: int, inbound_id: int, label: str = "",
-                                       priority: int = 100, max_active_profiles: int = 0) -> int:
+                                       priority: int = 100, max_active_profiles: int = 0,
+                                       connect_host: str = "") -> int:
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute(
             "SELECT id FROM subscription_node_configs WHERE server_id=? AND inbound_id=?",
@@ -554,16 +556,18 @@ async def add_subscription_node_config(server_id: int, inbound_id: int, label: s
         if existing:
             await db.execute(
                 """UPDATE subscription_node_configs
-                   SET label=?, priority=?, max_active_profiles=?, is_active=1
+                   SET label=?, priority=?, max_active_profiles=?, connect_host=?, is_active=1
                    WHERE id=?""",
-                (label or "", int(priority or 100), int(max_active_profiles or 0), int(existing[0])),
+                (label or "", int(priority or 100), int(max_active_profiles or 0),
+                 (connect_host or "").strip(), int(existing[0])),
             )
             await db.commit()
             return int(existing[0])
         cur = await db.execute(
-            """INSERT INTO subscription_node_configs(server_id,inbound_id,label,priority,max_active_profiles)
-               VALUES(?,?,?,?,?)""",
-            (int(server_id), int(inbound_id), label or "", int(priority or 100), int(max_active_profiles or 0)),
+            """INSERT INTO subscription_node_configs(server_id,inbound_id,label,priority,max_active_profiles,connect_host)
+               VALUES(?,?,?,?,?,?)""",
+            (int(server_id), int(inbound_id), label or "", int(priority or 100),
+             int(max_active_profiles or 0), (connect_host or "").strip()),
         )
         await db.commit()
         return int(cur.lastrowid)
@@ -2028,7 +2032,8 @@ async def get_subscription_nodes(profile_id: int) -> List[Dict]:
         async with db.execute(
             """SELECT n.*, s.name AS server_name, s.url AS server_url, s.username AS srv_user,
                       s.password AS srv_pass, s.api_token AS srv_api_token, s.sub_path,
-                      nc.label AS node_label, nc.priority AS node_priority
+                      nc.label AS node_label, nc.priority AS node_priority,
+                      nc.connect_host AS connect_host
                FROM subscription_nodes n
                JOIN servers s ON s.id=n.server_id
                LEFT JOIN subscription_node_configs nc

@@ -200,6 +200,18 @@ class XUIClient:
         r = await self._req("GET", f"/panel/api/inbounds/get/{iid}")
         return r.get("obj") if r and r.get("success") else None
 
+    async def update_inbound(self, iid: int, payload: Dict) -> bool:
+        """Update an inbound in place (remark/port/enable/settings/streamSettings…).
+
+        `payload` must be a full inbound object as 3x-ui expects, where `settings`,
+        `streamSettings` and `sniffing` are JSON *strings* (exactly how get_inbound
+        returns them). Requires panel login (token-write is not permitted for this).
+        """
+        body = dict(payload or {})
+        body["id"] = int(iid)
+        r = await self._req("POST", f"/panel/api/inbounds/update/{int(iid)}", json=body)
+        return bool(r and r.get("success"))
+
     async def get_client_traffic(self, email: str) -> Optional[Dict]:
         enc = quote(email, safe="")
         # Standard MHSanaei 3x-ui endpoint first; fall back to the fork-specific

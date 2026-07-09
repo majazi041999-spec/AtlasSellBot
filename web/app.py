@@ -155,6 +155,7 @@ from core.multi_subscription import (
     rebuild_subscription_profile,
     sync_subscription_nodes_for_all,
     sync_subscription_nodes_streamed,
+    reconcile_node_config_streamed,
 )
 from core.database import get_subscription_profile_by_token as _get_sub_profile_by_token
 from core.database import get_subscription_nodes as _get_sub_nodes
@@ -1630,8 +1631,10 @@ async def subscriptions_settings_save(
 ):
     if not _auth(request):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
-    node_count = max(2, min(8, int(multi_sub_node_count or 4)))
-    min_nodes = max(2, min(node_count, int(multi_sub_min_nodes or 2)))
+    # Min/max node caps were removed: every subscription now uses ALL usable nodes.
+    # These settings are kept (no ceiling) only for backward-compat display.
+    node_count = max(0, int(multi_sub_node_count or 0))
+    min_nodes = max(0, int(multi_sub_min_nodes or 0))
     # Subscriptions are the only fulfilment model now, so multi_sub_enabled is kept
     # pinned on rather than exposed as a toggle that could break the store.
     await set_setting("multi_sub_enabled", "1")
@@ -1683,6 +1686,25 @@ async def subscription_sync_nodes_log(request: Request):
     return JSONResponse(_read_job_log("sync"))
 
 
+def _start_nodeops(node_id: int, remove: bool = False, force_refresh: bool = False) -> bool:
+    """Kick off a real-time single-node reconciliation as a streamed job.
+
+    Returns False (without starting) if a node op is already running, so callers
+    can tell the user to wait rather than overlapping two writes to the panels.
+    """
+    if _read_job_log("nodeops").get("running"):
+        return False
+
+    async def _runner(log):
+        await reconcile_node_config_streamed(
+            log, int(node_id), remove=remove, force_refresh=force_refresh,
+            limit=5000, concurrency=6,
+        )
+
+    _asyncio.create_task(_run_python_job("nodeops", _runner))
+    return True
+
+
 @app.post(f"/{S}/subs/nodes/add")
 async def subscription_node_add(
     request: Request,
@@ -1691,10 +1713,18 @@ async def subscription_node_add(
     label: str = Form(""),
     priority: int = Form(100),
     max_active_profiles: int = Form(0),
+    connect_host: str = Form(""),
 ):
     if not _auth(request):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
-    await add_subscription_node_config(server_id, inbound_id, label.strip(), priority, max_active_profiles)
+    node_id = await add_subscription_node_config(
+        server_id, inbound_id, label.strip(), priority, max_active_profiles, connect_host.strip(),
+    )
+    # Immediately provision this node onto every active subscription (background,
+    # observable via the node-ops log). Adding a node now shows up in all links.
+    started = _start_nodeops(node_id, remove=False, force_refresh=False)
+    if request.headers.get("accept", "").startswith("application/json"):
+        return JSONResponse({"success": True, "node_id": node_id, "job_started": started})
     return RedirectResponse(f"/{S}/subs?saved=1", status_code=302)
 
 
@@ -1707,9 +1737,11 @@ async def subscription_node_edit(
     label: str = Form(""),
     priority: int = Form(100),
     max_active_profiles: int = Form(0),
+    connect_host: str = Form(""),
 ):
     if not _auth(request):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
+    before = await get_subscription_node_config(node_id)
     await update_subscription_node_config(
         node_id,
         server_id=int(server_id),
@@ -1717,7 +1749,21 @@ async def subscription_node_edit(
         label=label.strip(),
         priority=int(priority or 100),
         max_active_profiles=int(max_active_profiles or 0),
+        connect_host=connect_host.strip(),
     )
+    # If the server/inbound changed, links must be rebuilt (move); a bare label or
+    # connect_host change needs no panel calls (render applies host live), but a
+    # force refresh is cheap-ish and guarantees consistency, so we refresh on any
+    # target change.
+    target_changed = bool(before) and (
+        int(before.get("server_id") or 0) != int(server_id)
+        or int(before.get("inbound_id") or 0) != int(inbound_id)
+    )
+    started = False
+    if target_changed:
+        started = _start_nodeops(node_id, remove=False, force_refresh=True)
+    if request.headers.get("accept", "").startswith("application/json"):
+        return JSONResponse({"success": True, "job_started": started})
     return RedirectResponse(f"/{S}/subs?saved=1", status_code=302)
 
 
@@ -1728,16 +1774,119 @@ async def subscription_node_toggle(request: Request, node_id: int):
     node = await get_subscription_node_config(node_id)
     if not node:
         return JSONResponse({"success": False, "error": "not found"}, status_code=404)
-    await update_subscription_node_config(node_id, is_active=0 if int(node.get("is_active") or 0) else 1)
-    return JSONResponse({"success": True})
+    now_active = 0 if int(node.get("is_active") or 0) else 1
+    await update_subscription_node_config(node_id, is_active=now_active)
+    # Real-time: disabling removes this node from every link; enabling re-creates it.
+    started = _start_nodeops(node_id, remove=(now_active == 0), force_refresh=False)
+    return JSONResponse({"success": True, "is_active": now_active, "job_started": started})
+
+
+@app.post(f"/{S}/subs/nodes/{{node_id}}/reconcile")
+async def subscription_node_reconcile(request: Request, node_id: int):
+    """Force-rebuild this node's link on every subscription (apply inbound edits)."""
+    if not _auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    node = await get_subscription_node_config(node_id)
+    if not node:
+        return JSONResponse({"success": False, "error": "not found"}, status_code=404)
+    started = _start_nodeops(node_id, remove=False, force_refresh=True)
+    if not started:
+        return JSONResponse({"success": False, "error": "یک عملیات نود همین الان در حال اجراست."}, status_code=409)
+    return JSONResponse({"success": True, "job_started": True})
 
 
 @app.post(f"/{S}/subs/nodes/{{node_id}}/delete")
 async def subscription_node_delete(request: Request, node_id: int):
     if not _auth(request):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
+    # Remove from every subscription first (matches by email suffix _n{id}, so it
+    # works even after the config row is gone), then delete the config.
+    started = _start_nodeops(node_id, remove=True, force_refresh=False)
     await delete_subscription_node_config(node_id)
-    return JSONResponse({"success": True})
+    return JSONResponse({"success": True, "job_started": started})
+
+
+@app.get(f"/{S}/subs/nodes/ops/log")
+async def subscription_nodeops_log(request: Request):
+    if not _auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    return JSONResponse(_read_job_log("nodeops"))
+
+
+@app.get(f"/{S}/subs/nodes/{{node_id}}/inbound")
+async def subscription_node_inbound_get(request: Request, node_id: int):
+    """Fetch the raw inbound so it can be edited from our panel (no 3x-ui trip)."""
+    if not _auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    node = await get_subscription_node_config(node_id)
+    if not node:
+        return JSONResponse({"success": False, "error": "not found"}, status_code=404)
+    cli = XUIClient(node["server_url"], node["srv_user"], node["srv_pass"], node.get("sub_path") or "", node.get("srv_api_token", ""))
+    try:
+        inbound = await cli.get_inbound(int(node["inbound_id"]))
+        if not inbound:
+            return JSONResponse({"success": False, "error": cli.last_error or "inbound_not_found"}, status_code=502)
+        return JSONResponse({"success": True, "inbound": {
+            "id": inbound.get("id"),
+            "remark": inbound.get("remark", ""),
+            "port": inbound.get("port"),
+            "protocol": inbound.get("protocol"),
+            "enable": bool(inbound.get("enable", True)),
+            "listen": inbound.get("listen", ""),
+            "expiryTime": inbound.get("expiryTime", 0),
+            "total": inbound.get("total", 0),
+            "settings": inbound.get("settings", ""),
+            "streamSettings": inbound.get("streamSettings", ""),
+            "sniffing": inbound.get("sniffing", ""),
+        }})
+    finally:
+        await cli.close()
+
+
+@app.post(f"/{S}/subs/nodes/{{node_id}}/inbound")
+async def subscription_node_inbound_update(request: Request, node_id: int):
+    """Save inbound edits back to 3x-ui, then rebuild all links for this node."""
+    if not _auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    node = await get_subscription_node_config(node_id)
+    if not node:
+        return JSONResponse({"success": False, "error": "not found"}, status_code=404)
+    data = await request.json()
+    cli = XUIClient(node["server_url"], node["srv_user"], node["srv_pass"], node.get("sub_path") or "", node.get("srv_api_token", ""))
+    try:
+        current = await cli.get_inbound(int(node["inbound_id"]))
+        if not current:
+            return JSONResponse({"success": False, "error": cli.last_error or "inbound_not_found"}, status_code=502)
+        # Start from the live inbound and overlay only the editable fields so we
+        # never drop data 3x-ui expects (clientStats, tag, allocate, …).
+        payload = dict(current)
+        for key in ("remark", "listen", "settings", "streamSettings", "sniffing"):
+            if key in data and data[key] is not None:
+                payload[key] = data[key]
+        if "port" in data and data["port"]:
+            payload["port"] = int(data["port"])
+        if "enable" in data:
+            payload["enable"] = bool(data["enable"])
+        if "expiryTime" in data:
+            payload["expiryTime"] = int(data["expiryTime"] or 0)
+        if "total" in data:
+            payload["total"] = int(data["total"] or 0)
+        # Validate any JSON-string fields the admin edited before pushing.
+        for key in ("settings", "streamSettings", "sniffing"):
+            val = payload.get(key)
+            if isinstance(val, str) and val.strip():
+                try:
+                    json.loads(val)
+                except Exception:
+                    return JSONResponse({"success": False, "error": f"invalid JSON in {key}"}, status_code=400)
+        ok = await cli.update_inbound(int(node["inbound_id"]), payload)
+        if not ok:
+            return JSONResponse({"success": False, "error": cli.last_error or "update_failed"}, status_code=502)
+    finally:
+        await cli.close()
+    # Rebuild every subscription's link for this node so the inbound change lands.
+    started = _start_nodeops(node_id, remove=False, force_refresh=True)
+    return JSONResponse({"success": True, "job_started": started})
 
 
 @app.post(f"/{S}/subs/nodes/{{node_id}}/test")
@@ -3656,8 +3805,8 @@ async def settings_save(
     await set_setting("renewal_min_traffic_gb", str(max(0.1, float(renewal_min_traffic_gb or 1))))
     # Subscriptions are the only fulfilment model now; keep it pinned on.
     await set_setting("multi_sub_enabled", "1")
-    await set_setting("multi_sub_node_count", str(max(2, min(8, int(multi_sub_node_count or 4)))))
-    await set_setting("multi_sub_min_nodes", str(max(2, min(8, int(multi_sub_min_nodes or 2)))))
+    await set_setting("multi_sub_node_count", str(max(0, int(multi_sub_node_count or 0))))
+    await set_setting("multi_sub_min_nodes", str(max(0, int(multi_sub_min_nodes or 0))))
     await set_setting("public_base_url", public_base_url.strip().rstrip("/"))
     await set_setting("sub_info_enabled", "1" if sub_info_enabled == "1" else "0")
     await set_setting("sub_info_sync_on_render", "1" if sub_info_sync_on_render == "1" else "0")
@@ -3778,6 +3927,7 @@ _JOB_LOG_PATHS = {
     "cert": os.path.join(_repo_dir, "atlas-cert.log"),
     "update": os.path.join(_repo_dir, "atlas-update.log"),
     "sync": os.path.join(_repo_dir, "atlas-sync.log"),
+    "nodeops": os.path.join(_repo_dir, "atlas-nodeops.log"),
 }
 _JOB_DONE_OK = "__ATLAS_JOB_OK__"
 _JOB_DONE_FAIL = "__ATLAS_JOB_FAIL__"
