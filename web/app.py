@@ -3731,11 +3731,10 @@ async def receipt_image(request: Request, tx_type: str, tx_id: int):
 
 
 # ═══════════════════════════════ SETTINGS ═══════════════════════════
-@app.get(f"/{S}/settings", response_class=HTMLResponse)
-async def settings_page(request: Request):
-    if not _auth(request):
-        return _redir_login()
-
+async def _settings_snapshot() -> dict:
+    """Current values for every field the settings form manages, keyed exactly by
+    the POST /settings form param names so the React page maps 1:1 and can submit
+    the complete set (partial submits would reset omitted fields to defaults)."""
     settings = {
         "welcome_message": await get_setting("text.welcome_message", BOT_TEXT_DEFAULTS["text.welcome_message"]),
         "support_username": await get_setting("support_username", ""),
@@ -3788,7 +3787,14 @@ async def settings_page(request: Request):
     settings["card_bank"] = await get_setting("card_bank", CARD_BANK)
 
     settings["referral_bonus_gb"] = REFERRAL_BONUS_GB
+    return settings
 
+
+@app.get(f"/{S}/settings", response_class=HTMLResponse)
+async def settings_page(request: Request):
+    if not _auth(request):
+        return _redir_login()
+    settings = await _settings_snapshot()
     servers = await get_servers(active_only=False)
     saved = request.query_params.get("saved")
     cert_result = request.query_params.get("cert")
@@ -3796,6 +3802,18 @@ async def settings_page(request: Request):
         "settings.html",
         await _ctx_ui(request, settings=settings, servers=servers, saved=saved, cert_result=cert_result, active="settings"),
     )
+
+
+@app.get(f"/{S}/api/settings")
+async def api_settings(request: Request):
+    if not _api_guard(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    settings = await _settings_snapshot()
+    servers = await get_servers(active_only=False)
+    return JSONResponse({
+        "settings": settings,
+        "servers": [{"id": s["id"], "name": s.get("name"), "is_active": int(s.get("is_active") or 0)} for s in servers],
+    })
 
 
 @app.post(f"/{S}/settings")

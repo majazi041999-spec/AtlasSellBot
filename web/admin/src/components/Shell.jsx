@@ -8,6 +8,7 @@ const NAV = [
   { k: "/subs", icon: "🧬", label: "نودهای ساب" },
   { k: "/servers", icon: "🖥", label: "سرورها" },
   { k: "/packages", icon: "📦", label: "پکیج‌ها" },
+  { k: "/settings", icon: "⚙️", label: "تنظیمات" },
 ];
 
 // Pages not migrated yet → deep-link into the existing (legacy) panel so the
@@ -19,10 +20,9 @@ const LEGACY = [
   { path: "/referrals", icon: "🎁", label: "رفرال" },
   { path: "/campaigns", icon: "📣", label: "کمپین‌ها" },
   { path: "/miniapp", icon: "📱", label: "مینی‌اپ" },
-  { path: "/settings", icon: "⚙️", label: "تنظیمات" },
 ];
 
-const TITLES = { "/dashboard": "داشبورد", "/users": "کاربران", "/orders": "سفارش‌ها", "/subs": "نودهای ساب", "/servers": "سرورها", "/packages": "پکیج‌ها" };
+const TITLES = { "/dashboard": "داشبورد", "/users": "کاربران", "/orders": "سفارش‌ها", "/subs": "نودهای ساب", "/servers": "سرورها", "/packages": "پکیج‌ها", "/settings": "تنظیمات" };
 
 export default function Shell({ path, go, badges = {}, children, onLogout }) {
   const [open, setOpen] = useState(false);
