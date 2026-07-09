@@ -2061,6 +2061,23 @@ async def pkg_delete(request: Request, pid: int):
     return JSONResponse({"success": True})
 
 
+@app.get(f"/{S}/api/packages")
+async def api_packages(request: Request):
+    """Package list for the React panel."""
+    if not _api_guard(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    pkgs = await get_packages(active_only=False)
+    return JSONResponse({"packages": [{
+        "id": p["id"], "name": p.get("name"),
+        "traffic_gb": float(p.get("traffic_gb") or 0),
+        "duration_days": int(p.get("duration_days") or 0),
+        "price": int(p.get("price") or 0),
+        "description": p.get("description") or "",
+        "inbound_id": int(p.get("inbound_id") or 0),
+        "is_active": int(p.get("is_active") or 0),
+    } for p in pkgs]})
+
+
 # ═══════════════════════════════ DISCOUNT CODES ═════════════════════
 def _date_to_ms(s: str) -> int:
     s = (s or "").strip()

@@ -7,12 +7,12 @@ const NAV = [
   { k: "/orders", icon: "🧾", label: "سفارش‌ها", badgeKey: "pending_orders" },
   { k: "/subs", icon: "🧬", label: "نودهای ساب" },
   { k: "/servers", icon: "🖥", label: "سرورها" },
+  { k: "/packages", icon: "📦", label: "پکیج‌ها" },
 ];
 
 // Pages not migrated yet → deep-link into the existing (legacy) panel so the
 // admin keeps full access during the parallel rollout.
 const LEGACY = [
-  { path: "/packages", icon: "📦", label: "پکیج‌ها" },
   { path: "/subs/profiles", icon: "📄", label: "پروفایل‌های ساب" },
   { path: "/configs", icon: "🔑", label: "کانفیگ‌ها" },
   { path: "/discounts", icon: "🎟", label: "تخفیف‌ها" },
@@ -22,7 +22,7 @@ const LEGACY = [
   { path: "/settings", icon: "⚙️", label: "تنظیمات" },
 ];
 
-const TITLES = { "/dashboard": "داشبورد", "/users": "کاربران", "/orders": "سفارش‌ها", "/subs": "نودهای ساب", "/servers": "سرورها" };
+const TITLES = { "/dashboard": "داشبورد", "/users": "کاربران", "/orders": "سفارش‌ها", "/subs": "نودهای ساب", "/servers": "سرورها", "/packages": "پکیج‌ها" };
 
 export default function Shell({ path, go, badges = {}, children, onLogout }) {
   const [open, setOpen] = useState(false);
