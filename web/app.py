@@ -1738,20 +1738,19 @@ async def subscription_node_edit(request: Request, node_id: int):
     d = await _node_form_body(request)
     server_id = int(d.get("server_id"))
     inbound_id = int(d.get("inbound_id"))
-    label = str(d.get("label") or "")
-    priority = int(d.get("priority") or 100)
-    max_active_profiles = int(d.get("max_active_profiles") or 0)
-    connect_host = str(d.get("connect_host") or "")
     before = await get_subscription_node_config(node_id)
-    await update_subscription_node_config(
-        node_id,
+    update_fields = dict(
         server_id=int(server_id),
         inbound_id=int(inbound_id),
-        label=label.strip(),
-        priority=int(priority or 100),
-        max_active_profiles=int(max_active_profiles or 0),
-        connect_host=connect_host.strip(),
+        label=str(d.get("label") or "").strip(),
+        priority=int(d.get("priority") or 100),
+        max_active_profiles=int(d.get("max_active_profiles") or 0),
     )
+    # Only overwrite connect_host when the caller actually submitted it, so the
+    # legacy edit form (which has no domain field) can't silently wipe a domain.
+    if "connect_host" in d:
+        update_fields["connect_host"] = str(d.get("connect_host") or "").strip()
+    await update_subscription_node_config(node_id, **update_fields)
     # If the server/inbound changed, links must be rebuilt (move); a bare label or
     # connect_host change needs no panel calls (render applies host live), but a
     # force refresh is cheap-ish and guarantees consistency, so we refresh on any
