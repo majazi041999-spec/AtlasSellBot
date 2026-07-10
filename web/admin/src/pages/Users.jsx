@@ -128,10 +128,11 @@ function UserModal({ user, onClose, onChanged }) {
   );
 }
 
-export default function Users() {
+export default function Users({ go }) {
   const [data, setData] = useState(null);
   const [q, setQ] = useState("");
   const [page, setPage] = useState(1);
+  const open = (u) => (go ? go(`/users/${u.id}`) : setSel(u));
   const [sel, setSel] = useState(null);
   const tmr = useRef();
 
@@ -211,7 +212,7 @@ export default function Users() {
                     </div>
                   </td>
                   <td>
-                    <button className="btn xs primary" onClick={() => setSel(u)}>⚙️ مدیریت</button>
+                    <button className="btn xs primary" onClick={() => open(u)}>⚙️ مدیریت</button>
                   </td>
                 </tr>
               ))}

@@ -77,6 +77,7 @@ from core.database import (
     get_all_users,
     find_user,
     get_user_orders_full,
+    get_rep_financials,
     get_user_configs_full,
     get_user_business_stats,
     get_recent_receipt_transactions,
@@ -1493,13 +1494,34 @@ async def api_user_detail(request: Request, uid: int):
         return JSONResponse({"error": "not_found"}, status_code=404)
     business = await get_user_business_stats(uid)
     orders = await get_user_orders_full(uid, 100)
-    profiles = await get_subscription_profiles_full(uid, 100)
+    profiles = await get_subscription_profiles_full(uid, 200)
+    configs = await get_user_configs_full(uid)
+    now_ms = int(time.time() * 1000)
+
+    async def _prof(p):
+        try:
+            url = await subscription_url(p["token"])
+        except Exception:
+            url = f"/sub/{p.get('token','')}"
+        total_b = int(float(p.get("traffic_gb") or 0) * 1024 ** 3)
+        used = int(p.get("used_bytes") or 0)
+        exp = int(p.get("expire_timestamp") or 0)
+        return {
+            "id": p["id"], "name": p.get("name") or p.get("email"), "email": p.get("email"),
+            "traffic_gb": float(p.get("traffic_gb") or 0), "used_bytes": used,
+            "used_pct": (min(100, int(used / total_b * 100)) if total_b > 0 else 0),
+            "expire_timestamp": exp, "days_left": (max(0, int((exp - now_ms) / 86400000)) if exp > 0 else -1),
+            "is_active": int(p.get("is_active") or 0), "url": url,
+        }
+
+    fin = await get_rep_financials(uid) if int(u.get("is_wholesale") or 0) else None
     return JSONResponse({
         "user": {
             "id": u["id"], "telegram_id": u.get("telegram_id"), "username": u.get("username"),
             "full_name": u.get("full_name"), "is_blocked": int(u.get("is_blocked") or 0),
             "is_wholesale": int(u.get("is_wholesale") or 0),
             "wholesale_request_pending": int(u.get("wholesale_request_pending") or 0),
+            "rep_topup_required": int(u.get("rep_topup_required") or 0),
             "hide_brand": int(u.get("hide_brand") or 0),
             "rep_brand_name": u.get("rep_brand_name") or "",
             "admin_role": u.get("admin_role") or "none", "is_admin": int(u.get("is_admin") or 0),
@@ -1510,17 +1532,18 @@ async def api_user_detail(request: Request, uid: int):
             "created_at": u.get("created_at"),
         },
         "business": business,
+        "rep_financials": fin,
         "orders": [{
             "id": o["id"], "status": o.get("status"), "pkg_name": o.get("pkg_name"),
             "price": int(o.get("price") or 0), "traffic_gb": o.get("traffic_gb"),
             "duration_days": o.get("duration_days"), "created_at": o.get("created_at"),
             "server_name": o.get("server_name"),
         } for o in orders],
-        "profiles": [{
-            "id": p["id"], "name": p.get("name") or p.get("email"), "traffic_gb": p.get("traffic_gb"),
-            "used_bytes": p.get("used_bytes"), "expire_timestamp": int(p.get("expire_timestamp") or 0),
-            "is_active": int(p.get("is_active") or 0),
-        } for p in profiles],
+        "profiles": [await _prof(p) for p in profiles],
+        "configs": [{
+            "id": c["id"], "name": c.get("email") or c.get("name"), "server_name": c.get("server_name"),
+            "is_active": int(c.get("is_active") or 0),
+        } for c in configs],
     })
 
 

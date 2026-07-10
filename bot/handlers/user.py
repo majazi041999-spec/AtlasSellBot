@@ -1720,9 +1720,10 @@ async def rep_buy(cb: CallbackQuery, state: FSMContext):
         await cb.answer("فقط برای نمایندگان.", show_alert=True)
         return
     # Anti-abuse: a representative must have topped up at least the configured
-    # minimum before they can create services.
+    # minimum before they can create services. ONLY applies to reps who signed up
+    # under the new terms (rep_topup_required=1); existing reps are exempt.
     min_topup = await _rep_min_topup()
-    if min_topup > 0:
+    if min_topup > 0 and int(user.get("rep_topup_required") or 0):
         from core.database import get_user_total_topups
         total_in = await get_user_total_topups(user["id"])
         if total_in < min_topup:
@@ -1886,7 +1887,9 @@ async def wholesale_request_submit(cb: CallbackQuery):
         await cb.answer("درخواست شما قبلاً ثبت شده و در حال بررسی است.", show_alert=True)
         return
 
-    await update_user(user["id"], wholesale_request_pending=1)
+    # Only NEW applicants are bound by the minimum-topup rule; existing reps we
+    # already work with are grandfathered in (flag stays 0 for them).
+    await update_user(user["id"], wholesale_request_pending=1, rep_topup_required=1)
     for aid in ADMIN_IDS:
         try:
             await cb.bot.send_message(

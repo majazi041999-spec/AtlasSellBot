@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useCallback } from "react";
 import { api } from "./api.js";
-import { useRoute } from "./router.js";
+import { useRoute, match } from "./router.js";
 import { Loading, ToastHost } from "./components/ui.jsx";
 import Shell from "./components/Shell.jsx";
 import Login from "./pages/Login.jsx";
@@ -17,6 +17,7 @@ import SubProfiles from "./pages/SubProfiles.jsx";
 import Campaigns from "./pages/Campaigns.jsx";
 import Referrals from "./pages/Referrals.jsx";
 import Update from "./pages/Update.jsx";
+import UserDetail from "./pages/UserDetail.jsx";
 
 export default function App() {
   const [authed, setAuthed] = useState(null); // null=checking, false=login, true=in
@@ -35,8 +36,10 @@ export default function App() {
   if (!authed) return <ToastWrap><Login onAuthed={() => { setAuthed(true); go("/dashboard"); }} /></ToastWrap>;
 
   const base = "/" + path.split("/").filter(Boolean)[0];
+  const userDetail = match("/users/:id", path);
   let page;
-  if (base === "/users") page = <Users />;
+  if (userDetail) page = <UserDetail uid={userDetail.id} go={go} />;
+  else if (base === "/users") page = <Users go={go} />;
   else if (base === "/orders") page = <Orders onBadges={onBadges} />;
   else if (base === "/subs") page = <Subscriptions />;
   else if (base === "/servers") page = <Servers />;
