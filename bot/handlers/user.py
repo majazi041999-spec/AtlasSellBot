@@ -349,6 +349,34 @@ async def _pick_test_server(preferred_id: int) -> dict | None:
     return servers[0]
 
 
+async def _price_mismatch_note(order: dict) -> str:
+    """Plain-text note for admins explaining why a receipt's amount may differ from
+    the package's list price (discount code, per-user pricing, or random rounding),
+    so a lower/odd payment doesn't look suspicious. Empty when it matches."""
+    try:
+        net_price = int(order.get("price") or 0)
+        pkg = await get_package(int(order.get("package_id") or 0))
+        base_price = int((pkg or {}).get("price") or 0)
+        if not base_price or not net_price or net_price == base_price:
+            return ""
+        disc_amt = int(order.get("discount_amount") or 0)
+        disc_code = str(order.get("discount_code") or "").strip()
+        lines = [
+            "",
+            "⚠️ مبلغ با قیمت لیست پکیج فرق دارد:",
+            f"• قیمت لیست پکیج: {_fmt_toman(base_price)} تومان",
+            f"• مبلغی که کاربر باید واریز کند: {_fmt_toman(net_price)} تومان",
+        ]
+        if disc_code or disc_amt > 0:
+            lines.append(f"• 🎟️ کد تخفیف: {disc_code or '—'} (−{_fmt_toman(disc_amt)} تومان)")
+        else:
+            lines.append("• دلیل: قیمت اختصاصی این کاربر یا مبلغ خرد تصادفی")
+        lines.append("لطفاً مبلغ فیش را دقیقاً با «مبلغ قابل پرداخت» بالا مطابقت بده.")
+        return "\n" + "\n".join(lines)
+    except Exception:
+        return ""
+
+
 async def _payment_text(oid: int, title: str, traffic_gb, duration_days, price: int, spec: str = "") -> str:
     card_bank, card_number, card_holder = await _get_card_info()
     spec_line = spec or f"{traffic_gb} GB | {duration_days} روز"
@@ -357,14 +385,17 @@ async def _payment_text(oid: int, title: str, traffic_gb, duration_days, price: 
         f"━━━━━━━━━━━━━━\n"
         f" {title}\n"
         f" {spec_line}\n"
-        f" مبلغ: *{_fmt_toman(price)} تومان*\n\n"
+        f" مبلغ قابل پرداخت: *{_fmt_toman(price)} تومان*\n\n"
         f"━━━━━━━━━━━━━━\n"
         f" *پرداخت کارت به کارت:*\n\n"
         f" {card_bank}\n"
         f" `{card_number}`\n"
         f" به نام: {card_holder}\n\n"
+        f"‼️ *مهم — لطفاً دقیق بخوان:*\n"
+        f"▪️ حتماً و دقیقاً مبلغ *{_fmt_toman(price)} تومان* را واریز کن (کم یا زیاد نه)؛ در غیر این صورت تأیید سفارش به تأخیر می‌افتد.\n"
+        f"▪️ در قسمت «توضیحات/بابت» کارت‌به‌کارت *هیچ چیزی ننویس* — مخصوصاً کلماتی مثل «vpn»، «فیلترشکن» یا نام سرویس را ننویس.\n\n"
         f" *مراحل:*\n"
-        f"1. مبلغ را به کارت بالا واریز کن\n"
+        f"1. دقیقاً همین مبلغ را به کارت بالا واریز کن\n"
         f"2. روی «ارسال فیش» بزن و عکس فیش را بفرست\n"
         f"3. پس از تأیید، سرویس فعال/تمدید می‌شود\n\n"
         f"⏰ مهلت پرداخت: ۳۰ دقیقه"
@@ -407,7 +438,8 @@ async def wallet_topup_amount(msg: Message, state: FSMContext):
     card_bank, card_number, card_holder = await _get_card_info()
     await msg.answer(
         f"✅ مبلغ دقیق پرداخت: *{_fmt_toman(amount)} تومان*\n"
-        f"_لطفاً دقیقاً همین مبلغ را واریز کنید تا پرداختتان سریع شناسایی شود._\n\n"
+        f"‼️ لطفاً *دقیقاً همین مبلغ* را واریز کنید (کم یا زیاد نه) تا پرداختتان سریع شناسایی شود.\n"
+        f"‼️ در قسمت «توضیحات» کارت‌به‌کارت هیچ چیزی ننویسید (مخصوصاً «vpn» یا نام سرویس).\n\n"
         f"لطفاً واریز را انجام دهید و تصویر فیش را ارسال کنید.\n\n"
         f"🏦 {card_bank}\n`{card_number}`\n👤 {card_holder}",
         parse_mode="Markdown",
@@ -1499,13 +1531,14 @@ async def receive_receipt(msg: Message, state: FSMContext, bot: Bot):
 
     # اطلاع به ادمین‌ها
     caption = (
-        f" *فیش جدید!*\n"
+        f" فیش جدید!\n"
         f"━━━━━━━━━━━━━━\n"
         f" سفارش: #{oid}\n"
         f" {msg.from_user.full_name} (@{msg.from_user.username or '—'})\n"
         f" {order['pkg_name']}\n"
-        f" {_fmt_toman(order['price'])} تومان"
+        f" 💳 مبلغ قابل پرداخت: {_fmt_toman(order['price'])} تومان"
     )
+    caption += await _price_mismatch_note(order)
     from bot.keyboards import order_review_kb
 
     admin_targets = list(dict.fromkeys(list(ADMIN_IDS) + await get_all_admin_telegram_ids()))
