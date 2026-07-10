@@ -3390,6 +3390,41 @@ async def referral_tier_delete(request: Request, tid: int):
     return JSONResponse({"success": True})
 
 
+@app.get(f"/{S}/api/referrals")
+async def api_referrals(request: Request):
+    if not _api_guard(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    from core.database import get_pending_referral_claims
+    from core.rewards import referral_tier_reward_text
+    tiers = await get_referral_tiers(active_only=False)
+    pending = await get_pending_referral_claims(50)
+    codes = [c["code"] for c in await get_discount_codes() if int(c.get("is_active") or 0)]
+    banner_file_id = await get_setting("referral_banner_file_id", "")
+    banner_url = await get_setting("referral_banner_url", "")
+    return JSONResponse({
+        "settings": {
+            "referral_enabled": await get_setting("referral_enabled", "1"),
+            "referral_per_referral_amount": await get_setting("referral_per_referral_amount", "0"),
+            "referral_caption": await get_setting("referral_caption", ""),
+            "referral_reminder_enabled": await get_setting("referral_reminder_enabled", "1"),
+            "referral_reminder_code": await get_setting("referral_reminder_code", ""),
+        },
+        "tiers": [{
+            "id": t["id"], "referrals_needed": int(t.get("referrals_needed") or 0),
+            "reward_kind": t.get("reward_kind") or "wallet", "reward_amount": int(t.get("reward_amount") or 0),
+            "reward_gb": float(t.get("reward_gb") or 0), "duration_days": int(t.get("duration_days") or 0),
+            "is_unlimited": int(t.get("is_unlimited") or 0), "label": t.get("label") or "",
+            "is_active": int(t.get("is_active") or 0),
+        } for t in tiers],
+        "claims": [{
+            "id": cl["id"], "telegram_id": cl.get("telegram_id"), "full_name": cl.get("full_name"),
+            "username": cl.get("username"), "reward_text": referral_tier_reward_text(cl),
+        } for cl in pending],
+        "codes": codes,
+        "banner_set": bool((banner_file_id or "").strip() or (banner_url or "").strip()),
+    })
+
+
 @app.post(f"/{S}/referrals/banner")
 async def referral_banner_upload(request: Request, banner: UploadFile = File(...)):
     """Upload a banner: push it to Telegram once to obtain a reusable file_id,

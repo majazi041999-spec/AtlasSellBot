@@ -12,6 +12,7 @@ const NAV = [
   { k: "/proxy", icon: "🛰", label: "پروکسی تلگرام" },
   { k: "/discounts", icon: "🎟", label: "تخفیف‌ها" },
   { k: "/campaigns", icon: "📣", label: "کمپین‌ها" },
+  { k: "/referrals", icon: "🎁", label: "رفرال" },
   { k: "/settings", icon: "⚙️", label: "تنظیمات" },
 ];
 
@@ -19,11 +20,10 @@ const NAV = [
 // admin keeps full access during the parallel rollout.
 const LEGACY = [
   { path: "/configs", icon: "🔑", label: "کانفیگ‌ها" },
-  { path: "/referrals", icon: "🎁", label: "رفرال" },
   { path: "/miniapp", icon: "📱", label: "مینی‌اپ" },
 ];
 
-const TITLES = { "/dashboard": "داشبورد", "/users": "کاربران", "/orders": "سفارش‌ها", "/subs": "نودهای ساب", "/subprofiles": "ساب‌های کاربران", "/servers": "سرورها", "/packages": "پکیج‌ها", "/proxy": "پروکسی تلگرام", "/discounts": "تخفیف‌ها", "/campaigns": "کمپین‌ها", "/settings": "تنظیمات" };
+const TITLES = { "/dashboard": "داشبورد", "/users": "کاربران", "/orders": "سفارش‌ها", "/subs": "نودهای ساب", "/subprofiles": "ساب‌های کاربران", "/servers": "سرورها", "/packages": "پکیج‌ها", "/proxy": "پروکسی تلگرام", "/discounts": "تخفیف‌ها", "/campaigns": "کمپین‌ها", "/referrals": "رفرال", "/settings": "تنظیمات" };
 
 export default function Shell({ path, go, badges = {}, children, onLogout }) {
   const [open, setOpen] = useState(false);
