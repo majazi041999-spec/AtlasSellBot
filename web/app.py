@@ -2533,6 +2533,26 @@ async def discount_delete(request: Request, cid: int):
     return JSONResponse({"success": True})
 
 
+@app.get(f"/{S}/api/discounts")
+async def api_discounts(request: Request):
+    if not _api_guard(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    codes = await get_discount_codes()
+    packages = await get_packages(active_only=False)
+    return JSONResponse({
+        "codes": [{
+            "id": c["id"], "code": c.get("code"), "kind": c.get("kind") or "percent",
+            "value": float(c.get("value") or 0), "max_uses": int(c.get("max_uses") or 0),
+            "per_user_limit": int(c.get("per_user_limit") or 0), "min_amount": int(c.get("min_amount") or 0),
+            "package_id": int(c.get("package_id") or 0), "used_count": int(c.get("used_count") or 0),
+            "expires": _ms_to_date(c.get("expires_at")) or "", "note": c.get("note") or "",
+            "campaign": c.get("campaign") or "", "targeted": int(c.get("targeted") or 0),
+            "is_active": int(c.get("is_active") or 0),
+        } for c in codes],
+        "packages": [{"id": p["id"], "name": p.get("name")} for p in packages],
+    })
+
+
 # ═══════════════════════════════ CAMPAIGNS ══════════════════════════
 _CAMPAIGN_LABELS = {
     "trial2paid": "تبدیل تست به خرید",
