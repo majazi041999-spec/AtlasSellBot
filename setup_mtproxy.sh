@@ -65,10 +65,13 @@ install_mtg(){
 write_unit(){
   [[ -n "$SECRET" ]] || die "SECRET خالی است."
   [[ "$PORT" =~ ^[0-9]+$ ]] || die "پورت نامعتبر: $PORT"
-  # mtg v1: `run SECRET [ADTAG] -b BIND`. Tag is optional (sponsor channel).
-  local args="run ${SECRET}"
+  # IMPORTANT: mtg v1 uses urfave/cli, which only parses flags placed BEFORE the
+  # positional args. `mtg run SECRET --bind …` would silently ignore --bind and
+  # listen on the default 3128. So we (a) set MTG_BIND via the environment (the
+  # documented env for --bind) AND (b) put --bind before the positionals. Both
+  # agree, so the proxy always binds to the intended port.
+  local args="run --bind 0.0.0.0:${PORT} ${SECRET}"
   if [[ -n "$TAG" ]]; then args="${args} ${TAG}"; fi
-  args="${args} --bind 0.0.0.0:${PORT}"
   say "📝 نوشتن سرویس systemd (پورت ${PORT}$( [[ -n "$TAG" ]] && echo '، با اسپانسر' ))"
   cat > "$UNIT" <<EOF
 [Unit]
@@ -77,6 +80,7 @@ After=network.target
 
 [Service]
 Type=simple
+Environment=MTG_BIND=0.0.0.0:${PORT}
 ExecStart=${MTG_BIN} ${args}
 Restart=always
 RestartSec=3
@@ -114,12 +118,20 @@ conn_count(){
   fi
 }
 
+mtg_listen_ports(){
+  # Actual port(s) the mtg process is listening on (helps catch a wrong bind).
+  if command -v ss >/dev/null 2>&1; then
+    ss -Hltnp 2>/dev/null | grep -i "mtg" | grep -oE ':[0-9]+ ' | tr -d ': ' | sort -u | paste -sd, - 2>/dev/null
+  fi
+}
+
 do_status(){
-  local active listen conns
+  local active listen conns actual
   active="$(systemctl is-active mtproxy 2>/dev/null || echo inactive)"
   if ss -Hltn 2>/dev/null | grep -q ":${PORT} "; then listen="yes"; else listen="no"; fi
   conns="$(conn_count)"
-  echo "STATUS active=${active} listening=${listen} port=${PORT} connections=${conns}"
+  actual="$(mtg_listen_ports)"
+  echo "STATUS active=${active} listening=${listen} port=${PORT} connections=${conns} actual_ports=${actual:-none}"
 }
 
 do_test(){
@@ -169,6 +181,18 @@ case "$CMD" in
     ;;
   status) do_status ;;
   test) do_test ;;
+  restart)
+    systemctl restart mtproxy
+    sleep 2
+    do_status
+    ;;
+  logs)
+    if command -v journalctl >/dev/null 2>&1; then
+      journalctl -u mtproxy -n 80 --no-pager 2>/dev/null || echo "لاگی در دسترس نیست."
+    else
+      echo "journalctl در دسترس نیست."
+    fi
+    ;;
   uninstall)
     systemctl stop mtproxy 2>/dev/null || true
     systemctl disable mtproxy 2>/dev/null || true

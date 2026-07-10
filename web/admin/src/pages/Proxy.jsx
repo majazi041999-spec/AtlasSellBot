@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from "react";
 import { api } from "../api.js";
 import { Card, Loading, toast } from "../components/ui.jsx";
 
-const STEPS = ["تنظیمات پایه", "نصب و راه‌اندازی", "تست اتصال", "لینک‌ها", "اسپانسر (کانال)", "آمار زنده"];
+const STEPS = ["تنظیمات پایه", "نصب و راه‌اندازی", "تست اتصال", "لینک‌ها", "اسپانسر (کانال)", "مدیریت و آمار"];
 
 function Stepper({ step, go }) {
   return (
@@ -45,6 +45,7 @@ export default function Proxy() {
   const [cfg, setCfg] = useState({ port: 443, domain: "www.cloudflare.com", host: "", tag: "" });
   const [log, setLog] = useState({ lines: [], running: false, status: "idle" });
   const [testOut, setTestOut] = useState("");
+  const [svcLogs, setSvcLogs] = useState("");
   const tmr = useRef();
 
   const load = () => api.get("/api/proxy").then((r) => {
@@ -89,6 +90,17 @@ export default function Proxy() {
     catch (e) { setTestOut(e.message || "خطا"); } finally { setBusy(""); }
   };
 
+  const restart = async () => {
+    setBusy("restart");
+    try { await api.post("/api/proxy/restart"); toast("در حال ری‌استارت…"); setLog({ lines: [], running: true, status: "running" }); pollLog(); }
+    catch (e) { toast(e.message || "خطا", "error"); } finally { setBusy(""); }
+  };
+  const loadLogs = async () => {
+    setBusy("logs"); setSvcLogs("در حال بارگذاری…");
+    try { const r = await api.get("/api/proxy/logs"); setSvcLogs(r.logs || "لاگی نیست."); }
+    catch (e) { setSvcLogs(e.message || "خطا"); } finally { setBusy(""); }
+  };
+
   if (!d) return <Loading />;
   const st = d.status || {};
   const links = d.links || {};
@@ -101,9 +113,20 @@ export default function Proxy() {
         <div className="row" style={{ gap: 8, marginTop: 8, flexWrap: "wrap" }}>
           <span className={"badge " + (st.active ? "b-green" : "b-red")}>{st.active ? "🟢 فعال" : "🔴 غیرفعال"}</span>
           <span className="badge b-blue">پورت {d.config.port}</span>
+          {st.actual_ports ? <span className="badge b-yellow">درحال‌گوش‌دادن: {st.actual_ports}</span> : null}
           {st.active && <span className="badge b-purple">🔌 {st.connections} اتصال آنلاین</span>}
           {d.config.tag ? <span className="badge b-green">اسپانسر تنظیم شده</span> : null}
         </div>
+        {st.active && st.actual_ports && !st.actual_ports.split(",").includes(String(d.config.port)) && (
+          <div style={{ marginTop: 10, background: "rgba(251,191,36,.1)", border: "1px solid rgba(251,191,36,.4)", borderRadius: 10, padding: 10, fontSize: ".82rem" }}>
+            ⚠️ پروکسی روی پورت <b>{st.actual_ports}</b> گوش می‌دهد، نه پورت تنظیم‌شده‌ی <b>{d.config.port}</b>. دکمه‌ی «اعمال تغییرات و ری‌استارت» (مرحله ۲) را بزن تا اصلاح شود.
+          </div>
+        )}
+        {!st.active && d.config.has_secret && (
+          <div style={{ marginTop: 10, background: "rgba(251,113,133,.1)", border: "1px solid rgba(251,113,133,.4)", borderRadius: 10, padding: 10, fontSize: ".82rem" }}>
+            ⚠️ سرویس فعال نیست. مرحله ۲ «نصب و راه‌اندازی» را اجرا کن یا در بخش مدیریت (مرحله ۶) لاگ را ببین.
+          </div>
+        )}
       </Card>
 
       {step === 0 && (
@@ -221,26 +244,39 @@ export default function Proxy() {
       )}
 
       {step === 5 && (
-        <Card title="۶) آمار زنده"
-          right={<button className="btn xs" onClick={load}>↻ بروزرسانی</button>}>
-          <div className="grid stat-grid">
-            <div style={{ background: "rgba(52,211,153,.08)", border: "1px solid var(--line)", borderRadius: 14, padding: 16 }}>
-              <div style={{ fontSize: "1.8rem", fontWeight: 800, color: st.active ? "#34d399" : "var(--red,#f43f5e)" }}>{st.connections || 0}</div>
-              <div className="muted tiny">اتصال آنلاین همین حالا</div>
+        <>
+          <Card title="۶) آمار زنده" right={<button className="btn xs" onClick={load}>↻ بروزرسانی</button>}>
+            <div className="grid stat-grid">
+              <div style={{ background: "rgba(52,211,153,.08)", border: "1px solid var(--line)", borderRadius: 14, padding: 16 }}>
+                <div style={{ fontSize: "1.8rem", fontWeight: 800, color: st.active ? "#34d399" : "var(--red,#f43f5e)" }}>{st.connections || 0}</div>
+                <div className="muted tiny">اتصال آنلاین همین حالا</div>
+              </div>
+              <div style={{ background: "rgba(124,111,255,.08)", border: "1px solid var(--line)", borderRadius: 14, padding: 16 }}>
+                <div style={{ fontSize: "1.1rem", fontWeight: 700 }}>{st.active ? "فعال ✅" : "غیرفعال ❌"}</div>
+                <div className="muted tiny">وضعیت سرویس · گوش‌دادن روی: {st.actual_ports || "—"}</div>
+              </div>
             </div>
-            <div style={{ background: "rgba(124,111,255,.08)", border: "1px solid var(--line)", borderRadius: 14, padding: 16 }}>
-              <div style={{ fontSize: "1.1rem", fontWeight: 700 }}>{st.active ? "فعال ✅" : "غیرفعال ❌"}</div>
-              <div className="muted tiny">وضعیت سرویس (پورت {st.port || d.config.port})</div>
+            <p className="muted tiny" style={{ marginTop: 10 }}>
+              «اتصال آنلاین» تعداد اتصال‌های TCP برقرار روی پورت پروکسی است (تعداد کاربران وصل).
+            </p>
+          </Card>
+
+          <Card title="🛠 مدیریت و عیب‌یابی">
+            <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
+              <button className="btn sm" disabled={busy === "restart" || log.running} onClick={restart}>🔄 ری‌استارت سرویس</button>
+              <button className="btn sm" disabled={busy === "install" || log.running} onClick={() => install(true)}>♻️ اعمال مجدد تنظیمات</button>
+              <button className="btn sm" disabled={busy === "logs"} onClick={loadLogs}>📜 مشاهده لاگ سرویس</button>
+              <button className="btn sm" disabled={busy === "test"} onClick={runTest}>🧪 تست دوباره</button>
+              <button className="btn sm danger" onClick={() => { if (confirm("سرویس پروکسی حذف شود؟")) api.post("/api/proxy/uninstall").then(() => { toast("در حال حذف…"); setLog({ lines: [], running: true, status: "running" }); pollLog(); }); }}>🗑 حذف پروکسی</button>
             </div>
-          </div>
-          <p className="muted tiny" style={{ marginTop: 10 }}>
-            «اتصال آنلاین» تعداد اتصال‌های TCP برقرار روی پورت پروکسی است (تعداد کاربران وصل). برای مصرف دقیق حجم،
-            به شمارنده‌های فایروال سرور نیاز است که در نسخه‌های بعدی اضافه می‌شود.
-          </p>
-          <button className="btn danger sm" style={{ marginTop: 12 }} onClick={() => {
-            if (confirm("سرویس پروکسی حذف شود؟")) api.post("/api/proxy/uninstall").then(() => { toast("در حال حذف…"); setLog({ lines: [], running: true, status: "running" }); pollLog(); });
-          }}>🗑 حذف پروکسی</button>
-        </Card>
+            <LogBox running={log.running} lines={log.lines} status={log.status} />
+            {testOut ? <pre className="mono tiny" style={{ background: "rgba(0,0,0,.28)", border: "1px solid var(--line)", borderRadius: 10, padding: 10, marginTop: 10, whiteSpace: "pre-wrap" }}>{testOut}</pre> : null}
+            {svcLogs ? <pre className="mono tiny" style={{ background: "rgba(0,0,0,.28)", border: "1px solid var(--line)", borderRadius: 10, padding: 10, marginTop: 10, maxHeight: 260, overflow: "auto", whiteSpace: "pre-wrap", direction: "ltr" }}>{svcLogs}</pre> : null}
+            <p className="muted tiny" style={{ marginTop: 10 }}>
+              اگر «unavailable» می‌گیری: مطمئن شو پورت در فایروال ابری/پنل سرویس‌دهنده هم باز است، سرویس فعال است، و پروکسی روی همان پورت لینک گوش می‌دهد (بالای صفحه بررسی کن).
+            </p>
+          </Card>
+        </>
       )}
     </div>
   );

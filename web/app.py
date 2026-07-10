@@ -1195,8 +1195,8 @@ async def _mtproxy_cfg() -> dict:
 
 
 def _parse_proxy_status(text: str) -> dict:
-    """Parse the `STATUS active=.. listening=.. port=.. connections=..` line."""
-    out = {"active": False, "listening": False, "connections": 0, "port": 0}
+    """Parse the `STATUS active=.. listening=.. port=.. connections=.. actual_ports=..`."""
+    out = {"active": False, "listening": False, "connections": 0, "port": 0, "actual_ports": ""}
     for line in (text or "").splitlines():
         if line.startswith("STATUS "):
             for kv in line[7:].split():
@@ -1211,6 +1211,8 @@ def _parse_proxy_status(text: str) -> dict:
                     out["connections"] = int(v) if v.isdigit() else 0
                 elif k == "port":
                     out["port"] = int(v) if v.isdigit() else 0
+                elif k == "actual_ports":
+                    out["actual_ports"] = "" if v == "none" else v
     return out
 
 
@@ -1290,6 +1292,31 @@ async def api_proxy_test(request: Request):
     out = await _mtproxy_run("test", cfg, timeout=20)
     ok = "✅" in out and "❌" not in out
     return JSONResponse({"success": ok, "output": out.strip()[-1500:]})
+
+
+@app.post(f"/{S}/api/proxy/restart")
+async def api_proxy_restart(request: Request):
+    if not _api_guard(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    if _read_job_log("proxy").get("running"):
+        return JSONResponse({"error": "یک عملیات پروکسی در حال اجراست."}, status_code=409)
+    cfg = await _mtproxy_cfg()
+    script = (
+        f"export MTPROXY_PORT={shlex.quote(str(cfg['port']))} "
+        f"MTPROXY_SECRET={shlex.quote(cfg['secret'] or '')} "
+        f"MTPROXY_TAG={shlex.quote(cfg['tag'] or '')}; "
+        f"bash {shlex.quote(_MTPROXY_SCRIPT)} restart"
+    )
+    _asyncio.create_task(_run_logged_job("proxy", script))
+    return JSONResponse({"success": True})
+
+
+@app.get(f"/{S}/api/proxy/logs")
+async def api_proxy_logs(request: Request):
+    if not _api_guard(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    out = await _mtproxy_run("logs", await _mtproxy_cfg(), timeout=15)
+    return JSONResponse({"logs": out.strip()[-4000:]})
 
 
 @app.post(f"/{S}/api/proxy/uninstall")
