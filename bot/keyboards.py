@@ -66,7 +66,7 @@ def user_menu(include_wholesale: bool = True) -> ReplyKeyboardMarkup:
     b.row(KeyboardButton(text="💳 کیف پول"), KeyboardButton(text="🎁 دعوت دوستان"))
     b.row(KeyboardButton(text="📞 پشتیبانی"), KeyboardButton(text="🕊️ پیام ناشناس"))
     if include_wholesale:
-        b.row(KeyboardButton(text="🏷️ خرید عمده"))
+        b.row(KeyboardButton(text="🏢 پنل نمایندگی"))
     b.row(KeyboardButton(text="🔗 افزودن سرویس قبلی"))
     return b.as_markup(resize_keyboard=True)
 
@@ -136,15 +136,49 @@ def broadcast_target_kb() -> InlineKeyboardMarkup:
 
 def wholesale_request_kb() -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
-    _button(b, text="📝 ارسال درخواست همکاری عمده", callback_data="wh_req", style="success")
+    _button(b, text="📝 ارسال درخواست نمایندگی", callback_data="wh_req", style="success")
     b.adjust(1)
     return b.as_markup()
 
 
 def wholesale_request_admin_kb(user_id: int) -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
-    _button(b, text="✅ تایید همکاری عمده", callback_data=f"wh_appr:{user_id}", style="success")
+    _button(b, text="✅ تایید نمایندگی", callback_data=f"wh_appr:{user_id}", style="success")
     _button(b, text="❌ رد درخواست", callback_data=f"wh_rej:{user_id}", style="danger")
+    b.adjust(1)
+    return b.as_markup()
+
+
+def representative_panel_kb() -> InlineKeyboardMarkup:
+    """Main inline menu of the representative (reseller) panel."""
+    b = InlineKeyboardBuilder()
+    _button(b, text="🏷️ برند من", callback_data="rep:brand", style="primary")
+    _button(b, text="🛒 ساخت سرویس", callback_data="rep:buy", style="success")
+    _button(b, text="📊 فروش و آمار من", callback_data="rep:stats")
+    _button(b, text="💳 کیف پول من", callback_data="rep:wallet")
+    _button(b, text="💰 قیمت‌های من", callback_data="rep:pricing")
+    _button(b, text="ℹ️ راهنمای نماینده", callback_data="rep:help")
+    b.adjust(2, 2, 2)
+    return b.as_markup()
+
+
+def rep_brand_kb(has_brand: bool, hidden: bool) -> InlineKeyboardMarkup:
+    """Brand management for a representative: set name + show/hide brand line."""
+    b = InlineKeyboardBuilder()
+    _button(b, text=("✏️ تغییر نام برند" if has_brand else "➕ انتخاب نام برند"),
+            callback_data="rep:brand_set", style="primary")
+    if has_brand:
+        _button(b, text="🗑 حذف برند من", callback_data="rep:brand_clear", style="danger")
+    _button(b, text=("👁 نمایش برند در لینک" if hidden else "🙈 مخفی‌کردن برند در لینک"),
+            callback_data="rep:brand_toggle")
+    _button(b, text="⬅️ بازگشت به پنل نمایندگی", callback_data="rep:home")
+    b.adjust(1)
+    return b.as_markup()
+
+
+def rep_back_kb() -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    _button(b, text="⬅️ بازگشت به پنل نمایندگی", callback_data="rep:home")
     b.adjust(1)
     return b.as_markup()
 

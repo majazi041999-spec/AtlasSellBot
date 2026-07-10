@@ -75,6 +75,10 @@ class LegacySync(StatesGroup):
     waiting_link = State()
 
 
+class RepBrand(StatesGroup):
+    name = State()
+
+
 class PrivateMessage(StatesGroup):
     user_id = State()
     text = State()

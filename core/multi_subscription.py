@@ -524,25 +524,43 @@ async def _subscription_info_links(profile: Dict, used: int, total: int, active_
         "📊 حجم کل: {traffic_gb}GB | مصرف: {used} | باقی: {remaining}\n📅 باقی‌مانده: {days_left} روز | سپری‌شده: {days_elapsed} روز",
     )
     labels = _format_info_template(template, values)
-    # Wholesale customers can opt to hide our brand from their subscription link,
-    # so they can resell it under their own name. Skip the brand line entirely
-    # when the owning user has that flag set.
-    if not await _user_hide_brand(profile):
+    # Representative branding: the brand line shows the REP's own brand when the
+    # owner is a representative who set one; a representative can also hide the
+    # brand entirely. Otherwise the platform brand is used.
+    hide, rep_brand = await _owner_brand(profile)
+    if not hide:
+        if rep_brand:
+            values = {**values, "brand": rep_brand}
         brand_template = await get_setting("sub_brand_template", "📣 {brand}")
         labels = labels + _format_info_template(brand_template, values)
     return [_fake_info_link(label, i + 1) for i, label in enumerate(labels) if label]
 
 
-async def _user_hide_brand(profile: Dict) -> bool:
-    """True when the subscription's owner asked to hide our brand from their link."""
+async def _owner_brand(profile: Dict) -> tuple[bool, str]:
+    """Return (hide_brand, rep_brand_name) for the subscription's owner.
+
+    Representatives can pick their own brand (shown instead of ours) or hide the
+    brand line entirely so they can resell fully white-label."""
     uid = profile.get("user_id")
     if not uid:
-        return False
+        return False, ""
     try:
         u = await get_user_by_id(int(uid))
     except Exception:
-        return False
-    return bool(u and int(u.get("hide_brand") or 0))
+        return False, ""
+    if not u:
+        return False, ""
+    hide = bool(int(u.get("hide_brand") or 0))
+    rep_brand = ""
+    if int(u.get("is_wholesale") or 0):
+        rep_brand = (u.get("rep_brand_name") or "").strip()
+    return hide, rep_brand
+
+
+async def _user_hide_brand(profile: Dict) -> bool:
+    """Back-compat: True when the subscription owner hides the brand."""
+    hide, _ = await _owner_brand(profile)
+    return hide
 
 
 async def _subscription_expired_notice_links(profile: Dict) -> list[str]:

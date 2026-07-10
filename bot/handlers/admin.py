@@ -1789,7 +1789,7 @@ async def _render_user_card(message, uid: int):
     if int(u.get("is_admin") or 0):
         role_bits.append("ادمین")
     if int(u.get("is_wholesale") or 0):
-        role_bits.append("عمده")
+        role_bits.append("نماینده")
     role_line = (" | ".join(role_bits)) or "کاربر عادی"
     bal = int(u.get("balance_toman") or 0)
     name = u.get("full_name") or "—"
@@ -1950,12 +1950,12 @@ async def wholesale_approve(cb: CallbackQuery):
         from bot.keyboards import user_menu
         await cb.bot.send_message(
             u["telegram_id"],
-            "✅ درخواست همکاری عمده شما تایید شد.\nاز این لحظه منوی خرید عمده برای شما فعال است.",
+            "✅ درخواست نمایندگی شما تایید شد.\nاز این لحظه «🏢 پنل نمایندگی» برای شما فعال است.",
             reply_markup=user_menu(include_wholesale=True),
         )
     except Exception:
         pass
-    await cb.message.edit_text("✅ کاربر برای خرید عمده تایید شد.")
+    await cb.message.edit_text("✅ کاربر به‌عنوان نماینده تایید شد.")
 
 
 @router.callback_query(F.data.startswith("wh_rej:"))
@@ -1969,10 +1969,10 @@ async def wholesale_reject(cb: CallbackQuery):
         return
     await update_user(uid, wholesale_request_pending=0)
     try:
-        await cb.bot.send_message(u["telegram_id"], "❌ درخواست همکاری عمده شما فعلاً تایید نشد. برای بررسی دوباره با پشتیبانی در ارتباط باشید.")
+        await cb.bot.send_message(u["telegram_id"], "❌ درخواست نمایندگی شما فعلاً تایید نشد. برای بررسی دوباره با پشتیبانی در ارتباط باشید.")
     except Exception:
         pass
-    await cb.message.edit_text("❌ درخواست همکاری عمده رد شد.")
+    await cb.message.edit_text("❌ درخواست نمایندگی رد شد.")
 
 
 def _json_obj(value, default=None):
@@ -2408,7 +2408,7 @@ async def _broadcast_show_preview(msg: Message, state: FSMContext):
     target = data.get("target", "all")
     if target == "wholesale":
         total = sum(1 for u in all_users if u.get("is_wholesale", 0) and not u.get("is_blocked", 0))
-        target_text = "کاربران عمده"
+        target_text = "نمایندگان"
     else:
         total = sum(1 for u in all_users if not u.get("is_blocked", 0))
         target_text = "همه کاربران"

@@ -94,11 +94,14 @@ from bot.keyboards import (
     discount_skip_kb,
     wholesale_request_kb,
     wholesale_request_admin_kb,
+    representative_panel_kb,
+    rep_brand_kb,
+    rep_back_kb,
     legacy_claim_admin_kb,
     wallet_kb,
     flow_cancel_kb,
 )
-from bot.states import AnonymousFeedback, BuyService, WholesaleBuy, LegacySync, WalletTopup, RenameSub, BuyDiscount
+from bot.states import AnonymousFeedback, BuyService, WholesaleBuy, LegacySync, WalletTopup, RenameSub, BuyDiscount, RepBrand
 
 router = Router()
 
@@ -1568,28 +1571,222 @@ async def cancel_order(cb: CallbackQuery, state: FSMContext):
 
 
 # ─── WHOLESALE ────────────────────────────────────────────────────
-@router.message(F.text == "🏷️ خرید عمده")
-async def wholesale_start(msg: Message, state: FSMContext):
+async def _rep_panel_text(user: dict) -> str:
+    brand = (user.get("rep_brand_name") or "").strip()
+    hidden = int(user.get("hide_brand") or 0)
+    if brand:
+        brand_line = f"🏷️ برند شما: *{brand}*" + ("  (مخفی)" if hidden else "")
+    elif hidden:
+        brand_line = "🏷️ برند: *مخفی* (بدون نام)"
+    else:
+        brand_line = "🏷️ برند: پیش‌فرض پلتفرم (هنوز برند خودت را نگذاشته‌ای)"
+    return (
+        "🏢 *پنل نمایندگی*\n\n"
+        f"{brand_line}\n"
+        f"💳 موجودی کیف پول: *{int(user.get('balance_toman') or 0):,}* تومان\n\n"
+        "از این پنل می‌توانی برند اختصاصی خودت را تنظیم کنی، برای مشتری‌هایت سرویس بسازی و فروش‌ت را ببینی."
+    )
+
+
+async def _show_rep_panel(target, user: dict, edit: bool = False):
+    text = await _rep_panel_text(user)
+    kb = representative_panel_kb()
+    if edit and hasattr(target, "edit_text"):
+        try:
+            await target.edit_text(text, reply_markup=kb, parse_mode="Markdown")
+            return
+        except Exception:
+            pass
+    await target.answer(text, reply_markup=kb, parse_mode="Markdown")
+
+
+@router.message(F.text == "🏢 پنل نمایندگی")
+async def representative_start(msg: Message, state: FSMContext):
     if not await _ensure_channel_membership(msg):
         return
     if await _blocked(msg.from_user.id):
         await msg.answer(await get_text("blocked_message"))
         return
+    await state.clear()
     user = await get_or_create_user(msg.from_user.id)
     if not user.get("is_wholesale", 0):
         if user.get("wholesale_request_pending", 0):
-            await msg.answer("⏳ درخواست همکاری عمده شما قبلاً ثبت شده و منتظر بررسی ادمین است.")
+            await msg.answer("⏳ درخواست نمایندگی شما قبلاً ثبت شده و منتظر بررسی ادمین است.")
         else:
             await msg.answer(
-                "🏷️ *خرید عمده فقط برای همکاران تاییدشده فعال است.*\n\n"
-                "اگر فروشنده/همکار هستید، درخواست همکاری ارسال کنید تا ادمین بررسی کند.",
+                "🏢 *پنل نمایندگی فقط برای نمایندگان تاییدشده فعال است.*\n\n"
+                "اگر فروشنده هستی و می‌خواهی زیر برند خودت سرویس بفروشی، درخواست نمایندگی بده تا ادمین بررسی کند.",
                 reply_markup=wholesale_request_kb(),
                 parse_mode="Markdown",
             )
         return
+    await _show_rep_panel(msg, user)
 
+
+@router.callback_query(F.data == "rep:home")
+async def rep_home(cb: CallbackQuery, state: FSMContext):
+    await state.clear()
+    user = await get_or_create_user(cb.from_user.id)
+    await _show_rep_panel(cb.message, user, edit=True)
+    await cb.answer()
+
+
+@router.callback_query(F.data == "rep:brand")
+async def rep_brand(cb: CallbackQuery):
+    user = await get_or_create_user(cb.from_user.id)
+    if not user.get("is_wholesale", 0):
+        await cb.answer("فقط برای نمایندگان.", show_alert=True)
+        return
+    brand = (user.get("rep_brand_name") or "").strip()
+    hidden = int(user.get("hide_brand") or 0)
+    text = (
+        "🏷️ *برند من*\n\n"
+        f"برند فعلی: *{brand or '— تنظیم نشده —'}*\n"
+        f"وضعیت در لینک: {'مخفی 🙈' if hidden else 'نمایش داده می‌شود 👁'}\n\n"
+        "برند تو در انتهای لینک سابسکریپشن مشتری‌هایت نمایش داده می‌شود (به‌جای برند پلتفرم). "
+        "می‌توانی نامش را عوض کنی یا کلاً مخفی‌اش کنی تا کاملاً وایت‌لیبل باشد."
+    )
+    await cb.message.edit_text(text, reply_markup=rep_brand_kb(bool(brand), bool(hidden)), parse_mode="Markdown")
+    await cb.answer()
+
+
+@router.callback_query(F.data == "rep:brand_set")
+async def rep_brand_set(cb: CallbackQuery, state: FSMContext):
+    user = await get_or_create_user(cb.from_user.id)
+    if not user.get("is_wholesale", 0):
+        await cb.answer("فقط برای نمایندگان.", show_alert=True)
+        return
+    await state.set_state(RepBrand.name)
+    await cb.message.answer(
+        "🏷️ نام برند خودت را بفرست (مثال: *Sara VPN*).\n"
+        "بین ۲ تا ۳۲ کاراکتر. این نام در لینک مشتری‌هایت نشان داده می‌شود.",
+        reply_markup=flow_cancel_kb(show_back=False), parse_mode="Markdown",
+    )
+    await cb.answer()
+
+
+@router.message(RepBrand.name)
+async def rep_brand_name(msg: Message, state: FSMContext):
+    name = " ".join((msg.text or "").split()).strip()
+    if name in ("لغو", "❌ لغو", "/cancel"):
+        await state.clear()
+        user = await get_or_create_user(msg.from_user.id)
+        await _show_rep_panel(msg, user)
+        return
+    if not (2 <= len(name) <= 32):
+        await msg.answer("❌ نام برند باید بین ۲ تا ۳۲ کاراکتر باشد. دوباره بفرست:")
+        return
+    user = await get_or_create_user(msg.from_user.id)
+    await update_user(user["id"], rep_brand_name=name)
+    await state.clear()
+    await msg.answer(f"✅ برند تو ثبت شد: *{name}*\nاز این پس در لینک سابسکریپشن مشتری‌هایت نمایش داده می‌شود.", parse_mode="Markdown")
+    fresh = await get_or_create_user(msg.from_user.id)
+    await _show_rep_panel(msg, fresh)
+
+
+@router.callback_query(F.data == "rep:brand_clear")
+async def rep_brand_clear(cb: CallbackQuery):
+    user = await get_or_create_user(cb.from_user.id)
+    await update_user(user["id"], rep_brand_name="")
+    await cb.answer("برند حذف شد ✅", show_alert=False)
+    fresh = await get_or_create_user(cb.from_user.id)
+    await cb.message.edit_text(
+        "🏷️ *برند من*\n\nبرند حذف شد. حالا برند پلتفرم (یا حالت مخفی) استفاده می‌شود.",
+        reply_markup=rep_brand_kb(False, bool(int(fresh.get("hide_brand") or 0))), parse_mode="Markdown",
+    )
+
+
+@router.callback_query(F.data == "rep:brand_toggle")
+async def rep_brand_toggle(cb: CallbackQuery):
+    user = await get_or_create_user(cb.from_user.id)
+    new_hidden = 0 if int(user.get("hide_brand") or 0) else 1
+    await update_user(user["id"], hide_brand=new_hidden)
+    await cb.answer("مخفی شد 🙈" if new_hidden else "نمایش داده می‌شود 👁")
+    fresh = await get_or_create_user(cb.from_user.id)
+    brand = (fresh.get("rep_brand_name") or "").strip()
+    await cb.message.edit_text(
+        "🏷️ *برند من*\n\n"
+        f"برند فعلی: *{brand or '— تنظیم نشده —'}*\n"
+        f"وضعیت در لینک: {'مخفی 🙈' if new_hidden else 'نمایش داده می‌شود 👁'}",
+        reply_markup=rep_brand_kb(bool(brand), bool(new_hidden)), parse_mode="Markdown",
+    )
+
+
+@router.callback_query(F.data == "rep:buy")
+async def rep_buy(cb: CallbackQuery, state: FSMContext):
+    user = await get_or_create_user(cb.from_user.id)
+    if not user.get("is_wholesale", 0):
+        await cb.answer("فقط برای نمایندگان.", show_alert=True)
+        return
     await state.set_state(WholesaleBuy.count)
-    await msg.answer("️ خرید عمده\n\nتعداد کانفیگ موردنیاز را وارد کنید (مثال: 20)", reply_markup=flow_cancel_kb())
+    await cb.message.answer(
+        "🛒 *ساخت سرویس برای مشتری*\n\nتعداد سرویس موردنیاز را وارد کن (مثال: 20)",
+        reply_markup=flow_cancel_kb(), parse_mode="Markdown",
+    )
+    await cb.answer()
+
+
+@router.callback_query(F.data == "rep:wallet")
+async def rep_wallet(cb: CallbackQuery):
+    user = await get_or_create_user(cb.from_user.id)
+    await cb.message.edit_text(
+        f"💳 *کیف پول نماینده*\n\nموجودی: *{int(user.get('balance_toman') or 0):,}* تومان\n\n"
+        "برای شارژ از دکمه «💳 کیف پول» در منوی اصلی استفاده کن.",
+        reply_markup=rep_back_kb(), parse_mode="Markdown",
+    )
+    await cb.answer()
+
+
+@router.callback_query(F.data == "rep:pricing")
+async def rep_pricing(cb: CallbackQuery):
+    user = await get_or_create_user(cb.from_user.id)
+    ppg = int(user.get("price_per_gb") or 0)
+    unl = int(user.get("unlimited_price") or 0)
+    disc = float(user.get("discount_percent") or 0)
+    lines = ["💰 *قیمت‌های اختصاصی تو*\n"]
+    lines.append(f"• هر گیگ: *{ppg:,}* تومان" if ppg else "• هر گیگ: قیمت پیش‌فرض پلتفرم")
+    lines.append(f"• نامحدود: *{unl:,}* تومان" if unl else "• نامحدود: قیمت پیش‌فرض پلتفرم")
+    if disc:
+        lines.append(f"• تخفیف کلی: *{disc:g}%*")
+    lines.append("\nقیمت‌های اختصاصی توسط ادمین تنظیم می‌شود. برای تغییر با پشتیبانی هماهنگ کن.")
+    await cb.message.edit_text("\n".join(lines), reply_markup=rep_back_kb(), parse_mode="Markdown")
+    await cb.answer()
+
+
+@router.callback_query(F.data == "rep:stats")
+async def rep_stats(cb: CallbackQuery):
+    user = await get_or_create_user(cb.from_user.id)
+    if not user.get("is_wholesale", 0):
+        await cb.answer("فقط برای نمایندگان.", show_alert=True)
+        return
+    from core.database import get_user_subscription_profiles, get_user_configs_full
+    profiles = await get_user_subscription_profiles(user["id"])
+    configs = await get_user_configs_full(user["id"])
+    active_subs = sum(1 for p in profiles if int(p.get("is_active") or 0))
+    active_cfg = sum(1 for c in configs if int(c.get("is_active") or 0))
+    text = (
+        "📊 *فروش و آمار من*\n\n"
+        f"🧬 سرویس‌های سابسکریپشن: *{len(profiles)}* (فعال: {active_subs})\n"
+        f"🔑 کانفیگ‌های تکی: *{len(configs)}* (فعال: {active_cfg})\n"
+        f"💳 موجودی کیف پول: *{int(user.get('balance_toman') or 0):,}* تومان\n\n"
+        "هر سرویسی که برای مشتری‌هایت می‌سازی این‌جا شمرده می‌شود."
+    )
+    await cb.message.edit_text(text, reply_markup=rep_back_kb(), parse_mode="Markdown")
+    await cb.answer()
+
+
+@router.callback_query(F.data == "rep:help")
+async def rep_help(cb: CallbackQuery):
+    await cb.message.edit_text(
+        "ℹ️ *راهنمای نماینده*\n\n"
+        "• *برند من:* نام برند خودت را بگذار تا در لینک مشتری‌هایت به‌جای برند ما نمایش داده شود؛ یا مخفی‌اش کن.\n"
+        "• *ساخت سرویس:* چند سرویس هم‌زمان با حجم و مدت دلخواه برای مشتری‌هایت بساز.\n"
+        "• *کیف پول:* هزینه‌ی سرویس‌ها از کیف پول تو کم می‌شود؛ آن را شارژ نگه دار.\n"
+        "• *قیمت‌های من:* قیمت اختصاصی نمایندگی تو.\n\n"
+        "هر سرویسی که می‌سازی زیر برند خودت به مشتری تحویل می‌شود.",
+        reply_markup=rep_back_kb(), parse_mode="Markdown",
+    )
+    await cb.answer()
 
 
 

@@ -55,7 +55,7 @@ function UserModal({ user, onClose, onChanged }) {
     <Modal title={`مدیریت کاربر — ${u.full_name || u.telegram_id}`} onClose={onClose}>
       <div className="row" style={{ gap: 8, marginBottom: 14 }}>
         {u.is_blocked ? <span className="badge b-red">🔴 بلاک</span> : <span className="badge b-green">🟢 فعال</span>}
-        {u.is_wholesale ? <span className="badge b-purple">عمده‌فروش</span> : null}
+        {u.is_wholesale ? <span className="badge b-purple">نماینده</span> : null}
         {u.hide_brand ? <span className="badge b-blue">بدون برند</span> : null}
         {u.admin_role && u.admin_role !== "none" ? <span className="badge b-blue">{ROLES[u.admin_role]}</span> : null}
         <span className="muted tiny mono">{u.telegram_id}</span>
@@ -93,12 +93,12 @@ function UserModal({ user, onClose, onChanged }) {
         </div>
         <div className="row" style={{ gap: 8 }}>
           <button className="btn sm" disabled={busy === "toggle_block"} onClick={() => toggle("toggle_block")}>{u.is_blocked ? "🔓 آنبلاک" : "🔒 بلاک"}</button>
-          <button className="btn sm" disabled={busy === "toggle_wholesale"} onClick={() => toggle("toggle_wholesale")}>{u.is_wholesale ? "برداشتن عمده" : "تایید عمده"}</button>
+          <button className="btn sm" disabled={busy === "toggle_wholesale"} onClick={() => toggle("toggle_wholesale")}>{u.is_wholesale ? "لغو نمایندگی" : "تایید نماینده"}</button>
         </div>
         <div className="between" style={{ gap: 10, marginTop: 12, alignItems: "center" }}>
           <div style={{ minWidth: 0 }}>
             <b style={{ fontSize: ".9rem" }}>🏷️ حذف برند از لینک سابسکریپشن</b>
-            <p className="muted tiny" style={{ margin: "2px 0 0" }}>برای مشتری عمده — نام برند شما در لینک سابسکریپشن او نمایش داده نمی‌شود.</p>
+            <p className="muted tiny" style={{ margin: "2px 0 0" }}>برای نماینده — نام برند شما در لینک سابسکریپشن او نمایش داده نمی‌شود.</p>
           </div>
           <button className={`btn sm ${u.hide_brand ? "danger" : "primary"}`} disabled={busy === "toggle_hide_brand"} onClick={() => toggle("toggle_hide_brand")}>{u.hide_brand ? "نمایش برند" : "حذف برند"}</button>
         </div>
@@ -185,7 +185,7 @@ export default function Users() {
                   <td>
                     <div className="row" style={{ gap: 4 }}>
                       {u.is_blocked ? <span className="badge b-red">بلاک</span> : <span className="badge b-green">فعال</span>}
-                      {u.is_wholesale ? <span className="badge b-purple">عمده</span> : (u.wholesale_request_pending ? <span className="badge b-yellow">درخواست</span> : null)}
+                      {u.is_wholesale ? <span className="badge b-purple">نماینده</span> : (u.wholesale_request_pending ? <span className="badge b-yellow">درخواست</span> : null)}
                       {u.admin_role && u.admin_role !== "none" ? <span className="badge b-blue">{ROLES[u.admin_role]}</span> : null}
                     </div>
                   </td>
