@@ -1403,6 +1403,7 @@ async def api_users(request: Request):
             "is_wholesale": int(u.get("is_wholesale") or 0),
             "wholesale_request_pending": int(u.get("wholesale_request_pending") or 0),
             "hide_brand": int(u.get("hide_brand") or 0),
+            "rep_brand_name": u.get("rep_brand_name") or "",
             "admin_role": u.get("admin_role") or "none", "is_admin": int(u.get("is_admin") or 0),
             "balance_toman": int(u.get("balance_toman") or 0),
             "discount_percent": float(u.get("discount_percent") or 0),
@@ -1480,6 +1481,7 @@ async def api_user_detail(request: Request, uid: int):
             "is_wholesale": int(u.get("is_wholesale") or 0),
             "wholesale_request_pending": int(u.get("wholesale_request_pending") or 0),
             "hide_brand": int(u.get("hide_brand") or 0),
+            "rep_brand_name": u.get("rep_brand_name") or "",
             "admin_role": u.get("admin_role") or "none", "is_admin": int(u.get("is_admin") or 0),
             "balance_toman": int(u.get("balance_toman") or 0),
             "discount_percent": float(u.get("discount_percent") or 0),
@@ -3959,6 +3961,24 @@ async def user_toggle_hide_brand(request: Request, uid: int):
     next_status = 0 if u.get("hide_brand", 0) else 1
     await update_user(uid, hide_brand=next_status)
     return JSONResponse({"success": True, "hide_brand": bool(next_status)})
+
+
+@app.post(f"/{S}/users/{{uid}}/rep_brand")
+async def user_set_rep_brand(request: Request, uid: int):
+    """Admin sets/clears a representative's own brand name."""
+    if not _auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    from core.database import get_user_by_id, update_user
+    u = await get_user_by_id(uid)
+    if not u:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    if "application/json" in request.headers.get("content-type", ""):
+        data = await request.json()
+    else:
+        data = dict(await request.form())
+    brand = " ".join(str(data.get("brand") or "").split()).strip()[:32]
+    await update_user(uid, rep_brand_name=brand)
+    return JSONResponse({"success": True, "rep_brand_name": brand})
 
 
 @app.post(f"/{S}/users/{{uid}}/admin_role")

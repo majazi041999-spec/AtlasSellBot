@@ -8,8 +8,18 @@ function UserModal({ user, onClose, onChanged }) {
   const [u, setU] = useState(user);
   const [busy, setBusy] = useState("");
   const disc = useRef(); const ppg = useRef(); const unl = useRef();
-  const balAmt = useRef(); const balNote = useRef();
+  const balAmt = useRef(); const balNote = useRef(); const repBrand = useRef();
   const [role, setRole] = useState(u.admin_role || "none");
+
+  const saveRepBrand = async () => {
+    setBusy("repbrand");
+    try {
+      const r = await api.post(`/users/${u.id}/rep_brand`, { brand: repBrand.current.value });
+      setU({ ...u, rep_brand_name: r.rep_brand_name });
+      toast("برند نماینده ذخیره شد ✅");
+      onChanged();
+    } catch (e) { toast("خطا", "error"); } finally { setBusy(""); }
+  };
 
   const savePricing = async () => {
     setBusy("price");
@@ -103,6 +113,17 @@ function UserModal({ user, onClose, onChanged }) {
           <button className={`btn sm ${u.hide_brand ? "danger" : "primary"}`} disabled={busy === "toggle_hide_brand"} onClick={() => toggle("toggle_hide_brand")}>{u.hide_brand ? "نمایش برند" : "حذف برند"}</button>
         </div>
       </div>
+
+      {u.is_wholesale ? (
+        <div className="card" style={{ marginTop: 12, padding: 14 }}>
+          <div className="card-h"><h3 style={{ fontSize: ".92rem" }}>🏷️ برند نماینده</h3></div>
+          <p className="muted tiny" style={{ margin: "0 0 8px" }}>نام برندی که در لینک سابسکریپشن مشتری‌های این نماینده نمایش داده می‌شود (نماینده هم می‌تواند از داخل ربات تنظیمش کند).</p>
+          <div className="row" style={{ gap: 8 }}>
+            <input className="inp" ref={repBrand} defaultValue={u.rep_brand_name || ""} placeholder="مثال: Sara VPN" maxLength={32} style={{ flex: 1 }} />
+            <button className="btn sm primary" disabled={busy === "repbrand"} onClick={saveRepBrand}>💾 ذخیره</button>
+          </div>
+        </div>
+      ) : null}
     </Modal>
   );
 }
