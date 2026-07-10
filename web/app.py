@@ -1911,6 +1911,16 @@ async def subscription_node_inbound_get(request: Request, node_id: int):
         inbound = await cli.get_inbound(int(node["inbound_id"]))
         if not inbound:
             return JSONResponse({"success": False, "error": cli.last_error or "inbound_not_found"}, status_code=502)
+
+        def _as_text(v):
+            # 3x-ui usually returns these as JSON strings, but some forks parse them
+            # to objects. Always hand the panel a pretty JSON string to edit.
+            if v is None:
+                return ""
+            if isinstance(v, (dict, list)):
+                return json.dumps(v, ensure_ascii=False, indent=2)
+            return str(v)
+
         return JSONResponse({"success": True, "inbound": {
             "id": inbound.get("id"),
             "remark": inbound.get("remark", ""),
@@ -1920,9 +1930,9 @@ async def subscription_node_inbound_get(request: Request, node_id: int):
             "listen": inbound.get("listen", ""),
             "expiryTime": inbound.get("expiryTime", 0),
             "total": inbound.get("total", 0),
-            "settings": inbound.get("settings", ""),
-            "streamSettings": inbound.get("streamSettings", ""),
-            "sniffing": inbound.get("sniffing", ""),
+            "settings": _as_text(inbound.get("settings")),
+            "streamSettings": _as_text(inbound.get("streamSettings")),
+            "sniffing": _as_text(inbound.get("sniffing")),
         }})
     finally:
         await cli.close()

@@ -78,6 +78,13 @@ function NodeModal({ node, servers, onClose, onSaved }) {
   return (
     <Modal title={editing ? "✏️ ویرایش نود" : "➕ افزودن نود ساب"} onClose={onClose}>
       <div className="grid" style={{ gap: 10 }}>
+        <div style={{ border: "1px solid var(--p2)", borderRadius: 12, padding: 12, background: "rgba(99,102,241,.06)" }}>
+          <label style={{ fontWeight: 700, display: "block", marginBottom: 4 }}>🌐 دامین اتصال اختصاصی (اختیاری)</label>
+          <input className="inp" value={host} onChange={(e) => setHost(e.target.value)} dir="ltr" placeholder="مثال: customize.bagsale.click" />
+          <p className="muted tiny" style={{ margin: "6px 0 0" }}>
+            اگر پر شود، فقط <b>آدرس اتصال</b> در لینک همه‌ی ساب‌ها با این دامین جایگزین می‌شود (پورت، SNI، host و path دست‌نخورده). خالی = آدرس خود اینباند.
+          </p>
+        </div>
         <div className="grid" style={{ gridTemplateColumns: "2fr 1fr", gap: 10 }}>
           <div className="field"><label>سرور</label>
             <select className="inp" value={server} onChange={(e) => setServer(e.target.value)}>
@@ -98,13 +105,6 @@ function NodeModal({ node, servers, onClose, onSaved }) {
           <div className="field"><label>ظرفیت (۰=∞)</label>
             <input className="inp" type="number" min="0" value={cap} onChange={(e) => setCap(e.target.value)} dir="ltr" />
           </div>
-        </div>
-        <div className="field">
-          <label>دامین اتصال اختصاصی (اختیاری)</label>
-          <input className="inp" value={host} onChange={(e) => setHost(e.target.value)} dir="ltr" placeholder="مثال: customize.bagsale.click" />
-          <p className="muted tiny" style={{ margin: "4px 0 0" }}>
-            اگر پر شود، فقط <b>آدرس اتصال</b> در لینک با این دامین جایگزین می‌شود (پورت، SNI، host و path دست‌نخورده می‌مانند). خالی = آدرس خود اینباند.
-          </p>
         </div>
         <button className="btn primary" disabled={busy} onClick={save}>{busy ? "…" : "💾 ذخیره"}</button>
       </div>
@@ -128,6 +128,8 @@ function InboundModal({ node, onClose, onSaved }) {
   }, [node.id]);
 
   const upd = (k, v) => setInb((s) => ({ ...s, [k]: v }));
+  // Guard against a fork returning objects instead of JSON strings ([object Object]).
+  const asText = (v) => (v == null ? "" : typeof v === "string" ? v : JSON.stringify(v, null, 2));
 
   const save = async () => {
     // Client-side JSON sanity check for the three string fields before sending.
@@ -166,11 +168,11 @@ function InboundModal({ node, onClose, onSaved }) {
               </select></div>
           </div>
           <div className="field"><label>settings (JSON)</label>
-            <textarea style={ta} value={inb.settings || ""} onChange={(e) => upd("settings", e.target.value)} /></div>
+            <textarea style={ta} value={asText(inb.settings)} onChange={(e) => upd("settings", e.target.value)} /></div>
           <div className="field"><label>streamSettings (JSON)</label>
-            <textarea style={ta} value={inb.streamSettings || ""} onChange={(e) => upd("streamSettings", e.target.value)} /></div>
+            <textarea style={ta} value={asText(inb.streamSettings)} onChange={(e) => upd("streamSettings", e.target.value)} /></div>
           <div className="field"><label>sniffing (JSON)</label>
-            <textarea style={ta} value={inb.sniffing || ""} onChange={(e) => upd("sniffing", e.target.value)} /></div>
+            <textarea style={ta} value={asText(inb.sniffing)} onChange={(e) => upd("sniffing", e.target.value)} /></div>
           <p className="muted tiny" style={{ margin: 0 }}>پس از ذخیره، لینک همه ساب‌های این نود به‌صورت خودکار بازسازی می‌شود.</p>
           <button className="btn primary" disabled={busy} onClick={save}>{busy ? "…" : "💾 ذخیره اینباند"}</button>
         </div>
