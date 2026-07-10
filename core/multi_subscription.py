@@ -324,18 +324,15 @@ def _clean_display_part(value: str, max_len: int = 32) -> str:
 
 
 async def _subscription_node_display_label(profile: Dict, node: Dict, index: int) -> str:
-    custom_name = _clean_display_part(profile.get("name") or "", 30)
+    # Keep each server remark SHORT: only the node/server name. The user's chosen
+    # service name is NOT prefixed here (it made every remark long and was the #1
+    # complaint) — it lives once, as a separate info entry at the top of the list
+    # (see _subscription_info_links).
     node_name = _clean_display_part(
         node.get("node_label") or node.get("server_name") or f"Node {index}",
-        28,
+        26,
     )
-    # The remark per server must stay short: lead with the user's chosen name
-    # (so it's the first thing they see in v2rayNG's server list), then the
-    # server name to tell servers apart. The brand never goes here — it lives
-    # only in the dedicated info config so remarks don't get long/cluttered.
-    if custom_name:
-        return f"{custom_name} | {node_name}"[:90]
-    return node_name[:90]
+    return node_name[:48]
 
 
 def _decode_b64_json(value: str) -> Dict | None:
@@ -523,43 +520,56 @@ async def _subscription_info_links(profile: Dict, used: int, total: int, active_
         "sub_info_template",
         "📊 حجم کل: {traffic_gb}GB | مصرف: {used} | باقی: {remaining}\n📅 باقی‌مانده: {days_left} روز | سپری‌شده: {days_elapsed} روز",
     )
-    labels = _format_info_template(template, values)
-    # Representative branding: the brand line shows the REP's own brand when the
-    # owner is a representative who set one; a representative can also hide the
-    # brand entirely. Otherwise the platform brand is used.
-    hide, rep_brand = await _owner_brand(profile)
-    if not hide:
-        if rep_brand:
-            values = {**values, "brand": rep_brand}
+    labels: list[str] = []
+    # The user's chosen service name appears ONCE here, as the first info entry
+    # (a null/info config that just shows the name), instead of being prefixed to
+    # every server remark.
+    service_name = _clean_display_part(profile.get("name") or "", 40)
+    if service_name:
+        labels.append(service_name)
+    labels += _format_info_template(template, values)
+
+    # Brand line. HARD RULE: our platform brand must NEVER appear on a
+    # representative's subscription — only the rep's own brand (or nothing).
+    hide, rep_brand, is_rep = await _owner_brand(profile)
+    show_brand_text = ""
+    if is_rep:
+        # Rep: only ever their own brand, and only if they haven't hidden it.
+        if rep_brand and not hide:
+            show_brand_text = rep_brand
+    else:
+        if not hide:
+            show_brand_text = rep_brand or brand  # rep_brand is "" for non-reps
+    if show_brand_text:
+        values = {**values, "brand": show_brand_text}
         brand_template = await get_setting("sub_brand_template", "📣 {brand}")
         labels = labels + _format_info_template(brand_template, values)
     return [_fake_info_link(label, i + 1) for i, label in enumerate(labels) if label]
 
 
-async def _owner_brand(profile: Dict) -> tuple[bool, str]:
-    """Return (hide_brand, rep_brand_name) for the subscription's owner.
+async def _owner_brand(profile: Dict) -> tuple[bool, str, bool]:
+    """Return (hide_brand, rep_brand_name, is_representative) for the sub's owner.
 
-    Representatives can pick their own brand (shown instead of ours) or hide the
-    brand line entirely so they can resell fully white-label."""
+    Representatives resell fully white-label: our brand is NEVER shown for their
+    subscriptions — only their own brand (if set), otherwise no brand line."""
     uid = profile.get("user_id")
     if not uid:
-        return False, ""
+        return False, "", False
     try:
         u = await get_user_by_id(int(uid))
     except Exception:
-        return False, ""
+        return False, "", False
     if not u:
-        return False, ""
+        return False, "", False
     hide = bool(int(u.get("hide_brand") or 0))
-    rep_brand = ""
-    if int(u.get("is_wholesale") or 0):
-        rep_brand = (u.get("rep_brand_name") or "").strip()
-    return hide, rep_brand
+    is_rep = bool(int(u.get("is_wholesale") or 0))
+    rep_brand = (u.get("rep_brand_name") or "").strip() if is_rep else ""
+    return hide, rep_brand, is_rep
 
 
 async def _user_hide_brand(profile: Dict) -> bool:
     """Back-compat: True when the subscription owner hides the brand."""
-    hide, _ = await _owner_brand(profile)
+    hide, _, _ = await _owner_brand(profile)
     return hide
 
 
