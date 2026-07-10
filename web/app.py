@@ -2713,6 +2713,36 @@ async def campaigns_reset(request: Request, name: str):
     return JSONResponse({"success": True, "cleared": cleared})
 
 
+@app.get(f"/{S}/api/campaigns")
+async def api_campaigns(request: Request):
+    if not _api_guard(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    overview = await get_campaign_overview()
+    for c in overview:
+        c["label"] = _CAMPAIGN_LABELS.get(c["campaign"], c["campaign"])
+    codes = [c["code"] for c in await get_discount_codes() if int(c.get("is_active") or 0)]
+    kpi = {
+        "revenue": sum(c["revenue"] for c in overview),
+        "conversions": sum(c["conversions"] for c in overview),
+        "discount": sum(c["discount"] for c in overview),
+        "sent": sum(c["sent"] for c in overview),
+    }
+    return JSONResponse({
+        "overview": overview,
+        "codes": codes,
+        "kpi": kpi,
+        "settings": {
+            "campaign_trial_enabled": await get_setting("campaign_trial_enabled", "1"),
+            "campaign_trial_code": await get_setting("campaign_trial_code", ""),
+            "campaign_trial_template": await get_setting("campaign_trial_template", ""),
+            "campaign_winback_enabled": await get_setting("campaign_winback_enabled", "1"),
+            "campaign_winback_code": await get_setting("campaign_winback_code", ""),
+            "campaign_winback_days": await get_setting("campaign_winback_days", "14"),
+            "campaign_winback_template": await get_setting("campaign_winback_template", ""),
+        },
+    })
+
+
 # ═══════════════════════════════ MINI APP ═══════════════════════════
 _miniapp_dist = os.path.join(_dir, "miniapp", "dist")
 try:
