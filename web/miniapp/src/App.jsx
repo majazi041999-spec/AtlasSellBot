@@ -187,6 +187,7 @@ function Services({ go, balance, onBalance }) {
   const [planFor, setPlanFor] = useState(null); // service awaiting plan choice
   const [pkgs, setPkgs] = useState(null);       // packages for renewal
   const [editing, setEditing] = useState(null); // service id
+  const [expanded, setExpanded] = useState(null); // service id whose servers are shown
   const [busy, setBusy] = useState(0);
   const reload = () => api("services").then((d) => setList(d.services || [])).catch(() => setList([]));
   useEffect(() => { reload(); }, []);
@@ -273,7 +274,19 @@ function Services({ go, balance, onBalance }) {
               <div className="svc-actions">
                 <button className="btn-soft sm" onClick={() => copy(s.sub_url)}>📋 کپی لینک</button>
                 <button className="btn-soft sm" onClick={() => setEditing(s.id)}>✏️ نام</button>
+                <button className="btn-soft sm" onClick={() => { haptic("selection"); setExpanded(expanded === s.id ? null : s.id); }}>🖥 سرورها</button>
                 <button className="btn-primary sm" disabled={busy === s.id} onClick={() => openRenew(s)}>♻️ تمدید</button>
+              </div>
+            )}
+            {expanded === s.id && (
+              <div className="node-list">
+                {(s.nodes || []).filter((n) => n.is_active && n.link).map((n, i) => (
+                  <div className="node-item" key={i} onClick={() => copy(n.link)}>
+                    <span className="node-dot" /> <span className="node-lbl">{n.label}</span>
+                    <span className="node-copy">کپی لینک</span>
+                  </div>
+                ))}
+                {!(s.nodes || []).some((n) => n.is_active && n.link) && <p className="muted tiny" style={{ margin: 0 }}>سرور فعالی برای این سرویس نیست.</p>}
               </div>
             )}
           </div>
@@ -428,6 +441,45 @@ function Referral() {
   );
 }
 
+function RepPanel({ data, support }) {
+  const rep = data.rep || {};
+  const f = rep.financials || {};
+  const avg = f.orders ? Math.round((f.total_spent || 0) / f.orders) : 0;
+  return (
+    <div className="screen">
+      <h2 className="screen-title">🏢 پنل نمایندگی</h2>
+      <div className="card rep-brandcard">
+        <div className="rep-brand-row">
+          <div className="rep-brand-logo">{rep.has_logo ? "🖼" : "🏷️"}</div>
+          <div>
+            <div className="rep-brand-name">{rep.brand_name || "— برند تنظیم نشده —"}</div>
+            <div className="muted tiny">{rep.has_logo ? "لوگو تنظیم شده ✅" : "لوگو تنظیم نشده"}</div>
+          </div>
+        </div>
+        <p className="muted tiny" style={{ margin: "8px 0 0" }}>برند و لوگوی خودت روی لینک مشتری‌هایت نمایش داده می‌شود. تنظیم برند/لوگو از داخل ربات، بخش «🏢 پنل نمایندگی».</p>
+      </div>
+
+      <div className="rep-stat-grid">
+        <div className="card rep-stat"><div className="rep-stat-ico" style={{ background: "linear-gradient(135deg,#7c6fff,#a78bfa)" }}>💸</div><div className="rep-stat-val">{fmt(f.total_spent)}</div><div className="rep-stat-lbl">کل خرید (ت)</div></div>
+        <div className="card rep-stat"><div className="rep-stat-ico" style={{ background: "linear-gradient(135deg,#10b981,#34d399)" }}>📅</div><div className="rep-stat-val">{fmt(f.month_spent)}</div><div className="rep-stat-lbl">خرید این ماه</div></div>
+        <div className="card rep-stat"><div className="rep-stat-ico" style={{ background: "linear-gradient(135deg,#0891b2,#22d3ee)" }}>🔑</div><div className="rep-stat-val">{f.active_services || 0}/{f.total_services || 0}</div><div className="rep-stat-lbl">سرویس فعال/کل</div></div>
+        <div className="card rep-stat"><div className="rep-stat-ico" style={{ background: "linear-gradient(135deg,#f59e0b,#fbbf24)" }}>🧾</div><div className="rep-stat-val">{fmt(f.orders)}</div><div className="rep-stat-lbl">سفارش‌ها</div></div>
+      </div>
+
+      <div className="card">
+        <div className="list-title">💡 راهنما</div>
+        <p className="muted tiny" style={{ lineHeight: 2, margin: 0 }}>
+          • «سرویس‌ها» = مشتریان تو. هر سرویس را با اسم مشتری نام‌گذاری کن و لینکش را بده.<br />
+          • میانگین هزینه‌ی هر سرویس: <b>{fmt(avg)}</b> تومان — قیمت فروش به مشتری منهای این = سود تو.<br />
+          • برای ساخت سرویس جدید از تب «خرید» استفاده کن.
+        </p>
+      </div>
+
+      {support && <a className="support-card" href={`https://t.me/${support}`} target="_blank" rel="noreferrer"><span>☎️ پشتیبانی نمایندگان</span><span className="chev">›</span></a>}
+    </div>
+  );
+}
+
 const TABS = [
   { k: "home", icon: "🏠", label: "خانه" },
   { k: "services", icon: "📡", label: "سرویس‌ها" },
@@ -435,6 +487,7 @@ const TABS = [
   { k: "wallet", icon: "💳", label: "کیف پول" },
   { k: "referral", icon: "🎁", label: "دعوت" },
 ];
+const REP_TAB = { k: "rep", icon: "🏢", label: "نمایندگی" };
 
 export default function App() {
   const [tab, setTab] = useState("home");
@@ -460,6 +513,8 @@ export default function App() {
     <div className="fullscreen center"><div className="empty-emoji">🛠</div><p>{boot.brand?.title || "Atlas"} موقتاً در دسترس نیست.</p></div>
   );
 
+  const tabs = boot.is_rep ? [TABS[0], TABS[1], TABS[2], REP_TAB, TABS[3]] : TABS;
+
   return (
     <div className="app">
       <Header brand={boot.brand} user={boot.user} />
@@ -467,11 +522,12 @@ export default function App() {
         {tab === "home" && <Home data={boot} go={setTab} />}
         {tab === "services" && <Services go={setTab} balance={balance} onBalance={setBalance} />}
         {tab === "buy" && <Buy balance={balance} onBalance={setBalance} />}
+        {tab === "rep" && <RepPanel data={boot} support={boot.support} />}
         {tab === "wallet" && <Wallet />}
         {tab === "referral" && <Referral />}
       </main>
       <nav className="tabbar">
-        {TABS.map((t) => (
+        {tabs.map((t) => (
           <button key={t.k} className={"tab " + (tab === t.k ? "active" : "")} onClick={() => { haptic("selection"); setTab(t.k); }}>
             <span className="tab-icon">{t.icon}</span><span className="tab-label">{t.label}</span>
           </button>

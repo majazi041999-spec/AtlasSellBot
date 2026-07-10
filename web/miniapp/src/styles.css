@@ -145,3 +145,22 @@ small{font-weight:500}
 /* Spinner */
 .spinner{width:32px;height:32px;border-radius:50%;border:3px solid rgba(255,255,255,.14);border-top-color:var(--p);animation:spin .7s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
+
+/* ── Representative panel ── */
+.rep-brandcard{margin-bottom:12px}
+.rep-brand-row{display:flex;align-items:center;gap:12px}
+.rep-brand-logo{width:48px;height:48px;border-radius:14px;display:grid;place-items:center;font-size:1.5rem;background:linear-gradient(135deg,#7c6fff,#00e5a0)}
+.rep-brand-name{font-weight:800;font-size:1.05rem}
+.rep-stat-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px}
+.rep-stat{padding:14px;text-align:center}
+.rep-stat-ico{width:40px;height:40px;border-radius:12px;display:grid;place-items:center;font-size:1.15rem;margin:0 auto 8px}
+.rep-stat-val{font-weight:800;font-size:1.15rem}
+.rep-stat-lbl{color:var(--muted,#9aa6bd);font-size:.72rem;margin-top:2px}
+
+/* ── Per-service server links ── */
+.node-list{margin-top:10px;display:flex;flex-direction:column;gap:7px}
+.node-item{display:flex;align-items:center;gap:8px;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.07);border-radius:12px;padding:10px 12px;cursor:pointer}
+.node-item:active{transform:scale(.99)}
+.node-dot{width:8px;height:8px;border-radius:50%;background:#34d399;flex:none}
+.node-lbl{flex:1;font-size:.85rem;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.node-copy{font-size:.72rem;color:#7c6fff;font-weight:700;flex:none}

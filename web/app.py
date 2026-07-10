@@ -2897,11 +2897,22 @@ async def miniapp_bootstrap(request: Request):
     bal = await get_user_balance(user["id"])
     profiles = await get_user_subscription_profiles(user["id"])
     active = sum(1 for p in profiles if int(p.get("is_active") or 0))
+    is_rep = bool(int(user.get("is_wholesale") or 0))
+    rep = None
+    if is_rep:
+        fin = await get_rep_financials(user["id"])
+        rep = {
+            "brand_name": (user.get("rep_brand_name") or "").strip(),
+            "has_logo": bool((user.get("rep_logo") or "").strip()),
+            "financials": fin,
+        }
     return JSONResponse({
         "enabled": True,
         "brand": brand,
         "user": {"name": ((user.get("full_name") or "").split(" ")[0] if user.get("full_name") else ""), "balance": bal},
         "stats": {"active_services": active, "total_services": len(profiles)},
+        "is_rep": is_rep,
+        "rep": rep,
         "support": (await get_setting("support_username", "")).lstrip("@"),
     })
 
@@ -2925,7 +2936,11 @@ async def miniapp_services(request: Request):
             "traffic_gb": p.get("traffic_gb"), "used_bytes": p.get("used_bytes"),
             "expire_ts": int(p.get("expire_timestamp") or 0), "is_active": int(p.get("is_active") or 0),
             "sub_url": sub_url,
-            "nodes": [{"label": n.get("node_label") or n.get("server_name"), "is_active": int(n.get("is_active") or 0)} for n in nodes],
+            "nodes": [{
+                "label": n.get("node_label") or n.get("server_name"),
+                "is_active": int(n.get("is_active") or 0),
+                "link": (n.get("link") or "").strip() if int(n.get("is_active") or 0) else "",
+            } for n in nodes],
         })
     return JSONResponse({"services": out})
 
