@@ -1,5 +1,5 @@
-import React, { useState } from "react";
-import { BASE } from "../api.js";
+import React, { useState, useEffect } from "react";
+import { BASE, api } from "../api.js";
 
 const NAV = [
   { k: "/dashboard", icon: "📊", label: "داشبورد" },
@@ -29,6 +29,8 @@ const TITLES = { "/dashboard": "داشبورد", "/users": "کاربران", "/r
 
 export default function Shell({ path, go, badges = {}, children, onLogout }) {
   const [open, setOpen] = useState(false);
+  const [brand, setBrand] = useState({ brand_name: "Atlas Panel", logo: "" });
+  useEffect(() => { api.get("/api/branding").then(setBrand).catch(() => {}); }, []);
   const base = "/" + path.split("/").filter(Boolean)[0];
   const nav = (p) => { go(p); setOpen(false); };
   const title = TITLES[base] || "پنل اطلس";
@@ -38,9 +40,11 @@ export default function Shell({ path, go, badges = {}, children, onLogout }) {
       <div className={"scrim" + (open ? " show" : "")} onClick={() => setOpen(false)} />
       <aside className={"sidebar" + (open ? " open" : "")}>
         <div className="brand">
-          <div className="brand-logo">🛡️</div>
+          <div className="brand-logo" style={brand.logo ? { padding: 0, overflow: "hidden" } : undefined}>
+            {brand.logo ? <img src={brand.logo} alt="logo" style={{ width: "100%", height: "100%", objectFit: "cover", borderRadius: 13 }} /> : "🛡️"}
+          </div>
           <div>
-            <div className="brand-name">Atlas Panel</div>
+            <div className="brand-name">{brand.brand_name || "Atlas Panel"}</div>
             <div className="brand-sub">پنل مدیریت</div>
           </div>
         </div>

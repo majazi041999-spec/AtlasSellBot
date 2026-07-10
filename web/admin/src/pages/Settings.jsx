@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useRef } from "react";
 import { api, BASE } from "../api.js";
 import { Card, Loading, toast } from "../components/ui.jsx";
 
@@ -48,13 +48,29 @@ export default function Settings() {
   const [s, setS] = useState(null);
   const [servers, setServers] = useState([]);
   const [busy, setBusy] = useState(false);
+  const [logo, setLogo] = useState("");
+  const logoRef = useRef();
 
   useEffect(() => {
     api.get("/api/settings").then((r) => { setS(r.settings); setServers(r.servers || []); })
       .catch(() => toast("خطا در بارگذاری تنظیمات", "error"));
+    api.get("/api/branding").then((r) => setLogo(r.logo || "")).catch(() => {});
   }, []);
 
   const set = (k, v) => setS((o) => ({ ...o, [k]: v }));
+
+  const uploadLogo = async () => {
+    const file = logoRef.current?.files?.[0];
+    if (!file) { toast("عکسی انتخاب نشده", "error"); return; }
+    setBusy("logo");
+    try { const r = await api.form("/api/logo", { logo: file }); setLogo(r.logo || ""); toast("لوگو ذخیره شد ✅ (favicon و پنل هم به‌روز شد)"); }
+    catch (e) { toast(e.message || "خطا در آپلود", "error"); } finally { setBusy(false); }
+  };
+  const clearLogo = async () => {
+    setBusy("logo");
+    try { await api.post("/api/logo/clear"); setLogo(""); toast("لوگو حذف شد"); }
+    catch (e) { toast("خطا", "error"); } finally { setBusy(false); }
+  };
 
   const save = async () => {
     setBusy(true);
@@ -80,6 +96,16 @@ export default function Settings() {
           </div>
           <Text s={s} set={set} k="ui_panel_subtitle" label="زیرعنوان پنل" />
           <Text s={s} set={set} k="ui_topbar_note" label="یادداشت نوار بالا" />
+        </div>
+        <div style={{ borderTop: "1px solid var(--line)", marginTop: 12, paddingTop: 12 }}>
+          <label style={{ fontWeight: 700, fontSize: ".85rem" }}>🖼 لوگو (پنل، favicon و صفحه‌ی لینک مرورگر)</label>
+          <div className="row" style={{ gap: 10, flexWrap: "wrap", alignItems: "center", marginTop: 8 }}>
+            {logo ? <img src={logo} alt="logo" style={{ width: 56, height: 56, borderRadius: 14, objectFit: "cover", border: "1px solid var(--line)" }} /> : <div style={{ width: 56, height: 56, borderRadius: 14, display: "grid", placeItems: "center", background: "rgba(255,255,255,.05)" }}>🛡️</div>}
+            <input type="file" accept="image/*" ref={logoRef} className="inp" style={{ maxWidth: 240 }} />
+            <button className="btn sm primary" disabled={busy === "logo"} onClick={uploadLogo}>⬆️ آپلود</button>
+            {logo && <button className="btn sm danger" disabled={busy === "logo"} onClick={clearLogo}>حذف</button>}
+          </div>
+          <p className="muted tiny" style={{ margin: "6px 0 0" }}>تصویر به‌صورت خودکار ریسایز می‌شود. برای نماینده‌ها، لوگوی خودشان نشان داده می‌شود نه این.</p>
         </div>
       </Card>
 

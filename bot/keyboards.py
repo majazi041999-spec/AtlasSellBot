@@ -178,6 +178,7 @@ def rep_brand_kb(has_brand: bool, hidden: bool) -> InlineKeyboardMarkup:
             callback_data="rep:brand_set", style="primary")
     if has_brand:
         _button(b, text="🗑 حذف برند من", callback_data="rep:brand_clear", style="danger")
+    _button(b, text="🖼 لوگوی من", callback_data="rep:logo", style="primary")
     _button(b, text=("👁 نمایش برند در لینک" if hidden else "🙈 مخفی‌کردن برند در لینک"),
             callback_data="rep:brand_toggle")
     _button(b, text="⬅️ بازگشت به پنل نمایندگی", callback_data="rep:home")

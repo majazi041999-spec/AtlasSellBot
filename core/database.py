@@ -344,6 +344,7 @@ async def _ensure_columns(db):
             ("hide_brand", "INTEGER DEFAULT 0"),
             ("rep_brand_name", "TEXT DEFAULT ''"),
             ("rep_topup_required", "INTEGER DEFAULT 0"),
+            ("rep_logo", "TEXT DEFAULT ''"),
             ("admin_role", "TEXT DEFAULT 'none'"),
             ("balance_toman", "INTEGER DEFAULT 0"),
             ("referral_reminder_sent", "INTEGER DEFAULT 0"),

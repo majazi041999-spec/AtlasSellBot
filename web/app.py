@@ -226,6 +226,28 @@ def _fmt_bytes_web(b: int) -> str:
     return f"{f:.2f} {units[i]}"
 
 
+from core.images import process_logo_bytes
+
+
+async def _admin_logo() -> str:
+    return (await get_setting("ui.logo_data", "")).strip()
+
+
+async def _resolve_sub_logo(profile: dict) -> str:
+    """Logo to show on a subscription's browser page: the rep's own logo for a
+    rep's sub, otherwise the platform (admin) logo. Never leaks ours to a rep."""
+    uid = profile.get("user_id")
+    if uid:
+        try:
+            from core.database import get_user_by_id as _gubi
+            u = await _gubi(int(uid))
+        except Exception:
+            u = None
+        if u and int(u.get("is_wholesale") or 0):
+            return (u.get("rep_logo") or "").strip()  # empty → neutral, never ours
+    return await _admin_logo()
+
+
 async def _resolve_sub_brand(profile: dict) -> tuple[str, bool]:
     """(display_brand, is_representative) for a subscription's browser page/title.
 
@@ -248,6 +270,12 @@ async def _render_sub_status_html(token: str, profile: dict) -> str:
 
     disp_brand, is_rep = await _resolve_sub_brand(profile)
     brand = disp_brand or (str(profile.get("name") or "").strip() or "سرویس اشتراک")
+    logo_uri = await _resolve_sub_logo(profile)
+    logo_html = (
+        f'<img src="{_html.escape(logo_uri, quote=True)}" alt="logo" '
+        'style="width:54px;height:54px;border-radius:16px;object-fit:cover">'
+        if logo_uri else "🌐"
+    )
     sub_url = await subscription_url(token)
     nodes = await _get_sub_nodes(int(profile["id"]))
     active_nodes = [n for n in nodes if int(n.get("is_active") or 0) and (n.get("link") or "").strip()]
@@ -344,7 +372,7 @@ body{{margin:0;font-family:Vazirmatn,Tahoma,system-ui,-apple-system,sans-serif;
 </style></head>
 <body><div class="wrap"><div class="card">
   <div class="head">
-    <div class="logo">🌐</div>
+    <div class="logo">{logo_html}</div>
     <div class="brand">{safe_brand}</div>
     <div class="sub-title">صفحهٔ وضعیت اشتراک</div>
     <div><span class="status">{status_label}</span></div>
@@ -919,6 +947,10 @@ async def _serve_admin_spa():
     if not html:
         # Build missing → don't strand the admin: bounce to the legacy dashboard.
         return RedirectResponse(f"/{S}/dashboard", status_code=302)
+    # Inject the custom favicon (admin logo) so the browser tab shows your brand.
+    logo = await _admin_logo()
+    if logo:
+        html = html.replace("<head>", f'<head><link rel="icon" href="{logo}">', 1)
     return HTMLResponse(html)
 
 
@@ -4401,6 +4433,36 @@ async def api_settings(request: Request):
         "settings": settings,
         "servers": [{"id": s["id"], "name": s.get("name"), "is_active": int(s.get("is_active") or 0)} for s in servers],
     })
+
+
+@app.get(f"/{S}/api/branding")
+async def api_branding(request: Request):
+    if not _api_guard(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    return JSONResponse({
+        "brand_name": await get_setting("ui.brand_name", "Atlas Account"),
+        "logo": await _admin_logo(),
+    })
+
+
+@app.post(f"/{S}/api/logo")
+async def api_logo_upload(request: Request, logo: UploadFile = File(...)):
+    if not _api_guard(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    data = await logo.read()
+    uri = process_logo_bytes(data)
+    if not uri:
+        return JSONResponse({"success": False, "error": "تصویر نامعتبر یا خیلی بزرگ است."}, status_code=400)
+    await set_setting("ui.logo_data", uri)
+    return JSONResponse({"success": True, "logo": uri})
+
+
+@app.post(f"/{S}/api/logo/clear")
+async def api_logo_clear(request: Request):
+    if not _api_guard(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    await set_setting("ui.logo_data", "")
+    return JSONResponse({"success": True})
 
 
 @app.post(f"/{S}/settings")

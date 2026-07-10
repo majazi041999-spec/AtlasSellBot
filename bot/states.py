@@ -77,6 +77,7 @@ class LegacySync(StatesGroup):
 
 class RepBrand(StatesGroup):
     name = State()
+    logo = State()
 
 
 class PrivateMessage(StatesGroup):

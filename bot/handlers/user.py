@@ -1685,6 +1685,64 @@ async def rep_brand_name(msg: Message, state: FSMContext):
     await _show_rep_panel(msg, fresh)
 
 
+@router.callback_query(F.data == "rep:logo")
+async def rep_logo_start(cb: CallbackQuery, state: FSMContext):
+    user = await get_or_create_user(cb.from_user.id)
+    if not user.get("is_wholesale", 0):
+        await cb.answer("فقط برای نمایندگان.", show_alert=True)
+        return
+    has = bool((user.get("rep_logo") or "").strip())
+    await state.set_state(RepBrand.logo)
+    await cb.message.answer(
+        "🖼 *لوگوی نمایندگی*\n\n"
+        "یک عکس (لوگو) بفرست تا در صفحه‌ی لینک مشتری‌هایت نمایش داده شود. "
+        "خودمان اندازه‌اش را تنظیم می‌کنیم.\n"
+        + ("\nبرای حذف لوگوی فعلی، کلمه‌ی «حذف» را بفرست." if has else ""),
+        reply_markup=flow_cancel_kb(show_back=False), parse_mode="Markdown",
+    )
+    await cb.answer()
+
+
+@router.message(RepBrand.logo, F.photo)
+async def rep_logo_photo(msg: Message, state: FSMContext):
+    from core.images import process_logo_bytes
+    user = await get_or_create_user(msg.from_user.id)
+    if not user.get("is_wholesale", 0):
+        await state.clear()
+        return
+    try:
+        bio = await msg.bot.download(msg.photo[-1])
+        data = bio.read() if bio else b""
+    except Exception:
+        data = b""
+    uri = process_logo_bytes(data)
+    if not uri:
+        await msg.answer("❌ نشد لوگو را پردازش کنم. یک عکس دیگر بفرست.")
+        return
+    await update_user(user["id"], rep_logo=uri)
+    await state.clear()
+    await msg.answer("✅ لوگوی تو ذخیره شد و در صفحه‌ی لینک مشتری‌هایت نمایش داده می‌شود.")
+    fresh = await get_or_create_user(msg.from_user.id)
+    await _show_rep_panel(msg, fresh)
+
+
+@router.message(RepBrand.logo, F.text)
+async def rep_logo_text(msg: Message, state: FSMContext):
+    txt = (msg.text or "").strip()
+    user = await get_or_create_user(msg.from_user.id)
+    if txt in ("حذف", "🗑 حذف", "delete"):
+        await update_user(user["id"], rep_logo="")
+        await state.clear()
+        await msg.answer("🗑 لوگو حذف شد.")
+        await _show_rep_panel(msg, await get_or_create_user(msg.from_user.id))
+        return
+    if txt in ("لغو", "❌ لغو", "/cancel"):
+        await state.clear()
+        await _show_rep_panel(msg, user)
+        return
+    await msg.answer("لطفاً یک *عکس* بفرست (نه متن). یا «حذف» برای پاک‌کردن لوگو.", parse_mode="Markdown")
+
+
 @router.callback_query(F.data == "rep:brand_clear")
 async def rep_brand_clear(cb: CallbackQuery):
     user = await get_or_create_user(cb.from_user.id)
