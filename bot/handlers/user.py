@@ -1753,23 +1753,51 @@ async def rep_pricing(cb: CallbackQuery):
     await cb.answer()
 
 
-@router.callback_query(F.data == "rep:stats")
-async def rep_stats(cb: CallbackQuery):
+@router.callback_query(F.data == "rep:customers")
+async def rep_customers(cb: CallbackQuery):
     user = await get_or_create_user(cb.from_user.id)
     if not user.get("is_wholesale", 0):
         await cb.answer("فقط برای نمایندگان.", show_alert=True)
         return
-    from core.database import get_user_subscription_profiles, get_user_configs_full
-    profiles = await get_user_subscription_profiles(user["id"])
-    configs = await get_user_configs_full(user["id"])
-    active_subs = sum(1 for p in profiles if int(p.get("is_active") or 0))
-    active_cfg = sum(1 for c in configs if int(c.get("is_active") or 0))
+    configs, profiles = await _user_service_lists(user["id"])
+    total = len(configs) + len(profiles)
+    if not total:
+        await cb.message.edit_text(
+            "👥 *مشتریان من*\n\nهنوز سرویسی نساخته‌ای. از «🛒 ساخت سرویس» شروع کن.",
+            reply_markup=rep_back_kb(), parse_mode="Markdown",
+        )
+        await cb.answer()
+        return
     text = (
-        "📊 *فروش و آمار من*\n\n"
-        f"🧬 سرویس‌های سابسکریپشن: *{len(profiles)}* (فعال: {active_subs})\n"
-        f"🔑 کانفیگ‌های تکی: *{len(configs)}* (فعال: {active_cfg})\n"
+        "👥 *مشتریان من*\n\n"
+        f"مجموع سرویس‌ها: *{total}*\n\n"
+        "روی هر سرویس بزن تا مدیریتش کنی: با «✏️ تغییر نام» اسم مشتری را رویش بگذار، "
+        "یا «♻️ تمدید» کن."
+    )
+    await cb.message.edit_text(text, reply_markup=user_services_kb(configs, profiles, page=0), parse_mode="Markdown")
+    await cb.answer()
+
+
+@router.callback_query(F.data == "rep:report")
+async def rep_report(cb: CallbackQuery):
+    user = await get_or_create_user(cb.from_user.id)
+    if not user.get("is_wholesale", 0):
+        await cb.answer("فقط برای نمایندگان.", show_alert=True)
+        return
+    from core.database import get_rep_financials
+    fin = await get_rep_financials(user["id"])
+    avg = int(fin["total_spent"] / fin["orders"]) if fin.get("orders") else 0
+    text = (
+        "📈 *گزارش مالی نمایندگی*\n\n"
+        f"🧬 کل سرویس‌ها: *{fin['total_services']}*\n"
+        f"   • فعال: *{fin['active_services']}*  |  منقضی: {fin['expired_services']}\n\n"
+        f"🧾 سفارش‌های تاییدشده: *{fin['orders']}*\n"
+        f"💸 مجموع هزینه‌ی تو (خرید): *{fin['total_spent']:,}* تومان\n"
+        f"📅 هزینه‌ی این ماه: *{fin['month_spent']:,}* تومان\n"
+        f"📊 میانگین هر سرویس: *{avg:,}* تومان\n"
         f"💳 موجودی کیف پول: *{int(user.get('balance_toman') or 0):,}* تومان\n\n"
-        "هر سرویسی که برای مشتری‌هایت می‌سازی این‌جا شمرده می‌شود."
+        "💡 «هزینه» مبلغی است که تو برای ساخت سرویس‌ها پرداخت کرده‌ای. "
+        "سود تو = قیمتی که به مشتری می‌فروشی منهای این هزینه."
     )
     await cb.message.edit_text(text, reply_markup=rep_back_kb(), parse_mode="Markdown")
     await cb.answer()

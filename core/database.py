@@ -1291,6 +1291,47 @@ async def get_top_buyers(limit: int = 30) -> List[Dict]:
             return [dict(r) for r in await c.fetchall()]
 
 
+async def get_rep_financials(user_id: int) -> Dict:
+    """Financial summary for a representative: total & monthly spend, order count,
+    and service counts (active/expired). Spend = sum of approved orders."""
+    now_ms = int(time.time() * 1000)
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            """SELECT COALESCE(SUM(COALESCE(NULLIF(o.custom_price,0), p.price, 0)),0) AS total,
+                      COUNT(o.id) AS orders
+               FROM orders o LEFT JOIN packages p ON p.id=o.package_id
+               WHERE o.user_id=? AND o.status='approved'""",
+            (user_id,),
+        ) as c:
+            r = await c.fetchone()
+            total_spent = int(r["total"] or 0)
+            orders = int(r["orders"] or 0)
+        async with db.execute(
+            """SELECT COALESCE(SUM(COALESCE(NULLIF(o.custom_price,0), p.price, 0)),0) AS m
+               FROM orders o LEFT JOIN packages p ON p.id=o.package_id
+               WHERE o.user_id=? AND o.status='approved'
+                 AND o.created_at >= date('now','start of month','localtime')""",
+            (user_id,),
+        ) as c:
+            month_spent = int((await c.fetchone())["m"] or 0)
+        async with db.execute(
+            "SELECT COUNT(*) AS n FROM subscription_profiles WHERE user_id=?", (user_id,),
+        ) as c:
+            total_services = int((await c.fetchone())["n"] or 0)
+        async with db.execute(
+            """SELECT COUNT(*) AS n FROM subscription_profiles
+               WHERE user_id=? AND is_active=1 AND (expire_timestamp=0 OR expire_timestamp>?)""",
+            (user_id, now_ms),
+        ) as c:
+            active_services = int((await c.fetchone())["n"] or 0)
+        return {
+            "total_spent": total_spent, "month_spent": month_spent, "orders": orders,
+            "total_services": total_services, "active_services": active_services,
+            "expired_services": max(0, total_services - active_services),
+        }
+
+
 async def get_top_active_service_users(limit: int = 30) -> List[Dict]:
     """Users ranked by number of currently-active subscriptions."""
     now_ms = int(time.time() * 1000)

@@ -154,11 +154,12 @@ def representative_panel_kb() -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
     _button(b, text="🏷️ برند من", callback_data="rep:brand", style="primary")
     _button(b, text="🛒 ساخت سرویس", callback_data="rep:buy", style="success")
-    _button(b, text="📊 فروش و آمار من", callback_data="rep:stats")
+    _button(b, text="👥 مشتریان من", callback_data="rep:customers", style="primary")
+    _button(b, text="📈 گزارش مالی", callback_data="rep:report")
     _button(b, text="💳 کیف پول من", callback_data="rep:wallet")
     _button(b, text="💰 قیمت‌های من", callback_data="rep:pricing")
     _button(b, text="ℹ️ راهنمای نماینده", callback_data="rep:help")
-    b.adjust(2, 2, 2)
+    b.adjust(2, 2, 2, 1)
     return b.as_markup()
 
 
