@@ -225,10 +225,28 @@ def _fmt_bytes_web(b: int) -> str:
     return f"{f:.2f} {units[i]}"
 
 
+async def _resolve_sub_brand(profile: dict) -> tuple[str, bool]:
+    """(display_brand, is_representative) for a subscription's browser page/title.
+
+    HARD RULE: for a representative's subscription this NEVER returns our platform
+    brand — only their own brand (may be empty → caller shows a neutral title)."""
+    uid = profile.get("user_id")
+    if uid:
+        try:
+            from core.database import get_user_by_id as _gubi
+            u = await _gubi(int(uid))
+        except Exception:
+            u = None
+        if u and int(u.get("is_wholesale") or 0):
+            return (u.get("rep_brand_name") or "").strip(), True
+    return await get_setting("ui.brand_name", "Atlas Account"), False
+
+
 async def _render_sub_status_html(token: str, profile: dict) -> str:
     import html as _html
 
-    brand = await get_setting("ui.brand_name", "Atlas Account")
+    disp_brand, is_rep = await _resolve_sub_brand(profile)
+    brand = disp_brand or (str(profile.get("name") or "").strip() or "سرویس اشتراک")
     sub_url = await subscription_url(token)
     nodes = await _get_sub_nodes(int(profile["id"]))
     active_nodes = [n for n in nodes if int(n.get("is_active") or 0) and (n.get("link") or "").strip()]
@@ -396,9 +414,11 @@ async def public_subscription(token: str, request: Request):
     if not rendered:
         return StreamingResponse(iter([b""]), media_type="text/plain", status_code=404)
     body, info = rendered
-    brand = await get_setting("ui.brand_name", "Atlas Account")
-    title = (info.get("title") or "").strip() or brand
-    title_b64 = base64.b64encode(str(title or "Atlas Account").encode("utf-8")).decode()
+    # Profile-Title fallback must be brand-safe for reps (never our brand).
+    _prof = await _get_sub_profile_by_token(token) or {}
+    disp_brand, _is_rep = await _resolve_sub_brand(_prof)
+    title = (info.get("title") or "").strip() or disp_brand or "VPN"
+    title_b64 = base64.b64encode(str(title or "VPN").encode("utf-8")).decode()
     headers = {
         "Subscription-Userinfo": (
             f"upload={info['upload']}; download={info['download']}; "
