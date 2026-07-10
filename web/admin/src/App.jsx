@@ -18,6 +18,7 @@ import Campaigns from "./pages/Campaigns.jsx";
 import Referrals from "./pages/Referrals.jsx";
 import Update from "./pages/Update.jsx";
 import UserDetail from "./pages/UserDetail.jsx";
+import Reps from "./pages/Reps.jsx";
 
 export default function App() {
   const [authed, setAuthed] = useState(null); // null=checking, false=login, true=in
@@ -39,6 +40,7 @@ export default function App() {
   const userDetail = match("/users/:id", path);
   let page;
   if (userDetail) page = <UserDetail uid={userDetail.id} go={go} />;
+  else if (base === "/reps") page = <Reps go={go} />;
   else if (base === "/users") page = <Users go={go} />;
   else if (base === "/orders") page = <Orders onBadges={onBadges} />;
   else if (base === "/subs") page = <Subscriptions />;

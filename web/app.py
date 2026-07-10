@@ -1485,6 +1485,36 @@ async def api_topup_reject(request: Request, rid: int):
     return JSONResponse({"ok": True})
 
 
+@app.get(f"/{S}/api/reps")
+async def api_reps(request: Request):
+    """All representatives with sales/stats, for the admin Representatives page."""
+    if not _api_guard(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    from core.database import get_wholesale_users
+    reps = await get_wholesale_users(500)
+    out = []
+    total_spent = total_active = 0
+    for u in reps:
+        fin = await get_rep_financials(u["id"]) if int(u.get("is_wholesale") or 0) else {
+            "total_spent": 0, "month_spent": 0, "orders": 0, "total_services": 0, "active_services": 0, "expired_services": 0}
+        total_spent += int(fin.get("total_spent") or 0)
+        total_active += int(fin.get("active_services") or 0)
+        out.append({
+            "id": u["id"], "telegram_id": u.get("telegram_id"), "username": u.get("username"),
+            "full_name": u.get("full_name"), "is_wholesale": int(u.get("is_wholesale") or 0),
+            "wholesale_request_pending": int(u.get("wholesale_request_pending") or 0),
+            "rep_brand_name": u.get("rep_brand_name") or "", "balance_toman": int(u.get("balance_toman") or 0),
+            "fin": fin,
+        })
+    out.sort(key=lambda r: r["fin"].get("total_spent") or 0, reverse=True)
+    approved = [r for r in out if r["is_wholesale"]]
+    return JSONResponse({
+        "reps": out,
+        "kpi": {"count": len(approved), "pending": sum(1 for r in out if r["wholesale_request_pending"] and not r["is_wholesale"]),
+                "total_spent": total_spent, "active_services": total_active},
+    })
+
+
 @app.get(f"/{S}/api/users/{{uid}}")
 async def api_user_detail(request: Request, uid: int):
     if not _api_guard(request):

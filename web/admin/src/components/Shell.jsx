@@ -4,6 +4,7 @@ import { BASE } from "../api.js";
 const NAV = [
   { k: "/dashboard", icon: "📊", label: "داشبورد" },
   { k: "/users", icon: "👥", label: "کاربران" },
+  { k: "/reps", icon: "🏢", label: "نمایندگان" },
   { k: "/orders", icon: "🧾", label: "سفارش‌ها", badgeKey: "pending_orders" },
   { k: "/subs", icon: "🧬", label: "نودهای ساب" },
   { k: "/subprofiles", icon: "📄", label: "ساب‌های کاربران" },
@@ -24,7 +25,7 @@ const LEGACY = [
   { path: "/miniapp", icon: "📱", label: "مینی‌اپ" },
 ];
 
-const TITLES = { "/dashboard": "داشبورد", "/users": "کاربران", "/orders": "سفارش‌ها", "/subs": "نودهای ساب", "/subprofiles": "ساب‌های کاربران", "/servers": "سرورها", "/packages": "پکیج‌ها", "/proxy": "پروکسی تلگرام", "/discounts": "تخفیف‌ها", "/campaigns": "کمپین‌ها", "/referrals": "رفرال", "/settings": "تنظیمات", "/update": "به‌روزرسانی" };
+const TITLES = { "/dashboard": "داشبورد", "/users": "کاربران", "/reps": "نمایندگان", "/orders": "سفارش‌ها", "/subs": "نودهای ساب", "/subprofiles": "ساب‌های کاربران", "/servers": "سرورها", "/packages": "پکیج‌ها", "/proxy": "پروکسی تلگرام", "/discounts": "تخفیف‌ها", "/campaigns": "کمپین‌ها", "/referrals": "رفرال", "/settings": "تنظیمات", "/update": "به‌روزرسانی" };
 
 export default function Shell({ path, go, badges = {}, children, onLogout }) {
   const [open, setOpen] = useState(false);
