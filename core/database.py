@@ -1213,6 +1213,99 @@ async def get_new_users_timeseries(days: int = 30) -> List[Dict]:
     return out
 
 
+async def get_expiring_profiles(within_days: int = 3, limit: int = 100) -> List[Dict]:
+    """Active subscriptions expiring within the next `within_days` days."""
+    now_ms = int(time.time() * 1000)
+    until_ms = now_ms + int(within_days) * 86400000
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            """SELECT sp.id, sp.name, sp.expire_timestamp, sp.traffic_gb, sp.used_bytes,
+                      u.telegram_id, u.username, u.full_name
+               FROM subscription_profiles sp JOIN users u ON u.id=sp.user_id
+               WHERE sp.is_active=1 AND sp.expire_timestamp>? AND sp.expire_timestamp<=?
+               ORDER BY sp.expire_timestamp ASC LIMIT ?""",
+            (now_ms, until_ms, int(limit)),
+        ) as c:
+            return [dict(r) for r in await c.fetchall()]
+
+
+async def count_expiring_profiles(within_days: int = 3) -> int:
+    now_ms = int(time.time() * 1000)
+    until_ms = now_ms + int(within_days) * 86400000
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT COUNT(*) FROM subscription_profiles WHERE is_active=1 "
+            "AND expire_timestamp>? AND expire_timestamp<=?",
+            (now_ms, until_ms),
+        ) as c:
+            return (await c.fetchone())[0]
+
+
+async def get_online_users_by_emails(emails: List[str]) -> List[Dict]:
+    """Map a set of currently-online client emails back to users (deduped).
+
+    Matches both subscription node clients (subscription_nodes) and legacy single
+    configs (configs). Returns one row per user with how many of their connections
+    are online right now."""
+    emails = [e for e in (emails or []) if e]
+    if not emails:
+        return []
+    ph = ",".join("?" for _ in emails)
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            f"""SELECT u.id, u.telegram_id, u.username, u.full_name,
+                       COUNT(DISTINCT src.email) AS online_conns
+                FROM (
+                    SELECT n.email AS email, sp.user_id AS user_id
+                    FROM subscription_nodes n
+                    JOIN subscription_profiles sp ON sp.id=n.profile_id
+                    WHERE n.email IN ({ph})
+                    UNION ALL
+                    SELECT c.email AS email, c.user_id AS user_id
+                    FROM configs c WHERE c.email IN ({ph})
+                ) src
+                JOIN users u ON u.id=src.user_id
+                GROUP BY u.id ORDER BY online_conns DESC, u.id DESC""",
+            (*emails, *emails),
+        ) as c:
+            return [dict(r) for r in await c.fetchall()]
+
+
+async def get_top_buyers(limit: int = 30) -> List[Dict]:
+    """Users ranked by total approved spend."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            """SELECT u.id, u.telegram_id, u.username, u.full_name, u.balance_toman,
+                      COUNT(o.id) AS orders,
+                      COALESCE(SUM(COALESCE(NULLIF(o.custom_price,0), p.price)),0) AS spent
+               FROM orders o JOIN users u ON u.id=o.user_id
+               LEFT JOIN packages p ON p.id=o.package_id
+               WHERE o.status='approved'
+               GROUP BY o.user_id ORDER BY spent DESC LIMIT ?""",
+            (int(limit),),
+        ) as c:
+            return [dict(r) for r in await c.fetchall()]
+
+
+async def get_top_active_service_users(limit: int = 30) -> List[Dict]:
+    """Users ranked by number of currently-active subscriptions."""
+    now_ms = int(time.time() * 1000)
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            """SELECT u.id, u.telegram_id, u.username, u.full_name,
+                      COUNT(sp.id) AS active_services
+               FROM subscription_profiles sp JOIN users u ON u.id=sp.user_id
+               WHERE sp.is_active=1 AND (sp.expire_timestamp=0 OR sp.expire_timestamp>?)
+               GROUP BY sp.user_id ORDER BY active_services DESC, u.id DESC LIMIT ?""",
+            (now_ms, int(limit)),
+        ) as c:
+            return [dict(r) for r in await c.fetchall()]
+
+
 async def get_lapsed_users_for_winback(expired_before_ms: int, limit: int = 200) -> List[Dict]:
     """Users whose newest service ended before `expired_before_ms`, have nothing
     active now, and haven't been win-backed yet."""

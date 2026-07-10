@@ -212,6 +212,13 @@ class XUIClient:
         r = await self._req("POST", f"/panel/api/inbounds/update/{int(iid)}", json=body)
         return bool(r and r.get("success"))
 
+    async def get_onlines(self) -> List[str]:
+        """List of client emails currently online on this panel (3x-ui onlines)."""
+        r = await self._req("POST", "/panel/api/inbounds/onlines")
+        if r and r.get("success"):
+            return [str(e) for e in (r.get("obj") or []) if e]
+        return []
+
     async def get_client_traffic(self, email: str) -> Optional[Dict]:
         enc = quote(email, safe="")
         # Standard MHSanaei 3x-ui endpoint first; fall back to the fork-specific

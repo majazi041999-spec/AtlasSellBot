@@ -1024,7 +1024,8 @@ async def api_analytics(request: Request):
     """User/sales analytics + a lightweight on-device revenue forecast."""
     if not _api_guard(request):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
-    from core.database import get_new_users_timeseries, count_users, count_active_subscription_profiles
+    from core.database import (get_new_users_timeseries, count_users,
+                               count_active_subscription_profiles, count_expiring_profiles)
     rev = await get_revenue_timeseries(30)
     users_ts = await get_new_users_timeseries(30)
     rev_vals = [float(r["revenue"]) for r in rev]
@@ -1048,6 +1049,10 @@ async def api_analytics(request: Request):
         active_subs = await count_active_subscription_profiles()
     except Exception:
         active_subs = 0
+    try:
+        near_expiry = await count_expiring_profiles(3)
+    except Exception:
+        near_expiry = 0
     # Momentum: compare last 7 days vs the 7 before.
     last7 = sum(rev_vals[-7:])
     prev7 = sum(rev_vals[-14:-7]) if len(rev_vals) >= 14 else 0
@@ -1070,8 +1075,74 @@ async def api_analytics(request: Request):
             "momentum_pct": momentum,
             "forecast_next7": forecast_next7,
             "forecast_next30": max(0, forecast_next30),
+            "near_expiry": near_expiry,
         },
     })
+
+
+@app.get(f"/{S}/api/analytics/segment/{{kind}}")
+async def api_analytics_segment(request: Request, kind: str):
+    """Lazy-loaded user lists behind the dashboard tiles."""
+    if not _api_guard(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    from core.database import (get_expiring_profiles, get_top_buyers,
+                               get_top_active_service_users, get_online_users_by_emails)
+
+    if kind == "expiring":
+        rows = await get_expiring_profiles(3, 100)
+        now_ms = int(time.time() * 1000)
+        items = [{
+            "telegram_id": r.get("telegram_id"), "full_name": r.get("full_name"),
+            "username": r.get("username"), "title": r.get("name") or "سرویس",
+            "value": f"{max(0, int((int(r.get('expire_timestamp') or 0) - now_ms) / 3600000))} ساعت",
+        } for r in rows]
+        return JSONResponse({"items": items, "count": len(items)})
+
+    if kind == "top_buyers":
+        rows = await get_top_buyers(30)
+        items = [{
+            "telegram_id": r.get("telegram_id"), "full_name": r.get("full_name"),
+            "username": r.get("username"), "title": f"{int(r.get('orders') or 0)} خرید",
+            "value": f"{int(r.get('spent') or 0):,} ت",
+        } for r in rows]
+        return JSONResponse({"items": items, "count": len(items)})
+
+    if kind == "top_services":
+        rows = await get_top_active_service_users(30)
+        items = [{
+            "telegram_id": r.get("telegram_id"), "full_name": r.get("full_name"),
+            "username": r.get("username"), "title": "سرویس فعال",
+            "value": f"{int(r.get('active_services') or 0)}",
+        } for r in rows]
+        return JSONResponse({"items": items, "count": len(items)})
+
+    if kind == "online":
+        servers = await get_servers(active_only=True)
+        sem = _asyncio.Semaphore(8)
+        all_emails: list[str] = []
+
+        async def _probe(sv):
+            async with sem:
+                cli = XUIClient(sv["url"], sv["username"], sv["password"], sv.get("sub_path") or "", sv.get("api_token", ""))
+                try:
+                    return await _asyncio.wait_for(cli.get_onlines(), timeout=8)
+                except Exception:
+                    return []
+                finally:
+                    await cli.close()
+
+        results = await _asyncio.gather(*(_probe(sv) for sv in servers))
+        for r in results:
+            all_emails.extend(r or [])
+        users = await get_online_users_by_emails(all_emails)
+        items = [{
+            "telegram_id": u.get("telegram_id"), "full_name": u.get("full_name"),
+            "username": u.get("username"), "title": "اتصال آنلاین",
+            "value": f"{int(u.get('online_conns') or 0)}",
+        } for u in users]
+        return JSONResponse({"items": items, "count": len(items), "connections": len(all_emails)})
+
+    return JSONResponse({"error": "unknown_kind"}, status_code=400)
 
 
 def _slim_order(o: dict) -> dict:
