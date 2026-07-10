@@ -30,10 +30,13 @@ say(){ echo -e "$1"; }
 die(){ echo -e "❌ $1" >&2; exit 1; }
 
 arch_slug(){
+  # Must match 9seconds/mtg release asset names (…-linux-<slug>.tar.gz).
   case "$(uname -m)" in
     x86_64|amd64) echo "amd64" ;;
     aarch64|arm64) echo "arm64" ;;
-    armv7l|armv7) echo "arm" ;;
+    armv7l|armv7) echo "armv7" ;;
+    armv6l|armv6) echo "armv6" ;;
+    i386|i686) echo "386" ;;
     *) echo "amd64" ;;
   esac
 }
