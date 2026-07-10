@@ -8,6 +8,7 @@ const NAV = [
   { k: "/subs", icon: "🧬", label: "نودهای ساب" },
   { k: "/servers", icon: "🖥", label: "سرورها" },
   { k: "/packages", icon: "📦", label: "پکیج‌ها" },
+  { k: "/proxy", icon: "🛰", label: "پروکسی تلگرام" },
   { k: "/settings", icon: "⚙️", label: "تنظیمات" },
 ];
 
@@ -22,7 +23,7 @@ const LEGACY = [
   { path: "/miniapp", icon: "📱", label: "مینی‌اپ" },
 ];
 
-const TITLES = { "/dashboard": "داشبورد", "/users": "کاربران", "/orders": "سفارش‌ها", "/subs": "نودهای ساب", "/servers": "سرورها", "/packages": "پکیج‌ها", "/settings": "تنظیمات" };
+const TITLES = { "/dashboard": "داشبورد", "/users": "کاربران", "/orders": "سفارش‌ها", "/subs": "نودهای ساب", "/servers": "سرورها", "/packages": "پکیج‌ها", "/proxy": "پروکسی تلگرام", "/settings": "تنظیمات" };
 
 export default function Shell({ path, go, badges = {}, children, onLogout }) {
   const [open, setOpen] = useState(false);

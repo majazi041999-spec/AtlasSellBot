@@ -9,6 +9,7 @@ import os
 import re
 import glob
 import shlex
+import secrets
 import time
 import subprocess
 import uuid
@@ -1143,6 +1144,162 @@ async def api_analytics_segment(request: Request, kind: str):
         return JSONResponse({"items": items, "count": len(items), "connections": len(all_emails)})
 
     return JSONResponse({"error": "unknown_kind"}, status_code=400)
+
+
+# ═══════════════════════════════ MTPROTO PROXY ══════════════════════════════
+_MTPROXY_SCRIPT = os.path.join(_repo_dir, "setup_mtproxy.sh")
+
+
+def _mtproxy_secret(domain: str) -> str:
+    """Build a fake-TLS (`ee…`) MTProto secret for the given SNI domain.
+
+    Format: byte 0xEE + 16 random bytes + the domain bytes, hex-encoded. This is
+    generated here (not via mtg) so setup never depends on a fragile CLI step."""
+    domain = (domain or "www.cloudflare.com").strip().lower() or "www.cloudflare.com"
+    return "ee" + secrets.token_hex(16) + domain.encode("utf-8").hex()
+
+
+def _mtproxy_links(host: str, port, secret: str) -> dict:
+    host = (host or "").strip()
+    if not host or not secret:
+        return {"tg": "", "https": ""}
+    q = f"server={host}&port={port}&secret={secret}"
+    return {"tg": f"tg://proxy?{q}", "https": f"https://t.me/proxy?{q}"}
+
+
+async def _mtproxy_run(subcmd: str, cfg: dict, timeout: int = 25) -> str:
+    """Run a read-only proxy subcommand (status/test) synchronously and capture it."""
+    env = dict(os.environ,
+               MTPROXY_PORT=str(cfg.get("port") or 443),
+               MTPROXY_SECRET=str(cfg.get("secret") or ""),
+               MTPROXY_TAG=str(cfg.get("tag") or ""))
+    try:
+        proc = await _asyncio.create_subprocess_exec(
+            "bash", _MTPROXY_SCRIPT, subcmd,
+            stdout=_asyncio.subprocess.PIPE, stderr=_asyncio.subprocess.STDOUT, env=env,
+        )
+        out, _ = await _asyncio.wait_for(proc.communicate(), timeout=timeout)
+        return (out or b"").decode("utf-8", "replace")
+    except Exception as e:
+        return f"error: {e}"
+
+
+async def _mtproxy_cfg() -> dict:
+    return {
+        "port": int(await get_setting("proxy_port", "443") or 443),
+        "secret": await get_setting("proxy_secret", ""),
+        "domain": await get_setting("proxy_domain", "www.cloudflare.com"),
+        "tag": await get_setting("proxy_tag", ""),
+        "host": await get_setting("proxy_host", ""),
+    }
+
+
+def _parse_proxy_status(text: str) -> dict:
+    """Parse the `STATUS active=.. listening=.. port=.. connections=..` line."""
+    out = {"active": False, "listening": False, "connections": 0, "port": 0}
+    for line in (text or "").splitlines():
+        if line.startswith("STATUS "):
+            for kv in line[7:].split():
+                if "=" not in kv:
+                    continue
+                k, v = kv.split("=", 1)
+                if k == "active":
+                    out["active"] = (v == "active")
+                elif k == "listening":
+                    out["listening"] = (v == "yes")
+                elif k == "connections":
+                    out["connections"] = int(v) if v.isdigit() else 0
+                elif k == "port":
+                    out["port"] = int(v) if v.isdigit() else 0
+    return out
+
+
+@app.get(f"/{S}/api/proxy")
+async def api_proxy_get(request: Request):
+    if not _api_guard(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    cfg = await _mtproxy_cfg()
+    status = _parse_proxy_status(await _mtproxy_run("status", cfg, timeout=12))
+    return JSONResponse({
+        "config": {"port": cfg["port"], "domain": cfg["domain"], "tag": cfg["tag"],
+                   "host": cfg["host"], "has_secret": bool(cfg["secret"])},
+        "links": _mtproxy_links(cfg["host"], cfg["port"], cfg["secret"]),
+        "status": status,
+        "installing": _read_job_log("proxy").get("running", False),
+    })
+
+
+@app.post(f"/{S}/api/proxy/save")
+async def api_proxy_save(request: Request):
+    if not _api_guard(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    d = await request.json()
+    port = max(1, min(65535, int(d.get("port") or 443)))
+    domain = (str(d.get("domain") or "www.cloudflare.com").strip().lower()) or "www.cloudflare.com"
+    tag = "".join(ch for ch in str(d.get("tag") or "").strip() if ch in "0123456789abcdefABCDEF")
+    host = str(d.get("host") or "").strip()
+    await set_setting("proxy_port", str(port))
+    await set_setting("proxy_domain", domain)
+    await set_setting("proxy_tag", tag)
+    await set_setting("proxy_host", host)
+    # Generate/keep the secret. Regenerate when the domain changed or on request,
+    # otherwise keep it stable so existing links don't break.
+    secret = await get_setting("proxy_secret", "")
+    prev_domain_hex = secret[34:] if len(secret) > 34 else ""
+    want_new = bool(d.get("regenerate")) or not secret or prev_domain_hex != domain.encode("utf-8").hex()
+    if want_new:
+        secret = _mtproxy_secret(domain)
+        await set_setting("proxy_secret", secret)
+    return JSONResponse({"success": True, "links": _mtproxy_links(host, port, secret), "has_secret": bool(secret)})
+
+
+@app.post(f"/{S}/api/proxy/install")
+async def api_proxy_install(request: Request):
+    if not _api_guard(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    if _read_job_log("proxy").get("running"):
+        return JSONResponse({"error": "یک عملیات پروکسی همین الان در حال اجراست."}, status_code=409)
+    cfg = await _mtproxy_cfg()
+    if not cfg["secret"]:
+        cfg["secret"] = _mtproxy_secret(cfg["domain"])
+        await set_setting("proxy_secret", cfg["secret"])
+    body = await request.json() if request.headers.get("content-type", "").startswith("application/json") else {}
+    subcmd = "apply" if body.get("apply") else "install"
+    script = (
+        f"export MTPROXY_PORT={shlex.quote(str(cfg['port']))} "
+        f"MTPROXY_SECRET={shlex.quote(cfg['secret'])} "
+        f"MTPROXY_TAG={shlex.quote(cfg['tag'] or '')}; "
+        f"bash {shlex.quote(_MTPROXY_SCRIPT)} {subcmd}"
+    )
+    _asyncio.create_task(_run_logged_job("proxy", script))
+    return JSONResponse({"success": True})
+
+
+@app.get(f"/{S}/api/proxy/install/log")
+async def api_proxy_install_log(request: Request):
+    if not _api_guard(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    return JSONResponse(_read_job_log("proxy"))
+
+
+@app.get(f"/{S}/api/proxy/test")
+async def api_proxy_test(request: Request):
+    if not _api_guard(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    cfg = await _mtproxy_cfg()
+    out = await _mtproxy_run("test", cfg, timeout=20)
+    ok = "✅" in out and "❌" not in out
+    return JSONResponse({"success": ok, "output": out.strip()[-1500:]})
+
+
+@app.post(f"/{S}/api/proxy/uninstall")
+async def api_proxy_uninstall(request: Request):
+    if not _api_guard(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    if _read_job_log("proxy").get("running"):
+        return JSONResponse({"error": "یک عملیات پروکسی در حال اجراست."}, status_code=409)
+    _asyncio.create_task(_run_logged_job("proxy", f"bash {shlex.quote(_MTPROXY_SCRIPT)} uninstall"))
+    return JSONResponse({"success": True})
 
 
 def _slim_order(o: dict) -> dict:
@@ -4211,6 +4368,7 @@ _JOB_LOG_PATHS = {
     "update": os.path.join(_repo_dir, "atlas-update.log"),
     "sync": os.path.join(_repo_dir, "atlas-sync.log"),
     "nodeops": os.path.join(_repo_dir, "atlas-nodeops.log"),
+    "proxy": os.path.join(_repo_dir, "atlas-proxy.log"),
 }
 _JOB_DONE_OK = "__ATLAS_JOB_OK__"
 _JOB_DONE_FAIL = "__ATLAS_JOB_FAIL__"
