@@ -213,10 +213,17 @@ class XUIClient:
         return bool(r and r.get("success"))
 
     async def get_onlines(self) -> List[str]:
-        """List of client emails currently online on this panel (3x-ui onlines)."""
-        r = await self._req("POST", "/panel/api/inbounds/onlines")
-        if r and r.get("success"):
-            return [str(e) for e in (r.get("obj") or []) if e]
+        """List of client emails currently online on this panel.
+
+        The onlines list lives on the WEB route `/panel/inbound/onlines` (session
+        auth) on 3x-ui; the `/panel/api/inbounds/onlines` variant only exists on
+        some builds. Try both so it works across forks."""
+        for path in ("/panel/inbound/onlines", "/panel/api/inbounds/onlines"):
+            r = await self._req("POST", path)
+            if r and r.get("success"):
+                obj = r.get("obj")
+                if isinstance(obj, list):
+                    return [str(e) for e in obj if e]
         return []
 
     async def get_client_traffic(self, email: str) -> Optional[Dict]:

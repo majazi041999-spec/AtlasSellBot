@@ -94,12 +94,21 @@ function Chart({ points, kind = "line", forecastFrom = -1, valueFmt = compact, h
 function SegmentModal({ kind, title, onClose }) {
   const [d, setD] = useState(null);
   useEffect(() => { api.get(`/api/analytics/segment/${kind}`).then(setD).catch(() => setD({ items: [] })); }, [kind]);
+  const empty = d && !(d.items || []).length;
   return (
     <Modal title={title} onClose={onClose}>
-      {!d ? <Loading /> : !(d.items || []).length ? <Empty emoji="🫧">موردی نیست</Empty> : (
+      {!d ? <Loading /> : (
         <div className="grid" style={{ gap: 8 }}>
-          {kind === "online" && <div className="muted tiny">مجموع اتصال‌های آنلاین: {fmt(d.connections)} · کاربران: {fmt(d.count)}</div>}
-          {d.items.map((it, i) => (
+          {kind === "online" && (
+            <div className="muted tiny">مجموع اتصال‌های آنلاین: {fmt(d.connections || 0)} · کاربران map‌شده: {fmt(d.count || 0)}</div>
+          )}
+          {empty && kind === "online" && (d.connections || 0) > 0 && (
+            <div style={{ background: "rgba(251,191,36,.08)", border: "1px solid rgba(251,191,36,.3)", borderRadius: 10, padding: 10, fontSize: ".82rem" }}>
+              {fmt(d.connections)} اتصال آنلاین هست ولی به کاربری نگاشت نشد (ایمیل کلاینت‌ها با دیتابیس مطابقت نداشت).
+            </div>
+          )}
+          {empty && !(kind === "online" && (d.connections || 0) > 0) && <Empty emoji="🫧">موردی نیست</Empty>}
+          {(d.items || []).map((it, i) => (
             <div key={i} className="between" style={{ background: "rgba(255,255,255,.03)", border: "1px solid var(--line)", borderRadius: 10, padding: "9px 12px", gap: 10, flexWrap: "wrap" }}>
               <div style={{ minWidth: 0 }}>
                 <b>{it.full_name || "—"}</b>
