@@ -992,6 +992,88 @@ async def api_dashboard(request: Request):
     })
 
 
+def _linear_forecast(values: list[float], ahead: int) -> tuple[list[float], float]:
+    """Least-squares linear trend fit → forecast the next `ahead` points.
+
+    A small, dependency-free "smart estimate": fits revenue-vs-day to a line and
+    extrapolates. Returns (forecast_points, daily_slope). Non-negative clamped.
+    """
+    n = len(values)
+    if n < 2:
+        base = float(values[0]) if values else 0.0
+        return [max(0.0, base)] * ahead, 0.0
+    xs = list(range(n))
+    mean_x = sum(xs) / n
+    mean_y = sum(values) / n
+    denom = sum((x - mean_x) ** 2 for x in xs) or 1.0
+    slope = sum((xs[i] - mean_x) * (values[i] - mean_y) for i in range(n)) / denom
+    intercept = mean_y - slope * mean_x
+    # Blend the pure trend with the recent 7-day average so a single spike doesn't
+    # dominate the projection (a light, robust smoothing).
+    recent = values[-7:] or values
+    recent_avg = sum(recent) / len(recent)
+    out = []
+    for k in range(1, ahead + 1):
+        trend = intercept + slope * (n - 1 + k)
+        out.append(max(0.0, 0.6 * trend + 0.4 * recent_avg))
+    return out, slope
+
+
+@app.get(f"/{S}/api/analytics")
+async def api_analytics(request: Request):
+    """User/sales analytics + a lightweight on-device revenue forecast."""
+    if not _api_guard(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    from core.database import get_new_users_timeseries, count_users, count_active_subscription_profiles
+    rev = await get_revenue_timeseries(30)
+    users_ts = await get_new_users_timeseries(30)
+    rev_vals = [float(r["revenue"]) for r in rev]
+    forecast, slope = _linear_forecast(rev_vals, 7)
+    today = datetime.now()
+    forecast_series = [
+        {"date": (today + timedelta(days=k + 1)).strftime("%Y-%m-%d"), "revenue": int(round(v))}
+        for k, v in enumerate(forecast)
+    ]
+    total_rev_30 = int(sum(rev_vals))
+    total_orders_30 = int(sum(r["orders"] for r in rev))
+    new_users_30 = int(sum(u["new_users"] for u in users_ts))
+    avg_daily = total_rev_30 / max(1, len(rev))
+    forecast_next7 = int(sum(f["revenue"] for f in forecast_series))
+    forecast_next30 = int(round(avg_daily * 30 + slope * 30 * 15))  # trend-adjusted month
+    try:
+        total_users = await count_users()
+    except Exception:
+        total_users = 0
+    try:
+        active_subs = await count_active_subscription_profiles()
+    except Exception:
+        active_subs = 0
+    # Momentum: compare last 7 days vs the 7 before.
+    last7 = sum(rev_vals[-7:])
+    prev7 = sum(rev_vals[-14:-7]) if len(rev_vals) >= 14 else 0
+    momentum = 0.0
+    if prev7 > 0:
+        momentum = round((last7 - prev7) / prev7 * 100, 1)
+    elif last7 > 0:
+        momentum = 100.0
+    return JSONResponse({
+        "revenue": rev,
+        "users": users_ts,
+        "forecast": forecast_series,
+        "totals": {
+            "total_users": total_users,
+            "active_subs": active_subs,
+            "revenue_30d": total_rev_30,
+            "orders_30d": total_orders_30,
+            "new_users_30d": new_users_30,
+            "avg_daily_revenue": int(round(avg_daily)),
+            "momentum_pct": momentum,
+            "forecast_next7": forecast_next7,
+            "forecast_next30": max(0, forecast_next30),
+        },
+    })
+
+
 def _slim_order(o: dict) -> dict:
     return {
         "id": o["id"], "status": o.get("status"), "pkg_name": o.get("pkg_name"),

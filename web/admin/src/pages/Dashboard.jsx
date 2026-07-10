@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { api, fmt, BASE } from "../api.js";
 import { Stat, Card, Loading, Empty, toast } from "../components/ui.jsx";
+import Analytics from "./Analytics.jsx";
 
 function timeAgo(s) {
   if (!s) return "";
@@ -56,6 +57,8 @@ export default function Dashboard({ onBadges, go }) {
         <Stat icon="📦" value={fmt(s.total_orders)} label="کل فروش موفق" grad="linear-gradient(135deg,#2dd4bf,#14b8a6)" />
         <Stat icon="💳" value={fmt(rep.wallet_topup_amount)} label="شارژ کیف پول امروز" grad="linear-gradient(135deg,#c084fc,#a855f7)" />
       </div>
+
+      <Analytics />
 
       <Card title="سفارش‌های در انتظار تایید" sub={rep.jalali_display}
             right={<button className="btn sm" onClick={() => go("/orders")}>همه سفارش‌ها ›</button>}>

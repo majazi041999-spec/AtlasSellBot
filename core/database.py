@@ -924,6 +924,17 @@ async def count_users() -> int:
         async with db.execute("SELECT COUNT(*) FROM users") as c:
             return (await c.fetchone())[0]
 
+
+async def count_active_subscription_profiles() -> int:
+    now_ms = int(time.time() * 1000)
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT COUNT(*) FROM subscription_profiles WHERE is_active=1 "
+            "AND (expire_timestamp=0 OR expire_timestamp>?)",
+            (now_ms,),
+        ) as c:
+            return (await c.fetchone())[0]
+
 async def get_referral_stats(user_id: int) -> Dict:
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute(
@@ -1179,6 +1190,26 @@ async def get_revenue_timeseries(days: int = 14) -> List[Dict]:
         d = (today - timedelta(days=i)).strftime("%Y-%m-%d")
         v = rows.get(d, {"rev": 0, "cnt": 0})
         out.append({"date": d, "revenue": v["rev"], "orders": v["cnt"]})
+    return out
+
+
+async def get_new_users_timeseries(days: int = 30) -> List[Dict]:
+    """Daily new-user counts for the last N days (gaps filled with zero)."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            """SELECT date(created_at) AS d, COUNT(*) AS cnt
+               FROM users
+               WHERE date(created_at) >= date('now', ?, 'localtime')
+               GROUP BY date(created_at)""",
+            (f"-{max(1, int(days)) - 1} days",),
+        ) as c:
+            rows = {r["d"]: int(r["cnt"]) for r in await c.fetchall()}
+    out = []
+    today = datetime.now()
+    for i in range(max(1, int(days)) - 1, -1, -1):
+        d = (today - timedelta(days=i)).strftime("%Y-%m-%d")
+        out.append({"date": d, "new_users": rows.get(d, 0)})
     return out
 
 
