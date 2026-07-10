@@ -16,6 +16,7 @@ import Discounts from "./pages/Discounts.jsx";
 import SubProfiles from "./pages/SubProfiles.jsx";
 import Campaigns from "./pages/Campaigns.jsx";
 import Referrals from "./pages/Referrals.jsx";
+import Update from "./pages/Update.jsx";
 
 export default function App() {
   const [authed, setAuthed] = useState(null); // null=checking, false=login, true=in
@@ -46,6 +47,7 @@ export default function App() {
   else if (base === "/subprofiles") page = <SubProfiles />;
   else if (base === "/campaigns") page = <Campaigns />;
   else if (base === "/referrals") page = <Referrals />;
+  else if (base === "/update") page = <Update />;
   else page = <Dashboard onBadges={onBadges} go={go} />;
 
   return (

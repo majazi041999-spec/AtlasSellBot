@@ -14,6 +14,7 @@ const NAV = [
   { k: "/campaigns", icon: "📣", label: "کمپین‌ها" },
   { k: "/referrals", icon: "🎁", label: "رفرال" },
   { k: "/settings", icon: "⚙️", label: "تنظیمات" },
+  { k: "/update", icon: "🔄", label: "به‌روزرسانی" },
 ];
 
 // Pages not migrated yet → deep-link into the existing (legacy) panel so the
@@ -23,7 +24,7 @@ const LEGACY = [
   { path: "/miniapp", icon: "📱", label: "مینی‌اپ" },
 ];
 
-const TITLES = { "/dashboard": "داشبورد", "/users": "کاربران", "/orders": "سفارش‌ها", "/subs": "نودهای ساب", "/subprofiles": "ساب‌های کاربران", "/servers": "سرورها", "/packages": "پکیج‌ها", "/proxy": "پروکسی تلگرام", "/discounts": "تخفیف‌ها", "/campaigns": "کمپین‌ها", "/referrals": "رفرال", "/settings": "تنظیمات" };
+const TITLES = { "/dashboard": "داشبورد", "/users": "کاربران", "/orders": "سفارش‌ها", "/subs": "نودهای ساب", "/subprofiles": "ساب‌های کاربران", "/servers": "سرورها", "/packages": "پکیج‌ها", "/proxy": "پروکسی تلگرام", "/discounts": "تخفیف‌ها", "/campaigns": "کمپین‌ها", "/referrals": "رفرال", "/settings": "تنظیمات", "/update": "به‌روزرسانی" };
 
 export default function Shell({ path, go, badges = {}, children, onLogout }) {
   const [open, setOpen] = useState(false);

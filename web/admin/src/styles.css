@@ -135,7 +135,7 @@ tbody td { padding: 13px 14px; border-bottom: 1px solid rgba(255, 255, 255, 0.05
 tbody tr:last-child td { border-bottom: none; }
 tbody tr { transition: background .12s; }
 tbody tr:hover { background: rgba(255, 255, 255, 0.03); }
-.mono { font-family: ui-monospace, monospace; font-size: .8rem; color: var(--txt2); }
+.mono { font-family: ui-monospace, monospace; font-size: .8rem; color: var(--txt2); overflow-wrap: anywhere; word-break: break-word; }
 
 /* ───────────── badges & chips ───────────── */
 .badge { display: inline-flex; align-items: center; gap: 4px; font-size: .7rem; font-weight: 700; padding: 3px 10px; border-radius: 20px; border: 1px solid transparent; white-space: nowrap; }
@@ -211,8 +211,9 @@ tbody tr:hover { background: rgba(255, 255, 255, 0.03); }
 
 /* modal */
 .modal-scrim { position: fixed; inset: 0; background: rgba(4, 6, 12, 0.66); backdrop-filter: blur(4px); display: grid; place-items: center; z-index: 200; padding: 18px; animation: fade .18s ease; }
-.modal { width: 100%; max-width: 460px; background: var(--panel-solid); border: 1px solid var(--bd2); border-radius: var(--radius); padding: 20px; box-shadow: var(--shadow); }
+.modal { width: 100%; max-width: 460px; background: var(--panel-solid); border: 1px solid var(--bd2); border-radius: var(--radius); padding: 20px; box-shadow: var(--shadow); max-height: calc(100dvh - 32px); overflow-y: auto; }
 .modal h3 { margin: 0 0 14px; }
+.modal input, .modal textarea, .modal select { max-width: 100%; }
 
 /* progress bar */
 .bar { height: 7px; border-radius: 20px; background: rgba(255, 255, 255, 0.08); overflow: hidden; }
@@ -224,6 +225,12 @@ tbody tr:hover { background: rgba(255, 255, 255, 0.03); }
 .login-logo { width: 64px; height: 64px; border-radius: 19px; display: grid; place-items: center; font-size: 1.9rem; color: #fff; margin: 0 auto 16px; background: linear-gradient(135deg, var(--p), var(--acc)); box-shadow: var(--glow); }
 
 /* ───────────── responsive ───────────── */
+/* Never let the page scroll sideways; wide content (tables) scrolls inside its
+   own container instead. .content is not a sticky ancestor of the sidebar/topbar,
+   so clipping it here is safe. */
+.content { overflow-x: clip; } /* clip (not hidden) so sticky save-bars still work */
+.screen, .card { min-width: 0; }
+
 @media (max-width: 900px) {
   .shell { grid-template-columns: 1fr; }
   .sidebar { position: fixed; inset-block: 0; inset-inline-start: 0; width: 260px; transform: translateX(100%); transition: transform .25s; }
@@ -232,4 +239,36 @@ tbody tr:hover { background: rgba(255, 255, 255, 0.03); }
   .hamburger { display: grid; place-items: center; }
   .scrim.show { display: block; position: fixed; inset: 0; background: rgba(0, 0, 0, 0.5); z-index: 25; }
   .content { padding: 16px; }
+}
+
+@media (max-width: 640px) {
+  .content { padding: 12px; }
+  .card { padding: 14px; }
+  .topbar { padding: 11px 13px; gap: 10px; }
+  .topbar h1 { font-size: 1.02rem; }
+  .topbar .crumb { display: none; }
+
+  /* The #1 mobile problem: inline multi-column grids stay wide and squish.
+     Collapse EVERY inline grid-template-columns to a single column here.
+     (React renders gridTemplateColumns → grid-template-columns in the style attr,
+     and !important beats the inline value.) */
+  .content [style*="grid-template-columns"],
+  .modal  [style*="grid-template-columns"] { grid-template-columns: 1fr !important; }
+  .grid { gap: 10px; }
+
+  .between { flex-wrap: wrap; }
+  .stat { padding: 15px; }
+  .stat-val { font-size: 1.5rem; }
+
+  /* Tables: keep them scrollable inside their wrapper, tighten padding. */
+  table { font-size: .8rem; }
+  thead th, tbody td { padding: 10px 9px; }
+
+  .modal { padding: 16px; }
+  .btn { padding: 9px 12px; }
+  .btn.sm { padding: 7px 10px; }
+
+  /* Long links/inputs must never push the layout wider than the screen. */
+  .inp { font-size: 16px; } /* also stops iOS zoom-on-focus */
+  input, textarea, select, pre { max-width: 100%; }
 }
