@@ -4300,6 +4300,7 @@ async def _settings_snapshot() -> dict:
     settings["card_bank"] = await get_setting("card_bank", CARD_BANK)
 
     settings["referral_bonus_gb"] = REFERRAL_BONUS_GB
+    settings["rep_min_topup"] = await get_setting("rep_min_topup", "500000")
     return settings
 
 
@@ -4378,9 +4379,14 @@ async def settings_save(
     panel_domain: str = Form(""),
     cert_email: str = Form(""),
     atlas_tls_https_port: int = Form(443),
+    rep_min_topup: str = Form("500000"),
 ):
     if not _auth(request):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
+    try:
+        await set_setting("rep_min_topup", str(max(0, int(str(rep_min_topup or "0").replace(",", "")))))
+    except (TypeError, ValueError):
+        await set_setting("rep_min_topup", "500000")
 
     await set_setting("text.welcome_message", welcome_message)
     await set_setting("support_username", support_username)

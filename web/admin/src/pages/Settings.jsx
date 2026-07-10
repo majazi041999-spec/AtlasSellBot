@@ -94,6 +94,13 @@ export default function Settings() {
         </div>
       </Card>
 
+      <Card title="🏢 نمایندگان">
+        <div className="field"><label>حداقل شارژ اولیه نماینده (تومان)</label>
+          <input className="inp" value={s.rep_min_topup ?? ""} onChange={(e) => set("rep_min_topup", e.target.value.replace(/[^\d]/g, ""))} dir="ltr" />
+          <p className="muted tiny" style={{ margin: "4px 0 0" }}>نماینده تا این مبلغ شارژ نکند، «ساخت سرویس» برایش فعال نمی‌شود (ضد سوءاستفاده). در قوانین نمایندگی هم نشان داده می‌شود.</p>
+        </div>
+      </Card>
+
       <Card title="🎁 اکانت تست">
         <div className="grid" style={{ gap: 8 }}>
           <Toggle s={s} set={set} k="test_account_enabled" label="فعال بودن اکانت تست" />

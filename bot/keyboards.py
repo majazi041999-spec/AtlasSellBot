@@ -136,7 +136,15 @@ def broadcast_target_kb() -> InlineKeyboardMarkup:
 
 def wholesale_request_kb() -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
-    _button(b, text="📝 ارسال درخواست نمایندگی", callback_data="wh_req", style="success")
+    _button(b, text="📝 درخواست نمایندگی", callback_data="wh_terms", style="success")
+    b.adjust(1)
+    return b.as_markup()
+
+
+def wholesale_terms_kb() -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    _button(b, text="✅ قوانین را می‌پذیرم و درخواست می‌دهم", callback_data="wh_req", style="success")
+    _button(b, text="❌ انصراف", callback_data="wh_cancel", style="danger")
     b.adjust(1)
     return b.as_markup()
 

@@ -93,6 +93,7 @@ from bot.keyboards import (
     custom_name_kb,
     discount_skip_kb,
     wholesale_request_kb,
+    wholesale_terms_kb,
     wholesale_request_admin_kb,
     representative_panel_kb,
     rep_brand_kb,
@@ -1718,6 +1719,23 @@ async def rep_buy(cb: CallbackQuery, state: FSMContext):
     if not user.get("is_wholesale", 0):
         await cb.answer("فقط برای نمایندگان.", show_alert=True)
         return
+    # Anti-abuse: a representative must have topped up at least the configured
+    # minimum before they can create services.
+    min_topup = await _rep_min_topup()
+    if min_topup > 0:
+        from core.database import get_user_total_topups
+        total_in = await get_user_total_topups(user["id"])
+        if total_in < min_topup:
+            await cb.message.edit_text(
+                "🔒 *برای شروع فروش، ابتدا کیف پول را شارژ کن*\n\n"
+                f"طبق قوانین نمایندگی، باید حداقل *{min_topup:,} تومان* شارژ کرده باشی.\n"
+                f"تا این لحظه: *{total_in:,} تومان* شارژ کرده‌ای.\n"
+                f"باقی‌مانده تا فعال‌شدن: *{max(0, min_topup - total_in):,} تومان*\n\n"
+                "از دکمه «💳 کیف پول» در منوی اصلی شارژ کن.",
+                reply_markup=rep_back_kb(), parse_mode="Markdown",
+            )
+            await cb.answer()
+            return
     await state.set_state(WholesaleBuy.count)
     await cb.message.answer(
         "🛒 *ساخت سرویس برای مشتری*\n\nتعداد سرویس موردنیاز را وارد کن (مثال: 20)",
@@ -1817,6 +1835,45 @@ async def rep_help(cb: CallbackQuery):
     await cb.answer()
 
 
+
+
+async def _rep_min_topup() -> int:
+    try:
+        return max(0, int(await get_setting("rep_min_topup", "500000") or 0))
+    except (TypeError, ValueError):
+        return 500000
+
+
+@router.callback_query(F.data == "wh_cancel")
+async def wholesale_request_cancel(cb: CallbackQuery):
+    await cb.message.edit_text("درخواست نمایندگی لغو شد. هر زمان خواستی دوباره اقدام کن.")
+    await cb.answer()
+
+
+@router.callback_query(F.data == "wh_terms")
+async def wholesale_terms(cb: CallbackQuery):
+    user = await get_or_create_user(cb.from_user.id, cb.from_user.username, cb.from_user.full_name)
+    if user.get("is_wholesale", 0):
+        await cb.answer("شما قبلاً تایید شده‌اید ✅", show_alert=True)
+        return
+    if user.get("wholesale_request_pending", 0):
+        await cb.answer("درخواست شما قبلاً ثبت شده و در حال بررسی است.", show_alert=True)
+        return
+    min_topup = await _rep_min_topup()
+    text = (
+        "📜 *قوانین و شرایط نمایندگی*\n\n"
+        f"1️⃣ برای شروع، باید حداقل *{min_topup:,} تومان* کیف پولت را شارژ کنی "
+        "(برای جلوگیری از سوءاستفاده و اطمینان از جدی‌بودن). تا این حد شارژ نکنی، ساخت سرویس فعال نمی‌شود.\n"
+        "2️⃣ پشتیبانی و ارتباط با *مشتریان خودت* بر عهده‌ی خودت است؛ ما زیرساخت و پشتیبانی فنی نماینده را می‌دهیم.\n"
+        "3️⃣ مبالغ شارژ کیف پول *غیرقابل‌بازگشت* است و فقط برای خرید سرویس استفاده می‌شود.\n"
+        "4️⃣ استفاده از سرویس‌ها برای *فعالیت غیرقانونی، اسپم یا کلاهبرداری* اکیداً ممنوع است.\n"
+        "5️⃣ حساب نمایندگی *فقط برای خودت* است؛ فروش/واگذاری دسترسی پنل ممنوع است.\n"
+        "6️⃣ در صورت تخلف، نمایندگی *بدون بازگشت وجه* لغو و حساب مسدود می‌شود.\n"
+        "7️⃣ قیمت‌ها و شرایط ممکن است تغییر کند و از قبل اطلاع‌رسانی می‌شود.\n\n"
+        "با زدن دکمه‌ی زیر، یعنی همه‌ی موارد بالا را می‌پذیری."
+    )
+    await cb.message.edit_text(text, reply_markup=wholesale_terms_kb(), parse_mode="Markdown")
+    await cb.answer()
 
 
 @router.callback_query(F.data == "wh_req")

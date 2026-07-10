@@ -772,6 +772,18 @@ async def get_user_balance(user_id: int) -> int:
             return int((row[0] if row else 0) or 0)
 
 
+async def get_user_total_topups(user_id: int) -> int:
+    """Sum of all wallet credits (money the user has put in). Used to enforce a
+    representative's minimum initial top-up (anti-abuse)."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT COALESCE(SUM(amount),0) FROM wallet_transactions WHERE user_id=? AND amount>0",
+            (int(user_id),),
+        ) as c:
+            row = await c.fetchone()
+            return int((row[0] if row else 0) or 0)
+
+
 async def get_wallet_transactions(user_id: int, limit: int = 12) -> List[Dict]:
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
