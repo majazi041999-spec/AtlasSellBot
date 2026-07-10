@@ -13,6 +13,7 @@ import Packages from "./pages/Packages.jsx";
 import Settings from "./pages/Settings.jsx";
 import Proxy from "./pages/Proxy.jsx";
 import Discounts from "./pages/Discounts.jsx";
+import SubProfiles from "./pages/SubProfiles.jsx";
 
 export default function App() {
   const [authed, setAuthed] = useState(null); // null=checking, false=login, true=in
@@ -40,6 +41,7 @@ export default function App() {
   else if (base === "/settings") page = <Settings />;
   else if (base === "/proxy") page = <Proxy />;
   else if (base === "/discounts") page = <Discounts />;
+  else if (base === "/subprofiles") page = <SubProfiles />;
   else page = <Dashboard onBadges={onBadges} go={go} />;
 
   return (

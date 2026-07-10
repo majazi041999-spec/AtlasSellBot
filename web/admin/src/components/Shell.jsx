@@ -6,6 +6,7 @@ const NAV = [
   { k: "/users", icon: "👥", label: "کاربران" },
   { k: "/orders", icon: "🧾", label: "سفارش‌ها", badgeKey: "pending_orders" },
   { k: "/subs", icon: "🧬", label: "نودهای ساب" },
+  { k: "/subprofiles", icon: "📄", label: "ساب‌های کاربران" },
   { k: "/servers", icon: "🖥", label: "سرورها" },
   { k: "/packages", icon: "📦", label: "پکیج‌ها" },
   { k: "/proxy", icon: "🛰", label: "پروکسی تلگرام" },
@@ -16,14 +17,13 @@ const NAV = [
 // Pages not migrated yet → deep-link into the existing (legacy) panel so the
 // admin keeps full access during the parallel rollout.
 const LEGACY = [
-  { path: "/subs/profiles", icon: "📄", label: "پروفایل‌های ساب" },
   { path: "/configs", icon: "🔑", label: "کانفیگ‌ها" },
   { path: "/referrals", icon: "🎁", label: "رفرال" },
   { path: "/campaigns", icon: "📣", label: "کمپین‌ها" },
   { path: "/miniapp", icon: "📱", label: "مینی‌اپ" },
 ];
 
-const TITLES = { "/dashboard": "داشبورد", "/users": "کاربران", "/orders": "سفارش‌ها", "/subs": "نودهای ساب", "/servers": "سرورها", "/packages": "پکیج‌ها", "/proxy": "پروکسی تلگرام", "/discounts": "تخفیف‌ها", "/settings": "تنظیمات" };
+const TITLES = { "/dashboard": "داشبورد", "/users": "کاربران", "/orders": "سفارش‌ها", "/subs": "نودهای ساب", "/subprofiles": "ساب‌های کاربران", "/servers": "سرورها", "/packages": "پکیج‌ها", "/proxy": "پروکسی تلگرام", "/discounts": "تخفیف‌ها", "/settings": "تنظیمات" };
 
 export default function Shell({ path, go, badges = {}, children, onLogout }) {
   const [open, setOpen] = useState(false);

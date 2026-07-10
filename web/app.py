@@ -1970,6 +1970,44 @@ async def subscription_profile_delete(request: Request, profile_id: int):
     return JSONResponse({"success": True, **result})
 
 
+@app.get(f"/{S}/api/subs/profiles")
+async def api_subs_profiles(request: Request):
+    if not _api_guard(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    q = (request.query_params.get("q") or "").strip().lower()
+    page = max(1, int(request.query_params.get("page", "1") or 1))
+    per_page = 40
+    all_p = await get_subscription_profiles_full(limit=2000)
+    if q:
+        all_p = [p for p in all_p if q in str(p.get("email") or "").lower()
+                 or q in str(p.get("name") or "").lower()
+                 or q in str(p.get("telegram_id") or "").lower()
+                 or q in str(p.get("full_name") or "").lower()]
+    total = len(all_p)
+    total_pages = max(1, (total + per_page - 1) // per_page)
+    page = min(page, total_pages)
+    now_ms = int(time.time() * 1000)
+    items = []
+    for p in all_p[(page - 1) * per_page: page * per_page]:
+        try:
+            url = await subscription_url(p["token"])
+        except Exception:
+            url = f"/sub/{p['token']}"
+        total_b = int(float(p.get("traffic_gb") or 0) * 1024 ** 3)
+        used = int(p.get("used_bytes") or 0)
+        exp = int(p.get("expire_timestamp") or 0)
+        items.append({
+            "id": p["id"], "name": p.get("name") or "", "email": p.get("email"),
+            "telegram_id": p.get("telegram_id"), "full_name": p.get("full_name"), "username": p.get("username"),
+            "is_active": int(p.get("is_active") or 0), "traffic_gb": float(p.get("traffic_gb") or 0),
+            "used_bytes": used, "used_pct": (min(100, int(used / total_b * 100)) if total_b > 0 else 0),
+            "expire_timestamp": exp,
+            "days_left": (max(0, int((exp - now_ms) / 86400000)) if exp > 0 else -1),
+            "url": url,
+        })
+    return JSONResponse({"profiles": items, "total": total, "page": page, "total_pages": total_pages, "query": q})
+
+
 @app.post(f"/{S}/subs/settings")
 async def subscriptions_settings_save(
     request: Request,
