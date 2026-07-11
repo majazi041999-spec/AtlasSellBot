@@ -164,3 +164,28 @@ small{font-weight:500}
 .node-dot{width:8px;height:8px;border-radius:50%;background:#34d399;flex:none}
 .node-lbl{flex:1;font-size:.85rem;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .node-copy{font-size:.72rem;color:#7c6fff;font-weight:700;flex:none}
+
+/* ── Rep hero + badge ── */
+.hero-rep{background:linear-gradient(135deg,rgba(124,111,255,.22),rgba(0,229,160,.12))}
+.rep-badge{background:linear-gradient(135deg,#f59e0b,#fbbf24);color:#3a2600;font-weight:800;font-size:.74rem;padding:5px 12px;border-radius:20px}
+.rep-hero{position:relative;background:linear-gradient(135deg,#241b53,#0f2f2b);border:1px solid rgba(255,255,255,.08);border-radius:20px;padding:18px 16px;margin-bottom:14px;overflow:hidden}
+.rep-hero-crown{position:absolute;inset-inline-end:14px;top:10px;font-size:2.2rem;opacity:.85}
+.rep-hero-title{font-weight:800;font-size:1.15rem}
+.rep-hero-sub{color:#c9d2e6;font-size:.85rem;margin-top:2px}
+.rep-hero-stats{display:flex;gap:10px;margin-top:14px}
+.rep-hero-stats>div{flex:1;background:rgba(255,255,255,.06);border-radius:14px;padding:10px;text-align:center}
+.rep-hero-stats b{display:block;font-size:1.05rem;font-weight:800}
+.rep-hero-stats span{font-size:.68rem;color:#9aa6bd}
+
+/* ── Search box ── */
+.search-box{position:relative;margin-bottom:8px}
+.search-inp{padding-inline-start:38px}
+.search-ico{position:absolute;inset-inline-start:12px;top:50%;transform:translateY(-50%);opacity:.6;font-size:.9rem}
+.search-clear{position:absolute;inset-inline-end:8px;top:50%;transform:translateY(-50%);background:rgba(255,255,255,.1);border:none;color:#fff;width:24px;height:24px;border-radius:50%;cursor:pointer}
+
+/* ── Per-node card (rich) ── */
+.node-card{background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.07);border-radius:12px;padding:10px 12px}
+.node-top{display:flex;align-items:center;gap:8px;font-weight:700;font-size:.85rem}
+.node-uuid{font-size:.68rem;color:#9aa6bd;margin:6px 0;font-family:monospace;word-break:break-all;cursor:pointer}
+.node-btns{display:flex;gap:6px;flex-wrap:wrap}
+.btn-soft.xs{padding:5px 9px;font-size:.72rem}

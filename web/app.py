@@ -2941,9 +2941,11 @@ async def miniapp_services(request: Request):
             "traffic_gb": p.get("traffic_gb"), "used_bytes": p.get("used_bytes"),
             "expire_ts": int(p.get("expire_timestamp") or 0), "is_active": int(p.get("is_active") or 0),
             "sub_url": sub_url,
+            "email": p.get("email") or "",
             "nodes": [{
                 "label": n.get("node_label") or n.get("server_name"),
                 "is_active": int(n.get("is_active") or 0),
+                "uuid": (n.get("uuid") or "").strip(),
                 "link": (n.get("link") or "").strip() if int(n.get("is_active") or 0) else "",
             } for n in nodes],
         })

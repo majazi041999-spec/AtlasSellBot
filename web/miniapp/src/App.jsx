@@ -136,12 +136,12 @@ function PayCard({ title, payment, kind, id, amount, onDone, walletBalance, onWa
   );
 }
 
-function Header({ brand, user }) {
+function Header({ brand, user, isRep }) {
   return (
-    <div className="hero">
+    <div className={"hero" + (isRep ? " hero-rep" : "")}>
       <div className="hero-top">
         <div className="brand"><span className="brand-logo">{brand?.logo || "🌐"}</span><span className="brand-name">{brand?.title || "Atlas"}</span></div>
-        <div className="hello">سلام {user?.name || ""} 👋</div>
+        {isRep ? <div className="rep-badge">👑 نماینده</div> : <div className="hello">سلام {user?.name || ""} 👋</div>}
       </div>
       <div className="wallet-pill">
         <span>موجودی کیف پول</span>
@@ -152,7 +152,14 @@ function Header({ brand, user }) {
 }
 
 function Home({ data, go }) {
-  const tiles = [
+  const isRep = data.is_rep;
+  const f = data.rep?.financials || {};
+  const tiles = isRep ? [
+    { k: "buy", icon: "🛒", label: "ساخت سرویس", grad: "linear-gradient(135deg,#7c6fff,#a78bfa)" },
+    { k: "services", icon: "👥", label: "مشتریان من", grad: "linear-gradient(135deg,#10b981,#34d399)" },
+    { k: "rep", icon: "📈", label: "گزارش فروش", grad: "linear-gradient(135deg,#f59e0b,#fbbf24)" },
+    { k: "wallet", icon: "💳", label: "کیف پول", grad: "linear-gradient(135deg,#0891b2,#22d3ee)" },
+  ] : [
     { k: "buy", icon: "🛒", label: "خرید سرویس", grad: "linear-gradient(135deg,#7c6fff,#a78bfa)" },
     { k: "services", icon: "📡", label: "سرویس‌های من", grad: "linear-gradient(135deg,#10b981,#34d399)" },
     { k: "wallet", icon: "💳", label: "کیف پول", grad: "linear-gradient(135deg,#0891b2,#22d3ee)" },
@@ -160,10 +167,24 @@ function Home({ data, go }) {
   ];
   return (
     <div className="screen">
-      <div className="stat-row">
-        <div className="mini-stat"><div className="mini-val">{data.stats?.active_services ?? 0}</div><div className="mini-lbl">سرویس فعال</div></div>
-        <div className="mini-stat"><div className="mini-val">{fmt(data.user?.balance)}</div><div className="mini-lbl">موجودی (تومان)</div></div>
-      </div>
+      {isRep && (
+        <div className="rep-hero">
+          <div className="rep-hero-crown">👑</div>
+          <div className="rep-hero-title">سلام {data.user?.name || "نماینده عزیز"} 👋</div>
+          <div className="rep-hero-sub">به پنل نمایندگی <b>{data.rep?.brand_name || data.brand?.title}</b> خوش اومدی</div>
+          <div className="rep-hero-stats">
+            <div><b>{f.active_services || 0}</b><span>سرویس فعال</span></div>
+            <div><b>{fmt(f.total_spent)}</b><span>کل فروش (ت)</span></div>
+            <div><b>{fmt(f.month_spent)}</b><span>این ماه (ت)</span></div>
+          </div>
+        </div>
+      )}
+      {!isRep && (
+        <div className="stat-row">
+          <div className="mini-stat"><div className="mini-val">{data.stats?.active_services ?? 0}</div><div className="mini-lbl">سرویس فعال</div></div>
+          <div className="mini-stat"><div className="mini-val">{fmt(data.user?.balance)}</div><div className="mini-lbl">موجودی (تومان)</div></div>
+        </div>
+      )}
       <div className="tiles">
         {tiles.map((t) => (
           <button key={t.k} className="tile" onClick={() => { haptic(); go(t.k); }}>
@@ -174,20 +195,21 @@ function Home({ data, go }) {
       </div>
       {data.support && (
         <a className="support-card" href={`https://t.me/${data.support}`} target="_blank" rel="noreferrer">
-          <span>☎️ پشتیبانی</span><span className="chev">›</span>
+          <span>☎️ پشتیبانی{isRep ? " نمایندگان" : ""}</span><span className="chev">›</span>
         </a>
       )}
     </div>
   );
 }
 
-function Services({ go, balance, onBalance }) {
+function Services({ go, balance, onBalance, isRep }) {
   const [list, setList] = useState(null);
   const [renew, setRenew] = useState(null);   // {order_id, payment, name}
   const [planFor, setPlanFor] = useState(null); // service awaiting plan choice
   const [pkgs, setPkgs] = useState(null);       // packages for renewal
   const [editing, setEditing] = useState(null); // service id
   const [expanded, setExpanded] = useState(null); // service id whose servers are shown
+  const [q, setQ] = useState("");               // search query
   const [busy, setBusy] = useState(0);
   const reload = () => api("services").then((d) => setList(d.services || [])).catch(() => setList([]));
   useEffect(() => { reload(); }, []);
@@ -248,10 +270,23 @@ function Services({ go, balance, onBalance }) {
       <button className="btn-primary" onClick={() => go("buy")}>🛒 خرید سرویس</button>
     </div>
   );
+  const needle = q.trim().toLowerCase();
+  const filtered = !needle ? list : list.filter((s) => {
+    const hay = [s.name, s.email, s.sub_url, ...(s.nodes || []).flatMap((n) => [n.label, n.uuid, n.link])]
+      .filter(Boolean).join(" ").toLowerCase();
+    return hay.includes(needle);
+  });
   return (
     <div className="screen">
-      <h2 className="screen-title">سرویس‌های من</h2>
-      {list.map((s) => {
+      <h2 className="screen-title">{isRep ? "👥 مشتریان من" : "سرویس‌های من"}</h2>
+      <div className="search-box">
+        <span className="search-ico">🔎</span>
+        <input className="inp search-inp" value={q} onChange={(e) => setQ(e.target.value)} placeholder="جستجو: نام، UUID، لینک کامل یا سرور…" />
+        {q && <button className="search-clear" onClick={() => setQ("")}>✕</button>}
+      </div>
+      <div className="muted tiny" style={{ margin: "0 0 8px" }}>{filtered.length} از {list.length} سرویس</div>
+      {!filtered.length && <div className="card center" style={{ padding: 24 }}><p className="muted">موردی با این جستجو پیدا نشد.</p></div>}
+      {filtered.map((s) => {
         const r = remainText(s);
         return (
           <div className="card svc" key={s.id}>
@@ -281,9 +316,13 @@ function Services({ go, balance, onBalance }) {
             {expanded === s.id && (
               <div className="node-list">
                 {(s.nodes || []).filter((n) => n.is_active && n.link).map((n, i) => (
-                  <div className="node-item" key={i} onClick={() => copy(n.link)}>
-                    <span className="node-dot" /> <span className="node-lbl">{n.label}</span>
-                    <span className="node-copy">کپی لینک</span>
+                  <div className="node-card" key={i}>
+                    <div className="node-top"><span className="node-dot" /><span className="node-lbl">{n.label}</span></div>
+                    {n.uuid && <div className="node-uuid" onClick={() => copy(n.uuid)} title="کپی UUID">UUID: <span dir="ltr">{n.uuid}</span></div>}
+                    <div className="node-btns">
+                      <button className="btn-soft xs" onClick={() => copy(n.link)}>📋 کپی کانفیگ</button>
+                      {n.uuid && <button className="btn-soft xs" onClick={() => copy(n.uuid)}>🔑 کپی UUID</button>}
+                    </div>
                   </div>
                 ))}
                 {!(s.nodes || []).some((n) => n.is_active && n.link) && <p className="muted tiny" style={{ margin: 0 }}>سرور فعالی برای این سرویس نیست.</p>}
@@ -517,10 +556,10 @@ export default function App() {
 
   return (
     <div className="app">
-      <Header brand={boot.brand} user={boot.user} />
+      <Header brand={boot.brand} user={boot.user} isRep={boot.is_rep} />
       <main className="body">
         {tab === "home" && <Home data={boot} go={setTab} />}
-        {tab === "services" && <Services go={setTab} balance={balance} onBalance={setBalance} />}
+        {tab === "services" && <Services go={setTab} balance={balance} onBalance={setBalance} isRep={boot.is_rep} />}
         {tab === "buy" && <Buy balance={balance} onBalance={setBalance} />}
         {tab === "rep" && <RepPanel data={boot} support={boot.support} />}
         {tab === "wallet" && <Wallet />}
