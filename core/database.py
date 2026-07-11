@@ -376,6 +376,7 @@ async def _ensure_columns(db):
             ("referral_bonus_applied", "INTEGER DEFAULT 0"),
             ("discount_code", "TEXT DEFAULT ''"),
             ("discount_amount", "INTEGER DEFAULT 0"),
+            ("base_price", "INTEGER DEFAULT 0"),
         ],
         "daily_reports": [
             ("renewals", "INTEGER DEFAULT 0"),
@@ -1704,15 +1705,33 @@ async def delete_package(pid: int):
 async def get_user_pricing(user_id: int) -> Dict:
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
-        async with db.execute("SELECT discount_percent, price_per_gb, unlimited_price FROM users WHERE id=?", (user_id,)) as c:
+        async with db.execute(
+            "SELECT discount_percent, price_per_gb, unlimited_price, is_wholesale FROM users WHERE id=?",
+            (user_id,),
+        ) as c:
             r = await c.fetchone()
-            if not r:
-                return {"discount_percent": 0, "price_per_gb": 0, "unlimited_price": 0}
-            return {
-                "discount_percent": float(r["discount_percent"] or 0),
-                "price_per_gb": int(r["price_per_gb"] or 0),
-                "unlimited_price": int(r["unlimited_price"] or 0),
-            }
+    if not r:
+        return {"discount_percent": 0, "price_per_gb": 0, "unlimited_price": 0}
+    ppg = int(r["price_per_gb"] or 0)
+    unl = int(r["unlimited_price"] or 0)
+    # Representatives: a per-seller custom price ALWAYS wins; when it isn't set,
+    # fall back to the single global representative price the admin configured.
+    if int(r["is_wholesale"] or 0):
+        if ppg <= 0:
+            try:
+                ppg = max(0, int(await get_setting("rep_price_per_gb", "0") or 0))
+            except (TypeError, ValueError):
+                ppg = 0
+        if unl <= 0:
+            try:
+                unl = max(0, int(await get_setting("rep_unlimited_price", "0") or 0))
+            except (TypeError, ValueError):
+                unl = 0
+    return {
+        "discount_percent": float(r["discount_percent"] or 0),
+        "price_per_gb": ppg,
+        "unlimited_price": unl,
+    }
 
 
 async def create_custom_order(user_id: int, name: str, total_traffic_gb: float, duration_days: int,
@@ -1741,11 +1760,12 @@ async def create_custom_order(user_id: int, name: str, total_traffic_gb: float, 
         )
         await db.commit()
         return c.lastrowid
-async def create_order(user_id: int, package_id: int, custom_config_name: str = '', custom_price: int = 0) -> int:
+async def create_order(user_id: int, package_id: int, custom_config_name: str = '', custom_price: int = 0,
+                       base_price: int = 0) -> int:
     async with aiosqlite.connect(DB_PATH) as db:
         c = await db.execute(
-            "INSERT INTO orders(user_id,package_id,status,custom_config_name,custom_price) VALUES(?,?,'pending_payment',?,?)",
-            (user_id, package_id, custom_config_name, int(custom_price or 0))
+            "INSERT INTO orders(user_id,package_id,status,custom_config_name,custom_price,base_price) VALUES(?,?,'pending_payment',?,?,?)",
+            (user_id, package_id, custom_config_name, int(custom_price or 0), int(base_price or 0))
         )
         await db.commit()
         return c.lastrowid

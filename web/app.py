@@ -3175,7 +3175,8 @@ async def miniapp_wallet_pay(request: Request):
     if str(order.get("status")) not in ("pending_payment", "pending_receipt"):
         return JSONResponse({"error": "not_payable"}, status_code=400)
 
-    price = int(order.get("price") or 0)
+    # Wallet charges the FIXED clean price (base_price), not the jittered card amount.
+    price = int(order.get("base_price") or 0) or int(order.get("price") or 0)
     balance = await get_user_balance(user["id"])
     if balance < price:
         return JSONResponse({"error": "insufficient_balance", "balance": balance, "price": price}, status_code=400)
@@ -4428,6 +4429,8 @@ async def _settings_snapshot() -> dict:
 
     settings["referral_bonus_gb"] = REFERRAL_BONUS_GB
     settings["rep_min_topup"] = await get_setting("rep_min_topup", "500000")
+    settings["rep_price_per_gb"] = await get_setting("rep_price_per_gb", "0")
+    settings["rep_unlimited_price"] = await get_setting("rep_unlimited_price", "0")
     return settings
 
 
@@ -4455,6 +4458,22 @@ async def api_settings(request: Request):
         "settings": settings,
         "servers": [{"id": s["id"], "name": s.get("name"), "is_active": int(s.get("is_active") or 0)} for s in servers],
     })
+
+
+@app.post(f"/{S}/api/rep-pricing")
+async def api_rep_pricing(request: Request):
+    """Global representative pricing: one per-GB / unlimited price used for every
+    rep who has no per-seller custom price, plus the minimum first-top-up."""
+    if not _api_guard(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    d = await request.json()
+    ppg = max(0, int(str(d.get("rep_price_per_gb") or 0).replace(",", "") or 0))
+    unl = max(0, int(str(d.get("rep_unlimited_price") or 0).replace(",", "") or 0))
+    mint = max(0, int(str(d.get("rep_min_topup") or 0).replace(",", "") or 0))
+    await set_setting("rep_price_per_gb", str(ppg))
+    await set_setting("rep_unlimited_price", str(unl))
+    await set_setting("rep_min_topup", str(mint))
+    return JSONResponse({"success": True})
 
 
 @app.get(f"/{S}/api/branding")

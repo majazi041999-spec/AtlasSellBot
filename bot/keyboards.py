@@ -143,6 +143,16 @@ def wholesale_request_kb() -> InlineKeyboardMarkup:
     return b.as_markup()
 
 
+def rep_buy_choice_kb() -> InlineKeyboardMarkup:
+    """Representatives can create either a single service or a bulk batch."""
+    b = InlineKeyboardBuilder()
+    _button(b, text="🛍 خرید تکی (یک سرویس)", callback_data="rep:buy_single", style="primary")
+    _button(b, text="📦 خرید گروهی (چند سرویس)", callback_data="rep:buy_bulk", style="success")
+    _button(b, text="⬅️ بازگشت", callback_data="rep:home")
+    b.adjust(1)
+    return b.as_markup()
+
+
 def wholesale_terms_kb() -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
     _button(b, text="✅ قوانین را می‌پذیرم و درخواست می‌دهم", callback_data="wh_req", style="success")

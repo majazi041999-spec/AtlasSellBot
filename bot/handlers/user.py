@@ -96,6 +96,7 @@ from bot.keyboards import (
     wholesale_terms_kb,
     wholesale_request_admin_kb,
     representative_panel_kb,
+    rep_buy_choice_kb,
     rep_brand_kb,
     rep_back_kb,
     legacy_claim_admin_kb,
@@ -1304,10 +1305,13 @@ async def _finalize_buy_payment(from_user, state: FSMContext):
         code_amount = int(v.get("discount_amount") or 0) if v.get("ok") else 0
         if not v.get("ok"):
             code = ""
-    net_price = max(0, final_price - code_amount)
-    net_price = await _jitter_price(net_price)
+    clean_price = max(0, final_price - code_amount)   # exact, un-jittered price
+    net_price = await _jitter_price(clean_price)       # card amount (unique offset)
 
-    oid = await create_order(user["id"], pid, custom_config_name=custom_name, custom_price=net_price)
+    # base_price = the clean price so WALLET payments charge the fixed amount,
+    # while card-to-card still uses the jittered net_price for easy matching.
+    oid = await create_order(user["id"], pid, custom_config_name=custom_name,
+                             custom_price=net_price, base_price=clean_price)
     if code and code_amount > 0:
         await update_order(oid, discount_code=code, discount_amount=code_amount)
 
@@ -1447,7 +1451,9 @@ async def pay_with_wallet(cb: CallbackQuery):
         return
 
     balance = await get_user_balance(user["id"])
-    price = int(order.get("price") or 0)
+    # Wallet charges the FIXED clean price (base_price), not the jittered card
+    # amount — so paying from the wallet always deducts the exact plan price.
+    price = int(order.get("base_price") or 0) or int(order.get("price") or 0)
     if balance < price:
         await cb.answer(f"موجودی کافی نیست. موجودی: {_fmt_toman(balance)} تومان", show_alert=True)
         return
@@ -1775,15 +1781,14 @@ async def rep_brand_toggle(cb: CallbackQuery):
     )
 
 
-@router.callback_query(F.data == "rep:buy")
-async def rep_buy(cb: CallbackQuery, state: FSMContext):
-    user = await get_or_create_user(cb.from_user.id)
+async def _rep_buy_gate(cb: CallbackQuery, user: dict) -> bool:
+    """Return True if this rep may create services, else show the reason & stop.
+
+    Enforces the minimum-topup rule (only for reps who signed up under the new
+    terms — existing reps are exempt)."""
     if not user.get("is_wholesale", 0):
         await cb.answer("فقط برای نمایندگان.", show_alert=True)
-        return
-    # Anti-abuse: a representative must have topped up at least the configured
-    # minimum before they can create services. ONLY applies to reps who signed up
-    # under the new terms (rep_topup_required=1); existing reps are exempt.
+        return False
     min_topup = await _rep_min_topup()
     if min_topup > 0 and int(user.get("rep_topup_required") or 0):
         from core.database import get_user_total_topups
@@ -1798,10 +1803,52 @@ async def rep_buy(cb: CallbackQuery, state: FSMContext):
                 reply_markup=rep_back_kb(), parse_mode="Markdown",
             )
             await cb.answer()
-            return
+            return False
+    return True
+
+
+@router.callback_query(F.data == "rep:buy")
+async def rep_buy(cb: CallbackQuery, state: FSMContext):
+    user = await get_or_create_user(cb.from_user.id)
+    if not await _rep_buy_gate(cb, user):
+        return
+    await cb.message.edit_text(
+        "🛒 *ساخت سرویس برای مشتری*\n\nچه نوع خریدی می‌خواهی؟\n\n"
+        "🛍 *تکی:* یک سرویس با انتخاب پکیج (مثل خرید عادی، با قیمت نمایندگی تو).\n"
+        "📦 *گروهی:* چند سرویس هم‌زمان با حجم/مدت دلخواه.",
+        reply_markup=rep_buy_choice_kb(), parse_mode="Markdown",
+    )
+    await cb.answer()
+
+
+@router.callback_query(F.data == "rep:buy_single")
+async def rep_buy_single(cb: CallbackQuery, state: FSMContext):
+    user = await get_or_create_user(cb.from_user.id)
+    if not await _rep_buy_gate(cb, user):
+        return
+    pkgs = await get_packages(active_only=True)
+    if not pkgs:
+        await cb.answer("فعلاً پکیجی برای فروش نیست.", show_alert=True)
+        return
+    if not await get_available_servers():
+        await cb.answer("فعلاً سروری ظرفیت خالی ندارد.", show_alert=True)
+        return
+    await state.clear()
+    await cb.message.answer(
+        "🛍 *خرید تکی — پکیج را انتخاب کن*\n\nقیمت با تعرفه‌ی نمایندگی تو محاسبه می‌شود.",
+        reply_markup=packages_kb(pkgs), parse_mode="Markdown",
+    )
+    await cb.answer()
+
+
+@router.callback_query(F.data == "rep:buy_bulk")
+async def rep_buy_bulk(cb: CallbackQuery, state: FSMContext):
+    user = await get_or_create_user(cb.from_user.id)
+    if not await _rep_buy_gate(cb, user):
+        return
     await state.set_state(WholesaleBuy.count)
     await cb.message.answer(
-        "🛒 *ساخت سرویس برای مشتری*\n\nتعداد سرویس موردنیاز را وارد کن (مثال: 20)",
+        "📦 *خرید گروهی*\n\nتعداد سرویس موردنیاز را وارد کن (مثال: 20)",
         reply_markup=flow_cancel_kb(), parse_mode="Markdown",
     )
     await cb.answer()

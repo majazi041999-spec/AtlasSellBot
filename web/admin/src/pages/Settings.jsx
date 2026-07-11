@@ -59,6 +59,16 @@ export default function Settings() {
 
   const set = (k, v) => setS((o) => ({ ...o, [k]: v }));
 
+  const saveRepPricing = async () => {
+    setBusy("reppricing");
+    try {
+      await api.post("/api/rep-pricing", {
+        rep_price_per_gb: s.rep_price_per_gb, rep_unlimited_price: s.rep_unlimited_price, rep_min_topup: s.rep_min_topup,
+      });
+      toast("قیمت‌گذاری نمایندگان ذخیره شد ✅");
+    } catch (e) { toast(e.message || "خطا", "error"); } finally { setBusy(false); }
+  };
+
   const uploadLogo = async () => {
     const file = logoRef.current?.files?.[0];
     if (!file) { toast("عکسی انتخاب نشده", "error"); return; }
@@ -124,6 +134,23 @@ export default function Settings() {
         <div className="field"><label>حداقل شارژ اولیه نماینده (تومان)</label>
           <input className="inp" value={s.rep_min_topup ?? ""} onChange={(e) => set("rep_min_topup", e.target.value.replace(/[^\d]/g, ""))} dir="ltr" />
           <p className="muted tiny" style={{ margin: "4px 0 0" }}>نماینده تا این مبلغ شارژ نکند، «ساخت سرویس» برایش فعال نمی‌شود (ضد سوءاستفاده). در قوانین نمایندگی هم نشان داده می‌شود.</p>
+        </div>
+      </Card>
+
+      <Card title="🏢 قیمت‌گذاری نمایندگان">
+        <div className="grid" style={{ gap: 8 }}>
+          <p className="muted tiny" style={{ margin: 0 }}>قیمت واحد برای همه‌ی نماینده‌ها. اگر برای یک نماینده قیمت اختصاصی (کاستوم) در صفحه‌ی کاربر تنظیم کنی، آن قیمت اولویت دارد.</p>
+          <div className="grid" style={{ gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+            <div className="field"><label>قیمت هر GB (تومان)</label>
+              <input className="inp" value={s.rep_price_per_gb ?? "0"} onChange={(e) => set("rep_price_per_gb", e.target.value)} dir="ltr" /></div>
+            <div className="field"><label>قیمت نامحدود (تومان)</label>
+              <input className="inp" value={s.rep_unlimited_price ?? "0"} onChange={(e) => set("rep_unlimited_price", e.target.value)} dir="ltr" /></div>
+          </div>
+          <div className="field"><label>حداقل شارژ اولیه‌ی نماینده‌های جدید (تومان)</label>
+            <input className="inp" value={s.rep_min_topup ?? "0"} onChange={(e) => set("rep_min_topup", e.target.value)} dir="ltr" />
+            <p className="muted tiny" style={{ margin: "4px 0 0" }}>فقط برای نماینده‌هایی که تازه درخواست می‌دهند اعمال می‌شود؛ نماینده‌های فعلی مستثنا هستند.</p>
+          </div>
+          <button className="btn primary sm" disabled={busy === "reppricing"} onClick={saveRepPricing}>💾 ذخیره قیمت‌گذاری نمایندگان</button>
         </div>
       </Card>
 
