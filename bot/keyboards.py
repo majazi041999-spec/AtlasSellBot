@@ -65,8 +65,10 @@ def user_menu(include_wholesale: bool = True) -> ReplyKeyboardMarkup:
     b.row(KeyboardButton(text="🔄 شروع مجدد"))
     b.row(KeyboardButton(text="💳 کیف پول"), KeyboardButton(text="🎁 دعوت دوستان"))
     b.row(KeyboardButton(text="📞 پشتیبانی"), KeyboardButton(text="🕊️ پیام ناشناس"))
-    if include_wholesale:
-        b.row(KeyboardButton(text="🏢 پنل نمایندگی"))
+    # Always show the representative entry: reps get their panel, everyone else
+    # gets the "apply to become a representative" flow. (Previously hidden from
+    # non-reps, so people who saw the ad couldn't find the button.)
+    b.row(KeyboardButton(text="🏢 پنل نمایندگی"))
     b.row(KeyboardButton(text="🔗 افزودن سرویس قبلی"))
     return b.as_markup(resize_keyboard=True)
 

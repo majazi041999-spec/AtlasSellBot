@@ -2527,10 +2527,12 @@ async def pkg_add(
     price: int = Form(...),
     description: str = Form(""),
     inbound_id: int = Form(0),
+    is_unlimited: str = Form("0"),
 ):
     if not _auth(request):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
-    await add_package(name, traffic_gb, duration_days, price, description, inbound_id=inbound_id)
+    await add_package(name, traffic_gb, duration_days, price, description, inbound_id=inbound_id,
+                      is_unlimited=1 if is_unlimited == "1" else 0)
     return RedirectResponse(f"/{S}/packages", status_code=302)
 
 
@@ -2544,6 +2546,7 @@ async def pkg_edit(
     price: int = Form(...),
     description: str = Form(""),
     inbound_id: int = Form(0),
+    is_unlimited: str = Form("0"),
 ):
     if not _auth(request):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
@@ -2555,6 +2558,7 @@ async def pkg_edit(
         price=price,
         description=description,
         inbound_id=inbound_id,
+        is_unlimited=1 if is_unlimited == "1" else 0,
     )
     return RedirectResponse(f"/{S}/packages", status_code=302)
 
@@ -2590,6 +2594,7 @@ async def api_packages(request: Request):
         "description": p.get("description") or "",
         "inbound_id": int(p.get("inbound_id") or 0),
         "is_active": int(p.get("is_active") or 0),
+        "is_unlimited": int(p.get("is_unlimited") or 0),
     } for p in pkgs]})
 
 

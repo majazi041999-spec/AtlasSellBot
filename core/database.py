@@ -361,6 +361,7 @@ async def _ensure_columns(db):
         ],
         "packages": [
             ("inbound_id", "INTEGER DEFAULT 0"),
+            ("is_unlimited", "INTEGER DEFAULT 0"),
         ],
         "orders": [
             ("custom_name", "TEXT DEFAULT ''"),
@@ -1674,11 +1675,12 @@ async def get_package(pid: int) -> Optional[Dict]:
             r = await c.fetchone()
             return dict(r) if r else None
 
-async def add_package(name, traffic_gb, duration_days, price, description='', inbound_id: int = 0) -> int:
+async def add_package(name, traffic_gb, duration_days, price, description='', inbound_id: int = 0,
+                       is_unlimited: int = 0) -> int:
     async with aiosqlite.connect(DB_PATH) as db:
         c = await db.execute(
-            "INSERT INTO packages(name,traffic_gb,duration_days,price,description,inbound_id) VALUES(?,?,?,?,?,?)",
-            (name, traffic_gb, duration_days, price, description, inbound_id)
+            "INSERT INTO packages(name,traffic_gb,duration_days,price,description,inbound_id,is_unlimited) VALUES(?,?,?,?,?,?,?)",
+            (name, traffic_gb, duration_days, price, description, inbound_id, 1 if int(is_unlimited or 0) else 0)
         )
         await db.commit()
         return c.lastrowid

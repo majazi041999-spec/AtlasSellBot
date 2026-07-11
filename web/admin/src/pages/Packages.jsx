@@ -6,6 +6,7 @@ function PkgModal({ pkg, onClose, onSaved }) {
   const editing = !!pkg;
   const r = useRef({});
   const [busy, setBusy] = useState(false);
+  const [unlimited, setUnlimited] = useState(!!(pkg?.is_unlimited));
   const set = (k) => (e) => { r.current[k] = e.target.value; };
 
   const save = async () => {
@@ -20,6 +21,7 @@ function PkgModal({ pkg, onClose, onSaved }) {
         price: rawNum(r.current.price ?? String(pkg?.price ?? 0)),
         description: r.current.description ?? pkg?.description ?? "",
         inbound_id: parseInt(r.current.inbound_id ?? pkg?.inbound_id ?? 0) || 0,
+        is_unlimited: unlimited ? "1" : "0",
       };
       await api.form(editing ? `/packages/${pkg.id}/edit` : `/packages/add`, body);
       toast(editing ? "پکیج ذخیره شد ✅" : "پکیج اضافه شد ✅");
@@ -46,6 +48,15 @@ function PkgModal({ pkg, onClose, onSaved }) {
         </div>
         <div className="field"><label>توضیحات</label>
           <input className="inp" defaultValue={pkg?.description || ""} onInput={set("description")} /></div>
+        <div style={{ border: "1px solid var(--line)", borderRadius: 12, padding: 12, background: unlimited ? "rgba(52,211,153,.07)" : "transparent" }}>
+          <div className="row between">
+            <div>
+              <b style={{ fontSize: ".9rem" }}>♾ این یک پلن نامحدود است</b>
+              <p className="muted tiny" style={{ margin: "3px 0 0" }}>اگر روشن باشد، قیمت این پلن از «قیمت نامحدود» کاربر محاسبه می‌شود، نه گیگی — حتی اگر حجم بالا آستانه مصرف باشد.</p>
+            </div>
+            <button type="button" className={"btn xs " + (unlimited ? "success" : "")} onClick={() => setUnlimited((v) => !v)}>{unlimited ? "✅ بله" : "خیر"}</button>
+          </div>
+        </div>
         <button className="btn primary" disabled={busy} onClick={save}>{busy ? "…" : "💾 ذخیره"}</button>
       </div>
     </Modal>
@@ -83,7 +94,7 @@ export default function Packages() {
                     {p.name} <span className={"badge " + (p.is_active ? "b-green" : "b-red")}>{p.is_active ? "فعال" : "غیرفعال"}</span>
                   </div>
                   <div className="row" style={{ gap: 6, flexWrap: "wrap", marginTop: 6 }}>
-                    <span className="muted tiny">حجم: {p.traffic_gb ? `${p.traffic_gb}GB` : "نامحدود"}</span>
+                    {p.is_unlimited ? <span className="badge b-green">♾ نامحدود{p.traffic_gb ? ` (آستانه ${p.traffic_gb}GB)` : ""}</span> : <span className="muted tiny">حجم: {p.traffic_gb ? `${p.traffic_gb}GB` : "نامحدود"}</span>}
                     <span className="muted tiny">مدت: {p.duration_days} روز</span>
                     <span className="badge b-blue">{fmt(p.price)} ت</span>
                     {p.inbound_id ? <span className="muted tiny">Inbound: {p.inbound_id}</span> : null}

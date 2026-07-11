@@ -19,7 +19,11 @@ from typing import Dict
 
 
 def is_unlimited_package(pkg: Dict) -> bool:
-    return float(pkg.get("traffic_gb") or 0) <= 0
+    """A package is 'unlimited' if it's explicitly flagged so (admin marks it),
+    OR it has zero traffic. The flag matters because an unlimited plan is often
+    stored with a non-zero traffic_gb as a fair-use THRESHOLD (e.g. 100) — without
+    the flag that would be mistaken for a 100GB volume plan and priced per-GB."""
+    return bool(int(pkg.get("is_unlimited") or 0)) or float(pkg.get("traffic_gb") or 0) <= 0
 
 
 def compute_package_price(pricing: Dict, pkg: Dict) -> Dict:
@@ -33,7 +37,7 @@ def compute_package_price(pricing: Dict, pkg: Dict) -> Dict:
     discount = max(0.0, min(100.0, float(pricing.get("discount_percent") or 0)))
     ppg = max(0, int(pricing.get("price_per_gb") or 0))
     unlimited_price = max(0, int(pricing.get("unlimited_price") or 0))
-    unlimited = traffic_gb <= 0
+    unlimited = is_unlimited_package(pkg)
 
     if unlimited:
         base = unlimited_price if unlimited_price > 0 else pkg_price

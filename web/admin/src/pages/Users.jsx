@@ -78,7 +78,7 @@ function UserModal({ user, onClose, onChanged }) {
           <div className="field"><label>قیمت هر GB</label><input className="inp" ref={ppg} defaultValue={fmt(u.price_per_gb)} onInput={liveNum} dir="ltr" /></div>
           <div className="field"><label>قیمت نامحدود</label><input className="inp" ref={unl} defaultValue={fmt(u.unlimited_price)} onInput={liveNum} dir="ltr" /></div>
         </div>
-        <p className="muted tiny" style={{ margin: "8px 0 0" }}>صفر بگذارید تا به قیمت پیش‌فرض پکیج برگردد.</p>
+        <p className="muted tiny" style={{ margin: "8px 0 0" }}>صفر بگذارید تا به قیمت پیش‌فرض پکیج برگردد. «قیمت هر GB» فقط روی پلن‌های حجمی اعمال می‌شود؛ «قیمت نامحدود» فقط روی پکیج‌هایی که در بخش پکیج‌ها «♾ نامحدود» علامت خورده‌اند.</p>
         <button className="btn sm primary" style={{ marginTop: 10 }} disabled={busy === "price"} onClick={savePricing}>💾 ذخیره قیمت‌گذاری</button>
       </div>
 
