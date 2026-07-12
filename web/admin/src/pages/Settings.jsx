@@ -161,6 +161,11 @@ export default function Settings() {
             <Text s={s} set={set} k="test_account_traffic_gb" label="حجم (GB)" ltr />
             <Text s={s} set={set} k="test_account_duration_days" label="مدت (روز)" ltr />
           </div>
+          <div className="field" style={{ borderTop: "1px solid var(--line)", paddingTop: 10 }}>
+            <label>🏢 سقف تست روزانه‌ی نمایندگان (۰ = مثل کاربر عادی، فقط یک‌بار)</label>
+            <input className="inp" type="number" min="0" value={s.rep_test_daily_limit ?? "0"} onChange={(e) => set("rep_test_daily_limit", e.target.value)} dir="ltr" />
+            <p className="muted tiny" style={{ margin: "4px 0 0" }}>اگر عددی بزرگ‌تر از صفر بگذاری، هر نماینده می‌تواند روزانه تا این تعداد اکانت تست بگیرد (جدا از کاربران عادی).</p>
+          </div>
         </div>
       </Card>
 

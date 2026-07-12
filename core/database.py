@@ -168,6 +168,14 @@ CREATE TABLE IF NOT EXISTS test_accounts (
     FOREIGN KEY(config_id) REFERENCES configs(id)
 );
 
+CREATE TABLE IF NOT EXISTS rep_test_accounts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    profile_id INTEGER DEFAULT 0,
+    created_at TEXT DEFAULT (datetime('now','localtime')),
+    FOREIGN KEY(user_id) REFERENCES users(id)
+);
+
 CREATE TABLE IF NOT EXISTS daily_reports (
     jalali_date TEXT PRIMARY KEY,
     gregorian_date TEXT NOT NULL,
@@ -1958,6 +1966,28 @@ async def add_user_test_account(user_id: int, config_id: int = 0, profile_id: in
         )
         await db.commit()
         return c.lastrowid or 0
+
+async def count_rep_test_today(user_id: int) -> int:
+    """How many test accounts this representative created today (local date)."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            """SELECT COUNT(*) FROM rep_test_accounts
+               WHERE user_id=? AND date(created_at)=date('now','localtime')""",
+            (int(user_id),),
+        ) as c:
+            row = await c.fetchone()
+            return int((row[0] if row else 0) or 0)
+
+
+async def add_rep_test_account(user_id: int, profile_id: int = 0) -> int:
+    async with aiosqlite.connect(DB_PATH) as db:
+        c = await db.execute(
+            "INSERT INTO rep_test_accounts(user_id,profile_id) VALUES(?,?)",
+            (int(user_id), int(profile_id or 0)),
+        )
+        await db.commit()
+        return c.lastrowid or 0
+
 
 async def get_config(cid: int) -> Optional[Dict]:
     async with aiosqlite.connect(DB_PATH) as db:

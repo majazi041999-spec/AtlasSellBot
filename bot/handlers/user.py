@@ -1188,20 +1188,41 @@ async def test_account(msg: Message):
         return
 
     user = await get_or_create_user(msg.from_user.id, msg.from_user.username, msg.from_user.full_name)
-    existing = await get_user_test_account(user["id"])
-    if existing:
-        if existing.get("kind") == "sub" and existing.get("profile"):
-            await msg.answer("🧪 اکانت تست شما قبلاً ساخته شده است:", parse_mode=None)
-            await _send_subscription_status(msg, existing["profile"], send_qr=True)
+
+    # Representatives get a DAILY test allowance (admin-set) instead of the
+    # one-per-account limit that regular users have.
+    rep_daily = 0
+    try:
+        rep_daily = max(0, int(await get_setting("rep_test_daily_limit", "0") or 0))
+    except (TypeError, ValueError):
+        rep_daily = 0
+    is_rep_daily = bool(user.get("is_wholesale", 0)) and rep_daily > 0
+
+    if is_rep_daily:
+        from core.database import count_rep_test_today, add_rep_test_account
+        used_today = await count_rep_test_today(user["id"])
+        if used_today >= rep_daily:
+            await msg.answer(
+                f"🧪 سقف تست روزانه‌ی نمایندگی شما ({rep_daily} عدد) برای امروز پر شده است.\n"
+                "فردا دوباره می‌توانی تست بگیری.",
+                parse_mode=None,
+            )
             return
-        # A trial was already issued before (legacy single config, or it has since
-        # been removed). Don't hand out another one.
-        await msg.answer(
-            "🧪 شما قبلاً اکانت تست دریافت کرده‌اید.\n"
-            "برای ادامه می‌توانید از بخش «🛒 خرید سرویس» یک سرویس کامل تهیه کنید.",
-            parse_mode=None,
-        )
-        return
+    else:
+        existing = await get_user_test_account(user["id"])
+        if existing:
+            if existing.get("kind") == "sub" and existing.get("profile"):
+                await msg.answer("🧪 اکانت تست شما قبلاً ساخته شده است:", parse_mode=None)
+                await _send_subscription_status(msg, existing["profile"], send_qr=True)
+                return
+            # A trial was already issued before (legacy single config, or it has since
+            # been removed). Don't hand out another one.
+            await msg.answer(
+                "🧪 شما قبلاً اکانت تست دریافت کرده‌اید.\n"
+                "برای ادامه می‌توانید از بخش «🛒 خرید سرویس» یک سرویس کامل تهیه کنید.",
+                parse_mode=None,
+            )
+            return
 
     result = await create_test_subscription(user, settings["traffic_gb"], settings["duration_days"])
     if not result.get("ok"):
@@ -1214,10 +1235,19 @@ async def test_account(msg: Message):
         )
         return
 
-    await add_user_test_account(user["id"], profile_id=int(result["profile_id"]))
+    if is_rep_daily:
+        from core.database import count_rep_test_today, add_rep_test_account
+        await add_rep_test_account(user["id"], profile_id=int(result["profile_id"]))
+    else:
+        await add_user_test_account(user["id"], profile_id=int(result["profile_id"]))
+    remain_line = ""
+    if is_rep_daily:
+        left = max(0, rep_daily - (await count_rep_test_today(user["id"])))
+        remain_line = f"\n🧪 تست باقی‌مانده‌ی امروز شما: {left} از {rep_daily}"
     await msg.answer(
         "✅ اکانت تست چندسروره شما ساخته شد.\n"
-        f"حجم: {settings['traffic_gb']} GB | مدت: {settings['duration_days']} روز | سرورها: {result.get('nodes', 0)}",
+        f"حجم: {settings['traffic_gb']} GB | مدت: {settings['duration_days']} روز | سرورها: {result.get('nodes', 0)}"
+        + remain_line,
         parse_mode=None,
     )
     profile = await get_subscription_profile(int(result["profile_id"]))

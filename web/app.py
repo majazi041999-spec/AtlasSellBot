@@ -4416,6 +4416,7 @@ async def _settings_snapshot() -> dict:
         "test_account_duration_days": await get_setting("test_account_duration_days", SETTINGS_DEFAULTS["test_account_duration_days"]),
         "test_account_server_id": await get_setting("test_account_server_id", SETTINGS_DEFAULTS["test_account_server_id"]),
         "test_account_prefix": await get_setting("test_account_prefix", SETTINGS_DEFAULTS["test_account_prefix"]),
+        "rep_test_daily_limit": await get_setting("rep_test_daily_limit", "0"),
         "panel_domain": await get_setting("panel_domain", ""),
         "cert_email": await get_setting("cert_email", ""),
         "atlas_tls_https_port": await get_setting("atlas_tls_https_port", "443"),
@@ -4548,6 +4549,7 @@ async def settings_save(
     test_account_duration_days: int = Form(1),
     test_account_server_id: str = Form("0"),
     test_account_prefix: str = Form("test"),
+    rep_test_daily_limit: str = Form("0"),
     # ✅ کارت بانکی از پنل ذخیره می‌شود
     card_number: str = Form(""),
     card_holder: str = Form(""),
@@ -4610,6 +4612,11 @@ async def settings_save(
     await set_setting("test_account_server_id", test_account_server_id if test_account_server_id in valid_server_ids else "0")
     clean_test_prefix = "".join(ch for ch in (test_account_prefix or "test").strip() if ch.isalnum() or ch in ("_", "-"))[:16] or "test"
     await set_setting("test_account_prefix", clean_test_prefix)
+    try:
+        _rtdl = max(0, int(rep_test_daily_limit or 0))
+    except (TypeError, ValueError):
+        _rtdl = 0
+    await set_setting("rep_test_daily_limit", str(_rtdl))
 
     # ✅ ذخیره کارت
     await set_setting("card_number", card_number.strip())
