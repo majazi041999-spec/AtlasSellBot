@@ -121,17 +121,30 @@ class ChannelRequiredMiddleware(BaseMiddleware):
         return isinstance(event, CallbackQuery) and event.data == "check_channel_join"
 
     @staticmethod
+    async def _render_join_success(event: CallbackQuery, user: dict) -> None:
+        """Membership just confirmed: pop the toast, DELETE the join prompt, and
+        open the bot menu with a success message."""
+        await event.answer("✅ عضویت شما تایید شد!", show_alert=False)
+        if not event.message:
+            return
+        from bot.keyboards import admin_menu, user_menu
+        # Remove the "you must join" prompt so the chat is clean.
+        try:
+            await event.message.delete()
+        except Exception:
+            pass
+        kb = admin_menu() if user.get("is_admin", 0) else user_menu(include_wholesale=bool(user.get("is_wholesale", 0)))
+        await event.message.answer(
+            "🎉 عضویت شما تایید شد!\nحالا می‌توانید از همه‌ی امکانات ربات استفاده کنید. منوی ربات فعال شد 👇",
+            reply_markup=kb,
+        )
+
+    @staticmethod
     async def verify_join_callback(event: CallbackQuery, user: dict, channel_username: str) -> bool:
         uid = event.from_user.id if event.from_user else 0
         if not await ChannelRequiredMiddleware.is_member(event.bot, uid, channel_username, use_cache=False):
             return False
-        await event.answer("عضویت تایید شد.")
-        if event.message:
-            from bot.keyboards import admin_menu, user_menu
-
-            role = "full" if user.get("is_admin", 0) else "none"
-            kb = admin_menu() if role != "none" else user_menu(include_wholesale=bool(user.get("is_wholesale", 0)))
-            await event.message.answer("عضویت شما تایید شد. منوی ربات فعال است.", reply_markup=kb)
+        await ChannelRequiredMiddleware._render_join_success(event, user)
         return True
 
     @staticmethod
@@ -169,10 +182,20 @@ class ChannelRequiredMiddleware(BaseMiddleware):
         if await self.is_exempt(uid):
             return await handler(event, data)
 
+        # The "بررسی عضویت" button gets its own handling: a FRESH check (no cache)
+        # and a clear outcome either way — success cleans up + opens the menu,
+        # failure just tells them they're not a member yet (no duplicate prompt).
+        if self.is_join_check(event):
+            if await self.is_member(event.bot, uid, channel_username, use_cache=False):
+                await self._render_join_success(event, user)
+            else:
+                await event.answer(
+                    "❌ هنوز عضو کانال نشده‌اید.\nاول در کانال عضو شوید، بعد دوباره «بررسی عضویت» را بزنید.",
+                    show_alert=True,
+                )
+            return None
+
         if await self.is_member(event.bot, uid, channel_username):
-            if self.is_join_check(event):
-                await self.verify_join_callback(event, user, channel_username)
-                return None
             return await handler(event, data)
 
         text = self.join_text(channel_username)
