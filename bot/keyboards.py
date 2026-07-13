@@ -319,7 +319,7 @@ def _renew_pkg_label(pkg: Dict) -> str:
     days = int(pkg.get("duration_days") or 0)
     gb_txt = "نامحدود" if gb <= 0 else f"{gb:g}GB"
     days_txt = "نامحدود" if days <= 0 else f"{days} روز"
-    price = int(pkg.get("price") or 0)
+    price = int(pkg.get("display_price", pkg.get("price") or 0) or 0)
     return f"{pkg.get('name') or 'پکیج'} — {gb_txt}/{days_txt} · {price:,} ت"
 
 
@@ -582,8 +582,11 @@ def packages_kb(pkgs: List[Dict]) -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
     for p in pkgs:
         gb = int(p["traffic_gb"]) if p["traffic_gb"] == int(p["traffic_gb"]) else p["traffic_gb"]
-        price = f"{int(p['price']):,}".replace(",", "،")
-        tier = "🥉" if p["price"] < 100000 else "🥈" if p["price"] < 200000 else "🥇"
+        # Show the price THIS user actually pays (rep/custom price), not the
+        # package default. Callers enrich pkgs with `display_price`.
+        pnum = int(p.get("display_price", p["price"]) or 0)
+        price = f"{pnum:,}".replace(",", "،")
+        tier = "🥉" if pnum < 100000 else "🥈" if pnum < 200000 else "🥇"
         _button(
             b,
             text=f"{tier} {p['name']} | {gb}GB | {p['duration_days']} روز | {price} تومان",

@@ -300,6 +300,18 @@ async def _calc_package_price_for_user(user_id: int, pkg: dict) -> tuple[int, in
     return p["final"], p["base"], p["discount"], p["price_per_gb"]
 
 
+async def _priced_packages(user_id: int, pkgs: list[dict]) -> list[dict]:
+    """Stamp each package with `display_price` = the price THIS user pays, so the
+    package/renew keyboards show the rep/custom price instead of the default."""
+    for pkg in pkgs:
+        try:
+            pr = await package_price_for_user(user_id, pkg)
+            pkg["display_price"] = int(pr["final"])
+        except Exception:
+            pkg["display_price"] = int(pkg.get("price") or 0)
+    return pkgs
+
+
 async def _migration_limit() -> int:
     raw = await get_setting("max_daily_migrations", str(MAX_DAILY_MIGRATIONS))
     try:
@@ -534,7 +546,8 @@ def _register_user_back_steps():
 
     async def _buy_name_back(cb: CallbackQuery, state: FSMContext):
         await state.clear()
-        pkgs = await get_packages(active_only=True)
+        u = await get_or_create_user(cb.from_user.id)
+        pkgs = await _priced_packages(u["id"], await get_packages(active_only=True))
         await cb.message.edit_text(
             "🛒 *پکیج مورد نظر را انتخاب کنید:*",
             reply_markup=packages_kb(pkgs),
@@ -972,6 +985,7 @@ async def sub_renew_same(cb: CallbackQuery):
     if not packages:
         await cb.answer("فعلاً پکیجی برای تمدید موجود نیست.", show_alert=True)
         return
+    packages = await _priced_packages(user["id"], packages)
     await cb.message.answer(
         "♻️ *تمدید سابسکریپشن*\n\nبا کدام پلن می‌خواهید تمدید کنید؟",
         reply_markup=renew_packages_kb("sub", pid, packages, f"sub_show:{pid}"),
@@ -994,6 +1008,7 @@ async def renew_config_start(cb: CallbackQuery):
     if not packages:
         await cb.answer("فعلاً پکیجی برای تمدید موجود نیست.", show_alert=True)
         return
+    packages = await _priced_packages(user["id"], packages)
 
     await cb.message.answer(
         "♻️ *تمدید سرویس*\n\n"
@@ -1271,6 +1286,8 @@ async def buy_service(msg: Message):
         await msg.answer("⛔ فعلاً هیچ سروری ظرفیت خالی برای فروش ندارد.")
         return
 
+    user = await get_or_create_user(msg.from_user.id, msg.from_user.username, msg.from_user.full_name)
+    pkgs = await _priced_packages(user["id"], pkgs)
     await msg.answer(
         "🛒 *پکیج مورد نظر را انتخاب کنید:*\n\nروی هر بخش از کارت پکیج بزنید تا همان پکیج انتخاب شود.",
         reply_markup=packages_kb(pkgs),
@@ -1863,6 +1880,7 @@ async def rep_buy_single(cb: CallbackQuery, state: FSMContext):
     if not await get_available_servers():
         await cb.answer("فعلاً سروری ظرفیت خالی ندارد.", show_alert=True)
         return
+    pkgs = await _priced_packages(user["id"], pkgs)
     await state.clear()
     await cb.message.answer(
         "🛍 *خرید تکی — پکیج را انتخاب کن*\n\nقیمت با تعرفه‌ی نمایندگی تو محاسبه می‌شود.",
