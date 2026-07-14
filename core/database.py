@@ -385,6 +385,7 @@ async def _ensure_columns(db):
             ("discount_code", "TEXT DEFAULT ''"),
             ("discount_amount", "INTEGER DEFAULT 0"),
             ("base_price", "INTEGER DEFAULT 0"),
+            ("cart_reminder_stage", "INTEGER DEFAULT 0"),
         ],
         "daily_reports": [
             ("renewals", "INTEGER DEFAULT 0"),
@@ -1850,6 +1851,57 @@ async def get_pending_orders() -> List[Dict]:
             ORDER BY o.created_at DESC
         """) as c:
             return [dict(r) for r in await c.fetchall()]
+
+
+async def get_abandoned_carts(stage: int, min_age: str, max_age: str, limit: int = 200) -> List[Dict]:
+    """Orders left unpaid (no receipt) — the 'abandoned cart' funnel hole.
+
+    Returns at most ONE order per user (their most recent unpaid one) whose
+    reminder stage is below ``stage`` and whose age sits in [max_age, min_age]
+    (older than the reminder delay, but not so old we nag about a stale cart).
+    ``min_age``/``max_age`` are 'YYYY-MM-DD HH:MM:SS' localtime cutoffs where
+    ``min_age`` is the more-recent boundary (created_at <= min_age)."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute("""
+            SELECT o.*, u.telegram_id, u.username, u.full_name,
+                   COALESCE(NULLIF(o.custom_name,''), p.name) as pkg_name,
+                   COALESCE(NULLIF(o.custom_traffic_gb,0), p.traffic_gb) as traffic_gb,
+                   COALESCE(NULLIF(o.custom_duration_days,0), p.duration_days) as duration_days,
+                   COALESCE(NULLIF(o.custom_price,0), p.price) as price
+            FROM orders o
+            JOIN users u ON o.user_id=u.id
+            JOIN packages p ON o.package_id=p.id
+            WHERE o.status IN ('pending_payment','pending_receipt')
+              AND o.cart_reminder_stage < ?
+              AND o.created_at <= ?
+              AND o.created_at >= ?
+              AND u.telegram_id IS NOT NULL
+              AND COALESCE(u.is_blocked,0)=0
+              AND o.id = (
+                    SELECT o2.id FROM orders o2
+                    WHERE o2.user_id=o.user_id
+                      AND o2.status IN ('pending_payment','pending_receipt')
+                    ORDER BY o2.created_at DESC, o2.id DESC LIMIT 1
+              )
+            ORDER BY o.created_at ASC
+            LIMIT ?
+        """, (int(stage), min_age, max_age, int(limit))) as c:
+            return [dict(r) for r in await c.fetchall()]
+
+
+async def mark_cart_reminder(user_id: int, stage: int):
+    """Bump the reminder stage on ALL of a user's still-unpaid orders, so sibling
+    carts don't re-trigger the same nudge on the next pass."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """UPDATE orders SET cart_reminder_stage=?
+               WHERE user_id=? AND status IN ('pending_payment','pending_receipt')
+                 AND cart_reminder_stage < ?""",
+            (int(stage), int(user_id), int(stage)),
+        )
+        await db.commit()
+
 
 async def get_all_orders(limit=100) -> List[Dict]:
     async with aiosqlite.connect(DB_PATH) as db:

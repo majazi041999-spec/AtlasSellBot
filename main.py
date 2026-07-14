@@ -463,7 +463,7 @@ async def _subscription_lifecycle_worker(bot):
     from core.database import get_setting
     from core.multi_subscription import run_subscription_lifecycle, run_subscription_expiry_warnings
     from core.rewards import run_referral_reminders
-    from core.campaigns import run_trial_to_paid, run_winback
+    from core.campaigns import run_trial_to_paid, run_winback, run_cart_recovery
 
     await asyncio.sleep(60)
     while True:
@@ -474,6 +474,8 @@ async def _subscription_lifecycle_worker(bot):
             await run_subscription_lifecycle(bot)
             # Smart 24h referral nudge (ask inviters to send a discount code).
             await run_referral_reminders(bot)
+            # Recover abandoned carts (order created but never paid).
+            await run_cart_recovery(bot)
             # Sales campaigns: convert lapsed trials, win back churned users.
             await run_trial_to_paid(bot)
             await run_winback(bot)

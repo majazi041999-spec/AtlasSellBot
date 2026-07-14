@@ -59,8 +59,10 @@ def admin_menu(finance_only: bool = False) -> ReplyKeyboardMarkup:
 
 def user_menu(include_wholesale: bool = True) -> ReplyKeyboardMarkup:
     b = ReplyKeyboardBuilder()
-    b.row(KeyboardButton(text="📡 وضعیت سرویس"), KeyboardButton(text="🛒 خرید سرویس"))
+    # Free trial is the top of the funnel — make it the first, full-width button
+    # (biggest tap target) so newcomers try before they weigh buying.
     b.row(KeyboardButton(text="🧪 تست رایگان"))
+    b.row(KeyboardButton(text="📡 وضعیت سرویس"), KeyboardButton(text="🛒 خرید سرویس"))
     b.row(KeyboardButton(text="🔄 انتقال سرور"), KeyboardButton(text="📋 سفارش‌های من"))
     b.row(KeyboardButton(text="🔄 شروع مجدد"))
     b.row(KeyboardButton(text="💳 کیف پول"), KeyboardButton(text="🎁 دعوت دوستان"))

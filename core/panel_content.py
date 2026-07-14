@@ -99,6 +99,25 @@ SETTINGS_DEFAULTS: Dict[str, str] = {
         "🎟️ کد تخفیف: {code}\n\n"
         "همین حالا سرویس کامل با سرعت بالا و چند سرور پشتیبان بگیر. 🚀"
     ),
+    # Abandoned-cart recovery: nudge users who created an order but never sent a
+    # receipt. Two touches — a gentle reminder, then a stronger one (put a discount
+    # code / incentive in template2 if you want). Delays are minutes / hours.
+    "cart_recovery_enabled": "1",
+    "cart_recovery_delay1_min": "30",
+    "cart_recovery_delay2_hours": "6",
+    "cart_recovery_max_age_hours": "48",
+    "cart_recovery_template1": (
+        "🛒 سفارشت رو برات نگه داشتیم!\n\n"
+        "📦 {pkg}\n"
+        "💳 مبلغ: {price} تومان\n\n"
+        "فقط ارسال رسید مونده تا سرویست همین حالا فعال شه. 👇"
+    ),
+    "cart_recovery_template2": (
+        "⏳ هنوز فرصت داری!\n\n"
+        "سفارش «{pkg}» هنوز کامل نشده و برات محفوظه.\n"
+        "💳 مبلغ: {price} تومان\n\n"
+        "همین حالا رسیدت رو بفرست تا با سرعت بالا و چند سرور پشتیبان وصل شی. 🚀"
+    ),
     "campaign_winback_enabled": "1",
     "campaign_winback_code": "",
     "campaign_winback_days": "14",

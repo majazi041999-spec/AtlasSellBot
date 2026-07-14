@@ -499,10 +499,22 @@ async def _subscription_info_links(profile: Dict, used: int, total: int, active_
     expire_date = datetime.fromtimestamp(expire_ms / 1000).strftime("%Y-%m-%d") if expire_ms > 0 else "نامحدود"
     remaining = max(0, total - used) if total > 0 else 0
     percent = min(100, int(used / total * 100)) if total > 0 else 0
-    brand = await get_setting("ui.brand_name", "Atlas Account")
+    platform_brand = await get_setting("ui.brand_name", "Atlas Account")
+
+    # HARD RULE: our platform brand must NEVER appear on a representative's
+    # subscription — only their own brand (or nothing). Resolve the brand that is
+    # allowed on THIS sub up-front, so every place it is interpolated is safe —
+    # not only the dedicated brand line but also the info template (which may
+    # itself contain {brand}). Rendering the info template with the raw platform
+    # brand was leaking our name onto reps' subscriptions.
+    hide, rep_brand, is_rep = await _owner_brand(profile)
+    if is_rep:
+        owner_brand = rep_brand if not hide else ""      # rep's own brand, or nothing
+    else:
+        owner_brand = "" if hide else rep_brand or platform_brand  # rep_brand is "" for non-reps
 
     values = {
-        "brand": brand,
+        "brand": owner_brand,
         "traffic_gb": f"{float(profile.get('traffic_gb') or 0):g}",
         "duration_days": str(int(profile.get("duration_days") or 0)),
         "used": _fmt_bytes_short(used),
@@ -529,19 +541,9 @@ async def _subscription_info_links(profile: Dict, used: int, total: int, active_
         labels.append(service_name)
     labels += _format_info_template(template, values)
 
-    # Brand line. HARD RULE: our platform brand must NEVER appear on a
-    # representative's subscription — only the rep's own brand (or nothing).
-    hide, rep_brand, is_rep = await _owner_brand(profile)
-    show_brand_text = ""
-    if is_rep:
-        # Rep: only ever their own brand, and only if they haven't hidden it.
-        if rep_brand and not hide:
-            show_brand_text = rep_brand
-    else:
-        if not hide:
-            show_brand_text = rep_brand or brand  # rep_brand is "" for non-reps
-    if show_brand_text:
-        values = {**values, "brand": show_brand_text}
+    # Dedicated brand line. Uses the same owner-safe brand resolved above, so a
+    # representative only ever sees their own brand here (never ours).
+    if owner_brand:
         brand_template = await get_setting("sub_brand_template", "📣 {brand}")
         labels = labels + _format_info_template(brand_template, values)
     return [_fake_info_link(label, i + 1) for i, label in enumerate(labels) if label]
@@ -580,7 +582,12 @@ async def _subscription_expired_notice_links(profile: Dict) -> list[str]:
     the whole list with a clear 'expired — renew from the bot' notice so people
     know what happened and how to fix it (and don't think the service is broken).
     """
-    brand = await get_setting("ui.brand_name", "Atlas Account")
+    # Owner-safe brand: never leak our platform brand onto a rep's sub, even here.
+    hide, rep_brand, is_rep = await _owner_brand(profile)
+    if is_rep:
+        brand = rep_brand if not hide else ""
+    else:
+        brand = "" if hide else await get_setting("ui.brand_name", "Atlas Account")
     now_ms = int(time.time() * 1000)
     expire_ms = int(profile.get("expire_timestamp") or 0)
     total = total_bytes(profile.get("traffic_gb") or 0)

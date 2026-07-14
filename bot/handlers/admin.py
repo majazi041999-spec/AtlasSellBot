@@ -797,6 +797,36 @@ async def _do_approve_impl(cb: CallbackQuery, oid: int, sid: int):
         )
     except Exception:
         pass
+
+    # Strike while the iron's hot: right after a successful purchase, invite the
+    # buyer to refer friends for a cash reward. Skipped for reps (they resell)
+    # and when referrals are disabled or the user has no code yet.
+    try:
+        if await get_setting("referral_enabled", "1") == "1" and not int(user.get("is_wholesale") or 0):
+            code = (user.get("referral_code") or "").strip()
+            if code:
+                from urllib.parse import quote
+                from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+
+                bot_username = (await cb.bot.get_me()).username
+                ref_link = f"https://t.me/{bot_username}?start={code}"
+                share_text = (
+                    "🌐 اینترنت پرسرعت و بی‌قطعی — با این لینک رایگان تستش کن:\n" + ref_link
+                )
+                share_url = f"https://t.me/share/url?url={quote(ref_link)}&text={quote(share_text)}"
+                kb = InlineKeyboardMarkup(inline_keyboard=[[
+                    InlineKeyboardButton(text="🎁 دعوت دوستان و کسب درآمد", url=share_url)
+                ]])
+                await cb.bot.send_message(
+                    order["telegram_id"],
+                    "🎁 سرویست فعال شد — حالا نوبت درآمده!\n\n"
+                    "دوستات رو دعوت کن؛ برای هر دعوتی که خرید کنه، پول نقد می‌گیری تو کیف پولت 💰\n\n"
+                    f"🔗 لینک دعوت اختصاصی تو:\n{ref_link}",
+                    parse_mode=None,
+                    reply_markup=kb,
+                )
+    except Exception:
+        pass
     return True
 
 
