@@ -233,6 +233,17 @@ async def _admin_logo() -> str:
     return (await get_setting("ui.logo_data", "")).strip()
 
 
+def _is_whitelabel_owner(u: dict) -> bool:
+    """True when a subscription owner must be treated as a representative for
+    white-label branding: flagged wholesale OR has configured their own brand /
+    logo. Keying only on is_wholesale leaked our brand onto a rep whose flag was
+    momentarily off (or set after their branding). Mirrors _owner_brand in
+    core.multi_subscription — keep the two in sync."""
+    return bool(int(u.get("is_wholesale") or 0)) \
+        or bool((u.get("rep_brand_name") or "").strip()) \
+        or bool((u.get("rep_logo") or "").strip())
+
+
 async def _resolve_sub_logo(profile: dict) -> str:
     """Logo to show on a subscription's browser page: the rep's own logo for a
     rep's sub, otherwise the platform (admin) logo. Never leaks ours to a rep."""
@@ -243,7 +254,7 @@ async def _resolve_sub_logo(profile: dict) -> str:
             u = await _gubi(int(uid))
         except Exception:
             u = None
-        if u and int(u.get("is_wholesale") or 0):
+        if u and _is_whitelabel_owner(u):
             return (u.get("rep_logo") or "").strip()  # empty → neutral, never ours
     return await _admin_logo()
 
@@ -260,7 +271,7 @@ async def _resolve_sub_brand(profile: dict) -> tuple[str, bool]:
             u = await _gubi(int(uid))
         except Exception:
             u = None
-        if u and int(u.get("is_wholesale") or 0):
+        if u and _is_whitelabel_owner(u):
             return (u.get("rep_brand_name") or "").strip(), True
     return await get_setting("ui.brand_name", "Atlas Account"), False
 

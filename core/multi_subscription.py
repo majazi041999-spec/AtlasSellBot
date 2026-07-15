@@ -564,8 +564,15 @@ async def _owner_brand(profile: Dict) -> tuple[bool, str, bool]:
     if not u:
         return False, "", False
     hide = bool(int(u.get("hide_brand") or 0))
-    is_rep = bool(int(u.get("is_wholesale") or 0))
-    rep_brand = (u.get("rep_brand_name") or "").strip() if is_rep else ""
+    rep_brand = (u.get("rep_brand_name") or "").strip()
+    rep_logo = (u.get("rep_logo") or "").strip()
+    # White-label detection: treat the owner as a representative if they're flagged
+    # a wholesale user OR have configured their own brand/logo. Keying only on the
+    # is_wholesale flag leaked our brand onto a rep whose flag was momentarily off
+    # (or set after their branding) — so honor configured branding directly too.
+    is_rep = bool(int(u.get("is_wholesale") or 0)) or bool(rep_brand) or bool(rep_logo)
+    if not is_rep:
+        rep_brand = ""
     return hide, rep_brand, is_rep
 
 
