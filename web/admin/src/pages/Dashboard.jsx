@@ -1,20 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { api, fmt, BASE } from "../api.js";
-import { Stat, Card, Loading, Empty, toast } from "../components/ui.jsx";
+import { Stat, Card, Loading, Empty, toast, timeAgo } from "../components/ui.jsx";
 import Analytics from "./Analytics.jsx";
-
-function timeAgo(s) {
-  if (!s) return "";
-  const t = new Date((s || "").replace(" ", "T")).getTime();
-  if (!t) return s;
-  const diff = Math.max(0, Date.now() - t);
-  const m = Math.floor(diff / 60000);
-  if (m < 1) return "همین حالا";
-  if (m < 60) return `${m} دقیقه پیش`;
-  const h = Math.floor(m / 60);
-  if (h < 24) return `${h} ساعت پیش`;
-  return `${Math.floor(h / 24)} روز پیش`;
-}
 
 export default function Dashboard({ onBadges, go }) {
   const [d, setD] = useState(null);

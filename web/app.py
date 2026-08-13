@@ -75,6 +75,11 @@ from core.database import (
     delete_configs_by_base_email,
     get_all_orders,
     get_all_users,
+    list_users,
+    USER_SORTS,
+    USER_FILTERS,
+    USER_PERIODS,
+    DEFAULT_USER_SORT,
     find_user,
     get_user_orders_full,
     get_rep_financials,
@@ -139,6 +144,7 @@ from core.panel_content import (
     SETTINGS_DEFAULTS,
     UI_DEFAULTS,
 )
+from core.sorting import fa_sort_key
 from core.xui_api import XUIClient, expiry_ms_from_days
 from core.renewal import find_and_renew_config
 from core.qr import build_qr_image
@@ -1458,9 +1464,29 @@ async def api_users(request: Request):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     q = (request.query_params.get("q") or "").strip()
     page = max(1, int(request.query_params.get("page", "1") or 1))
+    # Unknown keys fall back to the default inside list_users, so a stale or
+    # hand-edited query string can never 500 the page.
+    sort = request.query_params.get("sort") or DEFAULT_USER_SORT
+    filt = request.query_params.get("filter") or "all"
+    period = request.query_params.get("period") or "all"
     per_page = 40
 
     def _slim_user(u: dict) -> dict:
+        # Stats come inline from list_users(); fall back to the per-user helper's
+        # shape for callers that still attach u["business"] themselves.
+        biz = u.get("business")
+        if biz is None:
+            biz = {
+                "approved_orders": int(u.get("approved_orders") or 0),
+                "pending_orders": int(u.get("pending_orders") or 0),
+                "total_configs": int(u.get("total_configs") or 0),
+                "active_configs": int(u.get("active_configs") or 0),
+                "total_subs": int(u.get("total_subs") or 0),
+                "active_subs": int(u.get("active_subs") or 0),
+                "active_services": int(u.get("active_services") or 0),
+                "total_spent": int(u.get("total_spent") or 0),
+                "last_order_at": u.get("last_order_at"),
+            }
         return {
             "id": u["id"], "telegram_id": u.get("telegram_id"), "username": u.get("username"),
             "full_name": u.get("full_name"), "is_blocked": int(u.get("is_blocked") or 0),
@@ -1474,21 +1500,17 @@ async def api_users(request: Request):
             "price_per_gb": int(u.get("price_per_gb") or 0),
             "unlimited_price": int(u.get("unlimited_price") or 0),
             "created_at": u.get("created_at"),
-            "business": u.get("business") or {},
+            "business": biz,
         }
 
-    if q and len(q) >= 2:
-        results = await search_users(q, limit=50)
-        for u in results:
-            u["business"] = await get_user_business_stats(u["id"])
-        return JSONResponse({"users": [_slim_user(u) for u in results], "total": len(results), "page": 1, "total_pages": 1, "query": q})
-
-    total = await count_users()
+    users, total = await list_users(q=q, filt=filt, sort=sort, period=period,
+                                    offset=(page - 1) * per_page, limit=per_page)
     total_pages = max(1, (total + per_page - 1) // per_page)
-    page = min(page, total_pages)
-    users = await get_all_users((page - 1) * per_page, per_page)
-    for u in users:
-        u["business"] = await get_user_business_stats(u["id"])
+    if page > total_pages:  # filter shrank the result set under the current page
+        page = total_pages
+        users, total = await list_users(q=q, filt=filt, sort=sort, period=period,
+                                        offset=(page - 1) * per_page, limit=per_page)
+
     wholesale = await get_wholesale_users(200)
     for u in wholesale:
         u["business"] = await get_user_business_stats(u["id"])
@@ -1496,6 +1518,9 @@ async def api_users(request: Request):
     return JSONResponse({
         "users": [_slim_user(u) for u in users],
         "total": total, "page": page, "total_pages": total_pages,
+        "query": q, "sort": sort, "filter": filt, "period": period,
+        "sorts": list(USER_SORTS.keys()), "filters": list(USER_FILTERS.keys()),
+        "periods": list(USER_PERIODS.keys()),
         "wholesale": [_slim_user(u) for u in wholesale],
         "pending_topups": [{
             "id": t.get("id"), "user_id": t.get("user_id"), "amount": int(t.get("amount") or 0),
@@ -1547,6 +1572,7 @@ async def api_reps(request: Request):
             "full_name": u.get("full_name"), "is_wholesale": int(u.get("is_wholesale") or 0),
             "wholesale_request_pending": int(u.get("wholesale_request_pending") or 0),
             "rep_brand_name": u.get("rep_brand_name") or "", "balance_toman": int(u.get("balance_toman") or 0),
+            "created_at": u.get("created_at"),
             "fin": fin,
         })
     out.sort(key=lambda r: r["fin"].get("total_spent") or 0, reverse=True)
@@ -2115,12 +2141,73 @@ async def subscription_profile_delete(request: Request, profile_id: int):
     return JSONResponse({"success": True, **result})
 
 
+# Sort/filter for the subscription (service) lists. Done in Python because the
+# rows are already fully materialised and the derived keys (usage %, days left)
+# aren't columns.
+SUB_SORTS = ["newest", "oldest", "name_az", "name_za", "owner_az",
+             "expiry_soon", "expiry_late", "usage_desc", "usage_asc", "traffic_desc"]
+SUB_FILTERS = ["all", "active", "inactive", "expired", "expiring", "near_limit", "unlimited"]
+
+
+def _profile_sort_name(p: dict) -> list:
+    return fa_sort_key(p.get("name") or p.get("email") or "")
+
+
+def _sort_filter_profiles(rows: list, sort: str, filt: str, now_ms: int) -> list:
+    def used_pct(p):
+        total_b = float(p.get("traffic_gb") or 0) * 1024 ** 3
+        return (min(100.0, float(p.get("used_bytes") or 0) / total_b * 100) if total_b > 0 else 0.0)
+
+    def expired(p):
+        exp = int(p.get("expire_timestamp") or 0)
+        return exp > 0 and exp <= now_ms
+
+    def days_left(p):
+        exp = int(p.get("expire_timestamp") or 0)
+        return (exp - now_ms) / 86400000 if exp > 0 else None
+
+    if filt == "active":
+        rows = [p for p in rows if int(p.get("is_active") or 0) and not expired(p)]
+    elif filt == "inactive":
+        rows = [p for p in rows if not int(p.get("is_active") or 0)]
+    elif filt == "expired":
+        rows = [p for p in rows if expired(p)]
+    elif filt == "expiring":  # ≤3 days left and still alive
+        rows = [p for p in rows if int(p.get("is_active") or 0) and not expired(p)
+                and days_left(p) is not None and days_left(p) <= 3]
+    elif filt == "near_limit":
+        rows = [p for p in rows if used_pct(p) >= 85]
+    elif filt == "unlimited":
+        rows = [p for p in rows if float(p.get("traffic_gb") or 0) <= 0]
+
+    # No-expiry profiles sort last under "soonest", first under "latest".
+    INF = float("inf")
+    keys = {
+        "newest":      (lambda p: int(p.get("id") or 0), True),
+        "oldest":      (lambda p: int(p.get("id") or 0), False),
+        "name_az":     (_profile_sort_name, False),
+        "name_za":     (_profile_sort_name, True),
+        "owner_az":    (lambda p: fa_sort_key(p.get("full_name") or p.get("username") or ""), False),
+        "expiry_soon": (lambda p: (days_left(p) if days_left(p) is not None else INF), False),
+        "expiry_late": (lambda p: (days_left(p) if days_left(p) is not None else INF), True),
+        "usage_desc":  (used_pct, True),
+        "usage_asc":   (used_pct, False),
+        "traffic_desc": (lambda p: float(p.get("traffic_gb") or 0), True),
+    }
+    key, rev = keys.get(sort or "", keys["newest"])
+    # Stable secondary order by id so equal keys page deterministically.
+    rows = sorted(rows, key=lambda p: int(p.get("id") or 0), reverse=True)
+    return sorted(rows, key=key, reverse=rev)
+
+
 @app.get(f"/{S}/api/subs/profiles")
 async def api_subs_profiles(request: Request):
     if not _api_guard(request):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     q = (request.query_params.get("q") or "").strip().lower()
     page = max(1, int(request.query_params.get("page", "1") or 1))
+    sort = request.query_params.get("sort") or "newest"
+    filt = request.query_params.get("filter") or "all"
     per_page = 40
     all_p = await get_subscription_profiles_full(limit=2000)
     if q:
@@ -2128,10 +2215,13 @@ async def api_subs_profiles(request: Request):
                  or q in str(p.get("name") or "").lower()
                  or q in str(p.get("telegram_id") or "").lower()
                  or q in str(p.get("full_name") or "").lower()]
+
+    now_ms = int(time.time() * 1000)
+    all_p = _sort_filter_profiles(all_p, sort, filt, now_ms)
+
     total = len(all_p)
     total_pages = max(1, (total + per_page - 1) // per_page)
     page = min(page, total_pages)
-    now_ms = int(time.time() * 1000)
     items = []
     for p in all_p[(page - 1) * per_page: page * per_page]:
         try:
@@ -2150,7 +2240,9 @@ async def api_subs_profiles(request: Request):
             "days_left": (max(0, int((exp - now_ms) / 86400000)) if exp > 0 else -1),
             "url": url,
         })
-    return JSONResponse({"profiles": items, "total": total, "page": page, "total_pages": total_pages, "query": q})
+    return JSONResponse({"profiles": items, "total": total, "page": page, "total_pages": total_pages,
+                         "query": q, "sort": sort, "filter": filt,
+                         "sorts": SUB_SORTS, "filters": SUB_FILTERS})
 
 
 @app.post(f"/{S}/subs/settings")
@@ -2953,6 +3045,7 @@ async def miniapp_services(request: Request):
             "expire_ts": int(p.get("expire_timestamp") or 0), "is_active": int(p.get("is_active") or 0),
             "sub_url": sub_url,
             "email": p.get("email") or "",
+            "created_at": p.get("created_at") or "",   # lets the mini-app sort by purchase time
             "nodes": [{
                 "label": n.get("node_label") or n.get("server_name"),
                 "is_active": int(n.get("is_active") or 0),

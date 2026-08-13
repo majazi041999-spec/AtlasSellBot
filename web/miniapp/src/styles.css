@@ -183,6 +183,17 @@ small{font-weight:500}
 .search-ico{position:absolute;inset-inline-start:12px;top:50%;transform:translateY(-50%);opacity:.6;font-size:.9rem}
 .search-clear{position:absolute;inset-inline-end:8px;top:50%;transform:translateY(-50%);background:rgba(255,255,255,.1);border:none;color:#fff;width:24px;height:24px;border-radius:50%;cursor:pointer}
 
+/* ── Sort & filter ── */
+.sortbar{margin-bottom:8px}
+.sort-sel{width:100%;cursor:pointer;font-weight:600}
+.sort-sel option{background:#151b2c;color:var(--txt)}
+/* One scrollable row so many filters never push the list down the screen. */
+.filter-chips{display:flex;gap:7px;overflow-x:auto;margin-bottom:10px;padding-bottom:2px;scrollbar-width:none;-webkit-overflow-scrolling:touch}
+.filter-chips::-webkit-scrollbar{display:none}
+.fchip{flex:none;display:inline-flex;align-items:center;gap:5px;font-family:inherit;font-size:.76rem;font-weight:700;color:var(--txt2);background:rgba(255,255,255,.05);border:1px solid var(--bd);border-radius:20px;padding:7px 13px;cursor:pointer;transition:all .15s}
+.fchip.on{color:#fff;border-color:transparent;background:linear-gradient(135deg,var(--p),var(--p2))}
+.fchip em{font-style:normal;font-size:.68rem;opacity:.75}
+
 /* ── Per-node card (rich) ── */
 .node-card{background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.07);border-radius:12px;padding:10px 12px}
 .node-top{display:flex;align-items:center;gap:8px;font-weight:700;font-size:.85rem}

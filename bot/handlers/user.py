@@ -87,6 +87,13 @@ from bot.keyboards import (
     renew_packages_kb,
     config_links_kb,
     user_services_kb,
+    service_sort_kb,
+    service_filter_kb,
+    normalize_service_view,
+    sort_filter_services,
+    SERVICE_FILTERS,
+    DEFAULT_SERVICE_SORT,
+    DEFAULT_SERVICE_FILTER,
     subscription_detail_kb,
     subscription_delete_confirm_kb,
     servers_kb,
@@ -569,20 +576,54 @@ async def _user_service_lists(user_id: int) -> tuple[list[dict], list[dict]]:
     return configs, profiles
 
 
-async def _send_services_list(target, user_id: int, page: int = 0):
+def _service_view_counts(configs: list[dict], profiles: list[dict]) -> dict[str, int]:
+    """How many services each filter would show — used on the filter menu."""
+    items = [("sub", p) for p in profiles] + [("cfg", c) for c in configs]
+    return {code: len(sort_filter_services(items, DEFAULT_SERVICE_SORT, code))
+            for code, _ in SERVICE_FILTERS}
+
+
+async def _send_services_list(target, user_id: int, page: int = 0,
+                              sort: str = DEFAULT_SERVICE_SORT, filt: str = DEFAULT_SERVICE_FILTER,
+                              is_rep: bool = False):
     configs, profiles = await _user_service_lists(user_id)
+    sort, filt = normalize_service_view(sort, filt)
     total = len(configs) + len(profiles)
+    shown = _service_view_counts(configs, profiles).get(filt, total)
+
+    if is_rep:
+        head = "👥 مشتریان من\n\n"
+        tail = "روی هر سرویس بزن تا مدیریتش کنی: «✏️ تغییر نام» یا «♻️ تمدید»."
+    else:
+        head = "📡 مدیریت سرویس‌های شما\n\n"
+        tail = "یکی از سرویس‌ها را انتخاب کنید:"
+    view = "" if filt == DEFAULT_SERVICE_FILTER else f"نمایش داده‌شده: {shown}\n"
     text = (
-        "📡 مدیریت سرویس‌های شما\n\n"
+        f"{head}"
         f"کل سرویس‌ها: {total}\n"
+        f"{view}"
         f"کانفیگ عادی: {len(configs)} | لینک ساب: {len(profiles)}\n\n"
-        "یکی از سرویس‌ها را انتخاب کنید:"
+        f"{tail}"
     )
-    kb = user_services_kb(configs, profiles, page=page)
+    kb = user_services_kb(configs, profiles, page=page, sort=sort, filt=filt)
     if isinstance(target, Message):
         await target.answer(text, reply_markup=kb, parse_mode=None)
     else:
         await target.message.edit_text(text, reply_markup=kb, parse_mode=None)
+
+
+def _parse_service_view(data: str) -> tuple[int, str, str]:
+    """`prefix:page:sort:filter` → (page, sort, filter), tolerant of old/short data."""
+    parts = (data or "").split(":")
+    try:
+        page = int(parts[1]) if len(parts) > 1 else 0
+    except ValueError:
+        page = 0
+    sort, filt = normalize_service_view(
+        parts[2] if len(parts) > 2 else None,
+        parts[3] if len(parts) > 3 else None,
+    )
+    return max(0, page), sort, filt
 
 
 @router.message(F.text == "📡 وضعیت سرویس")
@@ -605,19 +646,50 @@ async def user_status(msg: Message):
     if total == 1 and profiles:
         await _send_subscription_status(msg, profiles[0])
         return
-    await _send_services_list(msg, user["id"], page=0)
+    await _send_services_list(msg, user["id"], page=0, is_rep=bool(user.get("is_wholesale", 0)))
 
 
+@router.callback_query(F.data == "svc_noop")
+async def services_noop(cb: CallbackQuery):
+    """The page counter in the middle of the pager — label only."""
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("svc:"))
 @router.callback_query(F.data.startswith("svc_pg:"))
 async def services_page(cb: CallbackQuery):
+    """Paging + sort/filter state, all carried in `svc:{page}:{sort}:{filter}`.
+    `svc_pg:{page}` is the old form and still works (keyboards sent before the
+    update are still live in users' chats)."""
     if not await _ensure_channel_membership(cb):
         return
     user = await get_or_create_user(cb.from_user.id, cb.from_user.username, cb.from_user.full_name)
-    try:
-        page = int(cb.data.split(":", 1)[1])
-    except Exception:
-        page = 0
-    await _send_services_list(cb, user["id"], page=page)
+    page, sort, filt = _parse_service_view(cb.data)
+    await _send_services_list(cb, user["id"], page=page, sort=sort, filt=filt,
+                              is_rep=bool(user.get("is_wholesale", 0)))
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("svc_srt:"))
+async def services_sort_menu(cb: CallbackQuery):
+    page, sort, filt = _parse_service_view(cb.data)
+    await cb.message.edit_text(
+        "🔃 مرتب‌سازی سرویس‌ها\n\nلیست بر چه اساسی مرتب شود؟",
+        reply_markup=service_sort_kb(page, sort, filt), parse_mode=None,
+    )
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("svc_flt:"))
+async def services_filter_menu(cb: CallbackQuery):
+    user = await get_or_create_user(cb.from_user.id, cb.from_user.username, cb.from_user.full_name)
+    page, sort, filt = _parse_service_view(cb.data)
+    configs, profiles = await _user_service_lists(user["id"])
+    await cb.message.edit_text(
+        "🔎 فیلتر سرویس‌ها\n\nکدام سرویس‌ها نمایش داده شوند؟",
+        reply_markup=service_filter_kb(page, sort, filt, _service_view_counts(configs, profiles)),
+        parse_mode=None,
+    )
     await cb.answer()
 
 
@@ -641,7 +713,7 @@ async def back_configs(cb: CallbackQuery):
         await cb.message.edit_text(" سرویسی ندارید.")
         await cb.answer()
         return
-    await _send_services_list(cb, user["id"], page=0)
+    await _send_services_list(cb, user["id"], page=0, is_rep=bool(user.get("is_wholesale", 0)))
     await cb.answer()
 
 
@@ -1936,21 +2008,14 @@ async def rep_customers(cb: CallbackQuery):
         await cb.answer("فقط برای نمایندگان.", show_alert=True)
         return
     configs, profiles = await _user_service_lists(user["id"])
-    total = len(configs) + len(profiles)
-    if not total:
+    if not configs and not profiles:
         await cb.message.edit_text(
             "👥 *مشتریان من*\n\nهنوز سرویسی نساخته‌ای. از «🛒 ساخت سرویس» شروع کن.",
             reply_markup=rep_back_kb(), parse_mode="Markdown",
         )
         await cb.answer()
         return
-    text = (
-        "👥 *مشتریان من*\n\n"
-        f"مجموع سرویس‌ها: *{total}*\n\n"
-        "روی هر سرویس بزن تا مدیریتش کنی: با «✏️ تغییر نام» اسم مشتری را رویش بگذار، "
-        "یا «♻️ تمدید» کن."
-    )
-    await cb.message.edit_text(text, reply_markup=user_services_kb(configs, profiles, page=0), parse_mode="Markdown")
+    await _send_services_list(cb, user["id"], page=0, is_rep=True)
     await cb.answer()
 
 

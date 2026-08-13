@@ -6,6 +6,7 @@ from datetime import datetime, date, timedelta
 from typing import Optional, List, Dict
 from core.config import DB_PATH
 from core.jalali import jalali_date_key, jalali_display, tehran_now
+from core.sorting import fa_collation
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS servers (
@@ -748,6 +749,145 @@ async def get_all_users(offset=0, limit=50) -> List[Dict]:
             "SELECT * FROM users ORDER BY created_at DESC LIMIT ? OFFSET ?", (limit, offset)
         ) as c:
             return [dict(r) for r in await c.fetchall()]
+
+
+# ── users: search + filter + sort (one query, stats included) ────────────────
+# Sort keys are ORDER BY fragments over the aliases selected in _USER_STATS_SQL.
+# Every one ends with a stable tiebreaker so paging can't drop/repeat a row.
+USER_SORTS = {
+    "newest":        "u.created_at DESC, u.id DESC",
+    "oldest":        "u.created_at ASC, u.id ASC",
+    # {coll} = the Persian collation when we can register it, NOCASE otherwise.
+    "name_az":       "sort_name COLLATE {coll} ASC, u.id DESC",
+    "name_za":       "sort_name COLLATE {coll} DESC, u.id DESC",
+    "balance_desc":  "COALESCE(u.balance_toman,0) DESC, u.id DESC",
+    "balance_asc":   "COALESCE(u.balance_toman,0) ASC, u.id DESC",
+    "orders_desc":   "approved_orders DESC, u.id DESC",
+    "spent_desc":    "total_spent DESC, u.id DESC",
+    "services_desc": "active_services DESC, u.id DESC",
+    "recent_buy":    "last_order_at DESC, u.id DESC",
+}
+DEFAULT_USER_SORT = "newest"
+
+# Filter key → WHERE fragment (no params).
+USER_FILTERS = {
+    "all":          "",
+    "rep":          "COALESCE(u.is_wholesale,0)=1",
+    "rep_pending":  "COALESCE(u.wholesale_request_pending,0)=1 AND COALESCE(u.is_wholesale,0)=0",
+    "admin":        "(COALESCE(u.is_admin,0)=1 OR COALESCE(u.admin_role,'none') NOT IN ('none',''))",
+    "blocked":      "COALESCE(u.is_blocked,0)=1",
+    "active":       "COALESCE(u.is_blocked,0)=0",
+    "custom_price": ("(COALESCE(u.price_per_gb,0)>0 OR COALESCE(u.unlimited_price,0)>0 "
+                     "OR COALESCE(u.discount_percent,0)>0)"),
+    "has_balance":  "COALESCE(u.balance_toman,0)>0",
+    "buyers":       "(SELECT COUNT(*) FROM orders o WHERE o.user_id=u.id AND o.status='approved')>0",
+    "no_orders":    "(SELECT COUNT(*) FROM orders o WHERE o.user_id=u.id AND o.status='approved')=0",
+}
+
+# Registration-date window → WHERE fragment. `created_at` is 'YYYY-MM-DD HH:MM:SS'
+# local time, so plain string comparison against date()/datetime() is correct.
+USER_PERIODS = {
+    "all":   "",
+    "today": "u.created_at >= date('now','localtime')",
+    "week":  "u.created_at >= date('now','localtime','-7 days')",
+    "month": "u.created_at >= date('now','localtime','-30 days')",
+    "year":  "u.created_at >= date('now','localtime','-365 days')",
+}
+
+# Per-user aggregates, computed inline so a page costs ONE query instead of
+# get_user_business_stats() × page_size. Aliases double as sort keys.
+_USER_STATS_SQL = """
+    COALESCE(NULLIF(TRIM(u.full_name),''), NULLIF(TRIM(u.username),''),
+             CAST(u.telegram_id AS TEXT)) AS sort_name,
+    (SELECT COUNT(*) FROM orders o WHERE o.user_id=u.id AND o.status='approved') AS approved_orders,
+    (SELECT COUNT(*) FROM orders o WHERE o.user_id=u.id AND o.status='pending') AS pending_orders,
+    (SELECT COALESCE(SUM(COALESCE(NULLIF(o.custom_price,0), p.price, 0)),0)
+       FROM orders o LEFT JOIN packages p ON p.id=o.package_id
+      WHERE o.user_id=u.id AND o.status='approved') AS total_spent,
+    (SELECT MAX(o.created_at) FROM orders o
+      WHERE o.user_id=u.id AND o.status='approved') AS last_order_at,
+    (SELECT COUNT(*) FROM configs c WHERE c.user_id=u.id) AS total_configs,
+    (SELECT COUNT(*) FROM configs c WHERE c.user_id=u.id AND c.is_active=1) AS active_configs,
+    (SELECT COUNT(*) FROM subscription_profiles sp WHERE sp.user_id=u.id) AS total_subs,
+    (SELECT COUNT(*) FROM subscription_profiles sp
+      WHERE sp.user_id=u.id AND sp.is_active=1
+        AND (sp.expire_timestamp=0 OR sp.expire_timestamp > :now_ms)) AS active_subs,
+    (SELECT COUNT(*) FROM configs c WHERE c.user_id=u.id AND c.is_active=1)
+    + (SELECT COUNT(*) FROM subscription_profiles sp
+        WHERE sp.user_id=u.id AND sp.is_active=1
+          AND (sp.expire_timestamp=0 OR sp.expire_timestamp > :now_ms)) AS active_services
+"""
+
+
+def _user_list_where(q: str, filt: str, period: str) -> tuple[str, dict]:
+    """Build the shared WHERE for list_users/count_users_filtered."""
+    clauses: List[str] = []
+    params: Dict = {}
+
+    q = (q or "").strip().lstrip("@")
+    if q:
+        digits = q.replace(" ", "")
+        if digits.isdigit():
+            clauses.append("(CAST(u.telegram_id AS TEXT) LIKE :qlike OR u.id = :qid)")
+            params["qlike"] = f"%{digits}%"
+            params["qid"] = int(digits)
+        else:
+            clauses.append("(lower(COALESCE(u.username,'')) LIKE :qlike "
+                           "OR lower(COALESCE(u.full_name,'')) LIKE :qlike "
+                           "OR lower(COALESCE(u.rep_brand_name,'')) LIKE :qlike)")
+            params["qlike"] = f"%{q.lower()}%"
+
+    frag = USER_FILTERS.get(filt or "all", "")
+    if frag:
+        clauses.append(frag)
+    frag = USER_PERIODS.get(period or "all", "")
+    if frag:
+        clauses.append(frag)
+
+    return (" WHERE " + " AND ".join(clauses)) if clauses else "", params
+
+
+async def _register_fa_collation(db) -> str:
+    """Register the Persian collation on this connection so name sorts order
+    the way a Persian reader expects. aiosqlite has no public wrapper for
+    create_collation, so reach the raw sqlite3 connection through its executor;
+    if that ever stops working we degrade to NOCASE rather than breaking the
+    page. Returns the collation name to use in ORDER BY.
+    """
+    try:
+        await db._execute(db._conn.create_collation, "FA", fa_collation)
+        return "FA"
+    except Exception:
+        return "NOCASE"
+
+
+async def list_users(q: str = "", filt: str = "all", sort: str = DEFAULT_USER_SORT,
+                     period: str = "all", offset: int = 0, limit: int = 40) -> tuple[List[Dict], int]:
+    """Paged user list with search/filter/sort. Returns (rows, total_matching).
+
+    Each row carries the per-user aggregates (approved_orders, active_services,
+    total_spent, …) so callers don't need get_user_business_stats() per user.
+    """
+    where, params = _user_list_where(q, filt, period)
+    order = USER_SORTS.get(sort or "", USER_SORTS[DEFAULT_USER_SORT])
+    params["now_ms"] = int(time.time() * 1000)
+    params["limit"] = max(1, int(limit or 40))
+    params["offset"] = max(0, int(offset or 0))
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        # Only name sorts carry the {coll} placeholder; format() is a no-op
+        # for the rest, so registering is skipped unless it's actually needed.
+        if "{coll}" in order:
+            order = order.format(coll=await _register_fa_collation(db))
+        async with db.execute(f"SELECT COUNT(*) FROM users u{where}", params) as c:
+            total = (await c.fetchone())[0]
+        async with db.execute(
+            f"SELECT u.*, {_USER_STATS_SQL} FROM users u{where} "
+            f"ORDER BY {order} LIMIT :limit OFFSET :offset", params
+        ) as c:
+            rows = [dict(r) for r in await c.fetchall()]
+    return rows, total
 
 
 async def get_user_business_stats(uid: int) -> Dict:

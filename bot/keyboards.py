@@ -6,6 +6,8 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
 from typing import List, Dict
 import time
 
+from core.sorting import fa_sort_key
+
 try:
     from aiogram.types import CopyTextButton
 except Exception:
@@ -261,10 +263,90 @@ def _service_button_text(kind: str, item: Dict) -> tuple[str, str]:
     return text, callback
 
 
-def user_services_kb(configs: List[Dict], profiles: List[Dict], page: int = 0, per_page: int = 8) -> InlineKeyboardMarkup:
+# ── service list: sort & filter ──────────────────────────────────────────────
+# Codes are single letters / short words because they ride inside callback_data
+# (`svc:{page}:{sort}:{filter}`), which Telegram caps at 64 bytes.
+SERVICE_SORTS = [
+    ("n", "🕒 جدیدترین"),
+    ("o", "🕒 قدیمی‌ترین"),
+    ("a", "🔤 نام (الف → ی)"),
+    ("z", "🔤 نام (ی → الف)"),
+    ("e", "⏳ نزدیک‌ترین انقضا"),
+    ("x", "⏳ دورترین انقضا"),
+    ("g", "💾 بیشترین حجم"),
+]
+SERVICE_FILTERS = [
+    ("all", "📋 همه"),
+    ("on", "🟢 فعال"),
+    ("soon", "⏰ رو به انقضا"),
+    ("off", "🔴 منقضی / غیرفعال"),
+]
+SERVICE_SORT_LABELS = dict(SERVICE_SORTS)
+SERVICE_FILTER_LABELS = dict(SERVICE_FILTERS)
+DEFAULT_SERVICE_SORT = "n"
+DEFAULT_SERVICE_FILTER = "all"
+
+
+def normalize_service_view(sort: str | None, filt: str | None) -> tuple[str, str]:
+    """Clamp callback-supplied codes to known values."""
+    sort = sort if sort in SERVICE_SORT_LABELS else DEFAULT_SERVICE_SORT
+    filt = filt if filt in SERVICE_FILTER_LABELS else DEFAULT_SERVICE_FILTER
+    return sort, filt
+
+
+def _service_name_key(item: Dict) -> list:
+    return fa_sort_key(item.get("name") or item.get("email") or "")
+
+
+def sort_filter_services(items: List[tuple], sort: str, filt: str) -> List[tuple]:
+    """items = [(kind, row)]. Returns a new filtered+sorted list."""
+    now_ms = int(time.time() * 1000)
+    INF = float("inf")
+
+    def expire_ms(it):
+        return int(it[1].get("expire_timestamp") or 0)
+
+    def expired(it):
+        exp = expire_ms(it)
+        return exp > 0 and exp <= now_ms
+
+    def alive(it):
+        return bool(int(it[1].get("is_active") or 0)) and not expired(it)
+
+    def days_left(it):
+        exp = expire_ms(it)
+        return (exp - now_ms) / 86_400_000 if exp > 0 else None
+
+    if filt == "on":
+        items = [it for it in items if alive(it)]
+    elif filt == "off":
+        items = [it for it in items if not alive(it)]
+    elif filt == "soon":
+        items = [it for it in items if alive(it)
+                 and days_left(it) is not None and days_left(it) <= 3]
+
+    # Newest/oldest use the row id — subscription_profiles and configs both
+    # allocate ids in purchase order.
+    keys = {
+        "n": (lambda it: int(it[1].get("id") or 0), True),
+        "o": (lambda it: int(it[1].get("id") or 0), False),
+        "a": (lambda it: _service_name_key(it[1]), False),
+        "z": (lambda it: _service_name_key(it[1]), True),
+        "e": (lambda it: (days_left(it) if days_left(it) is not None else INF), False),
+        "x": (lambda it: (days_left(it) if days_left(it) is not None else INF), True),
+        "g": (lambda it: float(it[1].get("traffic_gb") or 0), True),
+    }
+    key, rev = keys.get(sort, keys[DEFAULT_SERVICE_SORT])
+    items = sorted(items, key=lambda it: int(it[1].get("id") or 0), reverse=True)
+    return sorted(items, key=key, reverse=rev)
+
+
+def user_services_kb(configs: List[Dict], profiles: List[Dict], page: int = 0, per_page: int = 8,
+                     sort: str = DEFAULT_SERVICE_SORT, filt: str = DEFAULT_SERVICE_FILTER) -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
-    items = [("sub", p) for p in profiles] + [("cfg", c) for c in configs]
-    items.sort(key=lambda pair: (int(pair[1].get("is_active") or 0), int(pair[1].get("id") or 0)), reverse=True)
+    sort, filt = normalize_service_view(sort, filt)
+    items = sort_filter_services(
+        [("sub", p) for p in profiles] + [("cfg", c) for c in configs], sort, filt)
 
     total = len(items)
     page = max(0, int(page or 0))
@@ -275,13 +357,47 @@ def user_services_kb(configs: List[Dict], profiles: List[Dict], page: int = 0, p
         _button(b, text=text, callback_data=callback, style="primary")
     b.adjust(1)
 
+    if not total:
+        _button(b, text="😕 با این فیلتر سرویسی نیست", callback_data=f"svc:0:{sort}:all", style="primary")
+        b.adjust(1)
+
+    b.row(
+        _inline_button(text=f"🔃 {SERVICE_SORT_LABELS[sort]}", callback_data=f"svc_srt:{page}:{sort}:{filt}"),
+        _inline_button(text=f"🔎 {SERVICE_FILTER_LABELS[filt]}", callback_data=f"svc_flt:{page}:{sort}:{filt}"),
+    )
+
     nav = []
     if page > 0:
-        nav.append(_inline_button(text="◀️ قبلی", callback_data=f"svc_pg:{page-1}", style="primary"))
+        nav.append(_inline_button(text="◀️ قبلی", callback_data=f"svc:{page-1}:{sort}:{filt}", style="primary"))
+    if max_page > 0:
+        nav.append(_inline_button(text=f"{page+1}/{max_page+1}", callback_data="svc_noop", style="primary"))
     if page < max_page:
-        nav.append(_inline_button(text="بعدی ▶️", callback_data=f"svc_pg:{page+1}", style="primary"))
+        nav.append(_inline_button(text="بعدی ▶️", callback_data=f"svc:{page+1}:{sort}:{filt}", style="primary"))
     if nav:
         b.row(*nav)
+    return b.as_markup()
+
+
+def service_sort_kb(page: int, sort: str, filt: str) -> InlineKeyboardMarkup:
+    """Sort picker. Choosing an option jumps back to page 0 of the list."""
+    b = InlineKeyboardBuilder()
+    for code, label in SERVICE_SORTS:
+        mark = "✅ " if code == sort else ""
+        _button(b, text=f"{mark}{label}", callback_data=f"svc:0:{code}:{filt}", style="primary")
+    b.adjust(1)
+    b.row(_inline_button(text="🔙 بازگشت به لیست", callback_data=f"svc:{page}:{sort}:{filt}", style="primary"))
+    return b.as_markup()
+
+
+def service_filter_kb(page: int, sort: str, filt: str, counts: Dict[str, int] | None = None) -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    for code, label in SERVICE_FILTERS:
+        mark = "✅ " if code == filt else ""
+        n = (counts or {}).get(code)
+        suffix = f" ({n})" if n is not None else ""
+        _button(b, text=f"{mark}{label}{suffix}", callback_data=f"svc:0:{sort}:{code}", style="primary")
+    b.adjust(1)
+    b.row(_inline_button(text="🔙 بازگشت به لیست", callback_data=f"svc:{page}:{sort}:{filt}", style="primary"))
     return b.as_markup()
 
 

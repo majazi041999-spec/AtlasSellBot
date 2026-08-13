@@ -86,6 +86,93 @@ export function Avatar({ name }) {
   return <div className="avatar">{ch}</div>;
 }
 
+/* ── sort / filter toolbar ──────────────────────────────────────────────
+   Shared by every list page so search + sort + filter look identical
+   everywhere. All three are controlled; pages own the state (and usually
+   persist it through usePref). */
+
+export function Toolbar({ children, right }) {
+  return (
+    <div className="toolbar">
+      <div className="toolbar-main">{children}</div>
+      {right && <div className="toolbar-right">{right}</div>}
+    </div>
+  );
+}
+
+export function Search({ value, onChange, placeholder }) {
+  return (
+    <div className="search">
+      <span className="search-i">🔍</span>
+      <input className="inp search-inp" value={value} placeholder={placeholder}
+             onChange={(e) => onChange(e.target.value)} />
+      {value ? <button className="search-x" title="پاک کردن" onClick={() => onChange("")}>✕</button> : null}
+    </div>
+  );
+}
+
+/** options: [{k, label}] */
+export function Select({ label, value, onChange, options }) {
+  return (
+    <label className="sel">
+      {label ? <span className="sel-lbl">{label}</span> : null}
+      <select className="inp sel-inp" value={value} onChange={(e) => onChange(e.target.value)}>
+        {options.map((o) => <option key={o.k} value={o.k}>{o.label}</option>)}
+      </select>
+    </label>
+  );
+}
+
+/** options: [{k, label, count?}] */
+export function Chips({ options, value, onChange }) {
+  return (
+    <div className="chips">
+      {options.map((o) => (
+        <button key={o.k} className={"chip" + (value === o.k ? " on" : "")}
+                onClick={() => onChange(o.k)}>
+          {o.label}
+          {o.count != null ? <em className="chip-n">{o.count}</em> : null}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+/** Clickable table header. `pair` = [ascKey, descKey]; clicking flips between
+    them, and the active direction shows an arrow. */
+export function SortTh({ children, pair, sort, onSort, style }) {
+  const [asc, desc] = pair || [];
+  const active = sort === asc || sort === desc;
+  const next = sort === desc ? asc : desc;   // first click = descending
+  return (
+    <th className={"sort-th" + (active ? " on" : "")} style={style}
+        onClick={() => onSort(next)} title="مرتب‌سازی">
+      {children}<span className="sort-ar">{active ? (sort === asc ? "▲" : "▼") : "↕"}</span>
+    </th>
+  );
+}
+
+/** State that survives navigation + reloads (per-key, localStorage). */
+export function usePref(key, initial) {
+  const k = "atlas.pref." + key;
+  const [v, setV] = useState(() => {
+    try { return localStorage.getItem(k) ?? initial; } catch (e) { return initial; }
+  });
+  return [v, (nv) => { setV(nv); try { localStorage.setItem(k, nv); } catch (e) {} }];
+}
+
+export function timeAgo(s) {
+  if (!s) return "";
+  const t = new Date(String(s).replace(" ", "T")).getTime();
+  if (!t) return s;
+  const m = Math.floor(Math.max(0, Date.now() - t) / 60000);
+  if (m < 1) return "همین حالا";
+  if (m < 60) return `${m} دقیقه پیش`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h} ساعت پیش`;
+  return `${Math.floor(h / 24)} روز پیش`;
+}
+
 // comma-format an input's value live (digits only)
 export function liveNum(e) {
   const raw = e.target.value.replace(/[^\d-]/g, "");

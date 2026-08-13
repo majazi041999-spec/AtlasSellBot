@@ -41,6 +41,61 @@ function remainText(s) {
   return { volTxt, dayTxt, remaining, total, pct };
 }
 
+/* ── service sort & filter (client-side; the whole list is already loaded) ── */
+const SVC_SORTS = [
+  { k: "newest", label: "🕒 جدیدترین" },
+  { k: "oldest", label: "🕒 قدیمی‌ترین" },
+  { k: "name_az", label: "🔤 نام (الف → ی)" },
+  { k: "name_za", label: "🔤 نام (ی → الف)" },
+  { k: "expiry_soon", label: "⏳ نزدیک‌ترین انقضا" },
+  { k: "expiry_late", label: "⏳ دورترین انقضا" },
+  { k: "usage_desc", label: "📊 بیشترین مصرف" },
+  { k: "traffic_desc", label: "💾 بیشترین حجم" },
+];
+const SVC_FILTERS = [
+  { k: "all", label: "همه" },
+  { k: "active", label: "فعال" },
+  { k: "expiring", label: "رو به انقضا" },
+  { k: "near_limit", label: "حجم کم" },
+  { k: "off", label: "منقضی/غیرفعال" },
+];
+
+const svcName = (s) => String(s.name || s.email || "").trim();
+// Persian alphabetical order — a plain `<` puts پ چ ژ ک گ ی after every other letter.
+const byName = (a, b) => svcName(a).localeCompare(svcName(b), "fa");
+const svcDays = (s) => (s.expire_ts > 0 ? (s.expire_ts - Date.now()) / 86400000 : null);
+const svcLive = (s) => !!s.is_active && !(s.expire_ts > 0 && s.expire_ts <= Date.now());
+
+function matchFilter(s, k) {
+  if (k === "active") return svcLive(s);
+  if (k === "off") return !svcLive(s);
+  if (k === "expiring") return svcLive(s) && svcDays(s) !== null && svcDays(s) <= 3;
+  if (k === "near_limit") { const r = remainText(s); return r.total > 0 && r.pct >= 85; }
+  return true;
+}
+
+function sortServices(rows, k) {
+  const INF = Infinity;
+  // Services with no expiry sort last under "soonest", first under "latest".
+  if (k === "name_az") return [...rows].sort(byName);
+  if (k === "name_za") return [...rows].sort((a, b) => byName(b, a));
+  const keys = {
+    newest: [(s) => s.id, true],
+    oldest: [(s) => s.id, false],
+    expiry_soon: [(s) => (svcDays(s) === null ? INF : svcDays(s)), false],
+    expiry_late: [(s) => (svcDays(s) === null ? INF : svcDays(s)), true],
+    usage_desc: [(s) => remainText(s).pct, true],
+    traffic_desc: [(s) => Number(s.traffic_gb || 0), true],
+  };
+  const [key, desc] = keys[k] || keys.newest;
+  return [...rows].sort((a, b) => {
+    const ka = key(a), kb = key(b);
+    if (ka < kb) return desc ? 1 : -1;
+    if (ka > kb) return desc ? -1 : 1;
+    return (b.id || 0) - (a.id || 0);   // stable tiebreak
+  });
+}
+
 function copy(text) {
   try { navigator.clipboard.writeText(text); } catch (e) {
     const t = document.createElement("textarea"); t.value = text; document.body.appendChild(t); t.select();
@@ -210,6 +265,8 @@ function Services({ go, balance, onBalance, isRep }) {
   const [editing, setEditing] = useState(null); // service id
   const [expanded, setExpanded] = useState(null); // service id whose servers are shown
   const [q, setQ] = useState("");               // search query
+  const [sort, setSort] = useState("newest");   // see SVC_SORTS
+  const [filt, setFilt] = useState("all");      // see SVC_FILTERS
   const [busy, setBusy] = useState(0);
   const reload = () => api("services").then((d) => setList(d.services || [])).catch(() => setList([]));
   useEffect(() => { reload(); }, []);
@@ -271,11 +328,12 @@ function Services({ go, balance, onBalance, isRep }) {
     </div>
   );
   const needle = q.trim().toLowerCase();
-  const filtered = !needle ? list : list.filter((s) => {
+  const searched = !needle ? list : list.filter((s) => {
     const hay = [s.name, s.email, s.sub_url, ...(s.nodes || []).flatMap((n) => [n.label, n.uuid, n.link])]
       .filter(Boolean).join(" ").toLowerCase();
     return hay.includes(needle);
   });
+  const filtered = sortServices(searched.filter((s) => matchFilter(s, filt)), sort);
   return (
     <div className="screen">
       <h2 className="screen-title">{isRep ? "👥 مشتریان من" : "سرویس‌های من"}</h2>
@@ -284,8 +342,29 @@ function Services({ go, balance, onBalance, isRep }) {
         <input className="inp search-inp" value={q} onChange={(e) => setQ(e.target.value)} placeholder="جستجو: نام، UUID، لینک کامل یا سرور…" />
         {q && <button className="search-clear" onClick={() => setQ("")}>✕</button>}
       </div>
+      <div className="sortbar">
+        <select className="inp sort-sel" value={sort} onChange={(e) => { haptic("selection"); setSort(e.target.value); }}>
+          {SVC_SORTS.map((o) => <option key={o.k} value={o.k}>{o.label}</option>)}
+        </select>
+      </div>
+      <div className="filter-chips">
+        {SVC_FILTERS.map((o) => {
+          const n = searched.filter((s) => matchFilter(s, o.k)).length;
+          return (
+            <button key={o.k} className={"fchip" + (filt === o.k ? " on" : "")}
+                    onClick={() => { haptic("selection"); setFilt(o.k); }}>
+              {o.label}<em>{n}</em>
+            </button>
+          );
+        })}
+      </div>
       <div className="muted tiny" style={{ margin: "0 0 8px" }}>{filtered.length} از {list.length} سرویس</div>
-      {!filtered.length && <div className="card center" style={{ padding: 24 }}><p className="muted">موردی با این جستجو پیدا نشد.</p></div>}
+      {!filtered.length && (
+        <div className="card center" style={{ padding: 24 }}>
+          <p className="muted">موردی با این جستجو و فیلتر پیدا نشد.</p>
+          <button className="btn-ghost sm" onClick={() => { setQ(""); setFilt("all"); }}>پاک کردن فیلترها</button>
+        </div>
+      )}
       {filtered.map((s) => {
         const r = remainText(s);
         return (

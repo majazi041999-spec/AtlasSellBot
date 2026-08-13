@@ -42,6 +42,7 @@ core/
   images.py         (37)    process_logo_bytes(): resize upload → data-URI PNG (logo system).
   miniapp.py        (73)    validate_init_data() for Telegram WebApp auth.
   panel_content.py (140)    default settings text/templates (SETTINGS_DEFAULTS, brand, sub templates).
+  sorting.py        (45)    Persian collation: fa_sort_key/fa_collation (SQLite byte order misorders پ چ ژ ک گ ی).
   qr.py, jalali.py, texts.py, update_notes.py
 bot/
   handlers/user.py  (2764)  all end-user + representative bot flows (buy, test, services, wallet, rep panel).
@@ -78,6 +79,26 @@ setup_mtproxy.sh   MTProto proxy installer (mtg v1.0.11). atlas_menu.sh, install
 - **configs**: legacy single-server configs (mostly superseded by subscriptions).
 - **test_accounts** (UNIQUE user_id → one lifetime trial) vs **rep_test_accounts** (per-day rep allowance, no unique).
 - discount_codes, discount_redemptions, referral_tiers, wallet_transactions, topup_requests, campaign_events, daily_reports.
+
+### Sorting & filtering (added for the users/services lists)
+One vocabulary of keys is shared across panel, bot and mini-app — keep the lists in sync when adding one.
+- **Users (server-side, SQL):** `list_users(q, filt, sort, period, offset, limit) -> (rows, total)` in database.py.
+  Key sets: `USER_SORTS` / `USER_FILTERS` / `USER_PERIODS`, defaults via `DEFAULT_USER_SORT`. Unknown keys fall
+  back silently, so a stale query string can't 500. Rows carry inline aggregates (`approved_orders`,
+  `active_services`, `total_spent`, `last_order_at`, …) — this **replaced the get_user_business_stats() N+1**
+  in `/api/users` (was ~4 queries × 40 rows per page). `/{S}/api/users?q&page&sort&filter&period`; React
+  `Users.jsx` drives it with a Toolbar + filter chips + clickable `SortTh` headers (all three stay in sync).
+- **Subscriptions (in-memory):** `_sort_filter_profiles()` + `SUB_SORTS`/`SUB_FILTERS` in web/app.py, behind
+  `/{S}/api/subs/profiles?sort&filter`. Sorting is Python-side because usage % / days-left aren't columns.
+- **Bot services list (users AND reps):** `SERVICE_SORTS`/`SERVICE_FILTERS` + `sort_filter_services()` +
+  `normalize_service_view()` in keyboards.py. State rides in callback_data as **`svc:{page}:{sort}:{filter}`**
+  (short codes because of Telegram's 64-byte cap); `svc_srt:`/`svc_flt:` open the picker menus, `svc_noop` is
+  the page-counter label. Legacy `svc_pg:{page}` still parses (old keyboards live on in users' chats).
+- **Persian name order is not the default:** SQLite's BINARY/NOCASE sort by UTF-8 bytes, which dumps پ چ ژ ک گ ی
+  at the end. `core/sorting.py` fixes it. In SQL, `USER_SORTS` name entries carry a `{coll}` placeholder that
+  `list_users` formats after `_register_fa_collation()` registers `FA` on the connection — aiogram/aiosqlite has
+  no public `create_collation`, so it goes through `db._execute(db._conn.create_collation, …)` and **falls back to
+  NOCASE if that private path ever breaks**. In JS use `localeCompare(x, "fa")`.
 
 ## 6. Subscription / node engine (`core/multi_subscription.py`) — most complex, highest risk
 Concept: a sold sub = 1 `subscription_profile` + a client on EVERY active `subscription_node_config` (a `subscription_node` row per node). Link `/sub/{token}` returns all node links + info lines.
@@ -145,5 +166,7 @@ Brand/UI: `ui.brand_name`, `ui.logo_data`, `ui.panel_subtitle`, `ui.custom_css/j
 - A new setting → `SETTINGS_DEFAULTS` (panel_content) + `_settings_snapshot` + settings_save Form param + React Settings field.
 - New admin page → web/app.py `/{S}/api/<x>` JSON + `web/admin/src/pages/<X>.jsx` + wire in App.jsx + Shell.jsx nav, then `npm --prefix web/admin run build`.
 - Bot keyboards/menus → bot/keyboards.py. Bot flows/FSM → bot/handlers/user.py + bot/states.py.
+- A new sort/filter option → see §5 "Sorting & filtering": add the key to the Python key set (`USER_SORTS`,
+  `SUB_SORTS`, `SERVICE_SORTS`, …) AND the matching label list in the JSX page — the two must stay in sync.
 - x-ui API behavior → core/xui_api.py (XUIClient).
 ```

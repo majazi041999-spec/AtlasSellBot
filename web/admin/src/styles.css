@@ -181,6 +181,54 @@ tbody tr:hover { background: rgba(255, 255, 255, 0.03); }
 .field { display: flex; flex-direction: column; gap: 5px; }
 .field label { font-size: .74rem; color: var(--txt3); font-weight: 600; }
 
+/* ───────────── sort / filter toolbar ───────────── */
+.toolbar {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  background: var(--card); border: 1px solid var(--bd); border-radius: var(--radius);
+  padding: 12px 14px; backdrop-filter: blur(10px);
+}
+.toolbar-main { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; flex: 1; min-width: 0; }
+.toolbar-right { color: var(--txt3); font-size: .76rem; white-space: nowrap; }
+
+.search { position: relative; flex: 1; min-width: 200px; max-width: 340px; }
+.search-i { position: absolute; inset-inline-start: 11px; top: 50%; transform: translateY(-50%); font-size: .82rem; opacity: .6; pointer-events: none; }
+.search-inp { padding-inline-start: 33px; padding-inline-end: 30px; }
+.search-x {
+  position: absolute; inset-inline-end: 7px; top: 50%; transform: translateY(-50%);
+  background: none; border: none; color: var(--txt3); cursor: pointer; font-size: .8rem;
+  padding: 3px 5px; border-radius: 7px; line-height: 1;
+}
+.search-x:hover { color: var(--txt); background: rgba(255, 255, 255, 0.08); }
+
+.sel { display: inline-flex; align-items: center; gap: 7px; }
+.sel-lbl { font-size: .74rem; color: var(--txt3); font-weight: 600; white-space: nowrap; }
+.sel-inp { width: auto; min-width: 150px; padding: 9px 11px; cursor: pointer; }
+/* the native dropdown list itself isn't glass — keep it readable */
+.sel-inp option { background: var(--panel-solid); color: var(--txt); }
+
+.chips { display: flex; gap: 7px; flex-wrap: wrap; }
+.chip {
+  font-family: inherit; font-size: .76rem; font-weight: 600; cursor: pointer;
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 7px 13px; border-radius: 20px; color: var(--txt2);
+  border: 1px solid var(--bd2); background: rgba(255, 255, 255, 0.04);
+  transition: background .14s, color .14s, border-color .14s, transform .12s;
+}
+.chip:hover { background: rgba(255, 255, 255, 0.09); color: var(--txt); }
+.chip:active { transform: scale(.96); }
+.chip.on {
+  color: #fff; border-color: transparent;
+  background: linear-gradient(135deg, var(--p), var(--p2)); box-shadow: var(--glow);
+}
+.chip-n { font-style: normal; font-size: .68rem; opacity: .75; font-weight: 800; }
+
+/* sortable table headers */
+.sort-th { cursor: pointer; user-select: none; transition: color .14s, background .14s; }
+.sort-th:hover { color: var(--txt); background: rgba(255, 255, 255, 0.05); }
+.sort-th.on { color: var(--p2); }
+.sort-ar { font-size: .62rem; margin-inline-start: 5px; opacity: .55; }
+.sort-th.on .sort-ar { opacity: 1; }
+
 /* ───────────── misc ───────────── */
 .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
 .between { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
@@ -283,4 +331,21 @@ tbody tr:hover { background: rgba(255, 255, 255, 0.03); }
   /* Long links/inputs must never push the layout wider than the screen. */
   .inp { font-size: 16px; } /* also stops iOS zoom-on-focus */
   input, textarea, select, pre { max-width: 100%; }
+
+  /* Toolbar: search on its own row, selects share the next one, chips scroll
+     sideways instead of wrapping into a tall block. */
+  .toolbar { padding: 10px; gap: 8px; }
+  /* Controls take the full width; the row count drops to its own line rather
+     than squeezing the search box and selects. */
+  .toolbar-main { flex-basis: 100%; }
+  .toolbar-right { flex-basis: 100%; }
+  .search { max-width: none; flex-basis: 100%; }
+  .sel { flex: 1; min-width: 0; }
+  .sel-inp { min-width: 0; width: 100%; }
+  .chips {
+    flex-wrap: nowrap; overflow-x: auto; width: 100%;
+    scrollbar-width: none; -webkit-overflow-scrolling: touch;
+  }
+  .chips::-webkit-scrollbar { display: none; }
+  .chip { flex: none; }
 }

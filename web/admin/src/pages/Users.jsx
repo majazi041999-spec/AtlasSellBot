@@ -1,8 +1,43 @@
 import React, { useEffect, useRef, useState } from "react";
 import { api, fmt } from "../api.js";
-import { Card, Loading, Empty, Pager, Modal, Avatar, toast, liveNum, rawNum } from "../components/ui.jsx";
+import {
+  Card, Loading, Empty, Pager, Modal, Avatar, toast, liveNum, rawNum,
+  Toolbar, Search, Select, Chips, SortTh, usePref, timeAgo,
+} from "../components/ui.jsx";
 
 const ROLES = { none: "کاربر عادی", finance: "ادمین ساده", full: "ادمین کل" };
+
+/* Keys must match USER_SORTS / USER_FILTERS / USER_PERIODS in core/database.py. */
+const SORTS = [
+  { k: "newest", label: "🕒 جدیدترین عضو" },
+  { k: "oldest", label: "🕒 قدیمی‌ترین عضو" },
+  { k: "name_az", label: "🔤 نام (الف → ی)" },
+  { k: "name_za", label: "🔤 نام (ی → الف)" },
+  { k: "balance_desc", label: "💳 موجودی (زیاد → کم)" },
+  { k: "balance_asc", label: "💳 موجودی (کم → زیاد)" },
+  { k: "orders_desc", label: "🧾 بیشترین خرید" },
+  { k: "spent_desc", label: "💰 بیشترین مبلغ پرداختی" },
+  { k: "services_desc", label: "🔑 بیشترین سرویس فعال" },
+  { k: "recent_buy", label: "⚡ آخرین خرید" },
+];
+const FILTERS = [
+  { k: "all", label: "همه" },
+  { k: "rep", label: "نمایندگان" },
+  { k: "rep_pending", label: "درخواست نمایندگی" },
+  { k: "buyers", label: "خریدار" },
+  { k: "no_orders", label: "بدون خرید" },
+  { k: "has_balance", label: "دارای موجودی" },
+  { k: "custom_price", label: "قیمت اختصاصی" },
+  { k: "admin", label: "ادمین‌ها" },
+  { k: "blocked", label: "بلاک‌شده" },
+];
+const PERIODS = [
+  { k: "all", label: "همه زمان‌ها" },
+  { k: "today", label: "عضو امروز" },
+  { k: "week", label: "۷ روز اخیر" },
+  { k: "month", label: "۳۰ روز اخیر" },
+  { k: "year", label: "یک سال اخیر" },
+];
 
 function UserModal({ user, onClose, onChanged }) {
   const [u, setU] = useState(user);
@@ -132,33 +167,52 @@ export default function Users({ go }) {
   const [data, setData] = useState(null);
   const [q, setQ] = useState("");
   const [page, setPage] = useState(1);
+  const [sort, setSort] = usePref("users.sort", "newest");
+  const [filt, setFilt] = usePref("users.filter", "all");
+  const [period, setPeriod] = usePref("users.period", "all");
   const open = (u) => (go ? go(`/users/${u.id}`) : setSel(u));
   const [sel, setSel] = useState(null);
   const tmr = useRef();
 
-  const load = (p = 1, query = q) => {
+  // One loader for every control — search, sort, filter and period all page
+  // server-side, so the ordering is over ALL users and not just this page.
+  const load = (opts = {}) => {
+    const p = opts.page ?? page;
+    const params = new URLSearchParams({
+      page: p, q: opts.q ?? q, sort: opts.sort ?? sort,
+      filter: opts.filter ?? filt, period: opts.period ?? period,
+    });
     setData(null);
-    api.get(`/api/users?page=${p}&q=${encodeURIComponent(query)}`).then(setData).catch(() => setData({ users: [] }));
+    api.get(`/api/users?${params}`).then(setData).catch(() => setData({ users: [] }));
   };
-  useEffect(() => { load(1, ""); }, []);
+  useEffect(() => { load({ page: 1, q: "" }); }, []);
+
   const onSearch = (v) => {
     setQ(v); clearTimeout(tmr.current);
-    tmr.current = setTimeout(() => { setPage(1); load(1, v); }, 350);
+    tmr.current = setTimeout(() => { setPage(1); load({ page: 1, q: v }); }, 350);
   };
+  // Every control resets to page 1 — staying on page 7 of a smaller result set
+  // would land the user on an empty screen.
+  const control = (key, setter) => (v) => { setter(v); setPage(1); load({ page: 1, [key]: v }); };
+  const sortBy = control("sort", setSort);
+  const filterBy = control("filter", setFilt);
+  const periodBy = control("period", setPeriod);
 
   const topups = (data && data.pending_topups) || [];
 
   const topupAct = async (rid, kind) => {
-    try { await api.post(`/api/topups/${rid}/${kind}`); toast(kind === "approve" ? "شارژ تایید شد ✅" : "رد شد"); load(page, q); }
+    try { await api.post(`/api/topups/${rid}/${kind}`); toast(kind === "approve" ? "شارژ تایید شد ✅" : "رد شد"); load(); }
     catch (e) { toast("خطا", "error"); }
   };
 
   return (
     <div className="screen grid" style={{ gap: 16 }}>
-      <div className="row between">
-        <input className="inp" style={{ maxWidth: 340 }} placeholder="🔍 جستجو: نام، یوزرنیم یا آیدی تلگرام…" value={q} onChange={(e) => onSearch(e.target.value)} />
-        {data && <span className="muted tiny">{fmt(data.total)} کاربر</span>}
-      </div>
+      <Toolbar right={data ? `${fmt(data.total)} کاربر` : null}>
+        <Search value={q} onChange={onSearch} placeholder="نام، یوزرنیم، برند یا آیدی تلگرام…" />
+        <Select label="مرتب‌سازی" value={sort} options={SORTS} onChange={sortBy} />
+        <Select label="بازه عضویت" value={period} options={PERIODS} onChange={periodBy} />
+      </Toolbar>
+      <Chips options={FILTERS} value={filt} onChange={filterBy} />
 
       {topups.length > 0 && (
         <Card title="درخواست‌های شارژ کیف پول" sub={`${topups.length} در انتظار`}>
@@ -177,12 +231,26 @@ export default function Users({ go }) {
       )}
 
       {!data ? <Loading /> : !data.users.length ? (
-        <Card><Empty emoji="🔍">کاربری یافت نشد</Empty></Card>
+        <Card><Empty emoji="🔍">
+          کاربری با این جستجو و فیلتر پیدا نشد
+          {(q || filt !== "all" || period !== "all") && (
+            <div style={{ marginTop: 12 }}>
+              <button className="btn sm" onClick={() => {
+                setQ(""); setFilt("all"); setPeriod("all"); setPage(1);
+                load({ page: 1, q: "", filter: "all", period: "all" });
+              }}>پاک کردن فیلترها</button>
+            </div>
+          )}
+        </Empty></Card>
       ) : (
         <div className="table-wrap">
           <table>
             <thead><tr>
-              <th>کاربر</th><th>کیف پول</th><th>آمار</th><th>قیمت‌گذاری</th><th>وضعیت</th><th>عملیات</th>
+              <SortTh pair={["name_az", "name_za"]} sort={sort} onSort={sortBy}>کاربر</SortTh>
+              <SortTh pair={["balance_asc", "balance_desc"]} sort={sort} onSort={sortBy}>کیف پول</SortTh>
+              <SortTh pair={["orders_desc", "orders_desc"]} sort={sort} onSort={sortBy}>آمار</SortTh>
+              <SortTh pair={["oldest", "newest"]} sort={sort} onSort={sortBy}>عضویت</SortTh>
+              <th>قیمت‌گذاری</th><th>وضعیت</th><th>عملیات</th>
             </tr></thead>
             <tbody>
               {data.users.map((u) => (
@@ -197,7 +265,16 @@ export default function Users({ go }) {
                     </div>
                   </td>
                   <td><b style={{ color: "var(--p2)" }}>{fmt(u.balance_toman)}</b> <span className="muted tiny">ت</span></td>
-                  <td className="tiny muted">✅ {u.business.approved_orders || 0}<br />🔑 {u.business.active_configs || 0}/{u.business.total_configs || 0}</td>
+                  <td className="tiny muted">
+                    ✅ {u.business.approved_orders || 0}
+                    {u.business.total_spent ? <> · <b>{fmt(u.business.total_spent)}</b> ت</> : null}
+                    <br />🔑 {u.business.active_services ?? u.business.active_configs ?? 0}/
+                    {(u.business.total_configs || 0) + (u.business.total_subs || 0)}
+                  </td>
+                  <td className="tiny muted" style={{ whiteSpace: "nowrap" }}>
+                    {(u.created_at || "").slice(0, 10)}
+                    <br /><span style={{ opacity: .7 }}>{timeAgo(u.created_at)}</span>
+                  </td>
                   <td className="tiny">
                     {u.price_per_gb > 0 ? <div>هر GB: <b>{fmt(u.price_per_gb)}</b></div> : null}
                     {u.unlimited_price > 0 ? <div>نامحدود: <b>{fmt(u.unlimited_price)}</b></div> : null}
@@ -220,9 +297,9 @@ export default function Users({ go }) {
           </table>
         </div>
       )}
-      {data && !q && <Pager page={data.page} totalPages={data.total_pages} onGo={(p) => { setPage(p); load(p, q); }} />}
+      {data && <Pager page={data.page} totalPages={data.total_pages} onGo={(p) => { setPage(p); load({ page: p }); }} />}
 
-      {sel && <UserModal user={sel} onClose={() => setSel(null)} onChanged={() => load(page, q)} />}
+      {sel && <UserModal user={sel} onClose={() => setSel(null)} onChanged={() => load()} />}
     </div>
   );
 }

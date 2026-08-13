@@ -1,6 +1,32 @@
 import React, { useEffect, useRef, useState } from "react";
 import { api, fmt } from "../api.js";
-import { Card, Loading, Empty, Modal, Pager, toast } from "../components/ui.jsx";
+import {
+  Card, Loading, Empty, Modal, Pager, toast,
+  Toolbar, Search, Select, Chips, usePref,
+} from "../components/ui.jsx";
+
+/* Keys must match SUB_SORTS / SUB_FILTERS in web/app.py. */
+const SORTS = [
+  { k: "newest", label: "🕒 جدیدترین" },
+  { k: "oldest", label: "🕒 قدیمی‌ترین" },
+  { k: "name_az", label: "🔤 نام سرویس (الف → ی)" },
+  { k: "name_za", label: "🔤 نام سرویس (ی → الف)" },
+  { k: "owner_az", label: "👤 نام صاحب سرویس" },
+  { k: "expiry_soon", label: "⏳ نزدیک‌ترین انقضا" },
+  { k: "expiry_late", label: "⏳ دورترین انقضا" },
+  { k: "usage_desc", label: "📊 بیشترین مصرف" },
+  { k: "usage_asc", label: "📊 کمترین مصرف" },
+  { k: "traffic_desc", label: "💾 بیشترین حجم" },
+];
+const FILTERS = [
+  { k: "all", label: "همه" },
+  { k: "active", label: "فعال" },
+  { k: "expiring", label: "رو به انقضا (۳ روز)" },
+  { k: "near_limit", label: "حجم رو به اتمام" },
+  { k: "expired", label: "منقضی" },
+  { k: "inactive", label: "غیرفعال" },
+  { k: "unlimited", label: "نامحدود" },
+];
 
 const gb = (bytes) => (Number(bytes || 0) / 1024 ** 3).toFixed(2);
 const tsToInput = (ms) => {
@@ -44,30 +70,58 @@ function EditModal({ p, onClose, onSaved }) {
 export default function SubProfiles() {
   const [data, setData] = useState(null);
   const [q, setQ] = useState("");
+  const [page, setPage] = useState(1);
+  const [sort, setSort] = usePref("subs.sort", "newest");
+  const [filt, setFilt] = usePref("subs.filter", "all");
   const [edit, setEdit] = useState(null);
   const tmr = useRef();
 
-  const load = (p = 1, query = q) => { setData(null); api.get(`/api/subs/profiles?page=${p}&q=${encodeURIComponent(query)}`).then(setData).catch(() => setData({ profiles: [] })); };
-  useEffect(() => { load(1, ""); }, []);
-  const onSearch = (v) => { setQ(v); clearTimeout(tmr.current); tmr.current = setTimeout(() => load(1, v), 350); };
+  const load = (opts = {}) => {
+    const params = new URLSearchParams({
+      page: opts.page ?? page, q: opts.q ?? q,
+      sort: opts.sort ?? sort, filter: opts.filter ?? filt,
+    });
+    setData(null);
+    api.get(`/api/subs/profiles?${params}`).then(setData).catch(() => setData({ profiles: [] }));
+  };
+  useEffect(() => { load({ page: 1, q: "" }); }, []);
+  const onSearch = (v) => {
+    setQ(v); clearTimeout(tmr.current);
+    tmr.current = setTimeout(() => { setPage(1); load({ page: 1, q: v }); }, 350);
+  };
+  const control = (key, setter) => (v) => { setter(v); setPage(1); load({ page: 1, [key]: v }); };
+  const sortBy = control("sort", setSort);
+  const filterBy = control("filter", setFilt);
 
   const act = async (id, kind, confirmMsg) => {
     if (confirmMsg && !confirm(confirmMsg)) return;
-    try { await api.post(`/subs/profiles/${id}/${kind}`); toast("انجام شد ✅"); load(data.page, q); }
+    try { await api.post(`/subs/profiles/${id}/${kind}`); toast("انجام شد ✅"); load(); }
     catch (e) { toast("خطا", "error"); }
   };
   const copy = (url) => { navigator.clipboard?.writeText(url).then(() => toast("لینک کپی شد ✅")); };
 
-  if (!data) return <Loading />;
-  const profiles = data.profiles || [];
+  const profiles = (data && data.profiles) || [];
 
   return (
     <div className="screen grid" style={{ gap: 16 }}>
-      <div className="row between">
-        <input className="inp" style={{ maxWidth: 340 }} placeholder="🔍 نام، ایمیل یا آیدی تلگرام…" value={q} onChange={(e) => onSearch(e.target.value)} />
-        {data.total != null && <span className="muted tiny">{fmt(data.total)} ساب</span>}
-      </div>
-      {!profiles.length ? <Card><Empty emoji="📄">سابی یافت نشد.</Empty></Card> : (
+      <Toolbar right={data && data.total != null ? `${fmt(data.total)} سرویس` : null}>
+        <Search value={q} onChange={onSearch} placeholder="نام سرویس، ایمیل، مشتری یا آیدی تلگرام…" />
+        <Select label="مرتب‌سازی" value={sort} options={SORTS} onChange={sortBy} />
+      </Toolbar>
+      <Chips options={FILTERS} value={filt} onChange={filterBy} />
+
+      {!data ? <Loading /> : !profiles.length ? (
+        <Card><Empty emoji="📄">
+          سرویسی با این جستجو و فیلتر پیدا نشد.
+          {(q || filt !== "all") && (
+            <div style={{ marginTop: 12 }}>
+              <button className="btn sm" onClick={() => {
+                setQ(""); setFilt("all"); setPage(1); load({ page: 1, q: "", filter: "all" });
+              }}>پاک کردن فیلترها</button>
+            </div>
+          )}
+        </Empty></Card>
+      ) : (
         <div className="grid" style={{ gap: 10 }}>
           {profiles.map((p) => (
             <Card key={p.id}>
@@ -101,8 +155,8 @@ export default function SubProfiles() {
           ))}
         </div>
       )}
-      {data.total_pages > 1 && <Pager page={data.page} totalPages={data.total_pages} onGo={(pg) => load(pg, q)} />}
-      {edit && <EditModal p={edit} onClose={() => setEdit(null)} onSaved={() => { setEdit(null); load(data.page, q); }} />}
+      {data && <Pager page={data.page} totalPages={data.total_pages} onGo={(pg) => { setPage(pg); load({ page: pg }); }} />}
+      {edit && <EditModal p={edit} onClose={() => setEdit(null)} onSaved={() => { setEdit(null); load(); }} />}
     </div>
   );
 }
