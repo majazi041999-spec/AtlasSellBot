@@ -63,6 +63,12 @@ from core.database import (
     get_campaign_overview,
     get_revenue_timeseries,
     reset_campaign_flag,
+    CUSTOM_SEGMENTS,
+    get_segment_counts,
+    get_custom_campaigns,
+    get_custom_campaign,
+    save_custom_campaign,
+    delete_custom_campaign,
     get_user_subscription_profiles,
     get_user_balance,
     get_referral_tiers,
@@ -168,6 +174,24 @@ from core.multi_subscription import (
 )
 from core.database import get_subscription_profile_by_token as _get_sub_profile_by_token
 from core.database import get_subscription_nodes as _get_sub_nodes
+from core.autonode import (
+    DEFAULTS as AUTONODE_DEFAULTS,
+    auto_node_overview,
+    rebalance_all_auto_nodes,
+    refresh_server_online_counts,
+)
+from core.database import (
+    add_auto_subscription_node_config,
+    count_auto_assignments_by_target,
+    get_auto_node_candidates,
+    parse_auto_pool,
+)
+from core.rep_report import (
+    DEFAULT_PRESET as DEFAULT_REPORT_PRESET,
+    build_rep_report,
+    rep_report_filename,
+    rep_report_xlsx,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1743,6 +1767,48 @@ async def backups_page(request: Request):
     )
 
 
+_XLSX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+
+async def _rep_report_for(user_id: int, request: Request):
+    """Build a rep's purchase report from the query string. Returns (user, report)."""
+    user = await get_user_by_id(int(user_id))
+    if not user:
+        return None, None
+    q = request.query_params
+    report = await build_rep_report(
+        user,
+        preset=str(q.get("preset") or DEFAULT_REPORT_PRESET),
+        date_from=str(q.get("from") or ""),
+        date_to=str(q.get("to") or ""),
+    )
+    return user, report
+
+
+@app.get(f"/{S}/api/reps/{{user_id}}/purchases")
+async def api_rep_purchases(request: Request, user_id: int):
+    """Date-filtered purchase report for one representative."""
+    if not _api_guard(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    user, report = await _rep_report_for(user_id, request)
+    if not user:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    return JSONResponse(report)
+
+
+@app.get(f"/{S}/api/reps/{{user_id}}/purchases.xlsx")
+async def api_rep_purchases_xlsx(request: Request, user_id: int):
+    """The same report as an Excel file (Jalali dates), for record keeping."""
+    if not _auth(request):
+        return _redir_login()
+    user, report = await _rep_report_for(user_id, request)
+    if not user:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    data = rep_report_xlsx(report)
+    headers = {"Content-Disposition": f'attachment; filename="{rep_report_filename(report)}"'}
+    return StreamingResponse(iter([data]), media_type=_XLSX_MEDIA_TYPE, headers=headers)
+
+
 @app.get(f"/{S}/backups/download")
 async def backup_download(request: Request):
     if not _auth(request):
@@ -2363,14 +2429,68 @@ async def subscription_node_add(request: Request):
     return RedirectResponse(f"/{S}/subs?saved=1", status_code=302)
 
 
+def _as_flag(value) -> int:
+    """Accept a checkbox, a JSON boolean, or a string — all mean the same thing."""
+    if isinstance(value, bool):
+        return 1 if value else 0
+    return 1 if str(value or "").strip().lower() in ("1", "true", "on", "yes") else 0
+
+
+@app.post(f"/{S}/subs/nodes/add_auto")
+async def subscription_auto_node_add(request: Request):
+    """Create an auto node — the entry that follows the least-busy server."""
+    if not _auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    d = await _node_form_body(request)
+    # Validate BEFORE inserting: creating the row first would leave an orphan
+    # auto node behind on every rejected attempt, and a retry would add another.
+    pool = parse_auto_pool(d.get("auto_pool"))
+    candidates = await get_auto_node_candidates({"auto_pool": ",".join(str(i) for i in pool)})
+    if not candidates:
+        return JSONResponse({
+            "success": False,
+            "error": ("هیچ نود قابل استفاده‌ای برای استخر خودکار وجود ندارد. "
+                      "اول حداقل یک نود معمولی فعال بسازید."),
+        }, status_code=400)
+    node_id = await add_auto_subscription_node_config(
+        label=str(d.get("label") or "").strip() or "🚀 خودکار",
+        priority=int(d.get("priority") or 1),
+        auto_pool=str(d.get("auto_pool") or ""),
+        auto_show_server=_as_flag(d.get("auto_show_server")),
+        connect_host=str(d.get("connect_host") or "").strip(),
+    )
+    started = _start_nodeops(node_id, remove=False, force_refresh=False)
+    return JSONResponse({"success": True, "node_id": node_id, "job_started": started})
+
+
 @app.post(f"/{S}/subs/nodes/{{node_id}}/edit")
 async def subscription_node_edit(request: Request, node_id: int):
     if not _auth(request):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     d = await _node_form_body(request)
+    before = await get_subscription_node_config(node_id)
+
+    # An auto node has no server/inbound of its own — only its label, priority
+    # and pool are editable, and changing the pool never needs a panel round-trip
+    # (the next rebalance picks it up).
+    if before and int(before.get("is_auto") or 0):
+        fields = dict(
+            label=str(d.get("label") or "").strip(),
+            priority=int(d.get("priority") or 1),
+            auto_pool=",".join(str(i) for i in parse_auto_pool(d.get("auto_pool"))),
+            auto_show_server=_as_flag(d.get("auto_show_server")),
+        )
+        if "connect_host" in d:
+            fields["connect_host"] = str(d.get("connect_host") or "").strip()
+        await update_subscription_node_config(node_id, **fields)
+        # A changed label only shows up once each link is relabelled, so refresh.
+        started = _start_nodeops(node_id, remove=False, force_refresh=True)
+        if "application/json" in request.headers.get("content-type", ""):
+            return JSONResponse({"success": True, "job_started": started})
+        return RedirectResponse(f"/{S}/subs?saved=1", status_code=302)
+
     server_id = int(d.get("server_id"))
     inbound_id = int(d.get("inbound_id"))
-    before = await get_subscription_node_config(node_id)
     update_fields = dict(
         server_id=int(server_id),
         inbound_id=int(inbound_id),
@@ -2454,6 +2574,13 @@ async def api_subs(request: Request):
     out_nodes = []
     for node in nodes:
         status = await subscription_node_config_status(node)
+        is_auto = int(node.get("is_auto") or 0)
+        if is_auto:
+            # An auto node owns no server/inbound, so count the subscriptions
+            # currently routed through it instead.
+            active_profiles = sum((await count_auto_assignments_by_target(int(node["id"]))).values())
+        else:
+            active_profiles = await count_active_subscription_nodes_by_target(node["server_id"], node["inbound_id"])
         out_nodes.append({
             "id": node["id"],
             "server_id": node["server_id"],
@@ -2466,21 +2593,77 @@ async def api_subs(request: Request):
             "max_active_profiles": int(node.get("max_active_profiles") or 0),
             "connect_host": node.get("connect_host") or "",
             "is_active": int(node.get("is_active") or 0),
-            "active_profiles": await count_active_subscription_nodes_by_target(node["server_id"], node["inbound_id"]),
+            "active_profiles": active_profiles,
             "usable": status["usable"],
             "usable_label": status["label"],
             "usable_reason": status["reason"],
+            "is_auto": is_auto,
+            "auto_pool": node.get("auto_pool") or "",
+            "auto_show_server": int(node.get("auto_show_server") or 0),
         })
     servers = await get_servers(active_only=False)
     return JSONResponse({
         "nodes": out_nodes,
         "servers": [{"id": s["id"], "name": s.get("name"), "is_active": int(s.get("is_active") or 0)} for s in servers],
+        "autonode": await auto_node_overview(),
         "settings": {
             "public_base_url": await get_setting("public_base_url", ""),
             "sub_auto_sync_enabled": await get_setting("sub_auto_sync_enabled", "0"),
             "sub_auto_sync_interval_hours": await get_setting("sub_auto_sync_interval_hours", "1"),
         },
     })
+
+
+@app.post(f"/{S}/subs/autonode/refresh")
+async def subscription_autonode_refresh(request: Request):
+    """Re-read every panel's online count right now (no subscriptions touched)."""
+    if not _auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    counts = await refresh_server_online_counts()
+    return JSONResponse({
+        "success": True,
+        "polled": len(counts),
+        "unknown": sum(1 for v in counts.values() if v is None),
+        "autonode": await auto_node_overview(),
+    })
+
+
+@app.post(f"/{S}/subs/autonode/rebalance")
+async def subscription_autonode_rebalance(request: Request):
+    """Redistribute subscriptions across servers now, streamed to the node-ops log."""
+    if not _auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    if _read_job_log("nodeops").get("running"):
+        return JSONResponse({"success": False, "error": "یک عملیات نود همین الان در حال اجراست."}, status_code=409)
+
+    async def _runner(log):
+        await rebalance_all_auto_nodes(log=log, refresh=True, concurrency=6)
+
+    _asyncio.create_task(_run_python_job("nodeops", _runner))
+    return JSONResponse({"success": True, "job_started": True})
+
+
+@app.post(f"/{S}/subs/autonode/settings")
+async def subscription_autonode_settings(request: Request):
+    """Save the load-balancer tuning knobs (each is validated, none are required)."""
+    if not _auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    d = await _node_form_body(request)
+    for key in AUTONODE_DEFAULTS:
+        if key not in d:
+            continue
+        if key == "autonode_enabled":
+            await set_setting(key, "1" if _as_flag(d.get(key)) else "0")
+            continue
+        raw = str(d.get(key) or "").strip()
+        try:
+            value = float(raw)
+        except ValueError:
+            continue
+        if value < 0:
+            continue
+        await set_setting(key, str(value) if key == "autonode_margin" else str(int(value)))
+    return JSONResponse({"success": True, "autonode": await auto_node_overview()})
 
 
 @app.get(f"/{S}/subs/nodes/{{node_id}}/inbound")
@@ -2932,9 +3115,11 @@ async def campaigns_reset(request: Request, name: str):
 async def api_campaigns(request: Request):
     if not _api_guard(request):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
+    custom = await get_custom_campaigns()
     overview = await get_campaign_overview()
+    custom_labels = {c["slug"]: f"{c.get('emoji') or '🎯'} {c['title']}" for c in custom}
     for c in overview:
-        c["label"] = _CAMPAIGN_LABELS.get(c["campaign"], c["campaign"])
+        c["label"] = _CAMPAIGN_LABELS.get(c["campaign"]) or custom_labels.get(c["campaign"]) or c["campaign"]
     codes = [c["code"] for c in await get_discount_codes() if int(c.get("is_active") or 0)]
     kpi = {
         "revenue": sum(c["revenue"] for c in overview),
@@ -2942,10 +3127,20 @@ async def api_campaigns(request: Request):
         "discount": sum(c["discount"] for c in overview),
         "sent": sum(c["sent"] for c in overview),
     }
+    conv_by_slug = {c["campaign"]: c for c in overview}
+    for c in custom:
+        perf = conv_by_slug.get(c["slug"]) or {}
+        c["conversions"] = int(perf.get("conversions") or 0)
+        c["revenue"] = int(perf.get("revenue") or 0)
+        c["has_photo"] = bool(c.get("photo"))
+        c.pop("photo", None)  # keep the list payload small; photo is write-only here
     return JSONResponse({
         "overview": overview,
         "codes": codes,
         "kpi": kpi,
+        "custom": custom,
+        "segments": [{"key": k, "label": v} for k, v in CUSTOM_SEGMENTS.items()],
+        "segment_counts": await get_segment_counts(),
         "settings": {
             "campaign_trial_enabled": await get_setting("campaign_trial_enabled", "1"),
             "campaign_trial_code": await get_setting("campaign_trial_code", ""),
@@ -2956,6 +3151,58 @@ async def api_campaigns(request: Request):
             "campaign_winback_template": await get_setting("campaign_winback_template", ""),
         },
     })
+
+
+@app.post(f"/{S}/api/campaigns/custom")
+async def api_custom_campaign_save(request: Request):
+    """Create or update a targeted campaign (JSON body; photo as data-URI)."""
+    if not _api_guard(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    try:
+        data = await request.json()
+    except Exception:
+        return JSONResponse({"error": "bad json"}, status_code=400)
+    photo = str(data.get("photo") or "")
+    if photo and (not photo.startswith("data:image/") or len(photo) > 3_000_000):
+        return JSONResponse({"error": "عکس نامعتبر یا بزرگ‌تر از ۲ مگابایت است."}, status_code=400)
+    if not str(data.get("title") or "").strip():
+        return JSONResponse({"error": "عنوان کمپین لازم است."}, status_code=400)
+    cid = int(data.get("id") or 0)
+    if cid:
+        old = await get_custom_campaign(cid)
+        if not old:
+            return JSONResponse({"error": "کمپین پیدا نشد."}, status_code=404)
+        if "photo" not in data:  # editor didn't touch the image → keep the stored one
+            data["photo"] = old.get("photo") or ""
+    new_id = await save_custom_campaign(data)
+    return JSONResponse({"success": True, "id": new_id})
+
+
+@app.post(f"/{S}/api/campaigns/custom/{{cid}}/delete")
+async def api_custom_campaign_delete(request: Request, cid: int):
+    if not _api_guard(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    await delete_custom_campaign(int(cid))
+    return JSONResponse({"success": True})
+
+
+@app.post(f"/{S}/api/campaigns/custom/{{cid}}/send")
+async def api_custom_campaign_send(request: Request, cid: int):
+    """Blast the campaign to its segment (each user receives it at most once)."""
+    if not _api_guard(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    if not BOT_TOKEN or len(BOT_TOKEN) < 20:
+        return JSONResponse({"error": "توکن ربات تنظیم نشده است."}, status_code=400)
+    camp = await get_custom_campaign(int(cid))
+    if not camp:
+        return JSONResponse({"error": "کمپین پیدا نشد."}, status_code=404)
+    from core.campaigns import run_custom_campaign
+    bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.MARKDOWN))
+    try:
+        res = await run_custom_campaign(bot, camp)
+    finally:
+        await bot.session.close()
+    return JSONResponse({"success": True, **res})
 
 
 # ═══════════════════════════════ MINI APP ═══════════════════════════
@@ -3116,6 +3363,84 @@ async def miniapp_referral(request: Request):
         "caption_no_link": caption.replace("{link}", "").strip(),
         "tiers": [{"referrals_needed": int(t["referrals_needed"]), "reward": referral_tier_reward_text(t), "reached": converted >= int(t["referrals_needed"])} for t in tiers],
     })
+
+
+@app.post("/app/api/rep/purchases")
+async def miniapp_rep_purchases(request: Request):
+    """A representative's own purchase report, filtered by date, inside the mini app."""
+    if await get_setting("miniapp_enabled", "0") != "1":
+        return JSONResponse({"error": "disabled"}, status_code=403)
+    user = await _miniapp_user(request)
+    if not user:
+        return JSONResponse({"error": "invalid_init_data"}, status_code=401)
+    if not int(user.get("is_wholesale") or 0):
+        return JSONResponse({"error": "not_a_representative"}, status_code=403)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    report = await build_rep_report(
+        user,
+        preset=str(body.get("preset") or DEFAULT_REPORT_PRESET),
+        date_from=str(body.get("from") or ""),
+        date_to=str(body.get("to") or ""),
+    )
+    return JSONResponse(report)
+
+
+@app.post("/app/api/rep/purchases/excel")
+async def miniapp_rep_purchases_excel(request: Request):
+    """Send the rep their Excel report as a Telegram document.
+
+    Deliberately not a browser download: Telegram's in-app WebView blocks or
+    silently drops blob downloads on several platforms, whereas a document sent
+    to the chat arrives everywhere and stays there for the rep to re-open.
+    """
+    if await get_setting("miniapp_enabled", "0") != "1":
+        return JSONResponse({"error": "disabled"}, status_code=403)
+    user = await _miniapp_user(request)
+    if not user:
+        return JSONResponse({"error": "invalid_init_data"}, status_code=401)
+    if not int(user.get("is_wholesale") or 0):
+        return JSONResponse({"error": "not_a_representative"}, status_code=403)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    report = await build_rep_report(
+        user,
+        preset=str(body.get("preset") or DEFAULT_REPORT_PRESET),
+        date_from=str(body.get("from") or ""),
+        date_to=str(body.get("to") or ""),
+    )
+    data = rep_report_xlsx(report)
+    rng = report["range"]
+    summary = report["summary"]
+    caption = (
+        f"📊 گزارش خرید شما\n"
+        f"بازه: از {rng['from_label']} تا {rng['to_label']}\n"
+        f"سرویس: {summary['services']} | تمدید: {summary['renewals']} | "
+        f"مجموع: {summary['total_spent']:,} تومان"
+    )
+    bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+    try:
+        await bot.send_document(
+            int(user["telegram_id"]),
+            BufferedInputFile(data, filename=rep_report_filename(report)),
+            caption=caption, parse_mode=None,
+        )
+    except Exception as e:
+        logger.warning("rep excel send failed for %s: %s", user.get("telegram_id"), e)
+        return JSONResponse(
+            {"error": "send_failed", "message": "ارسال فایل ناموفق بود. لطفاً ابتدا ربات را استارت کنید."},
+            status_code=502,
+        )
+    finally:
+        try:
+            await bot.session.close()
+        except Exception:
+            pass
+    return JSONResponse({"success": True, "rows": len(report["rows"])})
 
 
 async def _miniapp_jitter(base: int) -> int:

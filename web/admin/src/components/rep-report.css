@@ -1,0 +1,77 @@
+/* Rep purchase report — period picker, Jalali calendar popover, report table.
+   Kept next to the components instead of styles.css so the report ships as one
+   self-contained unit. Selectors are deliberately a notch more specific than the
+   base ones (.jfield .jfield-inp, not .jfield-inp) so the cascade result never
+   depends on which stylesheet the bundler happens to emit first. */
+
+/* ── period picker ── */
+.rep-range { display: flex; align-items: flex-start; gap: 10px; flex-wrap: wrap; margin-top: 12px; }
+.rep-range .rep-range-clear { margin-top: 21px; }   /* line up with the inputs, under the labels */
+
+/* ── report body ── */
+.rep-window { color: var(--txt2); }
+.rep-window b { color: var(--txt); font-weight: 700; }
+.rep-stats { margin-top: 14px; }
+.rep-body { transition: opacity .15s; }
+.rep-body.busy { opacity: .45; pointer-events: none; }
+.rep-loading { display: grid; place-items: center; padding: 34px 0; }
+.rep-note { color: var(--txt3); font-size: .74rem; margin-top: 12px; line-height: 1.7; }
+.rep-foot { text-align: start; }
+.rep-unl { font-style: normal; font-size: .68rem; font-weight: 800; color: var(--p2); margin-inline-start: 7px; }
+.rep-cur { font-style: normal; font-size: .72rem; font-weight: 700; color: var(--txt3); margin-inline-start: 6px; }
+.rep-tbl-wrap { margin-top: 14px; }
+/* Dates and amounts must stay on one line; the wrapper scrolls instead. */
+.rep-tbl td { white-space: nowrap; }
+.rep-tbl td.rep-name { white-space: normal; min-width: 130px; font-weight: 600; }
+
+/* ── Jalali date field ── */
+.jfield { position: relative; display: flex; flex-direction: column; gap: 5px; min-width: 180px; }
+.jfield-lbl { font-size: .74rem; color: var(--txt3); font-weight: 600; }
+.jfield-box { position: relative; }
+.jfield .jfield-inp { padding-inline-end: 38px; }
+.jfield .jfield-inp.bad { border-color: var(--red2); box-shadow: 0 0 0 3px rgba(244, 63, 94, .18); }
+.jfield-btn {
+  position: absolute; inset-inline-end: 5px; top: 50%; transform: translateY(-50%);
+  background: none; border: none; cursor: pointer; line-height: 1;
+  font-size: .95rem; padding: 4px 6px; border-radius: 8px;
+}
+.jfield-btn:hover { background: rgba(255, 255, 255, .08); }
+.jfield-err { font-size: .7rem; color: var(--red); }
+.jfield-hint { font-size: .7rem; color: var(--txt3); }
+
+/* ── calendar popover ── */
+.jcal {
+  position: absolute; z-index: 60; top: calc(100% + 6px); inset-inline-start: 0;
+  width: 264px; max-width: 86vw; padding: 11px;
+  background: var(--panel-solid); border: 1px solid var(--bd2);
+  border-radius: var(--radius-sm); box-shadow: var(--shadow);
+}
+.jcal-head { display: flex; align-items: center; justify-content: space-between; gap: 6px; margin-bottom: 9px; }
+.jcal-navs { display: flex; gap: 4px; }
+.jcal-nav {
+  width: 27px; height: 27px; border-radius: 9px; padding: 0; cursor: pointer; line-height: 1;
+  border: 1px solid var(--bd2); background: rgba(255, 255, 255, .04);
+  color: var(--txt2); font-family: inherit; font-size: .82rem;
+}
+.jcal-nav:hover { background: rgba(255, 255, 255, .1); color: var(--txt); }
+.jcal-title { font-weight: 700; font-size: .85rem; }
+/* 7 columns declared here (not inline) — the mobile rule in styles.css collapses
+   every INLINE grid-template-columns to one column. */
+.jcal .jcal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 3px; }
+.jcal .jcal-wd { margin-bottom: 4px; }
+.jcal-wd span { text-align: center; font-size: .66rem; font-weight: 700; color: var(--txt3); padding: 3px 0; }
+.jcal-d {
+  height: 30px; padding: 0; border-radius: 9px; cursor: pointer;
+  border: 1px solid transparent; background: rgba(255, 255, 255, .03);
+  color: var(--txt); font-family: inherit; font-size: .78rem;
+}
+.jcal-d:hover { background: rgba(255, 255, 255, .1); }
+.jcal-d.today { border-color: var(--bd2); color: var(--p2); font-weight: 800; }
+.jcal-d.on { background: linear-gradient(135deg, var(--p), var(--p2)); color: #fff; border-color: transparent; font-weight: 800; }
+.jcal-foot { display: flex; align-items: center; justify-content: space-between; gap: 6px; margin-top: 10px; }
+
+@media (max-width: 640px) {
+  .rep-range { gap: 8px; }
+  .rep-range .jfield { flex: 1 1 100%; min-width: 0; }
+  .rep-range .rep-range-clear { margin-top: 0; }
+}

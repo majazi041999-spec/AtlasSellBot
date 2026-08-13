@@ -12,12 +12,15 @@ from datetime import datetime, timedelta
 from core.database import (
     get_abandoned_carts,
     get_lapsed_users_for_winback,
+    get_segment_users,
     get_setting,
     get_trial_followups,
     log_campaign_event,
     mark_cart_reminder,
+    mark_custom_campaign_sent,
     mark_trial_followup_sent,
     mark_winback_sent,
+    user_has_campaign_event,
 )
 from core.panel_content import SETTINGS_DEFAULTS
 
@@ -114,6 +117,67 @@ async def run_winback(bot, limit: int = 200) -> dict:
     if sent:
         logger.info("campaign winback sent=%s", sent)
     return {"sent": sent}
+
+
+async def run_custom_campaign(bot, camp: dict) -> dict:
+    """Send a targeted (panel-authored) campaign to its segment.
+
+    Each user gets the campaign at most once ever (campaign_events guards
+    re-sends), so re-running after adding users to a segment is safe. A photo is
+    sent as the DM image; Telegram caps captions at 1024 chars, so longer
+    messages go as a follow-up text bubble."""
+    import base64
+
+    from aiogram.types import BufferedInputFile
+
+    slug = str(camp.get("slug") or "").strip()
+    template = str(camp.get("message") or "")
+    if not slug or not template.strip():
+        return {"sent": 0, "skipped": 0}
+    brand = await get_setting("ui.brand_name", "Atlas Account")
+    code = str(camp.get("code") or "").strip()
+
+    photo_bytes = b""
+    photo = str(camp.get("photo") or "")
+    if photo.startswith("data:") and "," in photo:
+        try:
+            photo_bytes = base64.b64decode(photo.split(",", 1)[1])
+        except Exception:
+            photo_bytes = b""
+
+    sent = skipped = 0
+    for u in await get_segment_users(str(camp.get("segment") or "all")):
+        uid = int(u.get("id") or 0)
+        tid = int(u.get("telegram_id") or 0)
+        if not tid or await user_has_campaign_event(slug, uid):
+            skipped += 1
+            continue
+        values = {"brand": brand, "code": code,
+                  "name": (u.get("full_name") or "").strip()[:20] or "دوست عزیز"}
+        try:
+            text = template.format(**values)
+        except Exception:
+            text = template
+        try:
+            if photo_bytes:
+                img = BufferedInputFile(photo_bytes, filename="campaign.jpg")
+                if len(text) <= 1024:
+                    await bot.send_photo(tid, img, caption=text, parse_mode=None)
+                else:
+                    await bot.send_photo(tid, img)
+                    await bot.send_message(tid, text, parse_mode=None)
+            else:
+                await bot.send_message(tid, text, parse_mode=None)
+            sent += 1
+            await log_campaign_event(slug, "sent", uid)
+            await asyncio.sleep(0.08)
+        except Exception:
+            # Blocked the bot / deleted account — skip silently, don't mark.
+            skipped += 1
+    if camp.get("id"):
+        await mark_custom_campaign_sent(int(camp["id"]), sent)
+    logger.info("custom campaign %s sent=%s skipped=%s", slug, sent, skipped)
+    return {"sent": sent, "skipped": skipped}
 
 
 async def _cart_card_footer() -> str:

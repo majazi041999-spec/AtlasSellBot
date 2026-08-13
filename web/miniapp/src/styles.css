@@ -155,7 +155,8 @@ small{font-weight:500}
 .rep-stat{padding:14px;text-align:center}
 .rep-stat-ico{width:40px;height:40px;border-radius:12px;display:grid;place-items:center;font-size:1.15rem;margin:0 auto 8px}
 .rep-stat-val{font-weight:800;font-size:1.15rem}
-.rep-stat-lbl{color:var(--muted,#9aa6bd);font-size:.72rem;margin-top:2px}
+.rep-stat-val small{font-size:.66rem;color:var(--txt2)}
+.rep-stat-lbl{color:var(--muted,#9aa6bd);font-size:.72rem;margin-top:2px;overflow-wrap:anywhere}
 
 /* ── Per-service server links ── */
 .node-list{margin-top:10px;display:flex;flex-direction:column;gap:7px}
@@ -193,6 +194,57 @@ small{font-weight:500}
 .fchip{flex:none;display:inline-flex;align-items:center;gap:5px;font-family:inherit;font-size:.76rem;font-weight:700;color:var(--txt2);background:rgba(255,255,255,.05);border:1px solid var(--bd);border-radius:20px;padding:7px 13px;cursor:pointer;transition:all .15s}
 .fchip.on{color:#fff;border-color:transparent;background:linear-gradient(135deg,var(--p),var(--p2))}
 .fchip em{font-style:normal;font-size:.68rem;opacity:.75}
+
+/* ── Rep purchase report (date-filtered) ── */
+.rep-report{display:flex;flex-direction:column;gap:12px}
+/* Slightly tighter than a normal card so the 7-column month grid keeps ~40px cells on a 360px screen. */
+.rp-filter{display:flex;flex-direction:column;gap:10px;padding:14px}
+.rp-filter .list-title{margin-bottom:0}
+.rp-filter .filter-chips{margin-bottom:0}
+/* Chips here are the primary control of the screen, so they get a real touch target. */
+.rp-filter .fchip{min-height:40px}
+.rp-range{display:flex;gap:8px}
+.rp-datebtn{flex:1;min-width:0;min-height:52px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;
+  background:rgba(255,255,255,.05);border:1.5px solid var(--bd);border-radius:13px;padding:8px 10px;
+  color:var(--txt);font-family:inherit;font-size:.84rem;font-weight:700;cursor:pointer;transition:border-color .15s,background .15s}
+.rp-datebtn.on{border-color:var(--p);background:rgba(124,111,255,.12)}
+.rp-datebtn span{font-size:.68rem;font-weight:600;color:var(--txt3)}
+
+/* Month grid: 7 fluid columns, so it can never widen past its card. */
+.rp-cal{background:rgba(0,0,0,.22);border:1px solid var(--bd);border-radius:var(--r2);padding:9px}
+.rp-cal-head{display:flex;align-items:center;justify-content:space-between;gap:6px;margin-bottom:8px}
+.rp-cal-head b{font-size:.9rem;font-weight:800;text-align:center;flex:1;min-width:0}
+.rp-cal-head.sub{margin-bottom:10px}
+.rp-cal-head.sub .rp-nav{flex:1}
+.rp-nav{flex:none;min-height:40px;background:rgba(255,255,255,.06);border:1px solid var(--bd);border-radius:11px;
+  color:var(--txt2);font-family:inherit;font-size:.74rem;font-weight:700;padding:9px 11px;cursor:pointer}
+.rp-nav:active{transform:scale(.96)}
+.rp-cal-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:3px;text-align:center}
+.rp-cal-wd{color:var(--txt3);font-size:.68rem;font-weight:700;margin-bottom:5px}
+.rp-day{min-height:42px;display:flex;align-items:center;justify-content:center;padding:0;border:none;border-radius:11px;
+  background:rgba(255,255,255,.05);color:var(--txt);font-family:inherit;font-size:.82rem;font-weight:600;cursor:pointer}
+.rp-day.empty{background:none}
+.rp-day.today{box-shadow:inset 0 0 0 1.5px rgba(124,111,255,.6)}
+.rp-day.on{background:linear-gradient(135deg,var(--p),var(--p2));color:#fff;font-weight:800}
+
+.rp-row .badge{flex:none}
+.rp-name{min-width:0;font-size:.95rem;overflow-wrap:anywhere}
+.rp-badges{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px}
+.badge.warn{background:rgba(245,158,11,.18);color:#fbbf24}
+.badge.info{background:rgba(124,111,255,.18);color:var(--p2)}
+.badge.cy{background:rgba(34,211,238,.16);color:var(--c)}
+.badge.soft{background:rgba(255,255,255,.07);color:var(--txt2);font-weight:700}
+.rp-facts{border-top:1px solid rgba(255,255,255,.06)}
+.rp-fact{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:8px 0;font-size:.78rem;border-bottom:1px solid rgba(255,255,255,.06)}
+.rp-fact:last-child{border-bottom:none}
+.rp-fact>span{color:var(--txt3);flex:none}
+.rp-fact>b{min-width:0;font-weight:700;text-align:end;overflow-wrap:anywhere}
+.rp-price{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-top:10px;
+  background:rgba(255,255,255,.05);border-radius:12px;padding:11px 14px;font-size:.8rem;color:var(--txt3)}
+.rp-price b{font-size:1rem;font-weight:800;color:var(--txt)} .rp-price small{font-size:.68rem;color:var(--txt2)}
+.rp-note{border-radius:13px;padding:11px 14px;font-size:.8rem;font-weight:700;line-height:1.75}
+.rp-note.ok{background:rgba(52,211,153,.14);color:var(--g)}
+.rp-note.err{background:rgba(251,113,133,.14);color:var(--acc)}
 
 /* ── Per-node card (rich) ── */
 .node-card{background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.07);border-radius:12px;padding:10px 12px}

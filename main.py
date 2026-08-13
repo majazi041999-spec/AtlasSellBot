@@ -331,6 +331,45 @@ async def _multi_subscription_worker():
         await asyncio.sleep(180)
 
 
+async def _auto_node_worker():
+    """Keep the auto node pointed at the least-busy server.
+
+    Two cadences on purpose: the online counts are re-read every cycle (cheap —
+    one HTTP call per panel) so the admin panel always shows live numbers, while
+    an actual rebalance runs only every few cycles, because moving a customer
+    between servers costs them a reconnect and should stay rare.
+    """
+    from core.autonode import is_enabled, rebalance_all_auto_nodes, refresh_server_online_counts, _setting_int
+    from core.database import get_auto_node_configs
+
+    await asyncio.sleep(45)
+    last_rebalance = 0.0
+    while True:
+        poll_seconds = 120
+        try:
+            if await is_enabled() and await get_auto_node_configs(active_only=True):
+                poll_seconds = max(30, await _setting_int("autonode_poll_seconds", 30))
+                counts = await refresh_server_online_counts()
+                known = sum(1 for v in counts.values() if v is not None)
+                logger.info("autonode: polled %s servers (%s answered)", len(counts), known)
+
+                now = time.time()
+                # Rebalance at 3× the polling interval so decisions are made on
+                # counts we have seen settle, not on a single noisy sample.
+                if now - last_rebalance >= poll_seconds * 3:
+                    last_rebalance = now
+                    result = await rebalance_all_auto_nodes(refresh=False)
+                    if result.get("moved") or result.get("failed"):
+                        logger.info(
+                            "autonode rebalance: considered=%s moved=%s kept=%s failed=%s",
+                            result.get("considered"), result.get("moved"),
+                            result.get("kept"), result.get("failed"),
+                        )
+        except Exception as e:
+            logger.exception("auto-node worker failed: %s", e)
+        await asyncio.sleep(poll_seconds)
+
+
 async def _single_to_sub_nudge_worker(bot):
     """Periodically nudge users who still have single configs to convert to a sub."""
     import time as _t
@@ -507,6 +546,8 @@ async def run_bot():
 
     await init_db()
     logger.info("✅ دیتابیس آماده")
+    from core.database import seed_default_campaigns
+    await seed_default_campaigns()
     await _repair_missing_expiries()
 
     bot = Bot(
@@ -533,6 +574,7 @@ async def run_bot():
     asyncio.create_task(_config_alert_worker(bot))
     asyncio.create_task(_daily_report_worker(bot))
     asyncio.create_task(_multi_subscription_worker())
+    asyncio.create_task(_auto_node_worker())
     asyncio.create_task(_subscription_lifecycle_worker(bot))
     asyncio.create_task(_single_to_sub_nudge_worker(bot))
     asyncio.create_task(_server_backup_worker(bot))

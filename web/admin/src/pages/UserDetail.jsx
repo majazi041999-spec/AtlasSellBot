@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import { api, fmt } from "../api.js";
 import { Card, Loading, Empty, Modal, Stat, toast, liveNum, rawNum } from "../components/ui.jsx";
+import RepPurchases from "../components/RepPurchases.jsx";
 
 const ROLES = { none: "کاربر عادی", finance: "ادمین ساده", full: "ادمین کل" };
 const gb = (b) => (Number(b || 0) / 1024 ** 3).toFixed(2);
@@ -88,6 +89,9 @@ export default function UserDetail({ uid, go }) {
           </div>
         </Card>
       )}
+
+      {/* Date-filtered purchase report — representatives only */}
+      {u.is_wholesale ? <RepPurchases uid={uid} /> : null}
 
       {/* Pricing + wallet + role management */}
       <Card title="💲 قیمت‌گذاری اختصاصی">

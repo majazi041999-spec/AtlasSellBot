@@ -17,7 +17,7 @@ Pillow (via `qrcode[pil]`).
 
 ## 2. Run / build / deploy
 - Entry: `python main.py` (runs bot + web concurrently). Port from `WEB_PORT` env (default 8000).
-- **Local dev caveat:** `aiogram` is NOT installed in the dev sandbox, so `web/app.py`/`main.py` can't be imported here; use `python -m py_compile` to check syntax. `core/*` mostly import-testable.
+- **Local dev:** `pip install aiogram uvicorn fastapi jinja2 python-jose[cryptography] passlib[bcrypt] python-multipart aiofiles "qrcode[pil]"` makes `web/app.py` importable and lets you actually boot the API for testing (`uvicorn` on any port with `WEB_SECRET_PATH`/`WEB_ADMIN_*`/`BOT_TOKEN` set, run from a scratch dir so it creates its own `atlas.db`). Without those, `python -m py_compile` + `python -m pyflakes` are the fallback; `core/*` is import-testable either way.
 - React builds (committed dist so server needs no Node):
   - `npm --prefix web/admin run build` → `web/admin/dist/`
   - `npm --prefix web/miniapp run build` → `web/miniapp/dist/`
@@ -33,7 +33,10 @@ core/
   config.py                 env/config: WEB_SECRET_PATH, WEB_PORT, BOT_TOKEN, ADMIN_IDS, card, JWT…
   database.py     (2663)    ALL DB access (aiosqlite). Schema (SCHEMA str) + _ensure_columns migrations + every query.
   multi_subscription.py (1993) THE subscription/node engine (see §6). Highest-risk file.
-  xui_api.py       (860)    XUIClient: talks to 3x-ui panels (add/update/del client, get_inbound, update_inbound, get_onlines, get_client_link).
+  xui_api.py       (860)    XUIClient: talks to 3x-ui panels (add/update/del client, get_inbound, update_inbound, get_onlines/get_online_count, get_client_link).
+  autonode.py      (520)    "نود خودکار": online-count poller + load balancer that keeps each sub on the least-busy server (see §6b).
+  rep_report.py    (215)    date-filtered representative purchase report + its Excel export (see §8b).
+  xlsx.py          (215)    dependency-free .xlsx writer (stdlib zipfile). RTL sheet, styled header, merged titles.
   pricing.py        (64)    per-user package price (rep/custom). One source of truth.
   rewards.py       (300)    referral tiers/claims reward logic.
   campaigns.py     (106)    trial→paid + winback campaigns.
@@ -79,6 +82,14 @@ setup_mtproxy.sh   MTProto proxy installer (mtg v1.0.11). atlas_menu.sh, install
 - **configs**: legacy single-server configs (mostly superseded by subscriptions).
 - **test_accounts** (UNIQUE user_id → one lifetime trial) vs **rep_test_accounts** (per-day rep allowance, no unique).
 - discount_codes, discount_redemptions, referral_tiers, wallet_transactions, topup_requests, campaign_events, daily_reports.
+- **custom_campaigns**: panel-authored targeted blasts (Campaigns tab). `slug` is the join key to
+  campaign_events (sends, once-per-user guard) AND discount_codes.campaign (attribution + targeted-code
+  lock). Segments in `CUSTOM_SEGMENTS` + `get_segment_users()` (database.py); sender =
+  `run_custom_campaign` (core/campaigns.py, photo data-URI + 1024-char caption split); endpoints
+  `/{S}/api/campaigns/custom[...]`. Seeded ONCE from `_SEED_CAMPAIGNS` via `seed_default_campaigns()`
+  (main.py after init_db; gate setting `custom_campaigns_seeded`) — 8 designed drafts incl. image
+  prompts + strategy notes; also creates codes COMEBACK30/FLASH20/RENEW15/VIP20/SCHOOL25 (FLASH20 &
+  SCHOOL25 created inactive) and repairs OldFriend15 campaign 'renewal'→'winback'.
 
 ### Sorting & filtering (added for the users/services lists)
 One vocabulary of keys is shared across panel, bot and mini-app — keep the lists in sync when adding one.
@@ -110,7 +121,16 @@ Concept: a sold sub = 1 `subscription_profile` + a client on EVERY active `subsc
 - Link labels: server remarks are SHORT (node name only). The user's chosen service name appears ONCE as the first info/null entry (fixed the "names too long" complaint) — see `_subscription_node_display_label` + `_subscription_info_links`.
 - **Brand safety (hard rule):** our platform brand is NEVER shown on a representative's subscription — only their `rep_brand_name` (or nothing). See `_owner_brand()` → (hide, rep_brand, is_rep) and `_subscription_info_links`. Logo equivalent: `_resolve_sub_logo`/`_resolve_sub_brand` in web/app.py.
 - Sync: `sync_subscription_nodes_streamed` (concurrent, time-boxed, progress log). Slowness is HTTP round-trips to x-ui, NOT SQLite — Postgres would NOT help sync speed.
-- Gotcha: node email suffix `_n{config_id}` is the join key between subscription_nodes and node configs.
+- Gotcha: node email suffix `_n{config_id}` is the join key between subscription_nodes and node configs. `subscription_nodes.config_id` now stores it explicitly (backfilled from the suffix in `_ensure_columns`) because an auto node's server/inbound differ per profile, so a (server_id, inbound_id) join would attach the wrong config.
+
+## 6b. Auto node — "نود خودکار" (`core/autonode.py`)
+One extra entry in every subscription that always points at whichever server has the fewest users online **right now**. It is a normal `subscription_node_configs` row with `is_auto=1`, parked at `server_id=0` and a NEGATIVE `inbound_id` (a sentinel that satisfies the UNIQUE(server_id, inbound_id) constraint and allows several auto nodes). `get_subscription_node_configs` LEFT JOINs servers so those rows survive.
+- **Resolution:** `expand_node_configs(nodes, existing_by_config, allow_move)` swaps each auto node for `_merge_target(auto, candidate)` — the auto node's own id/label/pool + the chosen candidate's server & inbound. Called by `create_profile_for_order`, `create_profile_from_config` and `ensure_subscription_profile_nodes`. Because the id is preserved, the `_n{id}` email suffix is stable and the EXISTING move path in `ensure_subscription_profile_nodes` performs the migration — no new provisioning code.
+- **`allow_move=False` on every routine reconcile.** Only a deliberate rebalance relocates a customer; a background sync must never do it.
+- **Load metric:** count of clients online on the panel (3x-ui derives it from xray's stats tick, so it is real concurrency, not assigned configs). Persisted per server: `online_count` (raw last sample), `online_avg` (EWMA α=0.4, what routing actually uses — the raw list is very noisy), `online_ok`, `online_checked_at`.
+- **Three safety rules** (all covered by tests): unknown ≠ empty (an unreachable panel scores +1000, never 0); hysteresis (`autonode_margin` 25% AND `autonode_min_delta` 3 users AND `autonode_cooldown_minutes` 60, via `subscription_nodes.moved_at`); projected load (`LoadView.reserve()` counts each decision immediately so a batch fans out instead of stampeding).
+- Worker: `_auto_node_worker` in main.py — polls every `autonode_poll_seconds`, rebalances every 3rd poll. Panel: `/{S}/subs/autonode/{refresh,rebalance,settings}`, rebalance streams to the "nodeops" job log.
+- `XUIClient.get_online_count()` returns `Optional[int]` — **None means unknown**; never coerce it to 0. It tries `/panel/api/clients/onlines` (3x-ui v3.1+), `/panel/api/inbounds/onlines` (v2), `/panel/inbound/onlines` (legacy web route), remembers which worked, and normalizes both `[email]` and `[{email}]` shapes. v3 CSRF-protects `/login` itself, so `_login` retries once with a token from `/csrf-token`.
 
 ## 7. Pricing (`core/pricing.py`)
 `package_price_for_user(user_id, pkg)` → {base, final, discount, ...}. Rules:
@@ -129,6 +149,15 @@ Formerly "wholesale/عمده". `users.is_wholesale=1` = approved rep.
 - Rep daily test allowance: `rep_test_daily_limit` setting; `count_rep_test_today`/`add_rep_test_account`.
 - Admin panel: Users modal + `UserDetail.jsx` + `Reps.jsx` manage rep brand/pricing/stats. Endpoints: `/users/{id}/rep_brand`, `/users/{id}/toggle_wholesale`, `/users/{id}/pricing`, `/users/{id}/toggle_hide_brand`.
 
+## 8b. Rep purchase report + Excel (`core/rep_report.py`)
+Date-filtered "what did this representative buy" report, shown on their page in the admin panel and in the mini-app's rep tab, exportable to Excel.
+- `resolve_range(preset, date_from, date_to)` — presets `week|month|3months|6months|year|all`, or an explicit Jalali `YYYY/MM/DD` pair which overrides the preset. "۱ ماه اخیر" is one **Jalali** month back (`jalali_add_months`, day clamped to month length), not 30 days. The end bound covers the whole chosen day.
+- `get_rep_purchases(user_id, since, until)` (database.py) returns **one row per service** — a bulk order of 10 yields 10 rows, each with its own name and dates, which is what makes the export usable as proof — plus renewal orders (which create no new profile). A bulk order's price is DIVIDED across its services so rows sum to what was charged; `summary.total_spent` is summed over DISTINCT orders instead.
+- Endpoints: `GET /{S}/api/reps/{id}/purchases` + `…/purchases.xlsx` (admin, cookie auth); `POST /app/api/rep/purchases` + `…/purchases/excel` (mini-app). **The mini-app one does not return a file** — it sends the .xlsx to the rep's Telegram chat via the bot, because blob downloads are unreliable in Telegram's WebView.
+- Unlimited plans must never render as `0` GB — `traffic_label`/the Excel cell say «نامحدود». A not-yet-started service says «شروع نشده» / «پس از اولین اتصال» rather than a fake date.
+- **Timezone (this is the accuracy-critical part):** `created_at` columns are the SERVER's local wall clock (`datetime('now','localtime')`), epoch-ms columns are absolute. `jalali.db_datetime_to_tehran` converts naive strings via `.astimezone()` (which reads them as system-local — exactly what they are) then to Tehran; `tehran_to_db_string` does the inverse so a Jalali range filters the right rows even on a UTC VPS. Verified across the +3:30 day rollover.
+- `core/jalali.py` gained `jalali_to_gregorian`, `jalali_is_leap` (decided by round-trip, so it can never disagree with the conversions), `jalali_month_days`, `jalali_add_months`, `parse_jalali`, `jalali_datetime_display`. `web/{admin,miniapp}/src/jalali.js` is the **same algorithm in JS** (verified to agree day-for-day) — use it, don't add a date npm package.
+
 ## 9. React admin panel (`web/admin/src`)
 - `api.js`: `BASE = window.__PANEL_BASE__` (secret). `api.get/post` (JSON), `api.form(path,obj)` (FormData; used for endpoints that read `request.form()` and/or redirect — treats redirect/HTML as success). Long-running ops poll job-log endpoints.
 - `router.js`: hash router; `App.jsx` routes by first path segment. `Shell.jsx`: sidebar NAV + legacy deep-links + fetches `/api/branding` (logo).
@@ -146,7 +175,7 @@ Telegram WebApp; auth via `X-Telegram-Init-Data` header → `validate_init_data`
 - `_resolve_sub_logo(profile)`: rep's logo for rep subs, else admin logo — never leaks ours to a rep.
 
 ## 12. Settings keys (get_setting/set_setting; defaults in panel_content.SETTINGS_DEFAULTS)
-Brand/UI: `ui.brand_name`, `ui.logo_data`, `ui.panel_subtitle`, `ui.custom_css/js`. Subs: `public_base_url`, `sub_info_enabled`, `sub_info_template`, `sub_brand_template`, `sub_auto_sync_*`, `multi_sub_node_count/min_nodes` (LEGACY/unused — caps removed). Test: `test_account_enabled/traffic_gb/duration_days`, `rep_test_daily_limit`. Rep: `rep_min_topup`, `rep_price_per_gb` (global rep per-GB default). Channel: `force_channel`, `channel_username`. Card: `card_number/holder/bank`. Campaigns: `campaign_trial_*`, `campaign_winback_*`. Referral: `referral_*`. Proxy: `proxy_port/secret/domain/tag/host`. Cert: `panel_domain`, `cert_email`, `atlas_tls_https_port`. Miniapp: `miniapp_enabled/domain/title/logo`.
+Brand/UI: `ui.brand_name`, `ui.logo_data`, `ui.panel_subtitle`, `ui.custom_css/js`. Subs: `public_base_url`, `sub_info_enabled`, `sub_info_template`, `sub_brand_template`, `sub_auto_sync_*`, `multi_sub_node_count/min_nodes` (LEGACY/unused — caps removed). Test: `test_account_enabled/traffic_gb/duration_days`, `rep_test_daily_limit`. Rep: `rep_min_topup`, `rep_price_per_gb` (global rep per-GB default). Channel: `force_channel`, `channel_username`. Card: `card_number/holder/bank`. Campaigns: `campaign_trial_*`, `campaign_winback_*`. Referral: `referral_*`. Proxy: `proxy_port/secret/domain/tag/host`. Cert: `panel_domain`, `cert_email`, `atlas_tls_https_port`. Miniapp: `miniapp_enabled/domain/title/logo`. Auto node: `autonode_enabled`, `autonode_poll_seconds`, `autonode_stale_seconds`, `autonode_margin`, `autonode_min_delta`, `autonode_cooldown_minutes`, `autonode_max_moves`, `autonode_poll_concurrency` (defaults live in `core.autonode.DEFAULTS`, edited on the Subscriptions page — NOT part of `_settings_snapshot`).
 
 ## 13. Conventions & gotchas
 - **RTL trap:** logical `inset-inline-end` = physical LEFT in RTL. Mobile sidebar drawer must use physical `right:0` + `translateX(105%)`. `html/body { overflow-x: clip }` prevents drawer-induced horizontal scroll (clip, not hidden, to keep sticky working).
@@ -162,6 +191,10 @@ Brand/UI: `ui.brand_name`, `ui.logo_data`, `ui.panel_subtitle`, `ui.custom_css/j
 - Per-node custom domain → `subscription_node_configs.connect_host` + `_apply_host_override`.
 - Pricing shown/charged → `core/pricing.py` + `_priced_packages` (bot) + `/app/api/packages` (miniapp).
 - Rep features → bot/handlers/user.py (`rep:*`, `wh_*`) + keyboards.py + web Users/UserDetail/Reps pages.
+- Auto-node routing / load metric / hysteresis → `core/autonode.py` (`LoadView.score`, `resolve_auto_target`, `rebalance_auto_node`); its provisioning hook is `expand_node_configs` inside `ensure_subscription_profile_nodes`.
+- Rep purchase report columns or date window → `core/rep_report.py` (`_COLUMNS`, `resolve_range`) + `get_rep_purchases` in database.py.
+- Anything Jalali → `core/jalali.py` AND the mirrored `web/{admin,miniapp}/src/jalali.js` (keep them in step).
+- Excel output → `core/xlsx.py` (no third-party dependency — don't add openpyxl).
 - A new user column → `_ensure_columns` in database.py + expose in `_slim_user`/user-detail API.
 - A new setting → `SETTINGS_DEFAULTS` (panel_content) + `_settings_snapshot` + settings_save Form param + React Settings field.
 - New admin page → web/app.py `/{S}/api/<x>` JSON + `web/admin/src/pages/<X>.jsx` + wire in App.jsx + Shell.jsx nav, then `npm --prefix web/admin run build`.

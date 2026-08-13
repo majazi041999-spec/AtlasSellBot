@@ -1,4 +1,5 @@
 import aiosqlite
+import re
 import secrets
 import string
 import time
@@ -316,6 +317,23 @@ CREATE TABLE IF NOT EXISTS referral_claims (
     FOREIGN KEY(tier_id) REFERENCES referral_tiers(id)
 );
 
+CREATE TABLE IF NOT EXISTS custom_campaigns (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    slug TEXT UNIQUE NOT NULL,            -- joins campaign_events + discount_codes.campaign
+    title TEXT NOT NULL,
+    emoji TEXT DEFAULT '🎯',
+    segment TEXT DEFAULT 'all',           -- key in CUSTOM_SEGMENTS
+    message TEXT DEFAULT '',              -- placeholders: {name} {code} {brand}
+    photo TEXT DEFAULT '',                -- data-URI image attached to the DM
+    code TEXT DEFAULT '',                 -- discount code substituted for {code}
+    image_prompt TEXT DEFAULT '',         -- AI image-generation prompt (copyable in panel)
+    notes TEXT DEFAULT '',                -- strategy notes shown to the admin
+    status TEXT DEFAULT 'draft',          -- 'draft' | 'sent'
+    sent_count INTEGER DEFAULT 0,
+    created_at TEXT DEFAULT (datetime('now','localtime')),
+    sent_at TEXT DEFAULT ''
+);
+
 INSERT OR IGNORE INTO settings VALUES
     ('welcome_message','به Atlas Account خوش آمدید! 🌐\nبهترین سرویس VPN با سرعت بالا.'),
     ('support_username',''),
@@ -343,6 +361,12 @@ async def _ensure_columns(db):
             ("max_active_configs", "INTEGER DEFAULT 0"),
             ("inbound_ids", "TEXT DEFAULT ''"),
             ("api_token", "TEXT DEFAULT ''"),
+            # Live load, refreshed by the auto-node poller.
+            ("online_count", "INTEGER DEFAULT 0"),       # newest raw sample (what the panel shows)
+            ("online_avg", "REAL DEFAULT 0"),            # smoothed sample; what routing decisions use
+            ("online_ok", "INTEGER DEFAULT 0"),          # 0 = last poll failed → count unknown, not zero
+            ("online_checked_at", "INTEGER DEFAULT 0"),  # epoch ms
+            ("load_weight", "REAL DEFAULT 1"),           # capacity multiplier; higher = can take more users
         ],
         "users": [
             ("discount_percent", "REAL DEFAULT 0"),
@@ -413,6 +437,30 @@ async def _ensure_columns(db):
             ("max_active_profiles", "INTEGER DEFAULT 0"),
             ("is_active", "INTEGER DEFAULT 1"),
             ("connect_host", "TEXT DEFAULT ''"),
+            # Auto node ("نود خودکار"): one entry in the user's subscription that
+            # always points at whichever server currently has the fewest online
+            # users. Its own server_id/inbound_id are placeholders (see
+            # add_auto_subscription_node_config); the real target is resolved per
+            # profile at provisioning time.
+            ("is_auto", "INTEGER DEFAULT 0"),
+            ("auto_pool", "TEXT DEFAULT ''"),        # csv of candidate node-config ids; '' = every active node
+            ("auto_show_server", "INTEGER DEFAULT 0"),  # append the current server name to the label
+        ],
+        "subscription_nodes": [
+            # Which node CONFIG this client belongs to. Previously derived from the
+            # `_n{config_id}` email suffix, which cannot work for an auto node
+            # (its server/inbound differ per profile, so a server+inbound join
+            # would attach the wrong config).
+            ("config_id", "INTEGER DEFAULT 0"),
+            # Epoch ms of the last auto-node reassignment; feeds the move cooldown
+            # so a subscription can't be bounced between servers repeatedly.
+            ("moved_at", "INTEGER DEFAULT 0"),
+            # Traffic this node used BEFORE its client was moved to another
+            # server. A moved client starts from zero on the new panel, and
+            # profile usage is the SUM over nodes — without carrying the old
+            # figure forward, every move would hand the customer back the quota
+            # they had already spent.
+            ("carried_bytes", "INTEGER DEFAULT 0"),
         ],
         "test_accounts": [
             ("profile_id", "INTEGER DEFAULT 0"),
@@ -427,6 +475,23 @@ async def _ensure_columns(db):
         for col, ddl in cols:
             if col not in existing:
                 await db.execute(f"ALTER TABLE {table} ADD COLUMN {col} {ddl}")
+
+    # Backfill subscription_nodes.config_id from the historical `_n{config_id}`
+    # email suffix so existing subscriptions keep their node identity now that we
+    # join on config_id instead of (server_id, inbound_id). Same trailing-suffix
+    # regex the orphan cleanup uses — done in Python because a legacy profile
+    # email may itself contain "_n", and only the LAST match is the config id.
+    async with db.execute(
+        "SELECT id, email FROM subscription_nodes WHERE config_id=0 AND email LIKE '%\\_n%' ESCAPE '\\'"
+    ) as c:
+        rows = await c.fetchall()
+    updates = []
+    for row in rows:
+        m = re.search(r"_n(\d+)$", str(row[1] or ""))
+        if m:
+            updates.append((int(m.group(1)), int(row[0])))
+    if updates:
+        await db.executemany("UPDATE subscription_nodes SET config_id=? WHERE id=?", updates)
 
 def _gen_referral_code() -> str:
     chars = string.ascii_uppercase + string.digits
@@ -525,18 +590,24 @@ async def get_available_servers() -> List[Dict]:
     return out
 
 
+# An auto node has no server of its own — the LEFT JOIN below keeps it in the
+# list anyway, and its real target is resolved per subscription at provisioning
+# time by core.autonode.
+_NODE_CONFIG_SELECT = """SELECT nc.*, s.name AS server_name, s.url AS server_url, s.username AS srv_user,
+                   s.password AS srv_pass, s.api_token AS srv_api_token, s.sub_path,
+                   COALESCE(s.is_active, 0) AS server_active, s.max_active_configs
+            FROM subscription_node_configs nc
+            LEFT JOIN servers s ON s.id=nc.server_id"""
+
+
 async def get_subscription_node_configs(active_only: bool = True) -> List[Dict]:
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         where = ""
         if active_only:
-            where = "WHERE nc.is_active=1 AND s.is_active=1"
+            where = "WHERE nc.is_active=1 AND (nc.is_auto=1 OR s.is_active=1)"
         async with db.execute(
-            f"""SELECT nc.*, s.name AS server_name, s.url AS server_url, s.username AS srv_user,
-                       s.password AS srv_pass, s.api_token AS srv_api_token, s.sub_path,
-                       s.is_active AS server_active, s.max_active_configs
-                FROM subscription_node_configs nc
-                JOIN servers s ON s.id=nc.server_id
+            f"""{_NODE_CONFIG_SELECT}
                 {where}
                 ORDER BY nc.priority ASC, nc.id ASC"""
         ) as c:
@@ -546,15 +617,7 @@ async def get_subscription_node_configs(active_only: bool = True) -> List[Dict]:
 async def get_subscription_node_config(node_id: int) -> Optional[Dict]:
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
-        async with db.execute(
-            """SELECT nc.*, s.name AS server_name, s.url AS server_url, s.username AS srv_user,
-                      s.password AS srv_pass, s.api_token AS srv_api_token, s.sub_path,
-                      s.is_active AS server_active, s.max_active_configs
-               FROM subscription_node_configs nc
-               JOIN servers s ON s.id=nc.server_id
-               WHERE nc.id=?""",
-            (int(node_id),),
-        ) as c:
+        async with db.execute(f"{_NODE_CONFIG_SELECT} WHERE nc.id=?", (int(node_id),)) as c:
             r = await c.fetchone()
             return dict(r) if r else None
 
@@ -604,7 +667,11 @@ async def delete_subscription_node_config(node_id: int):
 
 
 async def subscription_node_config_has_capacity(node: Dict) -> bool:
-    if not node or not int(node.get("is_active") or 0) or not int(node.get("server_active") or 0):
+    if not node or not int(node.get("is_active") or 0):
+        return False
+    if int(node.get("is_auto") or 0):
+        return bool(await get_auto_node_candidates(node))
+    if not int(node.get("server_active") or 0):
         return False
     cap = int(node.get("max_active_profiles") or 0)
     if cap <= 0:
@@ -618,6 +685,16 @@ async def subscription_node_config_status(node: Dict) -> Dict:
         return {"usable": False, "reason": "not_found", "label": "نود پیدا نشد"}
     if not int(node.get("is_active") or 0):
         return {"usable": False, "reason": "node_disabled", "label": "خود نود غیرفعال است"}
+
+    # An auto node is usable as long as its pool still has at least one usable
+    # member — it owns no server itself.
+    if int(node.get("is_auto") or 0):
+        candidates = await get_auto_node_candidates(node)
+        if not candidates:
+            return {"usable": False, "reason": "auto_pool_empty",
+                    "label": "هیچ نود قابل استفاده‌ای در استخر خودکار نیست"}
+        return {"usable": True, "reason": "ok", "label": f"قابل استفاده ({len(candidates)} سرور در استخر)"}
+
     if not int(node.get("server_active") or 0):
         return {"usable": False, "reason": "server_disabled", "label": "سرور این نود غیرفعال است"}
 
@@ -626,6 +703,160 @@ async def subscription_node_config_status(node: Dict) -> Dict:
     if cap > 0 and used >= cap:
         return {"usable": False, "reason": "node_capacity_full", "label": f"ظرفیت نود پر است ({used}/{cap})"}
     return {"usable": True, "reason": "ok", "label": "قابل استفاده"}
+
+
+# ══════════════════ AUTO NODE (نود خودکار) ══════════════════
+
+def parse_auto_pool(raw) -> List[int]:
+    """Parse the csv of candidate node-config ids. Empty = every active node."""
+    out = []
+    for part in str(raw or "").replace(" ", "").split(","):
+        if part.isdigit() and int(part) > 0 and int(part) not in out:
+            out.append(int(part))
+    return out
+
+
+async def add_auto_subscription_node_config(label: str = "", priority: int = 1,
+                                            auto_pool: str = "", auto_show_server: int = 0,
+                                            connect_host: str = "") -> int:
+    """Create an auto node.
+
+    It has no real server, but `subscription_node_configs` has a UNIQUE
+    (server_id, inbound_id) and other code joins on it, so we park auto rows at
+    server_id=0 with a NEGATIVE inbound_id — a value no real inbound can take,
+    which keeps the constraint satisfied for several auto nodes side by side.
+    """
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT MIN(inbound_id) FROM subscription_node_configs WHERE server_id=0 AND is_auto=1"
+        ) as c:
+            lowest = (await c.fetchone())[0]
+        slot = min(-1, int(lowest or 0) - 1)
+        cur = await db.execute(
+            """INSERT INTO subscription_node_configs
+                   (server_id,inbound_id,label,priority,max_active_profiles,connect_host,
+                    is_auto,auto_pool,auto_show_server)
+               VALUES(0,?,?,?,0,?,1,?,?)""",
+            (slot, label or "", int(priority or 1), (connect_host or "").strip(),
+             ",".join(str(i) for i in parse_auto_pool(auto_pool)), 1 if auto_show_server else 0),
+        )
+        await db.commit()
+        return int(cur.lastrowid)
+
+
+async def get_auto_node_candidates(node: Dict) -> List[Dict]:
+    """Usable node configs an auto node is allowed to route users to.
+
+    An empty pool means "every active node"; a configured pool is filtered to the
+    ids that are still usable, so deleting a pool member degrades gracefully.
+    """
+    pool = parse_auto_pool(node.get("auto_pool"))
+    out = []
+    for cand in await get_subscription_node_configs(active_only=True):
+        if int(cand.get("is_auto") or 0):
+            continue                      # an auto node never routes to another auto node
+        if pool and int(cand["id"]) not in pool:
+            continue
+        if await subscription_node_config_has_capacity(cand):
+            out.append(cand)
+    return out
+
+
+async def get_auto_node_configs(active_only: bool = True) -> List[Dict]:
+    return [n for n in await get_subscription_node_configs(active_only=active_only)
+            if int(n.get("is_auto") or 0)]
+
+
+# A client counts as "online" only if it moved bytes during the panel's last
+# stats tick, so any single reading understates a server that has idle-but-
+# connected users, and readings jump around between ticks. Routing on a
+# smoothed value instead of the raw sample stops that noise from bouncing
+# customers between servers. 0.4 keeps roughly the last three polls in view.
+ONLINE_SMOOTHING = 0.4
+
+
+async def set_server_online_stats(server_id: int, count: Optional[int], checked_at_ms: int) -> None:
+    """Persist a server's live online count. `None` = the poll failed.
+
+    A failed poll leaves the previous numbers untouched and only clears
+    `online_ok`, so readers can tell "we don't know" from "nobody is online".
+    """
+    async with aiosqlite.connect(DB_PATH) as db:
+        if count is None:
+            await db.execute(
+                "UPDATE servers SET online_ok=0, online_checked_at=? WHERE id=?",
+                (int(checked_at_ms), int(server_id)),
+            )
+        else:
+            sample = max(0, int(count))
+            async with db.execute(
+                "SELECT online_avg, online_ok FROM servers WHERE id=?", (int(server_id),)
+            ) as c:
+                row = await c.fetchone()
+            # Seed the average from the first usable reading rather than easing up
+            # from zero, which would make a fresh server look empty for minutes.
+            if not row or not int(row[1] or 0):
+                average = float(sample)
+            else:
+                average = ONLINE_SMOOTHING * sample + (1 - ONLINE_SMOOTHING) * float(row[0] or 0)
+            await db.execute(
+                """UPDATE servers SET online_count=?, online_avg=?, online_ok=1, online_checked_at=?
+                   WHERE id=?""",
+                (sample, round(average, 3), int(checked_at_ms), int(server_id)),
+            )
+        await db.commit()
+
+
+async def get_profiles_with_node_config(config_id: int, limit: int = 5000) -> List[Dict]:
+    """Active profiles that currently hold a client for this node config."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            """SELECT p.* FROM subscription_profiles p
+               JOIN subscription_nodes n ON n.profile_id=p.id
+               WHERE n.config_id=? AND p.is_active=1
+               GROUP BY p.id
+               ORDER BY p.id
+               LIMIT ?""",
+            (int(config_id), max(1, int(limit))),
+        ) as c:
+            return [dict(r) for r in await c.fetchall()]
+
+
+async def get_auto_node_rows(config_id: int, limit: int = 5000) -> List[Dict]:
+    """Active profiles already provisioned on this auto node, with their target.
+
+    Profile columns come first so the `node_*` aliases can never be shadowed by a
+    same-named column on subscription_profiles.
+    """
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            """SELECT p.*, n.id AS node_row_id, n.server_id AS node_server_id,
+                      n.inbound_id AS node_inbound_id, n.moved_at AS node_moved_at,
+                      n.is_active AS node_row_active
+               FROM subscription_nodes n
+               JOIN subscription_profiles p ON p.id=n.profile_id
+               WHERE n.config_id=? AND p.is_active=1
+               ORDER BY p.id
+               LIMIT ?""",
+            (int(config_id), max(1, int(limit))),
+        ) as c:
+            return [dict(r) for r in await c.fetchall()]
+
+
+async def count_auto_assignments_by_target(config_id: int) -> Dict[int, int]:
+    """How many active profiles each server currently holds for this auto node."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            """SELECT n.server_id, COUNT(*)
+               FROM subscription_nodes n
+               JOIN subscription_profiles p ON p.id=n.profile_id
+               WHERE n.config_id=? AND n.is_active=1 AND p.is_active=1
+               GROUP BY n.server_id""",
+            (int(config_id),),
+        ) as c:
+            return {int(r[0]): int(r[1]) for r in await c.fetchall()}
 
 
 async def get_available_subscription_node_configs() -> List[Dict]:
@@ -1497,6 +1728,169 @@ async def get_rep_financials(user_id: int) -> Dict:
         }
 
 
+async def get_rep_purchases(user_id: int, since: Optional[str] = None,
+                            until: Optional[str] = None, limit: int = 5000) -> Dict:
+    """Everything a representative bought in a date window, service by service.
+
+    `since`/`until` are inclusive `'YYYY-MM-DD HH:MM:SS'` bounds in the SAME
+    local-time frame the `created_at` columns are written in (build them with
+    core.jalali.tehran_to_db_string so a Jalali range lands on the right rows).
+
+    Two kinds of purchase are reported, because a rep's revenue is both:
+      • new services  — one row per subscription profile, which is the unit the
+        customer actually holds (a bulk order of 10 produces 10 rows, each with
+        its own name and dates — that is what makes the export usable as proof);
+      • renewals      — orders that topped up an existing service and so create
+        no new profile of their own.
+
+    The per-row price of a bulk order is divided by its service count, so the
+    rows sum to what was actually charged instead of counting the order N times.
+    """
+    where = ["sp.user_id=?"]
+    args: List = [int(user_id)]
+    if since:
+        where.append("sp.created_at>=?")
+        args.append(since)
+    if until:
+        where.append("sp.created_at<=?")
+        args.append(until)
+
+    order_where = ["o.user_id=?", "o.status='approved'"]
+    order_args: List = [int(user_id)]
+    if since:
+        order_where.append("o.created_at>=?")
+        order_args.append(since)
+    if until:
+        order_where.append("o.created_at<=?")
+        order_args.append(until)
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+
+        async with db.execute(
+            f"""SELECT sp.id, sp.name, sp.traffic_gb, sp.duration_days, sp.created_at,
+                       sp.first_use_at, sp.expire_timestamp, sp.is_active, sp.used_bytes,
+                       sp.order_id,
+                       o.approved_at AS order_approved_at,
+                       o.custom_config_name AS order_name,
+                       MAX(COALESCE(NULLIF(o.bulk_count,0),1), 1) AS bulk_count,
+                       COALESCE(NULLIF(o.custom_price,0), p.price, 0) AS order_price,
+                       COALESCE(p.name,'') AS package_name,
+                       COALESCE(p.is_unlimited,0) AS pkg_unlimited
+                FROM subscription_profiles sp
+                LEFT JOIN orders o ON o.id=sp.order_id
+                LEFT JOIN packages p ON p.id=o.package_id
+                WHERE {' AND '.join(where)}
+                ORDER BY sp.created_at DESC, sp.id DESC
+                LIMIT ?""",
+            (*args, max(1, int(limit))),
+        ) as c:
+            profile_rows = [dict(r) for r in await c.fetchall()]
+
+        async with db.execute(
+            f"""SELECT o.id AS order_id, o.created_at, o.approved_at AS order_approved_at,
+                       COALESCE(NULLIF(o.custom_price,0), p.price, 0) AS order_price,
+                       COALESCE(NULLIF(o.custom_traffic_gb,0), p.traffic_gb, 0) AS traffic_gb,
+                       COALESCE(NULLIF(o.custom_duration_days,0), p.duration_days, 0) AS duration_days,
+                       COALESCE(p.is_unlimited,0) AS pkg_unlimited,
+                       COALESCE(NULLIF(o.custom_config_name,''), sp.name, cfg.email, '') AS name,
+                       sp.expire_timestamp, sp.first_use_at, sp.is_active
+                FROM orders o
+                LEFT JOIN packages p ON p.id=o.package_id
+                LEFT JOIN subscription_profiles sp ON sp.id=o.renew_sub_profile_id
+                LEFT JOIN configs cfg ON cfg.id=o.renew_config_id
+                WHERE {' AND '.join(order_where)}
+                  AND (COALESCE(o.renew_sub_profile_id,0)>0 OR COALESCE(o.renew_config_id,0)>0)
+                ORDER BY o.created_at DESC
+                LIMIT ?""",
+            (*order_args, max(1, int(limit))),
+        ) as c:
+            renewal_rows = [dict(r) for r in await c.fetchall()]
+
+        # Spend is summed over DISTINCT orders — never over the service rows, or a
+        # bulk order would be counted once per service it produced.
+        async with db.execute(
+            f"""SELECT COUNT(*) AS n,
+                       COALESCE(SUM(COALESCE(NULLIF(o.custom_price,0), p.price, 0)),0) AS total
+                FROM orders o LEFT JOIN packages p ON p.id=o.package_id
+                WHERE {' AND '.join(order_where)}""",
+            tuple(order_args),
+        ) as c:
+            money = await c.fetchone()
+
+        legacy_where = ["user_id=?"]
+        legacy_args: List = [int(user_id)]
+        if since:
+            legacy_where.append("created_at>=?")
+            legacy_args.append(since)
+        if until:
+            legacy_where.append("created_at<=?")
+            legacy_args.append(until)
+        async with db.execute(
+            f"SELECT COUNT(*) FROM configs WHERE {' AND '.join(legacy_where)}", tuple(legacy_args),
+        ) as c:
+            legacy_configs = int((await c.fetchone())[0] or 0)
+
+    items: List[Dict] = []
+    for row in profile_rows:
+        bulk = max(1, int(row.get("bulk_count") or 1))
+        traffic = float(row.get("traffic_gb") or 0)
+        items.append({
+            "kind": "purchase",
+            "profile_id": int(row["id"]),
+            "order_id": int(row.get("order_id") or 0),
+            "name": (str(row.get("name") or "").strip()
+                     or str(row.get("order_name") or "").strip()
+                     or str(row.get("package_name") or "").strip()
+                     or f"سرویس #{row['id']}"),
+            "traffic_gb": traffic,
+            "is_unlimited": bool(int(row.get("pkg_unlimited") or 0)) or traffic <= 0,
+            "duration_days": int(row.get("duration_days") or 0),
+            "price": int(round(int(row.get("order_price") or 0) / bulk)),
+            "bulk_count": bulk,
+            "purchased_at": row.get("created_at"),
+            "approved_at": row.get("order_approved_at"),
+            "started_at": int(row.get("first_use_at") or 0),
+            "expires_at": int(row.get("expire_timestamp") or 0),
+            "used_bytes": int(row.get("used_bytes") or 0),
+            "is_active": int(row.get("is_active") or 0),
+        })
+    for row in renewal_rows:
+        traffic = float(row.get("traffic_gb") or 0)
+        items.append({
+            "kind": "renewal",
+            "profile_id": 0,
+            "order_id": int(row.get("order_id") or 0),
+            "name": str(row.get("name") or "").strip() or f"تمدید سفارش #{row.get('order_id')}",
+            "traffic_gb": traffic,
+            "is_unlimited": bool(int(row.get("pkg_unlimited") or 0)) or traffic <= 0,
+            "duration_days": int(row.get("duration_days") or 0),
+            "price": int(row.get("order_price") or 0),
+            "bulk_count": 1,
+            "purchased_at": row.get("created_at"),
+            "approved_at": row.get("order_approved_at"),
+            "started_at": int(row.get("first_use_at") or 0),
+            "expires_at": int(row.get("expire_timestamp") or 0),
+            "used_bytes": 0,
+            "is_active": int(row.get("is_active") or 0),
+        })
+    items.sort(key=lambda it: (str(it.get("purchased_at") or ""), it.get("order_id") or 0), reverse=True)
+
+    measured = [it for it in items if not it["is_unlimited"]]
+    return {
+        "items": items,
+        "summary": {
+            "services": sum(1 for it in items if it["kind"] == "purchase"),
+            "renewals": sum(1 for it in items if it["kind"] == "renewal"),
+            "total_gb": round(sum(it["traffic_gb"] for it in measured), 2),
+            "unlimited_count": len(items) - len(measured),
+            "orders": int(money["n"] or 0),
+            "total_spent": int(money["total"] or 0),
+            "legacy_configs": legacy_configs,
+        },
+    }
+
+
 async def get_top_active_service_users(limit: int = 30) -> List[Dict]:
     """Users ranked by number of currently-active subscriptions."""
     now_ms = int(time.time() * 1000)
@@ -1567,6 +1961,388 @@ async def reset_campaign_flag(flag: str) -> int:
         cur = await db.execute(f"UPDATE users SET {col}=0 WHERE {col}=1")
         await db.commit()
         return cur.rowcount or 0
+
+
+# ══════════════════ CUSTOM (TARGETED) CAMPAIGNS ══════════════════
+# One-shot promotional blasts managed from the panel's Campaigns tab. Each row is
+# a full campaign: audience segment + message + optional photo/discount code.
+# The slug ties three tables together: campaign_events (sends), discount_codes
+# .campaign (attribution + targeted-code lock) and this table.
+
+CUSTOM_SEGMENTS = {
+    "all":          "همه کاربران",
+    "buyers":       "خریداران (حداقل یک خرید موفق)",
+    "non_buyers":   "بدون خرید (عضو شده ولی هرگز نخریده)",
+    "lapsed":       "ریزش‌کرده (سرویس داشته، الان هیچ سرویس فعالی ندارد)",
+    "active_subs":  "دارای اشتراک فعال",
+    "expiring_7d":  "انقضای سرویس طی ۷ روز آینده",
+    "trial_no_buy": "تست رایگان گرفته ولی هنوز نخریده",
+    "reps":         "نمایندگان",
+    "vip":          "مشتریان VIP (۱۵ خریدار برتر)",
+}
+
+_SEG_BASE = "u.telegram_id>0 AND COALESCE(u.is_blocked,0)=0"
+_SEG_HAS_BOUGHT = "EXISTS(SELECT 1 FROM orders o WHERE o.user_id=u.id AND o.status='approved')"
+_SEG_ACTIVE_SUB = ("EXISTS(SELECT 1 FROM subscription_profiles sp WHERE sp.user_id=u.id "
+                   "AND sp.is_active=1 AND (sp.expire_timestamp=0 OR sp.expire_timestamp>{now}))")
+
+
+async def get_segment_users(segment: str, limit: int = 5000) -> List[Dict]:
+    """Resolve a CUSTOM_SEGMENTS key to its current audience (id, telegram_id, full_name)."""
+    now_ms = int(time.time() * 1000)
+    active = _SEG_ACTIVE_SUB.format(now=now_ms)
+    base = f"SELECT u.id, u.telegram_id, u.full_name FROM users u WHERE {_SEG_BASE}"
+    params: tuple = ()
+    if segment == "vip":
+        sql = f"""SELECT u.id, u.telegram_id, u.full_name,
+                         SUM(COALESCE(NULLIF(o.custom_price,0), p.price, 0)) AS spent
+                  FROM users u
+                  JOIN orders o ON o.user_id=u.id AND o.status='approved'
+                  LEFT JOIN packages p ON p.id=o.package_id
+                  WHERE {_SEG_BASE}
+                  GROUP BY u.id ORDER BY spent DESC LIMIT 15"""
+    elif segment == "buyers":
+        sql = f"{base} AND {_SEG_HAS_BOUGHT}"
+    elif segment == "non_buyers":
+        sql = f"{base} AND NOT {_SEG_HAS_BOUGHT}"
+    elif segment == "lapsed":
+        sql = (f"{base} AND EXISTS(SELECT 1 FROM subscription_profiles sp WHERE sp.user_id=u.id)"
+               f" AND NOT {active}")
+    elif segment == "active_subs":
+        sql = f"{base} AND {active}"
+    elif segment == "expiring_7d":
+        sql = (f"{base} AND EXISTS(SELECT 1 FROM subscription_profiles sp WHERE sp.user_id=u.id"
+               f" AND sp.is_active=1 AND sp.expire_timestamp>? AND sp.expire_timestamp<=?)")
+        params = (now_ms, now_ms + 7 * 86400000)
+    elif segment == "trial_no_buy":
+        sql = (f"{base} AND EXISTS(SELECT 1 FROM test_accounts ta WHERE ta.user_id=u.id)"
+               f" AND NOT {_SEG_HAS_BOUGHT}")
+    elif segment == "reps":
+        sql = f"{base} AND COALESCE(u.is_wholesale,0)=1"
+    else:  # "all" and unknown keys fall back to everyone
+        sql = base
+    if segment != "vip":
+        sql += f" ORDER BY u.id LIMIT {max(1, int(limit))}"
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(sql, params) as c:
+            return [dict(r) for r in await c.fetchall()]
+
+
+async def get_segment_counts() -> Dict[str, int]:
+    """Audience size per segment (shown in the panel's segment picker)."""
+    out = {}
+    for key in CUSTOM_SEGMENTS:
+        out[key] = len(await get_segment_users(key))
+    return out
+
+
+async def get_custom_campaigns() -> List[Dict]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute("SELECT * FROM custom_campaigns ORDER BY status='sent', id") as c:
+            return [dict(r) for r in await c.fetchall()]
+
+
+async def get_custom_campaign(cid: int) -> Optional[Dict]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute("SELECT * FROM custom_campaigns WHERE id=?", (int(cid),)) as c:
+            r = await c.fetchone()
+            return dict(r) if r else None
+
+
+async def save_custom_campaign(data: Dict) -> int:
+    """Insert (no id) or update (with id) a campaign. Returns the row id."""
+    fields = ("title", "emoji", "segment", "message", "photo", "code", "image_prompt", "notes")
+    vals = {k: str(data.get(k) or "") for k in fields}
+    if vals["segment"] not in CUSTOM_SEGMENTS:
+        vals["segment"] = "all"
+    cid = int(data.get("id") or 0)
+    async with aiosqlite.connect(DB_PATH) as db:
+        if cid:
+            sets = ",".join(f"{k}=?" for k in fields)
+            await db.execute(f"UPDATE custom_campaigns SET {sets} WHERE id=?", (*vals.values(), cid))
+        else:
+            slug = (str(data.get("slug") or "").strip() or f"cc{int(time.time())}")
+            cur = await db.execute(
+                f"""INSERT INTO custom_campaigns(slug,{','.join(fields)}) VALUES(?,?,?,?,?,?,?,?,?)""",
+                (slug, *vals.values()),
+            )
+            cid = int(cur.lastrowid)
+        await db.commit()
+        return cid
+
+
+async def delete_custom_campaign(cid: int):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("DELETE FROM custom_campaigns WHERE id=?", (int(cid),))
+        await db.commit()
+
+
+async def mark_custom_campaign_sent(cid: int, sent_count: int):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """UPDATE custom_campaigns SET status='sent', sent_count=sent_count+?,
+               sent_at=datetime('now','localtime') WHERE id=?""",
+            (int(sent_count), int(cid)),
+        )
+        await db.commit()
+
+
+# Campaigns designed from the shop's own sales data (churn, trial conversion,
+# package mix, buying hours). Seeded once as DRAFTS — nothing sends by itself.
+_SEED_CAMPAIGNS: List[Dict] = [
+    {
+        "slug": "winback_blast", "emoji": "💜", "segment": "lapsed", "code": "COMEBACK30",
+        "title": "بازگشت بزرگ — ۳۰٪ تخفیف ریزشی‌ها",
+        "message": (
+            "{name} عزیز، جای تو توی {brand} حسابی خالیه! 💜\n\n"
+            "از آخرین سرویست مدتی می‌گذره و این مدت کلی بهتر شدیم:\n"
+            "⚡️ سرورهای جدید با پایداری بالاتر\n"
+            "🌐 یک لینک، چند سرور پشتیبان — قطعی تقریباً صفر\n"
+            "📱 مینی‌اپ داخل تلگرام برای مدیریت راحت سرویس\n\n"
+            "برای برگشتنت یک هدیه ویژه گذاشتیم:\n"
+            "🎁 کد {code} → ۳۰٪ تخفیف خرید بعدی\n\n"
+            "⏳ این کد مخصوص شماست و همیشگی نیست!\n"
+            "🛒 منوی ربات → «خرید سرویس» → موقع پرداخت کد را وارد کن."
+        ),
+        "image_prompt": (
+            "Premium Telegram promo, square 1:1 (1080x1080). A glowing violet doorway opening in a "
+            "dark navy (#0d1024) scene, warm golden light spilling out, a small gift box with cyan "
+            "ribbon floating mid-air toward the viewer, subtle Persian geometric pattern in the "
+            "background shadows, huge glowing neon '30%' numeral above the door. Modern 3D render, "
+            "cinematic rim lighting, electric violet + cyan accents, shallow depth of field, "
+            "no other text anywhere."
+        ),
+        "notes": (
+            "چرا: ۷۳ کاربر ریزشی داری و فقط ۱۶ اشتراک فعال — بزرگ‌ترین درآمد خفته همین‌جاست. "
+            "کد COMEBACK30 قفل‌شده به همین کمپین است (فقط دریافت‌کننده‌ها می‌توانند استفاده کنند). "
+            "بهترین زمان ارسال: ساعت ۱۵ تا ۱۹ (اوج خرید طبق داده خودت). "
+            "KPI: نرخ تبدیل ۱۰٪ = حدود ۷ برگشتی؛ با میانگین سبد ~۲۱۰ هزار تومان یعنی +۱.۵ میلیون. "
+            "۴۸ ساعت بعد از ارسال، به جواب‌نداده‌ها دستی پیگیری نده — کمپین winback خودکار ادامه می‌دهد."
+        ),
+    },
+    {
+        "slug": "flash_sale", "emoji": "🔥", "segment": "all", "code": "FLASH20",
+        "title": "فلش‌سیل ۴۸ ساعته",
+        "message": (
+            "🔥 فلش‌سیل ۴۸ ساعته {brand} شروع شد!\n\n"
+            "فقط ۴۸ ساعت، روی همه پلن‌ها:\n"
+            "🎟 کد {code} → ۲۰٪ تخفیف\n\n"
+            "♾️ پیشنهاد داغ: پلن «نامحدود یک‌ماهه» — محبوب‌ترین پلن ما — با این کد "
+            "به‌صرفه‌تر از همیشه در می‌آید.\n\n"
+            "⏰ تایمر روشن شد؛ بعد از ۴۸ ساعت کد می‌سوزد.\n"
+            "🛒 منوی ربات → «خرید سرویس» → کد را موقع پرداخت وارد کن."
+        ),
+        "image_prompt": (
+            "High-energy flash-sale visual, square 1:1 (1080x1080). A massive electric lightning bolt "
+            "striking a glossy dark glass surface, neon shockwaves in violet and cyan, a futuristic "
+            "digital countdown hourglass glowing hot orange, sparks and light particles, dark navy "
+            "background (#0d1024), huge neon numeral '48' with a small 'H' beside it as the only text. "
+            "Modern 3D render, cinematic lighting, dramatic contrast, premium tech aesthetic."
+        ),
+        "notes": (
+            "چرا: فروش ماه اخیر نصف ماه قبلش بوده؛ فلش‌سیل بهترین شوک کوتاه‌مدت است. "
+            "کد FLASH20 عمومی است و «غیرفعال» ساخته شده — قبل از ارسال از تب تخفیف‌ها فعالش کن "
+            "و دقیقاً ۴۸ ساعت بعد خاموشش کن (اعتبار حرفت را نگه دار). "
+            "همین بنر را هم‌زمان در کانال @atlas_account بگذار تا غیرعضوها هم ببینند. "
+            "بهترین شروع: پنجشنبه ساعت ۱۵. هر فصل حداکثر ۲-۳ بار — زیاد تکرارش کنی، عادت می‌شود و "
+            "کسی دیگر با قیمت کامل نمی‌خرد."
+        ),
+    },
+    {
+        "slug": "renewal_save", "emoji": "⏳", "segment": "expiring_7d", "code": "RENEW15",
+        "title": "نجات تمدید — قبل از قطعی",
+        "message": (
+            "⏳ {name} عزیز، سرویس تو همین روزها تمام می‌شود!\n\n"
+            "برای اینکه حتی یک لحظه هم آفلاین نشوی، همین حالا تمدید کن:\n"
+            "🎟 کد {code} → ۱۵٪ تخفیف تمدید زودهنگام\n\n"
+            "🔁 منوی ربات → «وضعیت سرویس» → تمدید\n"
+            "یادت باشد: بعد از انقضا، این تخفیف هم می‌پرد 😉"
+        ),
+        "image_prompt": (
+            "Urgency renewal visual, square 1:1 (1080x1080). A sleek futuristic hourglass with "
+            "glowing cyan sand almost run out, wrapped by a luminous violet circular renewal arrow "
+            "(refresh loop) that radiates fresh energy, dark navy background (#0d1024), floating "
+            "clock shards dissolving into light particles, large neon '15%' numeral, modern 3D "
+            "render, cinematic product lighting, premium tech aesthetic, no other text."
+        ),
+        "notes": (
+            "چرا: فقط ۴٪ سفارش‌هایت «تمدید» است — مشتری منقضی می‌شود و بعد شاید برگردد، شاید نه. "
+            "این کمپین را هفته‌ای یک‌بار روی سگمنت «انقضای ۷ روز آینده» اجرا کن (هر کاربر فقط یک‌بار پیام می‌گیرد). "
+            "ربات پیام هشدار خودکار هم دارد؛ این پیام مکمل آن است چون «تخفیف» دارد و انگیزه می‌سازد. "
+            "KPI: نرخ تمدید را از ۴٪ به ۳۰٪+ برسان — ارزش طول عمر مشتری (LTV) را چند برابر می‌کند."
+        ),
+    },
+    {
+        "slug": "trial_push", "emoji": "🧪", "segment": "non_buyers", "code": "",
+        "title": "تست رایگان — بدون ریسک",
+        "message": (
+            "{name} عزیز 👋\n\n"
+            "هنوز {brand} را امتحان نکرده‌ای؟!\n"
+            "🎁 یک سرویس تست کاملاً رایگان منتظرته — بدون پرداخت، بدون شرط.\n\n"
+            "⚡️ سرعت و پایداری را خودت بسنج؛ راضی بودی، بعداً خرید کن.\n"
+            "بیشترِ کسانی که تست می‌گیرند، می‌مانند 😎\n\n"
+            "🧪 منوی ربات → «تست رایگان» — همین حالا فعالش کن."
+        ),
+        "image_prompt": (
+            "Friendly free-trial visual, square 1:1 (1080x1080). A translucent glass gift box "
+            "opening with a soft explosion of cyan light, a glowing shield with a wifi symbol "
+            "floating above it, gentle violet aurora ribbons, dark navy background (#0d1024), "
+            "sparkling particles, a glowing 'FREE' tag hanging from the box as the only text, "
+            "modern 3D render, soft cinematic lighting, inviting and safe mood."
+        ),
+        "notes": (
+            "چرا: ۷۴٪ کسانی که تست گرفته‌اند خریده‌اند (۲۰ از ۲۷) — ولی فقط ۲۷ نفر تست گرفته‌اند! "
+            "۵۵ کاربر عضو شده‌اند و هرگز نخریده‌اند؛ این پیام دقیقاً به آن‌ها می‌رود. "
+            "پیشنهاد: حجم تست را از ۰.۲ گیگ به ۱ گیگ ببر تا کاربر واقعاً کیفیت را حس کند — "
+            "با نرخ تبدیل ۷۴٪، هر تست تقریباً یک مشتری است. "
+            "بعد از این کمپین، اتوماسیون «تست→خرید» (کد NewBuy20) خودش پیگیری می‌کند."
+        ),
+    },
+    {
+        "slug": "referral_push", "emoji": "🎁", "segment": "buyers", "code": "",
+        "title": "احیای دعوت دوستان",
+        "message": (
+            "💎 {name} عزیز، با {brand} اینترنت رایگان بگیر!\n\n"
+            "لینک دعوت اختصاصی‌ات توی منوی «دعوت دوستان» است.\n"
+            "دوستانت که با لینک تو بیایند و بخرند:\n\n"
+            "🎁 ۳ دعوت → ۳۰ هزار تومان اعتبار کیف پول\n"
+            "💰 ۶ دعوت → ۸۰ هزار تومان اعتبار\n"
+            "🏆 ۱۰ دعوت → یک ماه سرویس نامحدود رایگان\n"
+            "👑 ۲۰ دعوت → سه ماه سرویس نامحدود رایگان\n\n"
+            "لینکت را در گروه دوستانه، پیج و استوری‌ات بفرست 🚀\n"
+            "🎁 منوی ربات → «دعوت دوستان»"
+        ),
+        "image_prompt": (
+            "Referral program visual, square 1:1 (1080x1080). Three stylized glowing avatars "
+            "connected by luminous threads of violet and cyan light forming a network, gift boxes "
+            "and gold coins orbiting the connections, one avatar wearing a tiny golden crown, dark "
+            "navy background (#0d1024) with subtle Persian star-pattern, floating sparkles, modern "
+            "3D render, warm friendly lighting, no text anywhere."
+        ),
+        "notes": (
+            "چرا: فقط ۳ کاربر با معرفی آمده‌اند — سیستم ریفرال کاملاً خوابیده در حالی که پلکان جایزه "
+            "خوبی تعریف کرده‌ای. در بازار VPN ایران، دهان‌به‌دهان (گروه‌های دوستانه/خانوادگی) "
+            "ارزان‌ترین کانال جذب است؛ هر مشتری راضی به‌طور طبیعی ۲-۳ نفر «هم‌نیاز» می‌شناسد. "
+            "این پیام را ماهی یک‌بار به خریداران یادآوری کن. ایده تکمیلی: به معرفی‌شده هم "
+            "یک هدیه کوچک بده (مثلاً ۱۰٪ اولین خرید) تا لینک‌ها راحت‌تر پخش شوند."
+        ),
+    },
+    {
+        "slug": "vip_thanks", "emoji": "👑", "segment": "vip", "code": "VIP20",
+        "title": "قدردانی VIP — مشتریان طلایی",
+        "message": (
+            "{name} عزیز؛ شما جزو مشتریان طلایی {brand} هستید 👑\n\n"
+            "بابت اعتماد و همراهی‌ات، یک هدیه اختصاصی داریم که برای همه ارسال نمی‌شود:\n"
+            "🎟 کد {code} → ۲۰٪ تخفیف — تا ۳ بار قابل استفاده\n\n"
+            "💼 راستی: اگر برای دوستان یا مشتری‌های خودت هم سرویس تهیه می‌کنی، "
+            "پنل نمایندگی با قیمت عمده و برند اختصاصی داریم؛ "
+            "از منوی ربات «پنل نمایندگی» → «درخواست نمایندگی» را بزن.\n\n"
+            "مرسی که هستی 🌟"
+        ),
+        "image_prompt": (
+            "Luxury VIP appreciation visual, square 1:1 (1080x1080). An elegant golden crown "
+            "resting on a dark velvet cushion, soft god-rays from above, floating golden particles "
+            "and a subtle violet-cyan aurora in the dark navy background (#0d1024), a glass star "
+            "trophy softly glowing beside it, premium jewelry-advert style 3D render, rich warm "
+            "gold + deep violet palette, cinematic spotlight, no text anywhere."
+        ),
+        "notes": (
+            "چرا: ۱۵ مشتری برتر تو بخش بزرگی از کل درآمدت را می‌سازند؛ دو نفر اول عملاً «ریسلر غیررسمی» "
+            "هستند (۸۷ و ۷۴ سفارش!). این پیام هم قدردانی است هم دعوت نرم به نمایندگی رسمی — "
+            "نماینده شدنشان یعنی فروش باثبات‌تر و وفاداری بلندمدت. "
+            "کد VIP20 قفل به همین ۱۵ نفر است و ۳ بار مصرف دارد. "
+            "این کمپین را هر فصل یک‌بار (با کد جدید) تکرار کن؛ حس «دیده شدن» قوی‌ترین ابزار حفظ مشتری است."
+        ),
+    },
+    {
+        "slug": "rep_recruit", "emoji": "💼", "segment": "buyers", "code": "",
+        "title": "جذب نماینده — بفروش، درآمد داشته باش",
+        "message": (
+            "💼 {name} عزیز، با {brand} کسب درآمد کن!\n\n"
+            "اگر ادمین گروه یا کانالی یا اطرافیانت دنبال اینترنت آزادند، نماینده ما شو:\n\n"
+            "✅ قیمت عمده (هرچه بیشتر بفروشی، سود بیشتر)\n"
+            "✅ برند و لوگوی خودت روی سرویس‌ها — مشتری اصلاً اسم ما را نمی‌بیند\n"
+            "✅ اکانت تست رایگان برای مشتری‌هایت\n"
+            "✅ پنل مدیریت و گزارش مالی شفاف داخل ربات\n\n"
+            "🚀 شروع: منوی ربات → «پنل نمایندگی» → «درخواست نمایندگی»"
+        ),
+        "image_prompt": (
+            "Business partnership visual, square 1:1 (1080x1080). A sleek holographic storefront "
+            "projected from a modern briefcase, a rising neon bar chart and floating coins above it, "
+            "violet and cyan glow on dark navy (#0d1024), a handshake silhouette formed of light "
+            "particles in the background, modern 3D render, cinematic lighting, ambitious "
+            "entrepreneurial mood, premium tech aesthetic, no text anywhere."
+        ),
+        "notes": (
+            "چرا: ۱۱ نماینده فعلی‌ات سهم بزرگی از فروش می‌سازند و وایت‌لیبل کامل، مزیت رقابتی جدی "
+            "توست — اکثر رقبا این را ندارند. هر نماینده جدید یعنی یک کانال فروش که خودش رشد می‌کند. "
+            "این پیام را به خریداران بفرست (به غیرخریدار نمایندگی نده). "
+            "ایده تکمیلی: در کانال هم پستش کن و برای ماه اول نماینده‌های جدید، حداقل شارژ اولیه را کم کن."
+        ),
+    },
+    {
+        "slug": "school_mehr", "emoji": "🎒", "segment": "all", "code": "SCHOOL25",
+        "title": "بازگشت به مدرسه (شهریور/مهر)",
+        "message": (
+            "🎒 مهر نزدیک است؛ اینترنت پایدار برای کلاس آنلاین، جزوه و تحقیق، واجب‌تر از همیشه!\n\n"
+            "📚 کمپین «بازگشت به مدرسه» {brand}:\n"
+            "🎟 کد {code} → ۲۵٪ تخفیف همه پلن‌ها، ویژه شروع سال تحصیلی\n\n"
+            "⚡️ سرعت بالا، چند سرور پشتیبان، پشتیبانی واقعی.\n"
+            "🛒 منوی ربات → «خرید سرویس» → کد را موقع پرداخت وارد کن."
+        ),
+        "image_prompt": (
+            "Back-to-school promo visual, square 1:1 (1080x1080). A stylish backpack with a glowing "
+            "laptop and floating books, wifi beams rising from the laptop screen like an aurora, "
+            "warm autumn orange leaves drifting through a dark navy scene (#0d1024) with violet-cyan "
+            "neon accents, pencils and a graduation cap floating playfully, big neon '25%' numeral, "
+            "modern 3D render, cinematic lighting, energetic youthful mood, no other text."
+        ),
+        "notes": (
+            "زمان‌بندی: نیمه دوم شهریور تا هفته اول مهر بفرست (الان پیش‌نویس بماند). "
+            "کد SCHOOL25 غیرفعال ساخته شده — موقع اجرا از تب تخفیف‌ها فعالش کن. "
+            "دانش‌آموز/دانشجو یعنی مصرف بالا و حساس به قیمت → پلن‌های حجمی ۱۰-۲۰ گیگ را جلو بگذار. "
+            "همزمان در کانال پست بگذار و از نماینده‌ها بخواه در گروه‌هایشان بازنشر کنند."
+        ),
+    },
+]
+
+
+async def seed_default_campaigns():
+    """One-time seed of the designed campaign playbook (drafts) + their discount
+    codes. Never re-runs (setting flag) and never touches a non-empty table."""
+    if await get_setting("custom_campaigns_seeded", "") == "1":
+        return
+    existing = await get_custom_campaigns()
+    if not existing:
+        # code, percent, per_user_limit, campaign slug, targeted, active
+        seed_codes = [
+            ("COMEBACK30", 30, 1, "winback_blast", 1, 1),
+            ("FLASH20",    20, 1, "flash_sale",    0, 0),  # activate when the sale starts
+            ("RENEW15",    15, 1, "renewal_save",  1, 1),
+            ("VIP20",      20, 3, "vip_thanks",    1, 1),
+            ("SCHOOL25",   25, 1, "school_mehr",   0, 0),  # activate in Shahrivar/Mehr
+        ]
+        for code, pct, per_user, slug, targeted, active in seed_codes:
+            if not await get_discount_code_by_code(code):
+                cid = await add_discount_code(code, "percent", pct, per_user_limit=per_user,
+                                              note="کمپین هدفمند (ساخت خودکار)",
+                                              campaign=slug, targeted=targeted)
+                if not active:
+                    await update_discount_code(cid, is_active=0)
+        for camp in _SEED_CAMPAIGNS:
+            await save_custom_campaign(dict(camp))
+    # Repair: the winback automation logs 'winback' events, but its configured
+    # code was created with campaign='renewal' — a string nothing ever logs, so
+    # the targeted-code lock rejected every single recipient ("not_eligible").
+    wb_code = (await get_setting("campaign_winback_code", "")).strip()
+    if wb_code:
+        row = await get_discount_code_by_code(wb_code)
+        if row and int(row.get("targeted") or 0) and (row.get("campaign") or "") == "renewal":
+            await update_discount_code(int(row["id"]), campaign="winback")
+    await set_setting("custom_campaigns_seeded", "1")
 
 
 # ══════════════════ DISCOUNT CODES ══════════════════
@@ -2371,12 +3147,13 @@ async def create_subscription_profile(user_id: int, order_id: int, token: str, e
         return c.lastrowid
 
 
-async def add_subscription_node(profile_id: int, server_id: int, inbound_id: int, uuid: str, email: str, link: str = "") -> int:
+async def add_subscription_node(profile_id: int, server_id: int, inbound_id: int, uuid: str,
+                                email: str, link: str = "", config_id: int = 0) -> int:
     async with aiosqlite.connect(DB_PATH) as db:
         c = await db.execute(
-            """INSERT INTO subscription_nodes(profile_id,server_id,inbound_id,uuid,email,link)
-               VALUES(?,?,?,?,?,?)""",
-            (int(profile_id), int(server_id), int(inbound_id), uuid, email, link or ""),
+            """INSERT INTO subscription_nodes(profile_id,server_id,inbound_id,uuid,email,link,config_id)
+               VALUES(?,?,?,?,?,?,?)""",
+            (int(profile_id), int(server_id), int(inbound_id), uuid, email, link or "", int(config_id or 0)),
         )
         await db.commit()
         return c.lastrowid
@@ -2454,16 +3231,25 @@ async def get_subscription_nodes(profile_id: int) -> List[Dict]:
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         async with db.execute(
+            # `own` is the node config this client belongs to (config_id); `phys`
+            # is whatever config owns the server/inbound it physically sits on.
+            # For a normal node they are the same row. For an AUTO node they
+            # differ — the label must come from the auto node, while the connect
+            # host belongs to the physical target, so each is resolved separately.
             """SELECT n.*, s.name AS server_name, s.url AS server_url, s.username AS srv_user,
                       s.password AS srv_pass, s.api_token AS srv_api_token, s.sub_path,
-                      nc.label AS node_label, nc.priority AS node_priority,
-                      nc.connect_host AS connect_host
+                      COALESCE(own.label, phys.label) AS node_label,
+                      COALESCE(own.priority, phys.priority, 100) AS node_priority,
+                      COALESCE(NULLIF(own.connect_host,''), phys.connect_host, '') AS connect_host,
+                      COALESCE(own.is_auto, 0) AS node_is_auto,
+                      COALESCE(own.auto_show_server, 0) AS node_auto_show_server
                FROM subscription_nodes n
                JOIN servers s ON s.id=n.server_id
-               LEFT JOIN subscription_node_configs nc
-                    ON nc.server_id=n.server_id AND nc.inbound_id=n.inbound_id
+               LEFT JOIN subscription_node_configs own ON own.id=n.config_id
+               LEFT JOIN subscription_node_configs phys
+                    ON phys.server_id=n.server_id AND phys.inbound_id=n.inbound_id
                WHERE n.profile_id=?
-               ORDER BY n.id""",
+               ORDER BY COALESCE(own.priority, phys.priority, 100) ASC, n.id ASC""",
             (int(profile_id),),
         ) as c:
             return [dict(r) for r in await c.fetchall()]

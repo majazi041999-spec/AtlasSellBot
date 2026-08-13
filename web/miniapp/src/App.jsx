@@ -1,4 +1,8 @@
 import React, { useEffect, useState, useCallback, useRef } from "react";
+import {
+  MONTHS, WEEKDAYS, monthDays, firstWeekdayOfMonth, addMonths,
+  format as jFormat, formatLong as jLong, parse as jParse, today as jToday,
+} from "./jalali";
 
 const tg = window.Telegram?.WebApp;
 const INIT = tg?.initData || "";
@@ -559,6 +563,250 @@ function Referral() {
   );
 }
 
+/* ── Representative purchase report (date filtered) ─────────────────────────
+   The server owns the preset list; this copy only keeps the picker from being
+   empty on first paint, and is replaced by `presets[]` on the first response. */
+const REP_PRESETS = [
+  { key: "week", label: "۷ روز اخیر" },
+  { key: "month", label: "۱ ماه اخیر" },
+  { key: "3months", label: "۳ ماه اخیر" },
+  { key: "6months", label: "۶ ماه اخیر" },
+  { key: "year", label: "۱ سال اخیر" },
+  { key: "all", label: "همه" },
+];
+const WD_SHORT = WEEKDAYS.map((d) => d[0]);
+const sameDay = (a, b) => !!a && !!b && a[0] === b[0] && a[1] === b[1] && a[2] === b[2];
+
+/* Dates arrive already formatted (and sometimes as words like «شروع نشده»), so
+   they're printed verbatim. <bdi> only isolates them: without it RTL bidi would
+   swap the two numeric runs of "1405/06/21 15:34" around the space. */
+const D = ({ v }) => <bdi>{v || "—"}</bdi>;
+const repStatusCls = (s) => (s === "فعال" ? "ok" : s === "منقضی" ? "warn" : "off");
+
+/** Compact Jalali month grid — everything comes from jalali.js. */
+function MonthGrid({ value, onPick }) {
+  const now = jToday();
+  const [view, setView] = useState(value || now);
+  const [jy, jm] = view;
+  const lead = firstWeekdayOfMonth(jy, jm);
+  const total = monthDays(jy, jm);
+  const cells = [...Array(lead).fill(0), ...Array.from({ length: total }, (_, i) => i + 1)];
+  const jump = (delta) => { haptic("selection"); setView(addMonths(view, delta)); };
+  return (
+    <div className="rp-cal">
+      <div className="rp-cal-head">
+        <button type="button" className="rp-nav" onClick={() => jump(-1)}>ماه قبل</button>
+        <b>{MONTHS[jm - 1]} {jy}</b>
+        <button type="button" className="rp-nav" onClick={() => jump(1)}>ماه بعد</button>
+      </div>
+      <div className="rp-cal-head sub">
+        <button type="button" className="rp-nav" onClick={() => jump(-12)}>سال قبل</button>
+        <button type="button" className="rp-nav" onClick={() => { haptic("selection"); setView(now); onPick(now); }}>امروز</button>
+        <button type="button" className="rp-nav" onClick={() => jump(12)}>سال بعد</button>
+      </div>
+      <div className="rp-cal-grid rp-cal-wd">{WD_SHORT.map((d, i) => <span key={i}>{d}</span>)}</div>
+      <div className="rp-cal-grid">
+        {cells.map((d, i) => (d === 0 ? <span className="rp-day empty" key={`b${i}`} /> : (
+          <button type="button" key={d}
+                  className={"rp-day" + (sameDay([jy, jm, d], value) ? " on" : "") + (sameDay([jy, jm, d], now) ? " today" : "")}
+                  onClick={() => { haptic("selection"); onPick([jy, jm, d]); }}>{d}</button>
+        )))}
+      </div>
+    </div>
+  );
+}
+
+const PAGE = 20;
+
+function RepReport() {
+  const [presets, setPresets] = useState(REP_PRESETS);
+  const [preset, setPreset] = useState("month");
+  const [custom, setCustom] = useState(false);
+  const [from, setFrom] = useState(null);      // [jy,jm,jd]
+  const [to, setTo] = useState(null);
+  const [pick, setPick] = useState("");        // "" | "from" | "to"
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState("");
+  const [shown, setShown] = useState(PAGE);
+  const [sending, setSending] = useState(false);
+  const [note, setNote] = useState(null);      // {ok, text}
+  const [tick, setTick] = useState(0);         // bump = refetch the same range
+  const reqRef = useRef(0);
+
+  const fromStr = custom ? jFormat(from) : "";
+  const toStr = custom ? jFormat(to) : "";
+
+  useEffect(() => {
+    if (custom && !fromStr && !toStr) return;   // custom mode with nothing chosen
+    const id = ++reqRef.current;                // last request in wins
+    setLoading(true); setErr(""); setNote(null);
+    api("rep/purchases", { preset, from: fromStr, to: toStr })
+      .then((d) => {
+        if (id !== reqRef.current) return;
+        setData(d); setShown(PAGE);
+        if (d.presets?.length) setPresets(d.presets);
+      })
+      .catch((e) => {
+        if (id !== reqRef.current) return;
+        setErr(e.data?.error === "not_a_representative"
+          ? "این بخش فقط برای نمایندگان است."
+          : "دریافت گزارش ناموفق بود. اتصال خود را بررسی کنید.");
+      })
+      .finally(() => { if (id === reqRef.current) setLoading(false); });
+  }, [preset, custom, fromStr, toStr, tick]);
+
+  const choosePreset = (k) => { haptic("selection"); setPick(""); setCustom(false); setPreset(k); };
+  const openCustom = () => {
+    haptic("selection");
+    const r = data?.range || {};
+    setFrom(jParse(r.from_jalali) || addMonths(jToday(), -1));
+    setTo(jParse(r.to_jalali) || jToday());
+    setCustom(true); setPick("from");
+  };
+
+  const getExcel = async () => {
+    setSending(true); setNote(null);
+    try {
+      const d = await api("rep/purchases/excel", { preset, from: fromStr, to: toStr });
+      haptic("success");
+      setNote({ ok: true, text: `✅ فایل اکسل به چت شما ارسال شد${d.rows ? ` — ${fmt(d.rows)} ردیف` : ""}` });
+    } catch (e) {
+      haptic("error");
+      setNote({ ok: false, text: `❌ ${e.data?.message || "ارسال فایل ناموفق بود. دوباره تلاش کنید."}`});
+    } finally { setSending(false); }
+  };
+
+  const s = data?.summary || {};
+  const rows = data?.rows || [];
+  const rng = data?.range || {};
+
+  return (
+    <div className="rep-report">
+      <div className="card rp-filter">
+        <div className="list-title">📅 گزارش خرید بر اساس تاریخ</div>
+        <div className="filter-chips">
+          {presets.map((p) => (
+            <button key={p.key} className={"fchip" + (!custom && preset === p.key ? " on" : "")}
+                    onClick={() => choosePreset(p.key)}>{p.label}</button>
+          ))}
+          <button className={"fchip" + (custom ? " on" : "")} onClick={openCustom}>🗓 بازه دلخواه</button>
+        </div>
+
+        {custom && (
+          <div className="rp-range">
+            <button className={"rp-datebtn" + (pick === "from" ? " on" : "")}
+                    onClick={() => { haptic("selection"); setPick(pick === "from" ? "" : "from"); }}>
+              <span>از تاریخ</span>{jLong(from) || "انتخاب کنید"}
+            </button>
+            <button className={"rp-datebtn" + (pick === "to" ? " on" : "")}
+                    onClick={() => { haptic("selection"); setPick(pick === "to" ? "" : "to"); }}>
+              <span>تا تاریخ</span>{jLong(to) || "انتخاب کنید"}
+            </button>
+          </div>
+        )}
+        {custom && pick && (
+          /* keyed so the grid re-opens on the month of whichever field is being edited */
+          <MonthGrid key={pick} value={pick === "from" ? from : to}
+                     onPick={(parts) => {
+                       if (pick === "from") { setFrom(parts); setPick("to"); }
+                       else { setTo(parts); setPick(""); }
+                     }} />
+        )}
+        {rng.from_label && <div className="muted tiny">بازهٔ نمایش‌داده‌شده: از {rng.from_label} تا {rng.to_label}</div>}
+      </div>
+
+      {loading && <div className="card center" style={{ padding: 28 }}><Spinner /></div>}
+
+      {!loading && err && (
+        <div className="card center" style={{ padding: 22, gap: 10, display: "flex", flexDirection: "column" }}>
+          <p className="muted" style={{ margin: 0 }}>{err}</p>
+          <button className="btn-ghost sm" onClick={() => setTick((t) => t + 1)}>تلاش دوباره</button>
+        </div>
+      )}
+
+      {!loading && !err && data && (
+        <>
+          <div className="card balance-card">
+            <div className="balance-lbl">مجموع خرید در این بازه</div>
+            <div className="balance-val">{fmt(s.total_spent)} <small>تومان</small></div>
+          </div>
+
+          <div className="rep-stat-grid">
+            <div className="card rep-stat">
+              <div className="rep-stat-ico" style={{ background: "linear-gradient(135deg,#7c6fff,#a78bfa)" }}>🆕</div>
+              <div className="rep-stat-val">{fmt(s.services)}</div><div className="rep-stat-lbl">سرویس جدید</div>
+            </div>
+            <div className="card rep-stat">
+              <div className="rep-stat-ico" style={{ background: "linear-gradient(135deg,#0891b2,#22d3ee)" }}>♻️</div>
+              <div className="rep-stat-val">{fmt(s.renewals)}</div><div className="rep-stat-lbl">تمدید</div>
+            </div>
+            <div className="card rep-stat">
+              <div className="rep-stat-ico" style={{ background: "linear-gradient(135deg,#10b981,#34d399)" }}>💾</div>
+              {/* An unlimited plan has no GB to add up — it's counted separately, never as 0. */}
+              <div className="rep-stat-val">{fmt(s.total_gb)} <small>GB</small></div>
+              <div className="rep-stat-lbl">مجموع حجم{s.unlimited_count > 0 ? ` +${fmt(s.unlimited_count)} نامحدود` : ""}</div>
+            </div>
+            <div className="card rep-stat">
+              <div className="rep-stat-ico" style={{ background: "linear-gradient(135deg,#f59e0b,#fbbf24)" }}>🧾</div>
+              <div className="rep-stat-val">{fmt(s.orders)}</div><div className="rep-stat-lbl">سفارش</div>
+            </div>
+          </div>
+
+          <button className="btn-primary" disabled={sending} onClick={getExcel}>
+            {sending ? "در حال ارسال به چت…" : "📥 دریافت فایل اکسل"}
+          </button>
+          {note && <div className={"rp-note " + (note.ok ? "ok" : "err")}>{note.text}</div>}
+          {!note && <p className="muted tiny" style={{ margin: 0 }}>فایل اکسل به‌صورت سند در چت شما با ربات ارسال می‌شود.</p>}
+
+          {s.legacy_configs > 0 && (
+            <p className="muted tiny" style={{ margin: 0 }}>
+              {fmt(s.legacy_configs)} کانفیگ قدیمی هم در این بازه ثبت شده که در فهرست زیر نمی‌آید.
+            </p>
+          )}
+
+          {!rows.length ? (
+            <div className="card center empty" style={{ padding: 26 }}>
+              <div className="empty-emoji">🗂</div>
+              <p>در این بازه خریدی ثبت نشده</p>
+            </div>
+          ) : (
+            <>
+              <div className="muted tiny">{fmt(Math.min(shown, rows.length))} از {fmt(rows.length)} مورد</div>
+              {rows.slice(0, shown).map((r) => (
+                <div className="card svc rp-row" key={`${r.kind}-${r.order_id}-${r.profile_id}-${r.row}`}>
+                  <div className="svc-head">
+                    <b className="rp-name">{r.name}</b>
+                    <span className={"badge " + repStatusCls(r.status)}>{r.status}</span>
+                  </div>
+                  <div className="rp-badges">
+                    <span className={"badge " + (r.kind === "renewal" ? "cy" : "info")}>{r.kind_label}</span>
+                    <span className="badge soft">📊 {r.is_unlimited ? r.traffic_label : `${r.traffic_label} GB`}</span>
+                    <span className="badge soft">⏱ {r.duration_days > 0 ? `${r.duration_days} روز` : "نامحدود"}</span>
+                  </div>
+                  <div className="rp-facts">
+                    <div className="rp-fact"><span>تاریخ خرید</span><b><D v={r.purchased_at} /></b></div>
+                    <div className="rp-fact"><span>تاریخ شروع</span><b><D v={r.started_at} /></b></div>
+                    <div className="rp-fact"><span>تاریخ انقضا</span><b><D v={r.expires_at} /></b></div>
+                  </div>
+                  <div className="rp-price"><span>مبلغ</span><b>{fmt(r.price)} <small>تومان</small></b></div>
+                </div>
+              ))}
+              {shown < rows.length && (
+                <button className="btn-soft" style={{ width: "100%" }}
+                        onClick={() => { haptic("selection"); setShown(shown + PAGE); }}>
+                  نمایش بیشتر ({fmt(rows.length - shown)} مورد دیگر)
+                </button>
+              )}
+            </>
+          )}
+          {data.generated_at && <p className="muted tiny" style={{ margin: 0 }}>تهیه گزارش: <D v={data.generated_at} /></p>}
+        </>
+      )}
+    </div>
+  );
+}
+
 function RepPanel({ data, support }) {
   const rep = data.rep || {};
   const f = rep.financials || {};
@@ -583,6 +831,9 @@ function RepPanel({ data, support }) {
         <div className="card rep-stat"><div className="rep-stat-ico" style={{ background: "linear-gradient(135deg,#0891b2,#22d3ee)" }}>🔑</div><div className="rep-stat-val">{f.active_services || 0}/{f.total_services || 0}</div><div className="rep-stat-lbl">سرویس فعال/کل</div></div>
         <div className="card rep-stat"><div className="rep-stat-ico" style={{ background: "linear-gradient(135deg,#f59e0b,#fbbf24)" }}>🧾</div><div className="rep-stat-val">{fmt(f.orders)}</div><div className="rep-stat-lbl">سفارش‌ها</div></div>
       </div>
+
+      {/* Same gate as the tab itself — the endpoint 403s for non-reps anyway. */}
+      {data.is_rep && <RepReport />}
 
       <div className="card">
         <div className="list-title">💡 راهنما</div>

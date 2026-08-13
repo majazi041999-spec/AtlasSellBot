@@ -23,46 +23,102 @@ class XUIClient:
         self.api_token = (api_token or "").strip()
         self._cookie: Optional[str] = None
         self._csrf_token: Optional[str] = None
+        # Remembered across calls on this instance: which onlines endpoint this
+        # panel actually answers on (they moved between 3x-ui major versions).
+        self._onlines_path: Optional[str] = None
         self.last_error: str = ""
         self._http = httpx.AsyncClient(verify=False, timeout=20.0)
 
+    # Sent on every request. Without `X-Requested-With`, an unauthenticated call
+    # to older panels is answered with a 307 to the login PAGE, which then
+    # returns HTML at HTTP 200 — indistinguishable from success until the JSON
+    # parse blows up. With it, they answer 401 and we can react properly.
+    _BASE_HEADERS = {
+        "X-Requested-With": "XMLHttpRequest",
+        "Accept": "application/json, text/plain, */*",
+    }
+
+    async def _try_login(self) -> tuple[bool, bool]:
+        """One login attempt. Returns (logged_in, worth_retrying_with_a_csrf_token)."""
+        headers = dict(self._BASE_HEADERS)
+        if self._csrf_token:
+            headers["X-CSRF-Token"] = self._csrf_token
+        r = await self._http.post(
+            f"{self.panel_url}/login",
+            data={"username": self.username, "password": self.password},
+            headers=headers,
+        )
+        if r.status_code != 200:
+            self.last_error = f"login_failed HTTP {r.status_code}: {r.text[:300]}"
+            return False, r.status_code in (400, 401, 403)
+        try:
+            data = r.json()
+        except Exception:
+            self.last_error = f"login_failed invalid_response: {r.text[:300]}"
+            return False, False
+        if data.get("success"):
+            # The session cookie may be set by this response OR by an earlier
+            # csrf-token call, so fall back to the client's own jar instead of
+            # assuming it arrived here.
+            self._cookie = "; ".join(f"{k}={v}" for k, v in r.cookies.items()) or "; ".join(
+                f"{k}={v}" for k, v in self._http.cookies.items()
+            )
+            await self._load_csrf_token()
+            self.last_error = ""
+            return True, False
+        self.last_error = f"login_failed: {str(data.get('msg') or data.get('error') or data)[:300]}"
+        # Some builds report a CSRF rejection as 200 + success:false, so this is
+        # still worth one retry with a token.
+        return False, True
+
     async def _login(self) -> bool:
         try:
-            r = await self._http.post(
-                f"{self.panel_url}/login",
-                data={"username": self.username, "password": self.password}
-            )
-            if r.status_code != 200:
-                self.last_error = f"login_failed HTTP {r.status_code}: {r.text[:300]}"
-                return False
-            try:
-                data = r.json()
-            except Exception:
-                self.last_error = f"login_failed invalid_response: {r.text[:300]}"
-                return False
-            if data.get("success"):
-                self._cookie = "; ".join(f"{k}={v}" for k, v in r.cookies.items())
-                await self._load_csrf_token()
-                self.last_error = ""
+            ok, retryable = await self._try_login()
+            if ok:
                 return True
-            self.last_error = f"login_failed: {str(data.get('msg') or data.get('error') or data)[:300]}"
+            # 3x-ui v3 protects /login itself with CSRF, so a first, tokenless
+            # attempt is always rejected there. Fetching a token also establishes
+            # the session cookie. Older panels have no such endpoint, so the
+            # token stays empty and we don't waste a second attempt on them.
+            if retryable and not self._csrf_token:
+                await self._load_csrf_token()
+                if self._csrf_token:
+                    ok, _ = await self._try_login()
+                    return ok
+            return False
         except Exception as e:
             self.last_error = f"login_failed: {str(e)[:300]}"
             logger.error(f"XUI login error: {e}")
-        return False
+            return False
 
     async def _load_csrf_token(self) -> None:
         try:
-            r = await self._http.get(
-                f"{self.panel_url}/csrf-token",
-                headers={"Cookie": self._cookie or ""},
-            )
+            headers = dict(self._BASE_HEADERS)
+            if self._cookie:
+                headers["Cookie"] = self._cookie
+            r = await self._http.get(f"{self.panel_url}/csrf-token", headers=headers)
             if r.status_code == 200:
                 data = r.json()
                 if data.get("success"):
                     self._csrf_token = data.get("obj") or data.get("token")
         except Exception:
             self._csrf_token = None
+
+    # POST endpoints that only READ. 3x-ui exposes several read-only queries over
+    # POST; authorizing them with the API token alone is safe and lets the online
+    # poller work on panels where only a token (no user/pass) is configured.
+    _TOKEN_READ_POST_PATHS = (
+        "/panel/api/inbounds/onlines",
+        "/panel/api/clients/onlines",
+        "/panel/api/clients/onlinesByGuid",
+        "/panel/api/inbounds/lastOnline",
+        "/panel/api/clients/lastOnline",
+        "/panel/api/server/status",
+        "/server/status",
+    )
+
+    def _allow_token_read(self, path: str) -> bool:
+        return bool(self.api_token) and path in self._TOKEN_READ_POST_PATHS
 
     def _allow_token_write(self, path: str) -> bool:
         if not self.api_token:
@@ -84,7 +140,8 @@ class XUIClient:
 
     def _headers(self, extra: Optional[Dict[str, str]] = None, unsafe: bool = False,
                  token_write: bool = False) -> Dict[str, str]:
-        headers = dict(extra or {})
+        headers = dict(self._BASE_HEADERS)
+        headers.update(extra or {})
         if self.api_token and (not unsafe or token_write):
             headers["Authorization"] = f"Bearer {self.api_token}"
         elif self._cookie:
@@ -95,7 +152,7 @@ class XUIClient:
 
     async def _req(self, method: str, path: str, **kw) -> Optional[Dict]:
         unsafe = method.upper() not in {"GET", "HEAD", "OPTIONS", "TRACE"}
-        token_write_allowed = unsafe and self._allow_token_write(path)
+        token_write_allowed = unsafe and (self._allow_token_write(path) or self._allow_token_read(path))
         token_write = False
         login_error = ""
         if (unsafe or not self.api_token) and not self._cookie:
@@ -212,19 +269,91 @@ class XUIClient:
         r = await self._req("POST", f"/panel/api/inbounds/update/{int(iid)}", json=body)
         return bool(r and r.get("success"))
 
-    async def get_onlines(self) -> List[str]:
-        """List of client emails currently online on this panel.
+    # Every known location of the "which clients are online right now" list,
+    # newest panel first. 3x-ui moved it between major versions:
+    #   • v3.x   POST /panel/api/clients/onlines      (clients controller)
+    #   • v2.x   POST /panel/api/inbounds/onlines     (inbounds controller)
+    #   • v2.x   POST /panel/inbound/onlines          (legacy web route, session)
+    # In every version the panel answers {"success":true,"obj":[<emails>]}, where
+    # a client counts as online when xray reported traffic for it in the last
+    # stats tick (~10s) — i.e. a real-time concurrency figure, exactly what we
+    # want for load balancing.
+    _ONLINES_PATHS = (
+        "/panel/api/clients/onlines",
+        "/panel/api/inbounds/onlines",
+        "/panel/inbound/onlines",
+    )
 
-        The onlines list lives on the WEB route `/panel/inbound/onlines` (session
-        auth) on 3x-ui; the `/panel/api/inbounds/onlines` variant only exists on
-        some builds. Try both so it works across forks."""
-        for path in ("/panel/inbound/onlines", "/panel/api/inbounds/onlines"):
+    @staticmethod
+    def _online_email(entry: Any) -> str:
+        """Normalize one entry of the panel's onlines list to an email string.
+
+        Older builds return plain emails; some forks (and v3's *ByGuid variants)
+        return objects. Accept both so a shape change can't zero our counts."""
+        if isinstance(entry, str):
+            return entry.strip()
+        if isinstance(entry, dict):
+            for key in ("email", "Email", "name", "id"):
+                value = entry.get(key)
+                if value:
+                    return str(value).strip()
+        return ""
+
+    async def get_onlines(self) -> List[str]:
+        """Client emails currently online on this panel ([] if none/unavailable).
+
+        Prefer `get_online_count()` when the answer feeds a decision: it can tell
+        "zero online" apart from "panel unreachable"."""
+        emails, _ = await self.get_onlines_checked()
+        return emails
+
+    async def get_onlines_checked(self) -> tuple[List[str], bool]:
+        """(emails, ok). `ok` is False when NO endpoint answered successfully.
+
+        The distinction matters: a panel we cannot reach must never be read as
+        "0 users online", or the load balancer would send everyone to the one
+        server that is actually down."""
+        paths = list(self._ONLINES_PATHS)
+        if self._onlines_path:
+            # Stick to the endpoint that already worked for this panel.
+            paths.remove(self._onlines_path)
+            paths.insert(0, self._onlines_path)
+        errors = []
+        for path in paths:
             r = await self._req("POST", path)
             if r and r.get("success"):
                 obj = r.get("obj")
+                if obj is None:
+                    obj = []
                 if isinstance(obj, list):
-                    return [str(e) for e in obj if e]
-        return []
+                    self._onlines_path = path
+                    self.last_error = ""
+                    return [e for e in (self._online_email(x) for x in obj) if e], True
+                errors.append(f"{path}: unexpected obj type {type(obj).__name__}")
+                continue
+            errors.append(f"{path}: {self.last_error or 'failed'}")
+        self.last_error = " | ".join(errors)[-500:]
+        return [], False
+
+    async def get_online_count(self) -> Optional[int]:
+        """How many clients are online on this panel, or None if unknown."""
+        emails, ok = await self.get_onlines_checked()
+        return len(emails) if ok else None
+
+    async def get_server_status(self) -> Optional[Dict]:
+        """Panel host stats (cpu/mem/xray state), or None if unavailable.
+
+        Informational only — shown to the admin next to each server. v3 serves it
+        over GET, v2 over POST, and the legacy web route exists on both."""
+        for method, path in (
+            ("GET", "/panel/api/server/status"),
+            ("POST", "/panel/api/server/status"),
+            ("POST", "/server/status"),
+        ):
+            r = await self._req(method, path)
+            if r and r.get("success") and isinstance(r.get("obj"), dict):
+                return r["obj"]
+        return None
 
     async def get_client_traffic(self, email: str) -> Optional[Dict]:
         enc = quote(email, safe="")

@@ -11,6 +11,7 @@ from datetime import datetime
 from typing import Dict, List
 from urllib.parse import quote, urlsplit, urlunsplit
 
+from core.autonode import expand_node_configs
 from core.config import WEB_PORT
 from core.database import (
     add_subscription_node,
@@ -332,6 +333,14 @@ async def _subscription_node_display_label(profile: Dict, node: Dict, index: int
         node.get("node_label") or node.get("server_name") or f"Node {index}",
         26,
     )
+    # An auto node is labelled by the admin ("خودکار"), not by the server it
+    # happens to sit on right now — otherwise its name would change under the
+    # customer every time it rebalances. The current server is appended only when
+    # the admin asked for it (useful for support).
+    if int(node.get("node_is_auto") or 0) and int(node.get("node_auto_show_server") or 0):
+        server_name = _clean_display_part(node.get("server_name") or "", 18)
+        if server_name:
+            node_name = f"{node_name} · {server_name}"
     return node_name[:48]
 
 
@@ -646,7 +655,9 @@ async def create_profile_for_order(user: Dict, order: Dict, traffic_gb: float, d
     # No min/max node cap: every subscription is provisioned on ALL usable nodes.
     # A single successful node is enough to hand the customer a working link; the
     # background/real-time reconciler fills in any node that was momentarily down.
-    nodes = await get_available_subscription_node_configs()
+    # An auto node carries no server of its own — resolve it to the currently
+    # least-busy one before we start provisioning.
+    nodes = await expand_node_configs(await get_available_subscription_node_configs())
     min_nodes = 1
     if not nodes:
         return {"ok": False, "error": "no_subscription_nodes_configured"}
@@ -694,7 +705,8 @@ async def create_profile_for_order(user: Dict, order: Dict, traffic_gb: float, d
                     except Exception:
                         pass
                     continue
-                await add_subscription_node(profile_id, node["server_id"], inbound_id, client_uuid, node_email, link)
+                await add_subscription_node(profile_id, node["server_id"], inbound_id, client_uuid,
+                                            node_email, link, config_id=int(node["id"]))
                 created_remote.append((node, inbound_id, client_uuid, node_email))
             except Exception as e:
                 failures.append(f"{node.get('server_name') or node['server_id']}#{inbound_id}:{e}")
@@ -770,7 +782,9 @@ async def create_profile_from_config(user: Dict, cfg: Dict) -> Dict:
     remaining_days = _days_remaining(expire_ms, now_ms)
 
     # Use ALL usable nodes (no min/max cap); one working node is enough to migrate.
-    nodes = await get_available_subscription_node_configs()
+    # An auto node carries no server of its own — resolve it to the currently
+    # least-busy one before we start provisioning.
+    nodes = await expand_node_configs(await get_available_subscription_node_configs())
     min_nodes = 1
     if not nodes:
         return {"ok": False, "error": "no_subscription_nodes_configured"}
@@ -810,7 +824,8 @@ async def create_profile_from_config(user: Dict, cfg: Dict) -> Dict:
                     except Exception:
                         pass
                     continue
-                await add_subscription_node(profile_id, node["server_id"], inbound_id, client_uuid, node_email, link)
+                await add_subscription_node(profile_id, node["server_id"], inbound_id, client_uuid,
+                                            node_email, link, config_id=int(node["id"]))
                 created_remote.append((node, inbound_id, client_uuid, node_email))
             except Exception as e:
                 failures.append(f"{node.get('server_name') or node['server_id']}#{inbound_id}:{e}")
@@ -979,13 +994,20 @@ async def render_subscription(token: str) -> tuple[str, Dict[str, int]] | None:
 
 
 async def ensure_subscription_profile_nodes(profile: Dict, force_refresh: bool = False,
-                                            only_config_ids: set | None = None) -> Dict:
+                                            only_config_ids: set | None = None,
+                                            auto_targets: Dict[int, Dict] | None = None) -> Dict:
     """Create missing clients for newly configured subscription nodes.
 
     `only_config_ids`: when given, restrict the whole pass to just those node
     config ids (used by the real-time per-node reconciler so a single node action
     doesn't touch — or risk breaking — every other node). Orphan pruning is also
     skipped in that mode, since we're deliberately looking at one node only.
+
+    `auto_targets`: {auto_config_id: resolved node config}. The rebalancer passes
+    the destinations it already decided, so its whole-fleet view of server load
+    is honoured. Without it we resolve each auto node ourselves but refuse to
+    relocate one that is still on a healthy server — routine reconciliation must
+    never move a customer; only a deliberate rebalance does.
     """
     if not profile or not int(profile.get("is_active") or 0):
         return {"created": 0, "skipped": 0, "failed": 0}
@@ -1000,6 +1022,27 @@ async def ensure_subscription_profile_nodes(profile: Dict, force_refresh: bool =
     configured_nodes = await get_subscription_node_configs(active_only=True)
     if only_config_ids is not None:
         configured_nodes = [n for n in configured_nodes if int(n["id"]) in only_config_ids]
+
+    # Resolve auto nodes to a real server for THIS profile. Anything the caller
+    # already decided wins; the rest keep their current server if it is still
+    # healthy (see the docstring).
+    auto_targets = auto_targets or {}
+    if any(int(n.get("is_auto") or 0) for n in configured_nodes):
+        existing_by_config = {}
+        for node in existing_nodes:
+            cfg_id = int(node.get("config_id") or 0)
+            if not cfg_id:
+                m = re.search(r"_n(\d+)$", str(node.get("email") or ""))
+                cfg_id = int(m.group(1)) if m else 0
+            if cfg_id:
+                existing_by_config[cfg_id] = node
+        configured_nodes = [
+            auto_targets.get(int(n["id"])) or n if int(n.get("is_auto") or 0) else n
+            for n in configured_nodes
+        ]
+        configured_nodes = await expand_node_configs(
+            configured_nodes, existing_by_config=existing_by_config, allow_move=False,
+        )
 
     # Orphan cleanup: a subscription node whose underlying node CONFIG was deleted
     # from the panel must be removed from the user's sub entirely (remote client +
@@ -1104,6 +1147,13 @@ async def ensure_subscription_profile_nodes(profile: Dict, force_refresh: bool =
                 link=link,
                 last_used_bytes=0,
                 is_active=1,
+                config_id=int(node["id"]),
+                # Stamps the auto-node move cooldown; harmless on a normal node.
+                moved_at=int(time.time() * 1000),
+                # The new client starts at zero on the new panel, so bank what
+                # this node had already used or the customer silently regains it.
+                carried_bytes=(int(existing.get("carried_bytes") or 0)
+                               + int(existing.get("last_used_bytes") or 0)),
             )
             moved += 1
             old_cli = XUIClient(existing["server_url"], existing["srv_user"], existing["srv_pass"], existing.get("sub_path") or "", existing.get("srv_api_token", ""))
@@ -1153,7 +1203,8 @@ async def ensure_subscription_profile_nodes(profile: Dict, force_refresh: bool =
                     or int(existing.get("inbound_id") or 0) != inbound_id
                     or str(existing.get("uuid") or "") != client_uuid
                 )
-                await update_subscription_node(existing["id"], inbound_id=inbound_id, uuid=client_uuid, link=link, is_active=1)
+                await update_subscription_node(existing["id"], inbound_id=inbound_id, uuid=client_uuid,
+                                               link=link, is_active=1, config_id=int(node["id"]))
                 if changed:
                     refreshed += 1
                 else:
@@ -1208,7 +1259,8 @@ async def ensure_subscription_profile_nodes(profile: Dict, force_refresh: bool =
                 except Exception:
                     pass
                 continue
-            await add_subscription_node(profile["id"], node["server_id"], inbound_id, client_uuid, node_email, link)
+            await add_subscription_node(profile["id"], node["server_id"], inbound_id, client_uuid,
+                                        node_email, link, config_id=int(node["id"]))
             created += 1
         except Exception as e:
             failed += 1
@@ -1274,6 +1326,9 @@ async def sync_profile_usage(profile: Dict) -> Dict:
 
     for node in nodes:
         cli = XUIClient(node["server_url"], node["srv_user"], node["srv_pass"], node.get("sub_path") or "", node.get("srv_api_token", ""))
+        # Traffic this node spent on servers it has since been moved off. The
+        # remote client only knows what it has used since it was created there.
+        carried = int(node.get("carried_bytes") or 0)
         try:
             traffic = await cli.get_client_traffic(node["email"])
             if traffic:
@@ -1281,9 +1336,9 @@ async def sync_profile_usage(profile: Dict) -> Dict:
                 await update_subscription_node(node["id"], last_used_bytes=used)
             else:
                 used = int(node.get("last_used_bytes") or 0)
-            used_total += used
+            used_total += used + carried
         except Exception:
-            used_total += int(node.get("last_used_bytes") or 0)
+            used_total += int(node.get("last_used_bytes") or 0) + carried
         finally:
             await cli.close()
 
@@ -1425,7 +1480,10 @@ async def renew_subscription_profile(profile: Dict, traffic_gb: float, duration_
                 # Refresh the cached link/identity so the served sub immediately
                 # reflects the renewed client.
                 fresh_inbound, fresh_uuid, fresh_link = await _remote_identity_and_link(cli, inbound_id, node_email, node_uuid)
-                update_kw = {"is_active": 1, "last_used_bytes": 0, "inbound_id": fresh_inbound or inbound_id, "uuid": fresh_uuid or node_uuid}
+                # Renewal wipes the client's traffic on the panel, so the banked
+                # pre-move usage has to go with it.
+                update_kw = {"is_active": 1, "last_used_bytes": 0, "carried_bytes": 0,
+                             "inbound_id": fresh_inbound or inbound_id, "uuid": fresh_uuid or node_uuid}
                 if _subscription_link_is_complete(fresh_link):
                     update_kw["link"] = fresh_link
                 await update_subscription_node(node["id"], **update_kw)
@@ -1548,7 +1606,7 @@ async def reset_subscription_usage(profile_id: int) -> Dict:
         try:
             if await cli.reset_client_traffic(int(node.get("inbound_id") or 0), node.get("email") or ""):
                 done += 1
-            await update_subscription_node(node["id"], last_used_bytes=0)
+            await update_subscription_node(node["id"], last_used_bytes=0, carried_bytes=0)
         except Exception:
             pass
         finally:
