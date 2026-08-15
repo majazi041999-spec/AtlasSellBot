@@ -16,12 +16,34 @@ const EMPTY = {
   clientapp_promo_image_url: "",
   clientapp_version_code: "0",
   clientapp_version_name: "",
-  clientapp_version_url: "",
-  clientapp_version_sha256: "",
   clientapp_version_notes: "",
   clientapp_version_mandatory: "0",
   clientapp_api_key: "",
 };
+
+/**
+ * Says whether the app is actually being served a banner, and if not, why.
+ *
+ * The two failure modes are silent from the panel's point of view — the fields
+ * look filled in either case — so the reason comes from the server, computed by
+ * the same code that builds the app's payload. Guessing it here could disagree
+ * with reality, which is exactly the confusion this is meant to end.
+ */
+function PromoStatus({ status }) {
+  const map = {
+    live: { c: "#2bd98a", t: "✅ بنر روی اپ نمایش داده می‌شود." },
+    disabled: { c: "#ffb020", t: "⚠️ تیک «بنر فعال باشد» زده نشده — اپ چیزی نمی‌بیند." },
+    empty: { c: "#ffb020", t: "⚠️ عنوان و متن هر دو خالی‌اند — حداقل یکی لازم است." },
+  };
+  const s = map[status];
+  if (!s) return null;
+  return (
+    <div style={{
+      background: s.c + "1f", border: "1px solid " + s.c + "55",
+      color: s.c, borderRadius: 12, padding: "10px 12px", fontSize: 13,
+    }}>{s.t}</div>
+  );
+}
 
 export default function ClientApp() {
   const [cfg, setCfg] = useState(null);
@@ -59,7 +81,6 @@ export default function ClientApp() {
 
   const promoOn = cfg.clientapp_promo_enabled === "1";
   const versionCode = parseInt(cfg.clientapp_version_code || "0", 10) || 0;
-  const shaOk = !cfg.clientapp_version_sha256 || /^[0-9a-f]{64}$/i.test(cfg.clientapp_version_sha256);
 
   return (
     <div className="grid" style={{ gap: 14 }}>
@@ -68,6 +89,8 @@ export default function ClientApp() {
         sub="در صفحهٔ اصلی برنامه نمایش داده می‌شود. کاربر می‌تواند ببندد و تا وقتی «شناسه» عوض نشود دیگر نمی‌بیند."
       >
         <div className="grid" style={{ gap: 10 }}>
+          <PromoStatus status={cfg._promo_status} />
+
           <label className="field" style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
             <input type="checkbox" checked={promoOn} onChange={set("clientapp_promo_enabled")} />
             <span>بنر فعال باشد</span>
@@ -134,25 +157,10 @@ export default function ClientApp() {
             </label>
           </div>
 
-          <div className="field">
-            <label>لینک دانلود APK — فقط https</label>
-            <input className="inp" dir="ltr" value={cfg.clientapp_version_url}
-                   onChange={set("clientapp_version_url")} placeholder="https://…/atlas-1.1.0.apk" />
-          </div>
-
-          <div className="field">
-            <label>
-              SHA-256 فایل APK
-              <span style={{ opacity: 0.6, fontSize: 12 }}> — ۶۴ کاراکتر هگز، اختیاری ولی توصیه‌شده</span>
-            </label>
-            <input className="inp" dir="ltr" value={cfg.clientapp_version_sha256}
-                   onChange={set("clientapp_version_sha256")}
-                   style={shaOk ? undefined : { borderColor: "#e5484d" }} />
-            {!shaOk && (
-              <div style={{ color: "#e5484d", fontSize: 12, marginTop: 4 }}>
-                باید دقیقاً ۶۴ کاراکتر هگز باشد، وگرنه سرور نادیده‌اش می‌گیرد.
-              </div>
-            )}
+          <div style={{ opacity: 0.75, fontSize: 13, lineHeight: 1.9 }}>
+            برنامه فایلی دانلود یا نصب نمی‌کند. وقتی versionCode اینجا از نسخهٔ
+            نصب‌شدهٔ کاربر بیشتر باشد، پیام «نسخهٔ جدید موجود است» می‌آید و دکمه‌اش
+            کاربر را مستقیم به کانال تلگرام می‌برد.
           </div>
 
           <div className="field">

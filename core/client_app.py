@@ -24,11 +24,10 @@ Three rules follow, and they are not negotiable:
    filters casual scrapers and nothing more, so it must never gate anything
    whose exposure would matter.
 
-The update manifest is the one genuinely sensitive surface, because it is the
-only path that leads to code execution on a user's phone. It therefore carries
-a SHA-256 of the APK, which the client verifies before installing — on top of
-Android's own guarantee that an update must be signed with the same key as the
-installed app.
+No download URL is published. The client only learns that a newer version
+exists and opens the seller's Telegram channel to fetch it, which keeps
+REQUEST_INSTALL_PACKAGES out of the APK — the single strongest Play Protect
+heuristic a sideloaded VPN can trip.
 """
 from __future__ import annotations
 
@@ -55,8 +54,6 @@ DEFAULTS: Dict[str, str] = {
     # In-app update manifest
     "clientapp_version_code": "0",
     "clientapp_version_name": "",
-    "clientapp_version_url": "",
-    "clientapp_version_sha256": "",
     "clientapp_version_notes": "",
     "clientapp_version_mandatory": "0",
     # Optional anti-scraper token (NOT authorisation — see module docstring)
@@ -140,14 +137,9 @@ async def version_payload() -> Dict:
         code = int(await _get("clientapp_version_code") or 0)
     except ValueError:
         code = 0
-    # Bind first: `await _get(k).lower()` parses as `.lower()` on the coroutine.
-    sha256 = (await _get("clientapp_version_sha256")).lower()
     return {
         "versionCode": code,
         "versionName": await _get("clientapp_version_name"),
-        "url": await _get("clientapp_version_url"),
-        # Client must refuse to install an APK whose hash does not match.
-        "sha256": sha256 if code else "",
         "notes": await _get("clientapp_version_notes"),
         "mandatory": _flag(await _get("clientapp_version_mandatory")),
     }
@@ -189,8 +181,22 @@ async def config_payload() -> Dict:
 
 
 async def admin_payload() -> Dict:
-    """Current values for the admin editor."""
-    return {key: await _get(key) for key in EDITABLE}
+    """Current values for the admin editor, plus why the banner is/isn't live.
+
+    The reason is computed here rather than re-derived in the panel so the two
+    can never disagree: this is the same code path that decides what the app
+    actually receives.
+    """
+    data = {key: await _get(key) for key in EDITABLE}
+    enabled = _flag(data.get("clientapp_promo_enabled", "0"))
+    has_body = bool(data.get("clientapp_promo_title") or data.get("clientapp_promo_text"))
+    if not enabled:
+        data["_promo_status"] = "disabled"
+    elif not has_body:
+        data["_promo_status"] = "empty"
+    else:
+        data["_promo_status"] = "live"
+    return data
 
 
 async def save_admin(data: Dict) -> Dict:
@@ -206,13 +212,7 @@ async def save_admin(data: Dict) -> Dict:
                 raw = str(max(0, int(raw or 0)))
             except ValueError:
                 continue
-        elif key == "clientapp_version_sha256":
-            raw = raw.lower().replace(" ", "")
-            # Either a full SHA-256 or nothing; a truncated hash would give a
-            # false sense of verification.
-            if raw and (len(raw) != 64 or not all(c in "0123456789abcdef" for c in raw)):
-                continue
-        elif key in ("clientapp_promo_url", "clientapp_promo_image_url", "clientapp_version_url"):
+        elif key in ("clientapp_promo_url", "clientapp_promo_image_url"):
             # Refuse anything that is not plain HTTPS. These become a tap target
             # and a download source inside the app, so a javascript:/http:/
             # intent: URL here would be an injection vector against every user.
