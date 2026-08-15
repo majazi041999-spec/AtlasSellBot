@@ -461,6 +461,14 @@ async def _ensure_columns(db):
             # figure forward, every move would hand the customer back the quota
             # they had already spent.
             ("carried_bytes", "INTEGER DEFAULT 0"),
+            # Epoch ms when the panel CONFIRMED this client was switched off.
+            # `is_active` alone can't say: it is dropped to 0 even when the
+            # remote write fails, so that rendering stops serving the node
+            # immediately. Without a separate confirmation, every later sweep
+            # re-issues the same disable write to the panel — and a client write
+            # makes 3x-ui rewrite the inbound and reload xray, which drops every
+            # live connection on that server. 0 = not confirmed, keep retrying.
+            ("remote_disabled_at", "INTEGER DEFAULT 0"),
         ],
         "test_accounts": [
             ("profile_id", "INTEGER DEFAULT 0"),

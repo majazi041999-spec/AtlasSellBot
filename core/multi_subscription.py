@@ -1485,8 +1485,20 @@ async def set_nodes_enabled(profile_id: int, enabled: bool):
       * Disable: we must never leave a node marked active in our DB even if the
         remote write fails, and we try hard (identity re-resolve) to actually
         disable the remote client so a finished sub can't keep working.
+      * Disabling is idempotent and must COST nothing once it has taken. A
+        client write makes 3x-ui rewrite the inbound and reload xray, which
+        drops every live connection on that server — so re-sending a disable
+        the panel already applied punishes every OTHER customer there. Nodes
+        confirmed off (`remote_disabled_at`) are skipped; ones whose remote
+        write never landed keep being retried, which is why the local
+        `is_active` flag alone cannot be the test.
     """
     nodes = await get_subscription_nodes(profile_id)
+    if not enabled:
+        nodes = [n for n in nodes
+                 if int(n.get("is_active") or 0) or not int(n.get("remote_disabled_at") or 0)]
+        if not nodes:
+            return
     from core.database import get_subscription_profile
     profile = await get_subscription_profile(profile_id)
     traffic_gb = float(profile.get("traffic_gb") or 0) if profile else 0
@@ -1519,15 +1531,30 @@ async def set_nodes_enabled(profile_id: int, enabled: bool):
                         ok = True
                 if ok:
                     r_in, r_uuid, link = await _remote_identity_and_link(cli, inbound_id, node_email, node_uuid)
-                    upd = {"is_active": 1, "inbound_id": r_in or inbound_id, "uuid": r_uuid or node_uuid}
+                    upd = {"is_active": 1, "inbound_id": r_in or inbound_id, "uuid": r_uuid or node_uuid,
+                           "remote_disabled_at": 0}
                     if _subscription_link_is_complete(link):
                         upd["link"] = link
                     await update_subscription_node(node["id"], **upd)
                 else:
                     logger.warning("set_nodes_enabled: could not re-enable node id=%s profile=%s", node.get("id"), profile_id)
             else:
-                # Disable: always drop the DB flag (render must stop serving it).
-                await update_subscription_node(node["id"], is_active=0)
+                # Disable: always drop the DB flag (render must stop serving it),
+                # but only stamp the confirmation when the PANEL took the write —
+                # an unconfirmed node stays on the retry list.
+                await update_subscription_node(
+                    node["id"], is_active=0,
+                    **({"remote_disabled_at": now_ms} if ok else {}))
+                if not ok:
+                    # Worth seeing: this node is now re-tried on every sweep, and
+                    # each retry is a client write the panel turns into an xray
+                    # reload. A recurring email here means something needs fixing
+                    # at the panel, not more retries.
+                    logger.warning(
+                        "set_nodes_enabled: disable not confirmed by panel, will retry "
+                        "profile=%s node=%s email=%s: %s",
+                        profile_id, node.get("id"), node_email,
+                        getattr(cli, "last_error", "") or "unknown")
         except Exception as e:
             logger.warning("set_nodes_enabled node id=%s failed: %s", node.get("id"), e)
             if not enabled:
