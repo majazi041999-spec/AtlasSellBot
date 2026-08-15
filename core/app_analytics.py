@@ -339,7 +339,10 @@ async def record_diag(payload: Dict) -> Optional[int]:
         return 0
 
     now = int(time.time())
-    carrier = _text(payload.get("carrier"), 40)
+    # Batch-level carrier is a fallback only. It is recorded per event now,
+    # because one batch can span a Wi-Fi session and a mobile one and a single
+    # value for both would file the Wi-Fi results under an operator.
+    batch_carrier = _text(payload.get("carrier"), 40)
     model = _text(payload.get("model"), 60)
     version_code = max(0, _int(payload.get("versionCode")))
     sdk_int = max(0, _int(payload.get("sdk")))
@@ -365,7 +368,7 @@ async def record_diag(payload: Dict) -> Optional[int]:
             _text(raw.get("transport"), 24),
             _text(raw.get("preset"), 24),
             _text(raw.get("net"), 12),
-            carrier,
+            _text(raw.get("carrier"), 40) or batch_carrier,
             model,
             version_code,
             sdk_int,
