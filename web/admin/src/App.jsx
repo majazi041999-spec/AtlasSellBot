@@ -21,6 +21,7 @@ import UserDetail from "./pages/UserDetail.jsx";
 import Reps from "./pages/Reps.jsx";
 import ClientApp from "./pages/ClientApp.jsx";
 import AppStats from "./pages/AppStats.jsx";
+import AppDiag from "./pages/AppDiag.jsx";
 
 export default function App() {
   const [authed, setAuthed] = useState(null); // null=checking, false=login, true=in
@@ -56,6 +57,7 @@ export default function App() {
   else if (base === "/referrals") page = <Referrals />;
   else if (base === "/clientapp") page = <ClientApp />;
   else if (base === "/appstats") page = <AppStats />;
+  else if (base === "/appdiag") page = <AppDiag />;
   else if (base === "/update") page = <Update />;
   else page = <Dashboard onBadges={onBadges} go={go} />;
 

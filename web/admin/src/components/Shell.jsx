@@ -16,6 +16,7 @@ const NAV = [
   { k: "/referrals", icon: "🎁", label: "رفرال" },
   { k: "/clientapp", icon: "📱", label: "اپ اندروید" },
   { k: "/appstats", icon: "📈", label: "آمار و اعلان اپ" },
+  { k: "/appdiag", icon: "🩺", label: "تشخیص سرورها" },
   { k: "/settings", icon: "⚙️", label: "تنظیمات" },
   { k: "/update", icon: "🔄", label: "به‌روزرسانی" },
 ];

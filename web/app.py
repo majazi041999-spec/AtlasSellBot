@@ -27,7 +27,7 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.types import BufferedInputFile
 from fastapi import FastAPI, File, Form, Request, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 from jose import JWTError, jwt
 
@@ -550,6 +550,99 @@ async def _app_analytics_interval() -> int:
         return max(15, min(1440, int(str(raw).strip() or 30)))
     except ValueError:
         return 30
+
+
+@app.post("/client/v1/diag")
+async def client_app_diag(request: Request):
+    """Receives a batch of connection diagnostics from the app.
+
+    What arrives here has already been stripped on the device: structured events
+    with a fixed field list, and the one free-text field redacted of hosts, IPs,
+    UUIDs and tokens before it ever left the phone. See the client's Diagnostics
+    module for the guarantee, and core/app_analytics.record_diag for what this
+    side refuses to store.
+
+    The point of the whole path is to answer "which server, on which carrier, is
+    failing" without ever learning where a user went.
+    """
+    blocked = await _client_gate(request)
+    if blocked:
+        return blocked
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "bad_request"}, status_code=400)
+    if not isinstance(body, dict):
+        return JSONResponse({"error": "bad_request"}, status_code=400)
+
+    stored = await _app_analytics.record_diag(body)
+    if stored is None:
+        return JSONResponse({"error": "bad_install_id"}, status_code=400)
+    return JSONResponse({"ok": True, "stored": stored}, headers={"Cache-Control": "no-store"})
+
+
+@app.get(f"/{S}/api/client/diag/summary")
+async def admin_client_diag_summary(request: Request):
+    if not _api_guard(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    try:
+        days = int(request.query_params.get("days", "7"))
+    except ValueError:
+        days = 7
+    return JSONResponse(await _app_analytics.diag_summary(days))
+
+
+@app.get(f"/{S}/api/client/diag/export")
+async def admin_client_diag_export(request: Request):
+    """Downloads the raw events as a file, for offline analysis."""
+    if not _api_guard(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    try:
+        days = int(request.query_params.get("days", "7"))
+    except ValueError:
+        days = 7
+
+    rows = await _app_analytics.diag_export(days)
+    fmt = (request.query_params.get("format") or "json").lower()
+
+    if fmt == "csv":
+        import csv
+        import io as _io
+
+        buffer = _io.StringIO()
+        columns = [
+            "at", "kind", "server", "transport", "preset", "net", "carrier",
+            "model", "version_code", "sdk_int", "ok", "ms", "dur",
+            "down_bps", "up_bps", "bytes", "stage", "why", "install_id",
+        ]
+        writer = csv.DictWriter(buffer, fieldnames=columns, extrasaction="ignore")
+        writer.writeheader()
+        for row in rows:
+            writer.writerow(row)
+        return PlainTextResponse(
+            buffer.getvalue(),
+            media_type="text/csv; charset=utf-8",
+            headers={
+                "Content-Disposition": f'attachment; filename="atlas-diag-{days}d.csv"',
+                "Cache-Control": "no-store",
+            },
+        )
+
+    return JSONResponse(
+        {"days": days, "count": len(rows), "events": rows},
+        headers={
+            "Content-Disposition": f'attachment; filename="atlas-diag-{days}d.json"',
+            "Cache-Control": "no-store",
+        },
+    )
+
+
+@app.post(f"/{S}/api/client/diag/purge")
+async def admin_client_diag_purge(request: Request):
+    if not _api_guard(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    await _app_analytics.diag_purge()
+    return JSONResponse({"success": True})
 
 
 @app.get(f"/{S}/api/client/stats")

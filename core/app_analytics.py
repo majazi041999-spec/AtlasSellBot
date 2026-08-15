@@ -129,6 +129,34 @@ CREATE TABLE IF NOT EXISTS app_push_receipts (
 );
 
 CREATE INDEX IF NOT EXISTS idx_app_receipts_push ON app_push_receipts(push_id);
+
+CREATE TABLE IF NOT EXISTS app_diag (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    install_id   TEXT NOT NULL,
+    at           INTEGER NOT NULL,
+    received     INTEGER NOT NULL,
+    kind         TEXT NOT NULL,
+    server       TEXT DEFAULT '',
+    transport    TEXT DEFAULT '',
+    preset       TEXT DEFAULT '',
+    net          TEXT DEFAULT '',
+    carrier      TEXT DEFAULT '',
+    model        TEXT DEFAULT '',
+    version_code INTEGER DEFAULT 0,
+    sdk_int      INTEGER DEFAULT 0,
+    ok           INTEGER DEFAULT -1,
+    ms           INTEGER DEFAULT -1,
+    dur          INTEGER DEFAULT -1,
+    down_bps     INTEGER DEFAULT -1,
+    up_bps       INTEGER DEFAULT -1,
+    bytes        INTEGER DEFAULT -1,
+    stage        TEXT DEFAULT '',
+    why          TEXT DEFAULT ''
+);
+
+CREATE INDEX IF NOT EXISTS idx_app_diag_at     ON app_diag(at);
+CREATE INDEX IF NOT EXISTS idx_app_diag_kind   ON app_diag(kind);
+CREATE INDEX IF NOT EXISTS idx_app_diag_server ON app_diag(server);
 """
 
 
@@ -289,7 +317,203 @@ async def _pending(db, install_id: str, version_code: int, sdk_int: int) -> List
     ]
 
 
-# ── Admin-facing ──────────────────────────────────────────────────────────────
+# -- Diagnostics ---------------------------------------------------------------
+# Retained for a fixed window and then deleted. Nothing here identifies a person
+# -- see the client's Diagnostics module for exactly what is and is not sent --
+# but a dataset that is never pruned is one that eventually gets copied somewhere
+# it should not be, so it expires on its own rather than on a promise.
+DIAG_RETENTION_DAYS = 30
+MAX_EVENTS_PER_BATCH = 200
+
+_DIAG_KINDS = ("connect", "probe", "connected", "failed", "session")
+
+
+async def record_diag(payload: Dict) -> Optional[int]:
+    """Stores one uploaded batch. Returns how many events were kept."""
+    install_id = str(payload.get("installId") or "").strip()
+    if not valid_install_id(install_id):
+        return None
+
+    events = payload.get("events")
+    if not isinstance(events, list) or not events:
+        return 0
+
+    now = int(time.time())
+    carrier = _text(payload.get("carrier"), 40)
+    model = _text(payload.get("model"), 60)
+    version_code = max(0, _int(payload.get("versionCode")))
+    sdk_int = max(0, _int(payload.get("sdk")))
+
+    rows = []
+    for raw in events[:MAX_EVENTS_PER_BATCH]:
+        if not isinstance(raw, dict):
+            continue
+        kind = _text(raw.get("kind"), 16)
+        # An unrecognised kind is dropped rather than stored: the columns only
+        # mean anything for the shapes the client actually sends, and accepting
+        # arbitrary strings would let a crafted upload invent categories that
+        # then appear in every breakdown.
+        if kind not in _DIAG_KINDS:
+            continue
+        ok = raw.get("ok")
+        rows.append((
+            install_id,
+            max(0, _int(raw.get("at"), now)),
+            now,
+            kind,
+            _text(raw.get("server"), 40),
+            _text(raw.get("transport"), 24),
+            _text(raw.get("preset"), 24),
+            _text(raw.get("net"), 12),
+            carrier,
+            model,
+            version_code,
+            sdk_int,
+            1 if ok is True else (0 if ok is False else -1),
+            _int(raw.get("ms"), -1),
+            _int(raw.get("dur"), -1),
+            _int(raw.get("down"), -1),
+            _int(raw.get("up"), -1),
+            _int(raw.get("bytes"), -1),
+            _text(raw.get("stage"), 24),
+            # Already redacted on the device. Truncated again here, on the
+            # principle that the server does not trust the client's limits.
+            _text(raw.get("why"), 140),
+        ))
+
+    if not rows:
+        return 0
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.executemany(
+            "INSERT INTO app_diag "
+            "(install_id, at, received, kind, server, transport, preset, net, "
+            " carrier, model, version_code, sdk_int, ok, ms, dur, "
+            " down_bps, up_bps, bytes, stage, why) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            rows,
+        )
+        await db.execute(
+            "DELETE FROM app_diag WHERE received < ?",
+            (now - DIAG_RETENTION_DAYS * DAY,),
+        )
+        await db.commit()
+
+    return len(rows)
+
+
+async def diag_export(days: int = 7, limit: int = 100000) -> List[Dict]:
+    """Every stored event in a window, newest first -- the downloadable file."""
+    since = int(time.time()) - max(1, min(DIAG_RETENTION_DAYS, days)) * DAY
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute(
+            "SELECT * FROM app_diag WHERE at >= ? ORDER BY at DESC LIMIT ?",
+            (since, max(1, min(500000, limit))),
+        )
+        return [dict(r) for r in await cur.fetchall()]
+
+
+async def diag_summary(days: int = 7) -> Dict:
+    """The rollups worth reading before downloading anything.
+
+    Every figure is an answer to a question the owner actually has: which server
+    fails most, which carrier struggles, whether a preset connects slower, and
+    what the failures say. The raw export covers everything else.
+    """
+    since = int(time.time()) - max(1, min(DIAG_RETENTION_DAYS, days)) * DAY
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+
+        async def rows(sql, args=()):
+            cur = await db.execute(sql, args)
+            return [dict(r) for r in await cur.fetchall()]
+
+        cur = await db.execute(
+            "SELECT COUNT(*) n, COUNT(DISTINCT install_id) d FROM app_diag WHERE at >= ?",
+            (since,),
+        )
+        head = await cur.fetchone()
+
+        servers = await rows(
+            "SELECT server AS key, "
+            " SUM(kind='probe' AND ok=1) AS reachable, "
+            " SUM(kind='probe' AND ok=0) AS unreachable, "
+            " CAST(AVG(CASE WHEN kind='probe' AND ok=1 AND ms>=0 THEN ms END) AS INT) AS avg_ms, "
+            " SUM(kind='connected') AS connects, "
+            " SUM(kind='failed') AS failures "
+            "FROM app_diag WHERE at >= ? AND server != '' "
+            "GROUP BY server ORDER BY (reachable + connects) DESC LIMIT 40",
+            (since,),
+        )
+
+        carriers = await rows(
+            "SELECT carrier AS key, COUNT(DISTINCT install_id) AS installs, "
+            " SUM(kind='probe' AND ok=1) AS reachable, "
+            " SUM(kind='probe' AND ok=0) AS unreachable, "
+            " CAST(AVG(CASE WHEN kind='probe' AND ok=1 AND ms>=0 THEN ms END) AS INT) AS avg_ms "
+            "FROM app_diag WHERE at >= ? AND carrier != '' "
+            "GROUP BY carrier ORDER BY installs DESC LIMIT 20",
+            (since,),
+        )
+
+        transports = await rows(
+            "SELECT transport AS key, "
+            " SUM(kind='probe' AND ok=1) AS reachable, "
+            " SUM(kind='probe' AND ok=0) AS unreachable, "
+            " CAST(AVG(CASE WHEN kind='probe' AND ok=1 AND ms>=0 THEN ms END) AS INT) AS avg_ms "
+            "FROM app_diag WHERE at >= ? AND transport != '' "
+            "GROUP BY transport ORDER BY (reachable + unreachable) DESC LIMIT 20",
+            (since,),
+        )
+
+        presets = await rows(
+            "SELECT preset AS key, "
+            " SUM(kind='connected') AS connects, "
+            " SUM(kind='failed') AS failures, "
+            " CAST(AVG(CASE WHEN kind='connected' AND dur>=0 THEN dur END) AS INT) AS avg_connect_ms, "
+            " CAST(AVG(CASE WHEN kind='session' AND down_bps>=0 THEN down_bps END) AS INT) AS avg_peak_down "
+            "FROM app_diag WHERE at >= ? AND preset != '' "
+            "GROUP BY preset ORDER BY connects DESC LIMIT 20",
+            (since,),
+        )
+
+        reasons = await rows(
+            "SELECT why AS key, COUNT(*) AS count FROM app_diag "
+            "WHERE at >= ? AND why != '' GROUP BY why ORDER BY count DESC LIMIT 30",
+            (since,),
+        )
+
+        networks = await rows(
+            "SELECT net AS key, COUNT(*) AS count, SUM(kind='failed') AS failures "
+            "FROM app_diag WHERE at >= ? AND net != '' "
+            "GROUP BY net ORDER BY count DESC LIMIT 10",
+            (since,),
+        )
+
+    return {
+        "days": days,
+        "events": int(head["n"] or 0),
+        "devices": int(head["d"] or 0),
+        "servers": servers,
+        "carriers": carriers,
+        "transports": transports,
+        "presets": presets,
+        "reasons": reasons,
+        "networks": networks,
+        "retentionDays": DIAG_RETENTION_DAYS,
+    }
+
+
+async def diag_purge() -> None:
+    """Deletes every stored diagnostic event."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("DELETE FROM app_diag")
+        await db.commit()
+
+
+# -- Admin-facing --------------------------------------------------------------
 async def stats() -> Dict:
     """Everything the panel's analytics page shows, in one round trip."""
     now = int(time.time())
