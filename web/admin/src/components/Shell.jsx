@@ -14,6 +14,7 @@ const NAV = [
   { k: "/discounts", icon: "🎟", label: "تخفیف‌ها" },
   { k: "/campaigns", icon: "📣", label: "کمپین‌ها" },
   { k: "/referrals", icon: "🎁", label: "رفرال" },
+  { k: "/clientapp", icon: "📱", label: "اپ اندروید" },
   { k: "/settings", icon: "⚙️", label: "تنظیمات" },
   { k: "/update", icon: "🔄", label: "به‌روزرسانی" },
 ];
@@ -25,7 +26,7 @@ const LEGACY = [
   { path: "/miniapp", icon: "📱", label: "مینی‌اپ" },
 ];
 
-const TITLES = { "/dashboard": "داشبورد", "/users": "کاربران", "/reps": "نمایندگان", "/orders": "سفارش‌ها", "/subs": "نودهای ساب", "/subprofiles": "ساب‌های کاربران", "/servers": "سرورها", "/packages": "پکیج‌ها", "/proxy": "پروکسی تلگرام", "/discounts": "تخفیف‌ها", "/campaigns": "کمپین‌ها", "/referrals": "رفرال", "/settings": "تنظیمات", "/update": "به‌روزرسانی" };
+const TITLES = { "/dashboard": "داشبورد", "/users": "کاربران", "/reps": "نمایندگان", "/orders": "سفارش‌ها", "/subs": "نودهای ساب", "/subprofiles": "ساب‌های کاربران", "/servers": "سرورها", "/packages": "پکیج‌ها", "/proxy": "پروکسی تلگرام", "/discounts": "تخفیف‌ها", "/campaigns": "کمپین‌ها", "/referrals": "رفرال", "/clientapp": "اپ اندروید", "/settings": "تنظیمات", "/update": "به‌روزرسانی" };
 
 export default function Shell({ path, go, badges = {}, children, onLogout }) {
   const [open, setOpen] = useState(false);

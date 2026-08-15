@@ -172,6 +172,7 @@ from core.multi_subscription import (
     sync_subscription_nodes_streamed,
     reconcile_node_config_streamed,
 )
+import core.client_app as _client_app
 from core.database import get_subscription_profile_by_token as _get_sub_profile_by_token
 from core.database import get_subscription_nodes as _get_sub_nodes
 from core.autonode import (
@@ -457,6 +458,65 @@ function copyText(btn, text){{
 function fallback(text,done){{const t=document.createElement('textarea');t.value=text;t.style.position='fixed';t.style.opacity='0';document.body.appendChild(t);t.select();try{{document.execCommand('copy');done();}}catch(e){{}}document.body.removeChild(t);}}
 </script>
 </body></html>"""
+
+
+# ═════════════════ Android client public API (/client/v1) ═════════════════
+# Deliberately NOT under /{S}/ — see core/client_app.py for why that separation
+# is load-bearing. Nothing here reads or returns user data.
+
+def _client_headers(seconds: int) -> dict:
+    return {
+        "Cache-Control": f"public, max-age={seconds}",
+        # These are consumed by a native app, never a browser, so no site has
+        # any business reading them cross-origin.
+        "X-Content-Type-Options": "nosniff",
+    }
+
+
+async def _client_gate(request: Request):
+    """Shared entry checks. Returns a JSONResponse to short-circuit, else None."""
+    if _client_app.rate_limited(_client_app.client_ip(request)):
+        return JSONResponse({"error": "rate_limited"}, status_code=429,
+                            headers={"Retry-After": "60"})
+    if not await _client_app.api_key_ok(request):
+        return JSONResponse({"error": "forbidden"}, status_code=403)
+    return None
+
+
+@app.get("/client/v1/config")
+async def client_app_config(request: Request):
+    """Launch payload for the Android app: brand, contacts, promo, version."""
+    blocked = await _client_gate(request)
+    if blocked:
+        return blocked
+    return JSONResponse(await _client_app.config_payload(), headers=_client_headers(300))
+
+
+@app.get("/client/v1/version")
+async def client_app_version(request: Request):
+    """Update manifest on its own, for clients that only poll for upgrades."""
+    blocked = await _client_gate(request)
+    if blocked:
+        return blocked
+    return JSONResponse(await _client_app.version_payload(), headers=_client_headers(900))
+
+
+@app.get(f"/{S}/api/client/config")
+async def admin_client_config(request: Request):
+    if not _api_guard(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    return JSONResponse(await _client_app.admin_payload())
+
+
+@app.post(f"/{S}/api/client/config")
+async def admin_client_config_save(request: Request):
+    if not _api_guard(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    try:
+        body = await request.json()
+    except Exception:
+        body = dict(await request.form())
+    return JSONResponse({"success": True, "config": await _client_app.save_admin(body)})
 
 
 @app.get("/sub/{token}")
