@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { api, fmtFa } from "../api.js";
-import { Card, Loading, Stat, Empty, toast } from "../components/ui.jsx";
+import { Card, Loading, Stat, Empty, Modal, toast } from "../components/ui.jsx";
 
 // ui.jsx's timeAgo parses "YYYY-MM-DD HH:MM:SS" strings; these columns are
 // epoch seconds, which it would fail to parse and echo back as a raw number.
@@ -251,6 +251,98 @@ function PushList({ rows, reload }) {
   );
 }
 
+
+/**
+ * Irreversible wipe of everything this page shows.
+ *
+ * Behind a typed confirmation rather than a plain OK/Cancel. This is the one
+ * control here that destroys data with no undo, and it sits on a page the owner
+ * visits routinely — a single mis-tap next to "refresh" should not be able to
+ * erase the install history.
+ *
+ * The dialog states what actually happens afterwards rather than just asking
+ * "are you sure". Deleting these rows does not reset anybody's phone: devices
+ * keep the id they generated for themselves and reappear as they check in, but
+ * dated from that moment, so the real install dates are gone permanently. That
+ * is the part someone would regret not being told.
+ */
+function ResetCard({ onDone }) {
+  const [open, setOpen] = useState(false);
+  const [typed, setTyped] = useState("");
+  const [busy, setBusy] = useState(false);
+  const CONFIRM = "RESET";
+
+  const run = async () => {
+    setBusy(true);
+    try {
+      const r = await api.post("/api/client/reset");
+      const n = r.removed || {};
+      toast(
+        `پاک شد — ${fmtFa(n.installs || 0)} نصب، ${fmtFa(n.messages || 0)} اعلان`,
+      );
+      setOpen(false);
+      setTyped("");
+      onDone();
+    } catch (e) {
+      toast(e.message || "پاک نشد", "error");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <>
+      <Card
+        title="⚠️ بازنشانی کامل"
+        sub="همهٔ آمار نصب و همهٔ اعلان‌ها را پاک می‌کند و این بخش را به حالت روز اول برمی‌گرداند."
+      >
+        <div style={{ opacity: 0.8, fontSize: 13, lineHeight: 2, marginBottom: 12 }}>
+          پاک می‌شود: تعداد نصب‌ها، فعال و خاموش، نمودار روزانه، تفکیک نسخه و مدل و
+          اندروید، و همهٔ اعلان‌های ساخته‌شده به‌همراه آمار تحویل و بازشدنشان.
+          <br />
+          <b style={{ color: "#ffb020" }}>برگشت‌پذیر نیست.</b>{" "}
+          گوشی کاربران پاک نمی‌شود؛ هر دستگاه با اولین تماس بعدی دوباره شمرده می‌شود،
+          اما تاریخ نصب واقعی‌اش از دست می‌رود و از همان لحظه «نصب جدید» حساب می‌شود.
+        </div>
+        <button className="btn" style={{ color: "#ff5c6e", borderColor: "#ff5c6e55" }}
+                onClick={() => setOpen(true)}>
+          بازنشانی آمار و اعلان‌ها
+        </button>
+      </Card>
+
+      {open && (
+        <Modal title="بازنشانی کامل" onClose={() => { setOpen(false); setTyped(""); }}>
+          <div style={{ fontSize: 13, lineHeight: 2, marginBottom: 14 }}>
+            این کار همهٔ آمار نصب و همهٔ اعلان‌ها را برای همیشه پاک می‌کند.
+            برای تأیید، عبارت <b dir="ltr">{CONFIRM}</b> را بنویس.
+          </div>
+          <input
+            className="inp"
+            dir="ltr"
+            value={typed}
+            onChange={(e) => setTyped(e.target.value)}
+            placeholder={CONFIRM}
+            autoFocus
+          />
+          <div style={{ display: "flex", gap: 10, marginTop: 14 }}>
+            <button
+              className="btn primary"
+              disabled={busy || typed.trim().toUpperCase() !== CONFIRM}
+              onClick={run}
+            >
+              {busy ? "در حال پاک کردن…" : "پاک کن"}
+            </button>
+            <button className="btn" disabled={busy}
+                    onClick={() => { setOpen(false); setTyped(""); }}>
+              انصراف
+            </button>
+          </div>
+        </Modal>
+      )}
+    </>
+  );
+}
+
 export default function AppStats() {
   const [s, setS] = useState(null);
   const [push, setPush] = useState(null);
@@ -310,6 +402,8 @@ export default function AppStats() {
       <div>
         <button className="btn" onClick={load}>بازخوانی</button>
       </div>
+
+      <ResetCard onDone={load} />
     </div>
   );
 }

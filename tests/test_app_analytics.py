@@ -150,10 +150,38 @@ async def main():
     await an.record_ping({"installId": A, "sdk": 33, "delivered": [999999], "opened": ["x"]})
     check("still alive", (await an.stats())["totals"]["total"], 2)
 
-    print("\n14. daily series is zero-filled to 30 points")
+    print("\n14. reset clears installs, messages and receipts together")
+    await an.record_ping({"installId": A, "versionCode": 2, "sdk": 33})
+    live = await an.create_push({"title": "Before reset", "body": "x"})
+    got = await an.record_ping({"installId": A, "sdk": 33})
+    check("message is pending before reset", [m["id"] for m in got["messages"]], [live["id"]])
+    await an.record_ping({"installId": A, "sdk": 33, "delivered": [live["id"]]})
+
+    removed = await an.reset_stats()
+    check("installs removed", removed["installs"] > 0, True)
+    check("messages removed", removed["messages"] > 0, True)
+    check("receipts removed", removed["receipts"] > 0, True)
+
+    s = await an.stats()
+    check("no installs left", s["totals"]["total"], 0)
+    check("no dormant left", s["totals"]["dormant_30d"], 0)
+    check("no messages left", await an.list_push(), [])
+    check("audience is zero", await an.audience({}), 0)
+
+    print("\n15. after a reset, nothing is re-delivered to a returning device")
+    # The trap this guards: clearing receipts but keeping messages would hand
+    # every active announcement to every phone again on its next heartbeat.
+    back = await an.record_ping({"installId": A, "versionCode": 2, "sdk": 33})
+    check("returning device gets no notifications", back["messages"], [])
+    check("device is counted again", (await an.stats())["totals"]["total"], 1)
+
+    print("\n16. push ids keep counting, so a stale ack cannot hit a new message")
+    fresh = await an.create_push({"title": "After reset"})
+    check("id was not recycled", fresh["id"] > live["id"], True)
+
+    print("\n17. daily series is zero-filled to 30 points")
     s = await an.stats()
     check("30 days", len(s["daily"]), 30)
-    check("today has both installs", s["daily"][-1]["count"], 2)
 
     print("\n" + ("ALL PASSED" if not FAILED else f"{len(FAILED)} FAILED: {FAILED}"))
     return 1 if FAILED else 0

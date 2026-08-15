@@ -652,6 +652,15 @@ async def admin_client_stats(request: Request):
     return JSONResponse(await _app_analytics.stats())
 
 
+@app.post(f"/{S}/api/client/reset")
+async def admin_client_reset(request: Request):
+    """Clears install analytics and all push messages. Not undoable."""
+    if not _api_guard(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    removed = await _app_analytics.reset_stats()
+    return JSONResponse({"success": True, "removed": removed})
+
+
 @app.get(f"/{S}/api/client/push")
 async def admin_client_push_list(request: Request):
     if not _api_guard(request):

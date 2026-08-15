@@ -608,6 +608,47 @@ async def stats() -> Dict:
     }
 
 
+async def reset_stats() -> Dict:
+    """Wipes install analytics and every push message. Irreversible.
+
+    ## Why all three tables go together
+
+    Delivery is remembered per (message, install) in app_push_receipts, and that
+    record is the only thing stopping a message being handed to the same phone
+    again. Clearing receipts while leaving messages live would re-deliver every
+    active announcement to every device on their next heartbeat — a silent mass
+    re-notification, which for a VPN is how an app gets uninstalled. So messages
+    and receipts are cleared as one operation, never separately.
+
+    ## What this does not do
+
+    It does not reset anybody's phone. Each install keeps the random id it
+    generated for itself, so devices reappear here as they check in — but with
+    first_seen set to whenever that happens, so their real install dates are
+    gone for good and the daily chart restarts from today. The panel says so
+    before asking for confirmation.
+
+    Push ids deliberately keep counting rather than restarting at 1. A phone
+    that was shown message 3 and has not yet acknowledged it would otherwise
+    acknowledge a *different* new message 3, marking it delivered to someone who
+    never saw it.
+    """
+    tables = ("app_installs", "app_push", "app_push_receipts")
+    removed = {}
+    async with aiosqlite.connect(DB_PATH) as db:
+        for table in tables:
+            cur = await db.execute(f"SELECT COUNT(*) FROM {table}")
+            removed[table] = int((await cur.fetchone())[0] or 0)
+        for table in tables:
+            await db.execute(f"DELETE FROM {table}")
+        await db.commit()
+    return {
+        "installs": removed["app_installs"],
+        "messages": removed["app_push"],
+        "receipts": removed["app_push_receipts"],
+    }
+
+
 async def list_push() -> List[Dict]:
     """Every message the owner has composed, newest first, with its counts."""
     async with aiosqlite.connect(DB_PATH) as db:
