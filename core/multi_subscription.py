@@ -8,7 +8,7 @@ import secrets
 import time
 import uuid
 from datetime import datetime
-from typing import Dict, List
+from typing import Dict, List, Optional
 from urllib.parse import quote, urlsplit, urlunsplit
 
 from core.autonode import expand_node_configs
@@ -1353,7 +1353,85 @@ async def repair_subscription_profile_expiry(profile: Dict) -> Dict:
     return fixed
 
 
-async def sync_profile_usage(profile: Dict) -> Dict:
+class PanelSessions:
+    """Per-server panel state shared across one sweep: a logged-in client, and
+    a single bulk traffic snapshot (see `client_traffic`).
+
+    XUIClient authenticates per instance, so building one per node turned a
+    sweep over N subscriptions into N×nodes logins against the panels — each a
+    TLS handshake plus a bcrypt password check, which is precisely the work
+    3x-ui is slowest at. At ~200 subscriptions × ~8 nodes that is 1600 logins
+    every few minutes, and it is what drove panels into 15-second timeouts:
+    saturated panel → failed link check → repair path re-adds the client →
+    xray reloads → every live connection on that server drops.
+
+    Reuse is safe: `XUIClient._req` clears the cookie and re-authenticates by
+    itself on a 401/403, so a session that goes stale mid-sweep recovers
+    without the caller knowing. Hand the pool to every call in one sweep and
+    `close()` it when the sweep ends.
+    """
+
+    def __init__(self):
+        self._clients: Dict[str, XUIClient] = {}
+        self._traffic: Dict[str, Optional[Dict[str, Dict]]] = {}
+
+    @staticmethod
+    def _key(node: Dict) -> str:
+        return str(node.get("server_id") or node.get("server_url") or "")
+
+    def get(self, node: Dict) -> XUIClient:
+        key = self._key(node)
+        cli = self._clients.get(key)
+        if cli is None:
+            cli = XUIClient(node["server_url"], node["srv_user"], node["srv_pass"],
+                            node.get("sub_path") or "", node.get("srv_api_token", ""))
+            self._clients[key] = cli
+        return cli
+
+    async def client_traffic(self, node: Dict) -> Optional[Dict]:
+        """This node's traffic, served from one bulk snapshot per panel.
+
+        The panel hands us every client's counters in a single response, so the
+        first node we look at on a server pays for all of them and the rest are
+        dict lookups. A sweep that used to be one request per node becomes one
+        request per server. It is also more consistent: today the first and last
+        subscription in a sweep are measured minutes apart.
+
+        Panels that don't return the list fall back to the per-client query, so
+        an older or unusual panel still works — just without the saving.
+        """
+        key = self._key(node)
+        if key not in self._traffic:
+            try:
+                self._traffic[key] = await self.get(node).get_all_client_traffics()
+            except Exception as e:
+                logger.warning("bulk traffic snapshot failed for server %s: %s",
+                               node.get("server_id"), e)
+                self._traffic[key] = None
+        snapshot = self._traffic.get(key)
+        if snapshot is None:
+            return await self.get(node).get_client_traffic(node["email"])
+        # A client missing from the snapshot has no counters to read; asking
+        # per-email would only repeat the same answer.
+        return snapshot.get(str(node.get("email") or ""))
+
+    async def close(self) -> None:
+        for cli in self._clients.values():
+            try:
+                await cli.close()
+            except Exception:
+                pass
+        self._clients.clear()
+        self._traffic.clear()
+
+
+async def sync_profile_usage(profile: Dict, sessions: Optional[PanelSessions] = None) -> Dict:
+    """Refresh one subscription's usage from the panels.
+
+    Pass `sessions` when syncing many profiles in a row — see PanelSessions for
+    why one login per node is the difference between a healthy panel and a
+    saturated one.
+    """
     profile = await repair_subscription_profile_expiry(profile)
     if not int(profile.get("is_active") or 0):
         await set_nodes_enabled(profile["id"], False)
@@ -1369,12 +1447,15 @@ async def sync_profile_usage(profile: Dict) -> Dict:
         return {"used": int(profile.get("used_bytes") or 0), "disabled": True, "expired": True}
 
     for node in nodes:
-        cli = XUIClient(node["server_url"], node["srv_user"], node["srv_pass"], node.get("sub_path") or "", node.get("srv_api_token", ""))
+        cli = None if sessions is not None else XUIClient(
+            node["server_url"], node["srv_user"], node["srv_pass"],
+            node.get("sub_path") or "", node.get("srv_api_token", ""))
         # Traffic this node spent on servers it has since been moved off. The
         # remote client only knows what it has used since it was created there.
         carried = int(node.get("carried_bytes") or 0)
         try:
-            traffic = await cli.get_client_traffic(node["email"])
+            traffic = (await sessions.client_traffic(node) if sessions is not None
+                       else await cli.get_client_traffic(node["email"]))
             if traffic:
                 used = int((traffic or {}).get("down") or 0) + int((traffic or {}).get("up") or 0)
                 await update_subscription_node(node["id"], last_used_bytes=used)
@@ -1384,7 +1465,8 @@ async def sync_profile_usage(profile: Dict) -> Dict:
         except Exception:
             used_total += int(node.get("last_used_bytes") or 0) + carried
         finally:
-            await cli.close()
+            if sessions is None:
+                await cli.close()
 
     should_disable = total_limit > 0 and used_total >= total_limit
     await update_subscription_profile(profile["id"], used_bytes=used_total, is_active=0 if should_disable else 1)
@@ -1750,36 +1832,44 @@ async def sync_active_profiles(limit: int = 100, usage_only: bool = False) -> in
         _usage_pass_offset = offset + len(profiles) if len(profiles) == limit else 0
 
     checked = 0
-    for profile in profiles:
-        result = await sync_profile_usage(profile)
-        if not usage_only and not result.get("disabled"):
-            fresh = await get_subscription_profile_by_token(profile["token"]) or profile
-            await ensure_subscription_profile_nodes(fresh)
-        checked += 1
+    sessions = PanelSessions()
+    try:
+        for profile in profiles:
+            result = await sync_profile_usage(profile, sessions=sessions)
+            if not usage_only and not result.get("disabled"):
+                fresh = await get_subscription_profile_by_token(profile["token"]) or profile
+                await ensure_subscription_profile_nodes(fresh)
+            checked += 1
+    finally:
+        await sessions.close()
     return checked
 
 
 async def sync_subscription_nodes_for_all(limit: int = 1000, force_refresh: bool = False) -> Dict:
     checked = created = refreshed = verified = moved = removed = failed = skipped = disabled = 0
     errors: list[str] = []
-    for profile in await get_active_subscription_profiles(limit):
-        usage = await sync_profile_usage(profile)
-        checked += 1
-        if usage.get("disabled"):
-            disabled += 1
-            continue
-        fresh = await get_subscription_profile_by_token(profile["token"]) or profile
-        result = await ensure_subscription_profile_nodes(fresh, force_refresh=force_refresh)
-        created += int(result.get("created") or 0)
-        refreshed += int(result.get("refreshed") or 0)
-        verified += int(result.get("verified") or 0)
-        moved += int(result.get("moved") or 0)
-        removed += int(result.get("removed") or 0)
-        failed += int(result.get("failed") or 0)
-        skipped += int(result.get("skipped") or 0)
-        for err in result.get("errors") or []:
-            if len(errors) < 20:
-                errors.append(str(err))
+    sessions = PanelSessions()
+    try:
+        for profile in await get_active_subscription_profiles(limit):
+            usage = await sync_profile_usage(profile, sessions=sessions)
+            checked += 1
+            if usage.get("disabled"):
+                disabled += 1
+                continue
+            fresh = await get_subscription_profile_by_token(profile["token"]) or profile
+            result = await ensure_subscription_profile_nodes(fresh, force_refresh=force_refresh)
+            created += int(result.get("created") or 0)
+            refreshed += int(result.get("refreshed") or 0)
+            verified += int(result.get("verified") or 0)
+            moved += int(result.get("moved") or 0)
+            removed += int(result.get("removed") or 0)
+            failed += int(result.get("failed") or 0)
+            skipped += int(result.get("skipped") or 0)
+            for err in result.get("errors") or []:
+                if len(errors) < 20:
+                    errors.append(str(err))
+    finally:
+        await sessions.close()
     return {
         "checked": checked,
         "created": created,

@@ -222,6 +222,30 @@ class XUIClient:
         r = await self._req("GET", "/panel/api/inbounds/list")
         return r.get("obj", []) if r and r.get("success") else []
 
+    async def get_all_client_traffics(self) -> Optional[Dict[str, Dict]]:
+        """Every client's traffic on this panel, keyed by email, in ONE request.
+
+        The inbound list already carries a `clientStats` entry per client (email,
+        up, down, expiryTime, enable), so a sweep that needs usage for hundreds
+        of clients does not have to ask per client: one call here replaces one
+        `get_client_traffic` per node. That is the difference between a handful
+        of requests per sweep and thousands, and thousands is what pushes a panel
+        into timing out.
+
+        Returns None if the panel gave us nothing, so the caller can tell that
+        apart from "this panel genuinely has no clients" and fall back.
+        """
+        inbounds = await self.get_inbounds()
+        if not inbounds:
+            return None
+        out: Dict[str, Dict] = {}
+        for inbound in inbounds:
+            for stat in inbound.get("clientStats") or []:
+                email = str(stat.get("email") or "").strip()
+                if email:
+                    out[email] = stat
+        return out
+
     async def download_db(self) -> Optional[bytes]:
         """Best-effort download of the panel's raw x-ui.db (the panel backup file).
 
