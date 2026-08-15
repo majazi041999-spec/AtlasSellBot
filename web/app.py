@@ -173,6 +173,7 @@ from core.multi_subscription import (
     reconcile_node_config_streamed,
 )
 import core.client_app as _client_app
+import core.app_analytics as _app_analytics
 from core.database import get_subscription_profile_by_token as _get_sub_profile_by_token
 from core.database import get_subscription_nodes as _get_sub_nodes
 from core.autonode import (
@@ -499,6 +500,116 @@ async def client_app_version(request: Request):
     if blocked:
         return blocked
     return JSONResponse(await _client_app.version_payload(), headers=_client_headers(900))
+
+
+@app.post("/client/v1/ping")
+async def client_app_ping(request: Request):
+    """Heartbeat up, push messages down — one round trip.
+
+    Deliberately a single endpoint rather than separate telemetry and inbox
+    calls. Every extra request is a radio wake-up on a phone this app is trying
+    not to drain, and the two have identical timing needs anyway.
+
+    This is the only ``/client/v1`` route that writes. See
+    ``core/app_analytics.py`` for what an anonymous caller can and cannot do to
+    the database through it.
+    """
+    blocked = await _client_gate(request)
+    if blocked:
+        return blocked
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "bad_request"}, status_code=400)
+    if not isinstance(body, dict):
+        return JSONResponse({"error": "bad_request"}, status_code=400)
+
+    result = await _app_analytics.record_ping(body)
+    if result is None:
+        return JSONResponse({"error": "bad_install_id"}, status_code=400)
+
+    return JSONResponse(
+        {
+            "ok": True,
+            # How long the client should wait before the next heartbeat. Served
+            # rather than hard-coded so the owner can back it off across the
+            # whole fleet without shipping an APK.
+            "intervalMinutes": await _app_analytics_interval(),
+            "messages": result["messages"],
+        },
+        # Never cached: the response is per-install and carries pending
+        # messages, so an intermediate cache would deliver one install's inbox
+        # to another and then stop delivering anything at all.
+        headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
+    )
+
+
+async def _app_analytics_interval() -> int:
+    raw = await get_setting("clientapp_ping_minutes", "30")
+    try:
+        return max(15, min(1440, int(str(raw).strip() or 30)))
+    except ValueError:
+        return 30
+
+
+@app.get(f"/{S}/api/client/stats")
+async def admin_client_stats(request: Request):
+    if not _api_guard(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    return JSONResponse(await _app_analytics.stats())
+
+
+@app.get(f"/{S}/api/client/push")
+async def admin_client_push_list(request: Request):
+    if not _api_guard(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    return JSONResponse({"messages": await _app_analytics.list_push()})
+
+
+@app.post(f"/{S}/api/client/push")
+async def admin_client_push_create(request: Request):
+    if not _api_guard(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    try:
+        body = await request.json()
+    except Exception:
+        body = dict(await request.form())
+    created = await _app_analytics.create_push(body)
+    if created is None:
+        return JSONResponse({"error": "title_required"}, status_code=400)
+    return JSONResponse({"success": True, **created})
+
+
+@app.post(f"/{S}/api/client/push/audience")
+async def admin_client_push_audience(request: Request):
+    """Reach preview for the compose form, before anything is stored."""
+    if not _api_guard(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    return JSONResponse({"count": await _app_analytics.audience(body or {})})
+
+
+@app.post(f"/{S}/api/client/push/{{push_id:int}}/active")
+async def admin_client_push_active(push_id: int, request: Request):
+    if not _api_guard(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    await _app_analytics.set_push_active(push_id, bool(body.get("active")))
+    return JSONResponse({"success": True})
+
+
+@app.post(f"/{S}/api/client/push/{{push_id:int}}/delete")
+async def admin_client_push_delete(push_id: int, request: Request):
+    if not _api_guard(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    await _app_analytics.delete_push(push_id)
+    return JSONResponse({"success": True})
 
 
 @app.get(f"/{S}/api/client/config")
