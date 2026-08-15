@@ -18,7 +18,10 @@ Three things keep the balancing from making matters worse:
 
   1. Unknown ≠ empty. A panel we could not reach reports *no* count, never zero —
      otherwise a server that just went down would look like the emptiest one and
-     attract every user.
+     attract every user. Nor is unknown a reason to move: not knowing a server's
+     load says nothing about whether it is overloaded, and the probe failing is
+     not the same as the server failing. Unknown means "take on nobody new",
+     never "evacuate".
   2. Hysteresis. A subscription only moves when the gap is both relatively large
      (`margin`) and absolutely meaningful (`min_delta`), and never twice inside
      the cooldown window. Without this, two near-equal servers trade users
@@ -49,13 +52,21 @@ logger = logging.getLogger(__name__)
 
 
 DEFAULTS = {
-    "autonode_enabled": "1",
+    # Off unless the admin turns it on. Balancing relocates PAYING customers, and
+    # each relocation costs them a dead cached config until their app refreshes,
+    # so it is not something an install should start doing on its own.
+    "autonode_enabled": "0",
     "autonode_poll_seconds": "120",       # how often to re-read every panel's onlines
     "autonode_stale_seconds": "900",      # a count older than this is no longer trusted
     "autonode_margin": "0.25",            # move only if current load exceeds best by 25%
     "autonode_min_delta": "3",            # …and by at least 3 online users
     "autonode_cooldown_minutes": "60",    # never move the same subscription again within an hour
-    "autonode_max_moves": "25",           # per rebalance pass
+    # Per rebalance pass. Kept small on purpose: a move writes a client to the
+    # destination panel and deletes one from the source, and 3x-ui reloads xray
+    # on each of those — which briefly drops EVERY live connection on that
+    # server, not just the customer being moved. A big batch turns a load tweak
+    # into a fleet-wide outage.
+    "autonode_max_moves": "5",
     "autonode_poll_concurrency": "6",
 }
 
@@ -298,19 +309,36 @@ async def resolve_auto_target(auto_node: Dict, existing: Optional[Dict] = None,
     if cooldown_ms > 0 and moved_at > 0 and (int(time.time() * 1000) - moved_at) < cooldown_ms:
         return _merge_target(auto_node, current)
 
+    # An unknown load is not evidence of overload, and moving on a guess is not
+    # free: it deletes the client off the old panel, so every copy of the
+    # subscription already cached in a customer's app keeps pointing at a server
+    # that no longer knows them, and that entry simply stops responding until
+    # they refresh it by hand.
+    #
+    # Both sides therefore have to be visible before we relocate anyone. A panel
+    # that does not answer the onlines query is not a server that is down — the
+    # endpoint moved between 3x-ui versions and the probe is best-effort — so
+    # treating "unknown" as "move them off" drains whole panels of customers on
+    # no evidence at all, and `score()`'s +1000 makes it worse by ranking every
+    # unknown server last, which points all of those moves at the same handful of
+    # destinations. Unknown servers are already excluded from attracting NEW
+    # placements by that same ranking; that is the whole of the safe response. A
+    # genuinely dead server is taken out of `candidates` (deactivated in the
+    # panel, or out of capacity), and that path already relocates its customers
+    # above, where `current` comes back None.
+    if not view.known(current["server_id"]) or not view.known(best["server_id"]):
+        return _merge_target(auto_node, current)
+
     # Only act on an imbalance that is both proportionally and absolutely real.
-    # If the current server's load is unknown we do move — an unreachable panel
-    # is the one case where staying put is the worse option.
     current_score = view.score(current["server_id"])
     best_score = view.score(best["server_id"])
-    if view.known(current["server_id"]):
-        margin = await _setting_float("autonode_margin", 0)
-        min_delta = await _setting_float("autonode_min_delta", 0)
-        weight = view.weight.get(int(current["server_id"]), 1.0)
-        if current_score - best_score < (min_delta / weight if weight else min_delta):
-            return _merge_target(auto_node, current)
-        if current_score < best_score * (1 + margin) + 1e-9:
-            return _merge_target(auto_node, current)
+    margin = await _setting_float("autonode_margin", 0)
+    min_delta = await _setting_float("autonode_min_delta", 0)
+    weight = view.weight.get(int(current["server_id"]), 1.0)
+    if current_score - best_score < (min_delta / weight if weight else min_delta):
+        return _merge_target(auto_node, current)
+    if current_score < best_score * (1 + margin) + 1e-9:
+        return _merge_target(auto_node, current)
 
     view.reserve(best["server_id"])
     return _merge_target(auto_node, best)

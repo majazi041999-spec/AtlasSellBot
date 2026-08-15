@@ -3271,7 +3271,14 @@ async def get_subscription_node(node_id: int) -> Optional[Dict]:
             return dict(r) if r else None
 
 
-async def get_active_subscription_profiles(limit: int = 200) -> List[Dict]:
+async def get_active_subscription_profiles(limit: int = 200, offset: int = 0) -> List[Dict]:
+    """A page of profiles that still need reconciling.
+
+    `offset` lets a caller walk the whole set across successive passes. Without
+    it a capped pass re-reads the SAME lowest-id profiles every time, so those
+    few get polled constantly while everyone past the cap waits for the slow
+    full sweep — and each poll costs one login + query per node.
+    """
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         async with db.execute(
@@ -3282,8 +3289,8 @@ async def get_active_subscription_profiles(limit: int = 200) -> List[Dict]:
                       WHERE n.profile_id=sp.id AND n.is_active=1
                   )
                ORDER BY sp.is_active DESC, sp.id
-               LIMIT ?""",
-            (max(1, int(limit or 200)),),
+               LIMIT ? OFFSET ?""",
+            (max(1, int(limit or 200)), max(0, int(offset or 0))),
         ) as c:
             return [dict(r) for r in await c.fetchall()]
 

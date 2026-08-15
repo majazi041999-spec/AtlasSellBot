@@ -880,15 +880,58 @@ async def create_profile_from_config(user: Dict, cfg: Dict) -> Dict:
 # when a client polls the subscription URL frequently.
 _inflight_render_sync: set[str] = set()
 
+# When each token last ran the routine freshness sync.
+#
+# The in-flight set above only stops CONCURRENT duplicates: as soon as one pass
+# finishes, the next poll starts another. VPN clients re-fetch the subscription
+# on a timer (and many do it on every connect), and one pass opens a FRESH
+# session to every one of the customer's nodes — XUIClient logs in per instance,
+# so it costs one login + one query per node, per poll, per customer. Multiplied
+# across the customer base that is enough to saturate the 3x-ui panels; a
+# saturated panel then fails the link check, which sends us down the repair path
+# that re-adds the client and makes xray reload — dropping every live connection
+# on that server. Polling more often must not mean syncing more often.
+_last_render_sync: dict[str, float] = {}
+_RENDER_SYNC_DEFAULT_SECONDS = 900
 
-async def _background_render_sync(token: str) -> None:
+
+async def _render_sync_min_interval() -> float:
+    try:
+        return max(0.0, float(await get_setting("sub_render_sync_min_seconds",
+                                                str(_RENDER_SYNC_DEFAULT_SECONDS))))
+    except (TypeError, ValueError):
+        return float(_RENDER_SYNC_DEFAULT_SECONDS)
+
+
+def _prune_render_sync_marks(now: float, interval: float) -> None:
+    if len(_last_render_sync) <= 5000:
+        return
+    cutoff = now - max(interval, 60.0) * 4
+    for tok in [t for t, ts in _last_render_sync.items() if ts < cutoff]:
+        _last_render_sync.pop(tok, None)
+
+
+async def _background_render_sync(token: str, force: bool = False) -> None:
     """Heavy reconciliation (usage sync + node ensure) done OFF the request path.
 
     Rendering the subscription must stay fast; this keeps usage/links fresh in
-    the background so the next fetch already has up-to-date data."""
+    the background so the next fetch already has up-to-date data.
+
+    `force=True` is for the one-shot transitions that must land immediately —
+    arming a first-use timer, disabling a sub that just ran out. The routine
+    freshness pass is rate-limited instead; quota and expiry are enforced
+    independently by the worker, so nothing depends on it running per fetch.
+    """
     if token in _inflight_render_sync:
         return
+    now = time.monotonic()
+    interval = await _render_sync_min_interval()
+    if not force and interval > 0:
+        last = _last_render_sync.get(token)
+        if last is not None and (now - last) < interval:
+            return
     _inflight_render_sync.add(token)
+    _last_render_sync[token] = now
     try:
         profile = await get_subscription_profile_by_token(token)
         if not profile:
@@ -901,6 +944,7 @@ async def _background_render_sync(token: str) -> None:
         logger.warning("background subscription sync failed: %s", e)
     finally:
         _inflight_render_sync.discard(token)
+        _prune_render_sync_marks(now, interval)
 
 
 async def render_subscription(token: str) -> tuple[str, Dict[str, int]] | None:
@@ -927,7 +971,7 @@ async def render_subscription(token: str) -> tuple[str, Dict[str, int]] | None:
         )
         profile["first_use_at"] = now_ms
         profile["expire_timestamp"] = new_expire
-        asyncio.create_task(_background_render_sync(token))
+        asyncio.create_task(_background_render_sync(token, force=True))
 
     expire_ms = int(profile.get("expire_timestamp") or 0)
     used = int(profile.get("used_bytes") or 0)
@@ -941,7 +985,7 @@ async def render_subscription(token: str) -> tuple[str, Dict[str, int]] | None:
         # single clear "expired, renew from the bot" notice that replaces the
         # whole list. Reconcile (disable remote nodes) in the background.
         if db_expired and int(profile.get("is_active") or 0):
-            asyncio.create_task(_background_render_sync(token))
+            asyncio.create_task(_background_render_sync(token, force=True))
         notice = _dedupe_complete_links(await _subscription_expired_notice_links(profile))
         if not notice:
             return None
@@ -1673,6 +1717,11 @@ async def delete_subscription_profile_remote(profile_id: int) -> Dict:
     return {"ok": True, "deleted": deleted, "failed": failed}
 
 
+# Where the frequent usage pass stopped last time, so it resumes instead of
+# restarting. See the rotation note in sync_active_profiles().
+_usage_pass_offset = 0
+
+
 async def sync_active_profiles(limit: int = 100, usage_only: bool = False) -> int:
     """Reconcile active profiles.
 
@@ -1680,9 +1729,28 @@ async def sync_active_profiles(limit: int = 100, usage_only: bool = False) -> in
     quota/expiry disable finished subs. The full pass also reconciles nodes
     (create missing / remove orphaned / repair links) and is driven on a slower,
     panel-configurable cadence by the worker.
+
+    The frequent pass ROTATES through the profiles. It is capped well below the
+    number of subscriptions we sell, and the query is ordered, so reading from
+    the top every time would re-poll the same lowest-id customers every few
+    minutes — pointless panel load for them — while everyone past the cap only
+    ever got the hourly sweep. Resuming from the last offset spends the same
+    budget covering the whole base.
     """
+    global _usage_pass_offset
+    offset = _usage_pass_offset if usage_only else 0
+    profiles = await get_active_subscription_profiles(limit, offset=offset)
+    if usage_only:
+        if not profiles and offset:
+            # Ran off the end (or the set shrank): restart from the top now
+            # rather than burning this pass doing nothing.
+            offset = 0
+            profiles = await get_active_subscription_profiles(limit, offset=0)
+        # A short page means we reached the end; wrap for the next pass.
+        _usage_pass_offset = offset + len(profiles) if len(profiles) == limit else 0
+
     checked = 0
-    for profile in await get_active_subscription_profiles(limit):
+    for profile in profiles:
         result = await sync_profile_usage(profile)
         if not usage_only and not result.get("disabled"):
             fresh = await get_subscription_profile_by_token(profile["token"]) or profile
