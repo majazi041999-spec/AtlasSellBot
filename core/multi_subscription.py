@@ -1826,6 +1826,179 @@ async def delete_subscription_profile_remote(profile_id: int) -> Dict:
     return {"ok": True, "deleted": deleted, "failed": failed}
 
 
+async def rotate_subscription_link(profile_id: int) -> Dict:
+    """Revoke a subscription's current link and hand back a fresh one.
+
+    Use when a customer shared their link and now wants it cut off. A shared
+    `/sub` link makes the client cache the underlying per-node vless configs, so
+    simply rotating the token is not enough — whoever imported it keeps
+    connecting by UUID. So this rotates BOTH:
+      * the profile token (the old `/sub/{token}` URL 404s immediately), and
+      * every node's client identity (a brand-new uuid + email on each panel),
+        deleting the old client so the shared credential stops working.
+
+    The subscription itself is preserved — same profile row, so quota, expiry,
+    name and first-use state carry over. Consumed traffic is banked into
+    `carried_bytes` (the fresh remote clients start at zero), exactly like the
+    auto-node move, so the customer neither loses nor regains usage.
+
+    Only rotates an ACTIVE profile: reviving an expired/exhausted sub by handing
+    it new live clients would be a free renewal.
+    """
+    profile = await get_subscription_profile(profile_id)
+    if not profile:
+        return {"ok": False, "error": "profile_not_found"}
+    if not int(profile.get("is_active") or 0):
+        return {"ok": False, "error": "inactive"}
+
+    new_token = secrets.token_urlsafe(24)
+    sub_url = await subscription_url(new_token)
+    if "YOUR_SERVER_IP" in sub_url:
+        return {"ok": False, "error": "public_base_url_not_configured"}
+    new_email = f"sub_{int(profile.get('user_id') or 0)}_{int(time.time())}_{secrets.token_hex(3)}"
+
+    traffic_gb = float(profile.get("traffic_gb") or 0)
+    expire_ms = int(profile.get("expire_timestamp") or 0)
+
+    nodes = await get_subscription_nodes(profile_id)
+    rotated = failed = 0
+    errors: list[str] = []
+    # (server creds..., inbound, old_uuid, old_email) — the clients to kill once
+    # the new ones are standing so the shared link truly stops connecting.
+    old_clients: list[tuple] = []
+
+    for node in nodes:
+        cfg_id = int(node.get("config_id") or 0)
+        if not cfg_id:
+            m = re.search(r"_n(\d+)$", str(node.get("email") or ""))
+            cfg_id = int(m.group(1)) if m else 0
+        inbound_id = int(node.get("inbound_id") or 1)
+        new_uuid = str(uuid.uuid4())
+        node_email = f"{new_email}_n{cfg_id}"[:120]
+        old = (node.get("server_url"), node.get("srv_user"), node.get("srv_pass"),
+               node.get("sub_path") or "", node.get("srv_api_token", ""),
+               int(node.get("inbound_id") or 0), node.get("uuid") or "", node.get("email") or "")
+        cli = XUIClient(node["server_url"], node["srv_user"], node["srv_pass"],
+                        node.get("sub_path") or "", node.get("srv_api_token", ""))
+        try:
+            added = await cli.add_client(inbound_id, new_uuid, node_email, traffic_gb, 0, starts_on_first_use=False)
+            if added and expire_ms > 0:
+                await cli.update_client(inbound_id, new_uuid, node_email, traffic_gb, expire_ms, True)
+            link = ""
+            if added:
+                inbound_id, new_uuid, link = await _remote_identity_and_link(cli, inbound_id, node_email, new_uuid)
+            # Whatever the outcome, bank this node's spent traffic onto the row so
+            # the (zero-usage) new client never hands the customer back quota.
+            banked = int(node.get("carried_bytes") or 0) + int(node.get("last_used_bytes") or 0)
+            if added and _subscription_link_is_complete(link):
+                await update_subscription_node(
+                    node["id"], server_id=int(node["server_id"]), inbound_id=inbound_id,
+                    uuid=new_uuid, email=node_email, link=link, is_active=1, config_id=cfg_id,
+                    last_used_bytes=0, remote_disabled_at=0, carried_bytes=banked,
+                )
+                rotated += 1
+            else:
+                # Couldn't stand up the replacement. Re-key the row to the NEW
+                # identity but leave it disabled with no link: the heal then
+                # re-adds THIS client (refresh path, preserving carried_bytes)
+                # instead of a fresh zero-usage one that would refund the quota.
+                # We must NOT keep the old uuid, or the heal would resurrect the
+                # very credential we are revoking.
+                failed += 1
+                errors.append(f"relink_failed:node{node.get('server_id')}/{inbound_id}:"
+                              f"{getattr(cli, 'last_error', '') or 'link_not_found'}")
+                if added:
+                    try:
+                        await cli.delete_client(inbound_id, new_uuid, node_email)
+                    except Exception:
+                        pass
+                await update_subscription_node(
+                    node["id"], uuid=new_uuid, email=node_email, link="", is_active=0,
+                    config_id=cfg_id, last_used_bytes=0, remote_disabled_at=0, carried_bytes=banked,
+                )
+            old_clients.append(old)
+        except Exception as e:
+            failed += 1
+            errors.append(f"relink_error:node{node.get('server_id')}:{e}")
+            # Same recovery as the else branch: re-key to the new identity,
+            # disabled, so the heal re-adds it with carried_bytes intact and the
+            # old credential is not resurrected. If this recovery UPDATE itself
+            # raises (a rare SQLite lock right here), the row keeps its OLD email
+            # while the profile is already on new_email, so the heal can't match
+            # it and rebuilds via the missing path — leaving one stale disabled
+            # row. Acceptable: it needs a double DB failure and serves nothing.
+            try:
+                await update_subscription_node(
+                    node["id"], uuid=new_uuid, email=node_email, link="", is_active=0,
+                    config_id=cfg_id, last_used_bytes=0, remote_disabled_at=0,
+                    carried_bytes=(int(node.get("carried_bytes") or 0)
+                                   + int(node.get("last_used_bytes") or 0)),
+                )
+            except Exception:
+                pass
+            old_clients.append(old)
+        finally:
+            await cli.close()
+
+    # Flip the profile onto its new identity — the old /sub token is dead now.
+    await update_subscription_profile(profile_id, token=new_token, email=new_email)
+
+    # Kill the old clients so a link the customer shared truly stops connecting.
+    # Revocation IS the point of a relink, so unlike a routine move we verify each
+    # delete, retry once for a transiently busy panel, and REPORT what didn't take
+    # — a node whose panel is unreachable right now keeps its old credential alive.
+    async def _kill(entry) -> bool:
+        (url, u, p, sp, tok, inb, old_uuid, old_email) = entry
+        if not old_uuid and not old_email:
+            return True
+        cli = XUIClient(url, u, p, sp, tok)
+        try:
+            return bool(await cli.delete_client(inb, old_uuid, old_email))
+        except Exception:
+            return False
+        finally:
+            await cli.close()
+
+    revoked = revoke_failed = 0
+    retry = []
+    for entry in old_clients:
+        if await _kill(entry):
+            revoked += 1
+        else:
+            retry.append(entry)
+    for entry in retry:
+        if await _kill(entry):
+            revoked += 1
+        else:
+            revoke_failed += 1
+            errors.append(f"revoke_failed:server{entry[0]}:inbound{entry[5]}")
+    if revoke_failed:
+        logger.warning(
+            "subscription relink profile=%s could NOT revoke %s old client(s) — a shared "
+            "link may still connect there until the panel is reachable and retried",
+            profile_id, revoke_failed,
+        )
+
+    # Only when a node couldn't be rotated: heal the ones we left disabled. Each
+    # carries its NEW uuid + email (carried_bytes already banked), so the refresh
+    # path re-adds that exact client — no quota refund, no resurrected old
+    # credential. On the all-good path every link is already fresh, so we skip the
+    # heal to avoid a needless login per node (and the latency) on the customer's tap.
+    if failed:
+        fresh = await get_subscription_profile(profile_id)
+        try:
+            await ensure_subscription_profile_nodes(fresh, force_refresh=True)
+        except Exception as e:
+            logger.warning("relink heal failed profile=%s: %s", profile_id, e)
+
+    active_nodes = [n for n in await get_subscription_nodes(profile_id) if int(n.get("is_active") or 0)]
+    logger.info("subscription relink profile=%s rotated=%s failed=%s revoked=%s revoke_failed=%s active=%s",
+                profile_id, rotated, failed, revoked, revoke_failed, len(active_nodes))
+    return {"ok": True, "token": new_token, "url": sub_url, "rotated": rotated,
+            "failed": failed, "revoked": revoked, "revoke_failed": revoke_failed,
+            "active_nodes": len(active_nodes), "errors": errors[:8]}
+
+
 # Where the frequent usage pass stopped last time, so it resumes instead of
 # restarting. See the rotation note in sync_active_profiles().
 _usage_pass_offset = 0

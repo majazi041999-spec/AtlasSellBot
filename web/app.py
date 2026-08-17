@@ -3414,6 +3414,7 @@ async def api_campaigns(request: Request):
         "custom": custom,
         "segments": [{"key": k, "label": v} for k, v in CUSTOM_SEGMENTS.items()],
         "segment_counts": await get_segment_counts(),
+        "segment_counts_reps": await get_segment_counts(include_reps=True),
         "settings": {
             "campaign_trial_enabled": await get_setting("campaign_trial_enabled", "1"),
             "campaign_trial_code": await get_setting("campaign_trial_code", ""),
@@ -3447,6 +3448,8 @@ async def api_custom_campaign_save(request: Request):
             return JSONResponse({"error": "کمپین پیدا نشد."}, status_code=404)
         if "photo" not in data:  # editor didn't touch the image → keep the stored one
             data["photo"] = old.get("photo") or ""
+        if "include_reps" not in data:  # older client → keep the stored setting
+            data["include_reps"] = old.get("include_reps") or 0
     new_id = await save_custom_campaign(data)
     return JSONResponse({"success": True, "id": new_id})
 

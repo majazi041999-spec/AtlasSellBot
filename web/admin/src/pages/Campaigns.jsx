@@ -25,7 +25,10 @@ function copyText(t) {
 }
 
 /* One targeted campaign: collapsed row → inline editor. */
-function CustomCampaign({ c, segments, counts, codes, onChanged, startOpen }) {
+function CustomCampaign({ c, segments, counts, countsReps, codes, onChanged, startOpen }) {
+  // A saved include_reps campaign reaches the rep-inclusive audience; show THAT
+  // number (rows + send confirm) so the count never contradicts the "با نماینده" label.
+  const effCounts = (Number(c.include_reps) && c.segment !== "reps") ? (countsReps || counts) : counts;
   const [open, setOpen] = useState(!!startOpen);
   const [f, setF] = useState(null); // edit buffer (photo only present when re-picked)
   const [busy, setBusy] = useState("");
@@ -33,7 +36,8 @@ function CustomCampaign({ c, segments, counts, codes, onChanged, startOpen }) {
 
   const edit = () => {
     setF({ id: c.id || 0, title: c.title || "", emoji: c.emoji || "🎯", segment: c.segment || "all",
-           message: c.message || "", code: c.code || "", image_prompt: c.image_prompt || "", notes: c.notes || "" });
+           message: c.message || "", code: c.code || "", image_prompt: c.image_prompt || "", notes: c.notes || "",
+           include_reps: Number(c.include_reps) ? 1 : 0 });
     setOpen(true);
   };
   const set = (k, v) => setF((o) => ({ ...o, [k]: v }));
@@ -57,7 +61,7 @@ function CustomCampaign({ c, segments, counts, codes, onChanged, startOpen }) {
     try { await api.post(`/api/campaigns/custom/${c.id}/delete`); toast("حذف شد"); onChanged(); } catch { toast("خطا", "error"); }
   };
   const send = async () => {
-    const n = counts?.[c.segment] ?? "?";
+    const n = effCounts?.[c.segment] ?? "?";
     if (!confirm(`ارسال به سگمنت «${segLabel}» (${n} نفر)؟\nهر کاربر فقط یک‌بار این کمپین را می‌گیرد.`)) return;
     setBusy("send");
     try { const r = await api.post(`/api/campaigns/custom/${c.id}/send`); toast(`ارسال شد: ${fmt(r.sent || 0)} پیام ✅`); onChanged(); }
@@ -73,7 +77,8 @@ function CustomCampaign({ c, segments, counts, codes, onChanged, startOpen }) {
         <div style={{ minWidth: 0 }}>
           <b>{c.emoji} {c.title}</b>
           <div className="muted tiny">
-            {segLabel} · {fmt(counts?.[c.segment] ?? 0)} نفر
+            {segLabel} · {fmt(effCounts?.[c.segment] ?? 0)} نفر
+            {c.segment !== "reps" ? (Number(c.include_reps) ? " · 👤 با نماینده" : " · بدون نماینده") : ""}
             {c.code ? <> · 🎟 <span className="mono">{c.code}</span></> : null}
             {c.has_photo ? " · 🖼 عکس دارد" : ""}
           </div>
@@ -98,6 +103,17 @@ function CustomCampaign({ c, segments, counts, codes, onChanged, startOpen }) {
             <select className="inp" value={f.segment} onChange={(e) => set("segment", e.target.value)}>
               {segments.map((s) => <option key={s.key} value={s.key}>{s.label} — {fmt(counts?.[s.key] ?? 0)} نفر</option>)}
             </select></div>
+          {f.segment !== "reps" && (
+            <div className="field"><label>نمایندگان (نماینده‌ها)</label>
+              <button type="button" className={"btn xs " + (Number(f.include_reps) ? "success" : "")}
+                      onClick={() => set("include_reps", Number(f.include_reps) ? 0 : 1)}>
+                {Number(f.include_reps) ? "✅ برای نمایندگان هم ارسال شود" : "🚫 نمایندگان مستثنا هستند (پیش‌فرض)"}
+              </button>
+              <div className="muted tiny" style={{ marginTop: 4 }}>
+                به‌صورت پیش‌فرض این کمپین برای نمایندگان ارسال نمی‌شود؛ برای احتساب آن‌ها این گزینه را روشن کن.
+              </div>
+            </div>
+          )}
           <div className="field"><label>متن پیام — جای‌گذاری‌ها: {"{name} {code} {brand}"}</label>
             <textarea style={{ ...TA, minHeight: 150 }} value={f.message} onChange={(e) => set("message", e.target.value)} /></div>
 
@@ -167,6 +183,7 @@ export default function Campaigns() {
   const kpi = d.kpi || {};
   const segments = d.segments || [];
   const counts = d.segment_counts || {};
+  const countsReps = d.segment_counts_reps || counts;
 
   return (
     <div className="screen grid" style={{ gap: 16 }}>
@@ -182,11 +199,11 @@ export default function Campaigns() {
         <div className="grid" style={{ gap: 10 }}>
           {adding && (
             <CustomCampaign key="new" startOpen
-              c={{ id: 0, title: "", emoji: "🎯", segment: "all", message: "", code: "", image_prompt: "", notes: "", status: "draft" }}
-              segments={segments} counts={counts} codes={d.codes} onChanged={load} />
+              c={{ id: 0, title: "", emoji: "🎯", segment: "all", message: "", code: "", image_prompt: "", notes: "", include_reps: 0, status: "draft" }}
+              segments={segments} counts={counts} countsReps={countsReps} codes={d.codes} onChanged={load} />
           )}
           {(d.custom || []).map((c) => (
-            <CustomCampaign key={c.id} c={c} segments={segments} counts={counts} codes={d.codes} onChanged={load} />
+            <CustomCampaign key={c.id} c={c} segments={segments} counts={counts} countsReps={countsReps} codes={d.codes} onChanged={load} />
           ))}
           {!(d.custom || []).length && !adding && <div className="muted tiny">هنوز کمپینی نداری — «+ کمپین جدید» را بزن.</div>}
         </div>

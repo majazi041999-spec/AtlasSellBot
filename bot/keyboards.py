@@ -494,6 +494,7 @@ def subscription_detail_kb(profile_id: int, sub_url: str = "", nodes: List[Dict]
 
     _button(b, text="✏️ تغییر نام سرویس", callback_data=f"sub_rename:{profile_id}", style="primary")
     _button(b, text="♻️ تمدید ساب", callback_data=f"sub_renew:{profile_id}", style="success")
+    _button(b, text="🔄 تغییر لینک اشتراک", callback_data=f"sub_relink:{profile_id}", style="primary")
     _button(b, text="🗑️ حذف ساب", callback_data=f"sub_del:{profile_id}", style="danger")
     _button(b, text="🔙 برگشت به سرویس‌ها", callback_data="back_configs", style="primary")
     b.adjust(1)
@@ -510,6 +511,14 @@ def single_to_sub_nudge_kb(config_id: int) -> InlineKeyboardMarkup:
 def subscription_delete_confirm_kb(profile_id: int) -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
     _button(b, text="✅ بله، حذف شود", callback_data=f"sub_del_do:{profile_id}", style="danger")
+    _button(b, text="❌ منصرف شدم", callback_data=f"sub_show:{profile_id}", style="primary")
+    b.adjust(1)
+    return b.as_markup()
+
+
+def subscription_relink_confirm_kb(profile_id: int) -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    _button(b, text="✅ بله، لینک جدید بده", callback_data=f"sub_relink_do:{profile_id}", style="danger")
     _button(b, text="❌ منصرف شدم", callback_data=f"sub_show:{profile_id}", style="primary")
     b.adjust(1)
     return b.as_markup()

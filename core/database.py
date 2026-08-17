@@ -328,6 +328,7 @@ CREATE TABLE IF NOT EXISTS custom_campaigns (
     code TEXT DEFAULT '',                 -- discount code substituted for {code}
     image_prompt TEXT DEFAULT '',         -- AI image-generation prompt (copyable in panel)
     notes TEXT DEFAULT '',                -- strategy notes shown to the admin
+    include_reps INTEGER DEFAULT 0,       -- 0 skips representatives (default), 1 also sends to them
     status TEXT DEFAULT 'draft',          -- 'draft' | 'sent'
     sent_count INTEGER DEFAULT 0,
     created_at TEXT DEFAULT (datetime('now','localtime')),
@@ -481,6 +482,11 @@ async def _ensure_columns(db):
         ],
         "referral_tiers": [
             ("reward_amount", "INTEGER DEFAULT 0"),
+        ],
+        "custom_campaigns": [
+            # 0 = representatives ("نمایندگان") are skipped so a consumer blast
+            # never lands in a reseller's chat; 1 = deliberately include them.
+            ("include_reps", "INTEGER DEFAULT 0"),
         ],
     }
     for table, cols in migrations.items():
@@ -2001,11 +2007,17 @@ _SEG_ACTIVE_SUB = ("EXISTS(SELECT 1 FROM subscription_profiles sp WHERE sp.user_
                    "AND sp.is_active=1 AND (sp.expire_timestamp=0 OR sp.expire_timestamp>{now}))")
 
 
-async def get_segment_users(segment: str, limit: int = 5000) -> List[Dict]:
-    """Resolve a CUSTOM_SEGMENTS key to its current audience (id, telegram_id, full_name)."""
+async def get_segment_users(segment: str, limit: int = 5000, include_reps: bool = False) -> List[Dict]:
+    """Resolve a CUSTOM_SEGMENTS key to its current audience (id, telegram_id, full_name).
+
+    Representatives ("نمایندگان") are excluded from EVERY segment by default so a
+    consumer campaign never reaches a reseller; the dedicated "reps" segment
+    targets them on purpose, and `include_reps=True` re-adds them elsewhere.
+    """
     now_ms = int(time.time() * 1000)
     active = _SEG_ACTIVE_SUB.format(now=now_ms)
-    base = f"SELECT u.id, u.telegram_id, u.full_name FROM users u WHERE {_SEG_BASE}"
+    rep_filter = "" if (include_reps or segment == "reps") else " AND COALESCE(u.is_wholesale,0)=0"
+    base = f"SELECT u.id, u.telegram_id, u.full_name FROM users u WHERE {_SEG_BASE}{rep_filter}"
     params: tuple = ()
     if segment == "vip":
         sql = f"""SELECT u.id, u.telegram_id, u.full_name,
@@ -2013,7 +2025,7 @@ async def get_segment_users(segment: str, limit: int = 5000) -> List[Dict]:
                   FROM users u
                   JOIN orders o ON o.user_id=u.id AND o.status='approved'
                   LEFT JOIN packages p ON p.id=o.package_id
-                  WHERE {_SEG_BASE}
+                  WHERE {_SEG_BASE}{rep_filter}
                   GROUP BY u.id ORDER BY spent DESC LIMIT 15"""
     elif segment == "buyers":
         sql = f"{base} AND {_SEG_HAS_BOUGHT}"
@@ -2043,11 +2055,15 @@ async def get_segment_users(segment: str, limit: int = 5000) -> List[Dict]:
             return [dict(r) for r in await c.fetchall()]
 
 
-async def get_segment_counts() -> Dict[str, int]:
-    """Audience size per segment (shown in the panel's segment picker)."""
+async def get_segment_counts(include_reps: bool = False) -> Dict[str, int]:
+    """Audience size per segment (shown in the panel's segment picker).
+
+    Defaults to the reps-excluded size (what a normal campaign sends); pass
+    include_reps=True for the size a campaign with that flag set would reach.
+    """
     out = {}
     for key in CUSTOM_SEGMENTS:
-        out[key] = len(await get_segment_users(key))
+        out[key] = len(await get_segment_users(key, include_reps=include_reps))
     return out
 
 
@@ -2072,16 +2088,20 @@ async def save_custom_campaign(data: Dict) -> int:
     vals = {k: str(data.get(k) or "") for k in fields}
     if vals["segment"] not in CUSTOM_SEGMENTS:
         vals["segment"] = "all"
+    include_reps = 1 if str(data.get("include_reps") or "0").strip() in ("1", "true", "True", "on") else 0
     cid = int(data.get("id") or 0)
     async with aiosqlite.connect(DB_PATH) as db:
         if cid:
             sets = ",".join(f"{k}=?" for k in fields)
-            await db.execute(f"UPDATE custom_campaigns SET {sets} WHERE id=?", (*vals.values(), cid))
+            await db.execute(f"UPDATE custom_campaigns SET {sets}, include_reps=? WHERE id=?",
+                             (*vals.values(), include_reps, cid))
         else:
             slug = (str(data.get("slug") or "").strip() or f"cc{int(time.time())}")
+            cols = ",".join(fields)
+            placeholders = ",".join(["?"] * (len(fields) + 2))  # slug + fields + include_reps
             cur = await db.execute(
-                f"""INSERT INTO custom_campaigns(slug,{','.join(fields)}) VALUES(?,?,?,?,?,?,?,?,?)""",
-                (slug, *vals.values()),
+                f"INSERT INTO custom_campaigns(slug,{cols},include_reps) VALUES({placeholders})",
+                (slug, *vals.values(), include_reps),
             )
             cid = int(cur.lastrowid)
         await db.commit()

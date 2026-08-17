@@ -85,7 +85,10 @@ setup_mtproxy.sh   MTProto proxy installer (mtg v1.0.11). atlas_menu.sh, install
 - discount_codes, discount_redemptions, referral_tiers, wallet_transactions, topup_requests, campaign_events, daily_reports.
 - **custom_campaigns**: panel-authored targeted blasts (Campaigns tab). `slug` is the join key to
   campaign_events (sends, once-per-user guard) AND discount_codes.campaign (attribution + targeted-code
-  lock). Segments in `CUSTOM_SEGMENTS` + `get_segment_users()` (database.py); sender =
+  lock). Segments in `CUSTOM_SEGMENTS` + `get_segment_users(segment, limit, include_reps=False)` (database.py) —
+  **representatives are excluded from EVERY segment by default** (a consumer blast must never reach a reseller);
+  the dedicated `reps` segment still targets them, and per-campaign `custom_campaigns.include_reps` re-adds them
+  (toggle in the Campaigns editor, default off). Sender =
   `run_custom_campaign` (core/campaigns.py, photo data-URI + 1024-char caption split); endpoints
   `/{S}/api/campaigns/custom[...]`. Seeded ONCE from `_SEED_CAMPAIGNS` via `seed_default_campaigns()`
   (main.py after init_db; gate setting `custom_campaigns_seeded`) — 8 designed drafts incl. image
@@ -120,6 +123,7 @@ Concept: a sold sub = 1 `subscription_profile` + a client on EVERY active `subsc
 - `ensure_subscription_profile_nodes(profile, force_refresh, only_config_ids)`: reconcile a profile's nodes (create missing / refresh / move / orphan-cleanup). `only_config_ids` targets one node (used by real-time per-node ops). Orphan prune skipped when targeting.
 - `reconcile_node_config_streamed(log, node_id, remove, force_refresh)` + `_remove_node_config_from_profile`: real-time apply of a single node action across all profiles, streamed to the "nodeops" job log. Node add/enable/disable/edit in the panel triggers this instantly.
 - `set_nodes_enabled(profile_id, enabled)`: enable/disable ALL of a profile's nodes on the panels (re-creates deleted clients on re-enable).
+- `rotate_subscription_link(profile_id)`: **"تغییر لینک اشتراک"** — revoke the current link and hand back a fresh one when a customer shared theirs. A shared `/sub` link makes clients cache the underlying vless configs, so token-only rotation would NOT cut off whoever imported it. So it rotates BOTH the profile token (old `/sub/{token}` 404s) AND every node's client identity (new uuid + email; delete+add because `update_client` refuses uuid changes). Same profile row → quota/expiry/name/first-use carry over; consumed traffic is banked into `carried_bytes` exactly like an auto-node move. Only rotates an ACTIVE profile (else it'd be a free renewal). Failed nodes drop their row and self-heal via the missing-node path. Bot: `subscription_detail_kb` button `sub_relink:` → `subscription_relink_confirm_kb` → `sub_relink_do:` (60s per-profile cooldown, `bot/handlers/user.py`).
 - **Disabling is idempotent and must stay that way.** Every sweep re-visits inactive profiles, and this used to re-issue `update_client` for all their nodes each time — measured at 144 writes per sweep on the live fleet. A client write makes 3x-ui rewrite the inbound and reload xray, which drops every live connection on that server, so re-sending a disable the panel already applied punishes every OTHER customer there. Nodes carrying `remote_disabled_at` are skipped; unconfirmed ones keep being retried and log why. **Any new code path that writes to a panel needs the same "has this already been applied?" test.**
 - Link labels: server remarks are SHORT (node name only). The user's chosen service name appears ONCE as the first info/null entry (fixed the "names too long" complaint) — see `_subscription_node_display_label` + `_subscription_info_links`.
 - **Brand safety (hard rule):** our platform brand is NEVER shown on a representative's subscription — only their `rep_brand_name` (or nothing). See `_owner_brand()` → (hide, rep_brand, is_rep) and `_subscription_info_links`. Logo equivalent: `_resolve_sub_logo`/`_resolve_sub_brand` in web/app.py.
@@ -187,6 +191,7 @@ Brand/UI: `ui.brand_name`, `ui.logo_data`, `ui.panel_subtitle`, `ui.custom_css/j
 - **RTL trap:** logical `inset-inline-end` = physical LEFT in RTL. Mobile sidebar drawer must use physical `right:0` + `translateX(105%)`. `html/body { overflow-x: clip }` prevents drawer-induced horizontal scroll (clip, not hidden, to keep sticky working).
 - Bash tool = Git Bash (POSIX); don't use PowerShell heredoc there. For multi-line git messages use a heredoc via `git commit -F -`.
 - Node email `_n{config_id}` suffix is load-bearing.
+- **`init_db` splits the `SCHEMA` string on `;`** (`for stmt in SCHEMA.split(';')`), so a `;` inside a SQL comment silently truncates that `CREATE TABLE` → `OperationalError: incomplete input`. Never put a semicolon in a SCHEMA comment.
 - `packages_kb` is defined twice in keyboards.py; the SECOND (l.581) wins.
 - Committed `dist/` — must rebuild React after src changes or the panel serves stale UI.
 - Telegram MTProto proxy uses `mtg v1.0.11`; flags MUST precede positional secret (`run --bind ... SECRET [TAG]`) or bind is ignored → wrong port. Also set `MTG_BIND` env.
@@ -197,6 +202,8 @@ Brand/UI: `ui.brand_name`, `ui.logo_data`, `ui.panel_subtitle`, `ui.custom_css/j
 - Per-node custom domain → `subscription_node_configs.connect_host` + `_apply_host_override`.
 - Pricing shown/charged → `core/pricing.py` + `_priced_packages` (bot) + `/app/api/packages` (miniapp).
 - Rep features → bot/handlers/user.py (`rep:*`, `wh_*`) + keyboards.py + web Users/UserDetail/Reps pages.
+- Change/revoke a customer's subscription link ("تغییر لینک اشتراک") → `rotate_subscription_link` (multi_subscription.py) + `sub_relink*` handlers/keyboards (bot). See §6.
+- Exclude/include reps in a campaign → `get_segment_users(..., include_reps)` + `custom_campaigns.include_reps` (database.py), `run_custom_campaign` (campaigns.py), Campaigns.jsx toggle. See §5 custom_campaigns.
 - Auto-node routing / load metric / hysteresis → `core/autonode.py` (`LoadView.score`, `resolve_auto_target`, `rebalance_auto_node`); its provisioning hook is `expand_node_configs` inside `ensure_subscription_profile_nodes`.
 - Rep purchase report columns or date window → `core/rep_report.py` (`_COLUMNS`, `resolve_range`) + `get_rep_purchases` in database.py.
 - Anything Jalali → `core/jalali.py` AND the mirrored `web/{admin,miniapp}/src/jalali.js` (keep them in step).

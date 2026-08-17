@@ -146,7 +146,8 @@ async def run_custom_campaign(bot, camp: dict) -> dict:
             photo_bytes = b""
 
     sent = skipped = 0
-    for u in await get_segment_users(str(camp.get("segment") or "all")):
+    include_reps = bool(int(camp.get("include_reps") or 0))
+    for u in await get_segment_users(str(camp.get("segment") or "all"), include_reps=include_reps):
         uid = int(u.get("id") or 0)
         tid = int(u.get("telegram_id") or 0)
         if not tid or await user_has_campaign_event(slug, uid):

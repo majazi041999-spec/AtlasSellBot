@@ -4,6 +4,7 @@ import time
 import json
 import base64
 import binascii
+import logging
 import random
 import aiosqlite
 from urllib.parse import urlparse, parse_qs, unquote
@@ -71,6 +72,7 @@ from core.multi_subscription import (
     subscription_url,
     sync_profile_usage,
     delete_subscription_profile_remote,
+    rotate_subscription_link,
     create_profile_from_config,
     create_test_subscription,
     subscription_error_message,
@@ -96,6 +98,7 @@ from bot.keyboards import (
     DEFAULT_SERVICE_FILTER,
     subscription_detail_kb,
     subscription_delete_confirm_kb,
+    subscription_relink_confirm_kb,
     servers_kb,
     custom_name_kb,
     discount_skip_kb,
@@ -111,6 +114,8 @@ from bot.keyboards import (
     flow_cancel_kb,
 )
 from bot.states import AnonymousFeedback, BuyService, WholesaleBuy, LegacySync, WalletTopup, RenameSub, BuyDiscount, RepBrand
+
+logger = logging.getLogger(__name__)
 
 router = Router()
 
@@ -1043,6 +1048,95 @@ async def sub_delete_do(cb: CallbackQuery):
         parse_mode=None,
     )
     await cb.answer()
+
+
+# Per-profile cooldown so a double-tap (or an impatient user) can't fire back-to-
+# back relinks: each rotation deletes+re-adds a client on every server, and a
+# client write makes 3x-ui reload xray, briefly dropping live connections there.
+_relink_cooldown: dict[int, float] = {}
+_RELINK_COOLDOWN_SECONDS = 60
+
+
+@router.callback_query(F.data.startswith("sub_relink:"))
+async def sub_relink_confirm(cb: CallbackQuery):
+    user = await get_or_create_user(cb.from_user.id, cb.from_user.username, cb.from_user.full_name)
+    pid = int(cb.data.split(":")[1])
+    profile = await _owned_subscription_for_user(user["id"], pid)
+    if not profile:
+        await cb.answer("این ساب برای شما پیدا نشد.", show_alert=True)
+        return
+    if not int(profile.get("is_active") or 0):
+        await cb.answer("این اشتراک فعال نیست. برای گرفتن لینک تازه، ابتدا آن را تمدید کن.", show_alert=True)
+        return
+    await cb.message.answer(
+        "🔄 تغییر لینک اشتراک\n\n"
+        "اگر لینک این اشتراک را به کسی داده‌ای و می‌خواهی دسترسی‌اش را قطع کنی، با این کار:\n"
+        "• لینک فعلی و همهٔ کانفیگ‌های داخل آن بلافاصله از کار می‌افتد (کسی که لینک را دارد قطع می‌شود).\n"
+        "• یک لینک کاملاً تازه می‌گیری.\n"
+        "• حجم و زمان باقی‌ماندهٔ همین اشتراک دقیقاً حفظ و به لینک جدید منتقل می‌شود.\n\n"
+        "‼️ بعد از دریافت لینک جدید، در برنامه‌ات لینک قدیمی را پاک کن و لینک تازه را وارد کن.",
+        reply_markup=subscription_relink_confirm_kb(pid),
+        parse_mode=None,
+    )
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("sub_relink_do:"))
+async def sub_relink_do(cb: CallbackQuery):
+    user = await get_or_create_user(cb.from_user.id, cb.from_user.username, cb.from_user.full_name)
+    pid = int(cb.data.split(":")[1])
+    profile = await _owned_subscription_for_user(user["id"], pid)
+    if not profile:
+        await cb.answer("این ساب برای شما پیدا نشد.", show_alert=True)
+        return
+    if not int(profile.get("is_active") or 0):
+        await cb.answer("این اشتراک فعال نیست.", show_alert=True)
+        return
+    now = time.time()
+    last = _relink_cooldown.get(pid, 0)
+    if now - last < _RELINK_COOLDOWN_SECONDS:
+        wait = int(_RELINK_COOLDOWN_SECONDS - (now - last))
+        await cb.answer(f"کمی صبر کن؛ {wait} ثانیهٔ دیگر دوباره امکان‌پذیر است.", show_alert=True)
+        return
+    _relink_cooldown[pid] = now
+    try:
+        await cb.message.edit_text("⏳ در حال ساخت لینک تازه و از کار انداختن لینک قبلی…", parse_mode=None)
+    except Exception:
+        pass
+    try:
+        result = await rotate_subscription_link(pid)
+    except Exception as e:
+        logger.warning("relink handler error profile=%s: %s", pid, e)
+        result = {"ok": False, "error": str(e)}
+    if not result.get("ok"):
+        # Keep the cooldown: rotate() may have already written to some panels
+        # before failing, so an immediate retry would reload xray on them again.
+        await cb.message.answer("❌ تغییر لینک انجام نشد. کمی بعد دوباره تلاش کن.", parse_mode=None)
+        await cb.answer()
+        return
+    fresh = await _owned_subscription_for_user(user["id"], pid)
+    if int(result.get("active_nodes") or 0) <= 0:
+        note = ("✅ لینک قبلی از کار افتاد و لینک جدید ساخته شد.\n"
+                "سرورها در حال آماده‌سازی‌اند؛ چند دقیقهٔ دیگر لینک تازه را در برنامه‌ات یک‌بار به‌روزرسانی کن.")
+    else:
+        note = "✅ لینک تازه آماده شد و لینک قبلی دیگر کار نمی‌کند. لینک جدید در سرویس زیر آمده:"
+    if int(result.get("revoke_failed") or 0) > 0:
+        # Be honest: one panel was unreachable, so the old link may still work
+        # on that server for a bit. Retrying the relink shortly finishes the job.
+        note += ("\n\n⚠️ یک سرور موقتاً در دسترس نبود؛ ممکن است لینک قبلی روی همان سرور کمی "
+                 "بیشتر کار کند. برای اطمینان، کمی بعد دوباره «تغییر لینک اشتراک» را بزن.")
+    try:
+        await cb.message.edit_text(note, parse_mode=None)
+    except Exception:
+        await cb.message.answer(note, parse_mode=None)
+    # Render the fresh-link card as a NEW message BELOW the note (pass the Message,
+    # not the callback, so it is appended rather than editing the note in place).
+    if fresh:
+        try:
+            await _send_subscription_status(cb.message, fresh)
+        except Exception as e:
+            logger.warning("relink status render failed profile=%s: %s", pid, e)
+    await cb.answer("انجام شد ✅")
 
 
 @router.callback_query(F.data.startswith("sub_renew:"))
