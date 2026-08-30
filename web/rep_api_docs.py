@@ -2,9 +2,15 @@
 
 Kept apart from ``web/rep_api.py`` so the routes stay readable: this file is one
 long template and nothing else. It is filled with ``.replace()`` rather than an
-f-string because the page is mostly JSON examples — every ``{`` in them would
-otherwise have to be doubled, and one missed brace silently corrupts a sample a
-representative is going to copy verbatim.
+f-string because the page is mostly JSON and code samples — every ``{`` in them
+would otherwise have to be doubled, and one missed brace silently corrupts a
+sample a representative is going to copy verbatim.
+
+Shape of the page, and why: every language (PHP / Python / Node.js) defines ONE
+helper called ``atlas(...)`` up front, and every endpoint below is then a single
+line calling it. A reseller does not want fifteen self-contained programs — they
+want one function they paste once and fifteen one-liners they can read at a
+glance. The language tabs swap all samples at once and remember the choice.
 
 Whoever changes a route MUST change the matching block here and in
 ``docs/REP_API.md``. A partner API whose docs lie is worse than one with no docs.
@@ -19,167 +25,323 @@ _PAGE = r"""<!doctype html>
 <title>مستندات API نمایندگان — __BRAND__</title>
 <style>
   :root{
-    --bg:#f6f7fb; --card:#fff; --ink:#12172b; --muted:#5b6480; --line:#e3e7f0;
-    --brand:#3b5bfd; --brand-soft:#eef2ff; --code:#0f1424; --code-ink:#e6ebff;
-    --ok:#0f9d58; --warn:#e8a33d; --danger:#e04b4b;
+    --bg:#f5f7fb; --card:#fff; --ink:#141a2e; --muted:#606b88; --line:#e2e7f1;
+    --brand:#3b5bfd; --soft:#eef2ff; --code:#0e1322; --codeInk:#e7ecff;
+    --ok:#0f9d58; --warn:#c47d12; --warnBg:#fff6e6; --danger:#d94141; --dangerBg:#fdeded;
   }
   @media (prefers-color-scheme: dark){
-    :root{ --bg:#0d1019; --card:#151a28; --ink:#eaeefb; --muted:#96a0bd; --line:#242c42;
-           --brand:#7d92ff; --brand-soft:#1b2440; --code:#0a0e1a; --code-ink:#dfe6ff; }
+    :root{ --bg:#0c0f18; --card:#141926; --ink:#e9edfa; --muted:#98a2c0; --line:#232b40;
+           --brand:#8098ff; --soft:#1a2340; --code:#080c16; --codeInk:#dee6ff;
+           --warn:#e0a740; --warnBg:#2a2313; --danger:#ff8080; --dangerBg:#2c1717; }
   }
   *{box-sizing:border-box}
+  html{scroll-behavior:smooth; scroll-padding-top:110px}
   body{margin:0;background:var(--bg);color:var(--ink);
-       font:15px/1.9 "Vazirmatn","Segoe UI",Tahoma,system-ui,sans-serif}
-  a{color:var(--brand);text-decoration:none} a:hover{text-decoration:underline}
-  .wrap{max-width:1060px;margin:0 auto;padding:24px 18px 80px}
+       font:15px/1.95 "Vazirmatn","Segoe UI",Tahoma,system-ui,sans-serif}
+  a{color:var(--brand);text-decoration:none}
+  a:hover{text-decoration:underline}
+  .wrap{max-width:960px;margin:0 auto;padding:0 16px 90px}
+
+  /* ── sticky bar: nav + the language switch ─────────────────────────────── */
+  .bar{position:sticky;top:0;z-index:20;background:var(--bg);
+       border-bottom:1px solid var(--line);padding:10px 0;margin-bottom:22px}
+  .bar .inner{max-width:960px;margin:0 auto;padding:0 16px;
+       display:flex;gap:12px;align-items:center;flex-wrap:wrap;justify-content:space-between}
+  .navlinks{display:flex;gap:4px;flex-wrap:wrap}
+  .navlinks a{font-size:13.5px;color:var(--muted);padding:4px 8px;border-radius:8px}
+  .navlinks a:hover{background:var(--soft);color:var(--brand);text-decoration:none}
+  .langbar{display:flex;gap:6px;background:var(--soft);padding:4px;border-radius:11px}
+  .langbar button{border:0;background:none;color:var(--muted);cursor:pointer;
+       font:600 13px/1 inherit;padding:8px 14px;border-radius:8px}
+  .langbar button.on{background:var(--brand);color:#fff}
+
   header.hero{background:linear-gradient(135deg,var(--brand),#8b5cf6);color:#fff;
-       border-radius:20px;padding:30px 26px;margin-bottom:22px}
-  header.hero h1{margin:0 0 8px;font-size:26px}
-  header.hero p{margin:0;opacity:.94}
-  .base{display:inline-block;margin-top:14px;background:rgba(255,255,255,.18);
-       border:1px solid rgba(255,255,255,.35);border-radius:10px;padding:7px 12px;
-       font-family:ui-monospace,Menlo,Consolas,monospace;direction:ltr}
-  nav.toc{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px 18px;margin-bottom:22px}
-  nav.toc b{display:block;margin-bottom:8px}
-  nav.toc a{display:inline-block;margin:3px 0 3px 14px;font-size:14px}
+       border-radius:20px;padding:28px 24px;margin-bottom:20px}
+  header.hero h1{margin:0 0 6px;font-size:25px}
+  header.hero p{margin:0;opacity:.93}
+  .base{display:inline-block;margin-top:14px;background:rgba(255,255,255,.16);
+       border:1px solid rgba(255,255,255,.3);border-radius:10px;padding:7px 12px;
+       font-family:ui-monospace,Menlo,Consolas,monospace;direction:ltr;font-size:13.5px}
+
   section{background:var(--card);border:1px solid var(--line);border-radius:16px;
-       padding:20px 22px;margin-bottom:18px}
-  h2{margin:0 0 12px;font-size:20px;border-inline-start:4px solid var(--brand);padding-inline-start:10px}
-  h3{margin:22px 0 8px;font-size:16px}
-  p,li{color:var(--ink)} .muted{color:var(--muted)}
-  code{background:var(--brand-soft);color:var(--brand);border-radius:6px;padding:1px 6px;
+       padding:20px 22px;margin-bottom:16px}
+  h2{margin:0 0 14px;font-size:19px;border-inline-start:4px solid var(--brand);padding-inline-start:10px}
+  h3{margin:24px 0 8px;font-size:16px}
+  h3:first-of-type{margin-top:6px}
+  .muted{color:var(--muted)}
+  ol,ul{padding-inline-start:22px}
+  code{background:var(--soft);color:var(--brand);border-radius:6px;padding:1px 6px;
        font-family:ui-monospace,Menlo,Consolas,monospace;direction:ltr;display:inline-block}
-  pre{background:var(--code);color:var(--code-ink);border-radius:12px;padding:14px 16px;
-      overflow-x:auto;direction:ltr;text-align:left;font-size:13.5px;line-height:1.7}
-  pre code{background:none;color:inherit;padding:0}
+
+  /* ── code blocks ───────────────────────────────────────────────────────── */
+  .snip{position:relative;margin:10px 0}
+  pre{background:var(--code);color:var(--codeInk);border-radius:12px;padding:15px 16px;
+      margin:10px 0;overflow-x:auto;direction:ltr;text-align:left;
+      font:13.5px/1.75 ui-monospace,Menlo,Consolas,monospace}
+  pre code{background:none;color:inherit;padding:0;display:block}
+  pre.res{background:var(--soft);color:var(--ink);border:1px solid var(--line)}
+  /* Physical `right`, not `inset-inline-*`: in RTL the logical end flips to the
+     left, which is exactly where the LTR code starts. See PROJECT_MAP §13. */
+  .copy{position:absolute;top:18px;right:10px;z-index:2;
+        border:0;border-radius:7px;background:rgba(255,255,255,.13);color:#cdd6f5;
+        cursor:pointer;font:600 11px/1 inherit;padding:6px 9px}
+  .copy:hover{background:rgba(255,255,255,.26)}
+  .copy.done{background:var(--ok);color:#fff}
+  body[data-lang="php"]    .snip>pre[data-l]:not([data-l="php"]),
+  body[data-lang="python"] .snip>pre[data-l]:not([data-l="python"]),
+  body[data-lang="node"]   .snip>pre[data-l]:not([data-l="node"]){display:none}
+
   table{width:100%;border-collapse:collapse;margin:10px 0;font-size:14px}
   th,td{border:1px solid var(--line);padding:8px 10px;text-align:right;vertical-align:top}
-  th{background:var(--brand-soft)}
-  td.ltr,th.ltr{direction:ltr;text-align:left;font-family:ui-monospace,Menlo,Consolas,monospace}
-  .ep{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:26px 0 8px;
-      padding-top:16px;border-top:1px dashed var(--line)}
-  .ep:first-of-type{border-top:0;padding-top:0;margin-top:8px}
-  .m{font:600 12px/1 ui-monospace,monospace;padding:5px 9px;border-radius:6px;color:#fff}
+  th{background:var(--soft);font-weight:600}
+  /* `anywhere` so a long error code cannot push the table wider than a phone
+     screen — the page itself must never scroll sideways. */
+  td.ltr,th.ltr{direction:ltr;text-align:left;font-family:ui-monospace,Menlo,Consolas,monospace;
+       font-size:13px;overflow-wrap:anywhere}
+
+  .ep{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:30px 0 6px;
+      padding-top:18px;border-top:1px dashed var(--line)}
+  .ep:first-of-type{border-top:0;padding-top:0;margin-top:4px}
+  .m{font:700 11.5px/1 ui-monospace,monospace;padding:6px 9px;border-radius:6px;color:#fff}
   .m.get{background:#0f9d58} .m.post{background:#3b5bfd}
-  .path{font-family:ui-monospace,Menlo,Consolas,monospace;direction:ltr;font-size:14.5px}
-  .note{background:var(--brand-soft);border-inline-start:4px solid var(--brand);
-        border-radius:0 10px 10px 0;padding:10px 14px;margin:12px 0}
-  .warn{background:rgba(232,163,61,.14);border-inline-start:4px solid var(--warn);
-        border-radius:0 10px 10px 0;padding:10px 14px;margin:12px 0}
-  .danger{background:rgba(224,75,75,.13);border-inline-start:4px solid var(--danger);
-        border-radius:0 10px 10px 0;padding:10px 14px;margin:12px 0}
-  footer{text-align:center;color:var(--muted);font-size:13px;margin-top:30px}
+  .path{font-family:ui-monospace,Menlo,Consolas,monospace;direction:ltr;font-size:14.5px;font-weight:600}
+
+  .note,.warn,.danger{border-radius:0 10px 10px 0;padding:11px 14px;margin:12px 0}
+  .note{background:var(--soft);border-inline-start:4px solid var(--brand)}
+  .warn{background:var(--warnBg);border-inline-start:4px solid var(--warn)}
+  .danger{background:var(--dangerBg);border-inline-start:4px solid var(--danger)}
+  footer{text-align:center;color:var(--muted);font-size:13px;margin-top:26px}
+  @media (max-width:640px){ .navlinks{display:none} .bar .inner{justify-content:center} }
 </style>
 </head>
-<body>
+<body data-lang="php">
+
+<div class="bar"><div class="inner">
+  <nav class="navlinks">
+    <a href="#start">شروع</a>
+    <a href="#auth">کلید</a>
+    <a href="#rules">قواعد</a>
+    <a href="#idem">خرید تکراری</a>
+    <a href="#endpoints">دستورها</a>
+    <a href="#errors">خطاها</a>
+    <a href="#full">مثال کامل</a>
+    <a href="#security">امنیت</a>
+  </nav>
+  <div class="langbar" id="langbar">
+    <button data-l="php">PHP</button>
+    <button data-l="python">Python</button>
+    <button data-l="node">Node.js</button>
+  </div>
+</div></div>
+
 <div class="wrap">
 
 <header class="hero">
   <h1>🔌 API نمایندگان — __BRAND__</h1>
-  <p>با این API می‌توانی ربات یا پنل خودت را به سامانه‌ی ما وصل کنی و خودکار سرویس بسازی، تمدید کنی و مدیریت کنی.</p>
-  <div class="base">Base URL: __BASE__/api/rep/v1</div>
+  <p>ربات یا سایت خودت را به سامانه‌ی ما وصل کن و خودکار سرویس بساز، تمدید کن و مدیریت کن.</p>
+  <div class="base">__BASE__/api/rep/v1</div>
 </header>
 
-<nav class="toc">
-  <b>فهرست</b>
-  <a href="#start">شروع سریع</a>
-  <a href="#auth">احراز هویت</a>
-  <a href="#rules">قواعد عمومی</a>
-  <a href="#idem">جلوگیری از خرید تکراری</a>
-  <a href="#errors">خطاها</a>
-  <a href="#endpoints">لیست Endpointها</a>
-  <a href="#samples">نمونه کد</a>
-  <a href="#security">امنیت</a>
-</nav>
+<div class="note">
+  نمونه‌کدها به سه زبان هستند. زبان دلخواهت را از نوار بالا انتخاب کن؛ همه‌ی کدهای این صفحه با هم عوض می‌شوند.
+</div>
 
+<!-- ═══════════════════════ 1 ═══════════════════════ -->
 <section id="start">
-  <h2>شروع سریع</h2>
+  <h2>۱. شروع در سه دقیقه</h2>
+
+  <h3>الف) کلید بگیر</h3>
   <ol>
     <li>در ربات ما وارد <b>پنل نمایندگی</b> شو.</li>
-    <li>روی <b>«🔌 اتصال ربات (API)»</b> بزن و یک کلید بساز.</li>
-    <li>کلید <b>فقط یک بار</b> نمایش داده می‌شود؛ همان‌جا ذخیره‌اش کن.</li>
-    <li>تست کن:</li>
+    <li>روی <b>«🔌 اتصال ربات (API)»</b> بزن.</li>
+    <li><b>«🔑 ساخت کلید جدید»</b> — کلید <b>فقط همان یک بار</b> نشان داده می‌شود، کپی و ذخیره‌اش کن.</li>
   </ol>
-<pre><code>curl -H "Authorization: Bearer atlas_rep_XXXX" \
-     __BASE__/api/rep/v1/ping</code></pre>
-  <p class="muted">پاسخ موفق: <code>{"ok":true,"api_version":"1.0",...}</code></p>
-  <div class="note">هزینه‌ی هر سرویسی که از طریق API می‌سازی، از <b>کیف پول نمایندگی تو</b> کم می‌شود؛ پس کیف پول را شارژ نگه دار.</div>
+
+  <h3>ب) این تابع را یک بار در پروژه‌ات بگذار</h3>
+  <p class="muted">همه‌ی کدهای بقیه‌ی این صفحه فقط همین تابع <code>atlas()</code> را صدا می‌زنند. یک بار کپی کن، تمام.</p>
+  <div class="snip">
+<pre data-l="php"><code>&lt;?php
+// ---------- تنظیمات ----------
+define('ATLAS_BASE', '__BASE__/api/rep/v1');
+define('ATLAS_KEY',  'atlas_rep_کلید_خودت_را_اینجا_بگذار');
+
+/**
+ * یک درخواست به API می‌زند.
+ * $idem فقط برای «ساخت» و «تمدید» لازم است (جلوگیری از خرید تکراری).
+ * خروجی: ['status' => کد HTTP, 'data' => آرایه‌ی پاسخ]
+ */
+function atlas($method, $path, $body = null, $idem = null) {
+    $headers = [
+        'Authorization: Bearer ' . ATLAS_KEY,
+        'Content-Type: application/json',
+    ];
+    if ($idem) {
+        $headers[] = 'Idempotency-Key: ' . $idem;
+    }
+
+    $ch = curl_init(ATLAS_BASE . $path);
+    curl_setopt_array($ch, [
+        CURLOPT_RETURNTRANSFER =&gt; true,
+        CURLOPT_CUSTOMREQUEST  =&gt; $method,
+        CURLOPT_HTTPHEADER     =&gt; $headers,
+        CURLOPT_TIMEOUT        =&gt; 100,
+    ]);
+    if ($body !== null) {
+        curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($body, JSON_UNESCAPED_UNICODE));
+    }
+
+    $raw    = curl_exec($ch);
+    $status = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
+
+    return ['status' =&gt; $status, 'data' =&gt; json_decode($raw, true)];
+}</code></pre>
+<pre data-l="python"><code># نصب:  pip install requests
+import requests
+
+# ---------- تنظیمات ----------
+BASE = "__BASE__/api/rep/v1"
+KEY  = "atlas_rep_کلید_خودت_را_اینجا_بگذار"
+
+
+# یک درخواست به API می‌زند.
+# idem فقط برای «ساخت» و «تمدید» لازم است (جلوگیری از خرید تکراری).
+# خروجی: (کد HTTP، دیکشنری پاسخ)
+def atlas(method, path, body=None, idem=None):
+    headers = {"Authorization": "Bearer " + KEY}
+    if idem:
+        headers["Idempotency-Key"] = idem
+
+    r = requests.request(method, BASE + path, json=body,
+                         headers=headers, timeout=100)
+    return r.status_code, r.json()</code></pre>
+<pre data-l="node"><code>// Node.js نسخه ۱۸ به بالا (fetch داخلی دارد، نیاز به نصب چیزی نیست)
+
+// ---------- تنظیمات ----------
+const BASE = "__BASE__/api/rep/v1";
+const KEY  = "atlas_rep_کلید_خودت_را_اینجا_بگذار";
+
+/**
+ * یک درخواست به API می‌زند.
+ * idem فقط برای «ساخت» و «تمدید» لازم است (جلوگیری از خرید تکراری).
+ * خروجی: { status: کد HTTP, data: پاسخ }
+ */
+async function atlas(method, path, body = null, idem = null) {
+  const headers = {
+    "Authorization": "Bearer " + KEY,
+    "Content-Type": "application/json",
+  };
+  if (idem) headers["Idempotency-Key"] = idem;
+
+  const res = await fetch(BASE + path, {
+    method,
+    headers,
+    body: body ? JSON.stringify(body) : undefined,
+    signal: AbortSignal.timeout(100000),
+  });
+
+  return { status: res.status, data: await res.json() };
+}</code></pre>
+  </div>
+
+  <h3>ج) اولین درخواست: تست کلید</h3>
+  <div class="snip">
+<pre data-l="php"><code>$r = atlas('GET', '/ping');
+print_r($r['data']);</code></pre>
+<pre data-l="python"><code>status, data = atlas("GET", "/ping")
+print(data)</code></pre>
+<pre data-l="node"><code>const r = await atlas("GET", "/ping");
+console.log(r.data);</code></pre>
+  </div>
+  <p class="muted">پاسخ:</p>
+<pre class="res"><code>{ "ok": true, "api_version": "1.0", "server_time": 1756500000, "representative_id": 12 }</code></pre>
+  <p>اگر <code>ok: true</code> گرفتی، همه‌چیز آماده است ✅</p>
+
+  <div class="note">هزینه‌ی هر سرویسی که می‌سازی از <b>کیف پول نمایندگی خودت</b> کم می‌شود، با همان تعرفه‌ای که در ربات می‌بینی. پس کیف پول را شارژ نگه دار.</div>
 </section>
 
+<!-- ═══════════════════════ 2 ═══════════════════════ -->
 <section id="auth">
-  <h2>احراز هویت</h2>
-  <p>کلید را در هدر بفرست:</p>
-<pre><code>Authorization: Bearer atlas_rep_XXXXXXXXXXXXXXXXXXXX</code></pre>
-  <p>یا (معادل آن):</p>
-<pre><code>X-API-Key: atlas_rep_XXXXXXXXXXXXXXXXXXXX</code></pre>
+  <h2>۲. کلید و دسترسی</h2>
+  <p>کلید در هدر <code>Authorization</code> می‌رود (تابع <code>atlas()</code> این کار را برایت می‌کند):</p>
+<pre><code>Authorization: Bearer atlas_rep_XXXXXXXXXXXX</code></pre>
   <table>
     <tr><th>موضوع</th><th>توضیح</th></tr>
-    <tr><td>Scope</td><td><code>read</code> فقط خواندن، <code>write</code> ساخت و تغییر. کلید پیش‌فرض هر دو را دارد.</td></tr>
-    <tr><td>محدودیت IP</td><td>اختیاری. اگر برای کلیدت IP ثبت شده باشد، فقط از همان IPها کار می‌کند.</td></tr>
-    <tr><td>لغو کلید</td><td>هر زمان از داخل ربات. اگر نمایندگی‌ات لغو یا حسابت مسدود شود، همه‌ی کلیدها بلافاصله از کار می‌افتند.</td></tr>
-    <tr><td>تعداد کلید</td><td>حداکثر ۳ کلید فعال هم‌زمان.</td></tr>
+    <tr><td>تعداد کلید</td><td>حداکثر <b>۳ کلید فعال</b> هم‌زمان برای هر نماینده.</td></tr>
+    <tr><td>سطح دسترسی</td><td><code>read</code> = فقط خواندن، <code>write</code> = ساخت و تغییر. کلیدی که از ربات می‌گیری هر دو را دارد.</td></tr>
+    <tr><td>محدودیت IP</td><td>اختیاری. اگر سرورت IP ثابت دارد، از پشتیبانی بخواه کلیدت را به همان IP قفل کند.</td></tr>
+    <tr><td>لغو</td><td>هر زمان از داخل ربات. اگر نمایندگی‌ات لغو یا حسابت مسدود شود، <b>همه‌ی کلیدها همان لحظه از کار می‌افتند</b>.</td></tr>
+    <tr><td>بازیابی</td><td><b>ممکن نیست.</b> ما فقط اثر انگشت (hash) کلید را نگه می‌داریم. گمش کردی؟ یکی جدید بساز.</td></tr>
   </table>
 </section>
 
+<!-- ═══════════════════════ 3 ═══════════════════════ -->
 <section id="rules">
-  <h2>قواعد عمومی</h2>
+  <h2>۳. قواعد عمومی</h2>
   <ul>
-    <li>همه‌ی درخواست‌ها و پاسخ‌ها <b>JSON</b> هستند (<code>Content-Type: application/json</code>).</li>
-    <li>پاسخ موفق همیشه <code>"ok": true</code> دارد؛ پاسخ ناموفق <code>"ok": false</code> به‌همراه <code>error</code> (کد ماشینی) و <code>message</code> (متن فارسی).</li>
-    <li>مبالغ همه به <b>تومان</b> و عدد صحیح‌اند.</li>
-    <li>زمان‌ها <b>epoch میلی‌ثانیه</b> هستند (مثلاً <code>expires_at</code>). عدد <code>0</code> یعنی «بدون انقضا / هنوز شروع نشده».</li>
-    <li><code>traffic_gb: 0</code> یعنی <b>نامحدود</b> — آن را «صفر گیگ» تفسیر نکن.</li>
-    <li>محدودیت نرخ: به‌صورت پیش‌فرض <b>۱۲۰ درخواست در دقیقه</b> برای هر کلید. هدرهای <code>X-RateLimit-Limit</code>، <code>X-RateLimit-Remaining</code> و <code>X-RateLimit-Reset</code> در هر پاسخ برمی‌گردند.</li>
+    <li>درخواست و پاسخ همیشه <b>JSON</b> است.</li>
+    <li>موفق: <code>"ok": true</code> — ناموفق: <code>"ok": false</code> به‌همراه <code>error</code> (کد انگلیسی برای برنامه) و <code>message</code> (متن فارسی برای نمایش به کاربر).</li>
+    <li>مبالغ به <b>تومان</b> و عدد صحیح‌اند.</li>
+    <li>زمان‌ها <b>epoch میلی‌ثانیه</b>‌اند. <code>0</code> یعنی «بدون انقضا» یا «هنوز شروع نشده».</li>
+    <li><code>traffic_gb: 0</code> یعنی <b>نامحدود</b> — آن را «صفر گیگ» حساب نکن.</li>
+    <li>محدودیت سرعت: <b>۱۲۰ درخواست در دقیقه</b> برای هر کلید. باقی‌مانده در هدر <code>X-RateLimit-Remaining</code> برمی‌گردد.</li>
   </ul>
+
+  <div class="warn">
+    <b>⏱ زمان پاسخ و خطای 524.</b> ساخت هر سرویس روی <b>همه‌ی سرورها</b> انجام می‌شود و می‌تواند تا حدود یک دقیقه طول بکشد.
+    سایت ما پشت Cloudflare است و Cloudflare بعد از حدود <b>۱۰۰ ثانیه</b> ارتباط را می‌بندد و خطای <code>524</code> می‌دهد —
+    <b>ولی سرور کارش را تمام می‌کند و سرویس ساخته می‌شود.</b> پس:
+    <ul style="margin:8px 0 0">
+      <li>در هر درخواست حداکثر <b>۳ تا ۵ سرویس</b> بساز (<code>count</code>)، نه ۱۰ تا.</li>
+      <li>حتماً <code>Idempotency-Key</code> بفرست تا اگر مجبور شدی دوباره بفرستی، دوباره پول کم نشود (بخش بعد).</li>
+    </ul>
+  </div>
 </section>
 
+<!-- ═══════════════════════ 4 ═══════════════════════ -->
 <section id="idem">
-  <h2>جلوگیری از خرید تکراری (Idempotency)</h2>
-  <p>اگر درخواست ساخت یا تمدید به‌خاطر قطعی شبکه timeout شد، <b>دوباره فرستادن آن نباید دو بار پول کم کند</b>. برای این کار روی درخواست‌های <code>POST /services</code> و <code>POST /services/{id}/renew</code> این هدر را بفرست:</p>
-<pre><code>Idempotency-Key: order-4471-attempt-1</code></pre>
-  <ul>
-    <li>اگر همان کلید با <b>همان بدنه</b> دوباره بیاید، پاسخ اولیه عیناً برگردانده می‌شود (<code>idempotent_replay: true</code>) و پول دوباره کم نمی‌شود.</li>
-    <li>اگر همان کلید با <b>بدنه‌ی متفاوت</b> بیاید → خطای <code>409 idempotency_conflict</code>.</li>
-    <li>اگر درخواست قبلی هنوز در حال پردازش باشد → <code>409 request_in_flight</code>؛ چند ثانیه بعد دوباره امتحان کن.</li>
-    <li>کلیدها ۲۴ ساعت نگه داشته می‌شوند. برای هر خرید یک کلید یکتا بساز.</li>
-  </ul>
-  <div class="warn">توصیه‌ی جدی: برای هر سفارش مشتری در ربات خودت یک شناسه‌ی یکتا بساز و همان را به‌عنوان <code>Idempotency-Key</code> بفرست.</div>
-</section>
+  <h2>۴. جلوگیری از خرید تکراری (مهم‌ترین بخش)</h2>
+  <p>هر بار که «ساخت» یا «تمدید» می‌زنی، یک <b>شناسه‌ی یکتا</b> هم بفرست — مثلاً شماره‌ی سفارش مشتری در ربات خودت:</p>
+  <div class="snip">
+<pre data-l="php"><code>$r = atlas('POST', '/services', ['package_id' =&gt; 3], 'order-1001');
+//                                                     ↑ شناسه‌ی یکتای همین سفارش</code></pre>
+<pre data-l="python"><code>status, data = atlas("POST", "/services", {"package_id": 3}, "order-1001")
+#                                                             ↑ شناسه‌ی یکتای همین سفارش</code></pre>
+<pre data-l="node"><code>const r = await atlas("POST", "/services", { package_id: 3 }, "order-1001");
+//                                                             ↑ شناسه‌ی یکتای همین سفارش</code></pre>
+  </div>
 
-<section id="errors">
-  <h2>خطاها</h2>
   <table>
-    <tr><th class="ltr">error</th><th>HTTP</th><th>معنی</th></tr>
-    <tr><td class="ltr">missing_key</td><td>401</td><td>هدر کلید فرستاده نشده.</td></tr>
-    <tr><td class="ltr">invalid_key</td><td>401</td><td>کلید اشتباه یا لغو شده.</td></tr>
-    <tr><td class="ltr">not_a_representative</td><td>403</td><td>حساب دیگر نماینده نیست.</td></tr>
-    <tr><td class="ltr">account_blocked</td><td>403</td><td>حساب مسدود است.</td></tr>
-    <tr><td class="ltr">ip_not_allowed</td><td>403</td><td>IP در لیست مجاز کلید نیست.</td></tr>
-    <tr><td class="ltr">insufficient_scope</td><td>403</td><td>کلید دسترسی نوشتن ندارد.</td></tr>
-    <tr><td class="ltr">topup_required</td><td>403</td><td>حداقل شارژ اولیه‌ی نمایندگی انجام نشده.</td></tr>
-    <tr><td class="ltr">rate_limited</td><td>429</td><td>تعداد درخواست بیش از حد. <code>Retry-After</code> را ببین.</td></tr>
-    <tr><td class="ltr">invalid_request</td><td>400</td><td>پارامترها ناقص یا نامعتبر.</td></tr>
-    <tr><td class="ltr">package_unavailable</td><td>400</td><td>پکیج وجود ندارد یا غیرفعال است.</td></tr>
-    <tr><td class="ltr">custom_pricing_unavailable</td><td>400</td><td>تعرفه‌ی اختصاصی برای حجم دلخواه تنظیم نشده؛ از <code>package_id</code> استفاده کن.</td></tr>
-    <tr><td class="ltr">insufficient_balance</td><td>402</td><td>موجودی کیف پول کافی نیست.</td></tr>
-    <tr><td class="ltr">service_not_found</td><td>404</td><td>سرویس پیدا نشد یا مال تو نیست.</td></tr>
-    <tr><td class="ltr">provisioning_failed</td><td>502</td><td>ساخت روی سرورها ناموفق بود؛ <b>مبلغ برگشت خورد</b>.</td></tr>
-    <tr><td class="ltr">renew_failed</td><td>502</td><td>تمدید ناموفق بود؛ <b>مبلغ برگشت خورد</b>.</td></tr>
-    <tr><td class="ltr">trial_disabled / trial_limit_reached</td><td>403 / 429</td><td>تست غیرفعال است یا سهمیه‌ی امروز پر شده.</td></tr>
-    <tr><td class="ltr">api_disabled</td><td>503</td><td>API موقتاً توسط ادمین خاموش شده.</td></tr>
+    <tr><th>اگر…</th><th>نتیجه</th></tr>
+    <tr><td>همان شناسه + همان درخواست را دوباره بفرستی</td><td>پاسخ دفعه‌ی اول عیناً برمی‌گردد (<code>idempotent_replay: true</code>). <b>پول دوباره کم نمی‌شود.</b></td></tr>
+    <tr><td>درخواست قبلی هنوز در حال انجام باشد</td><td><code>409 request_in_flight</code> — چند ثانیه صبر کن و دوباره بپرس</td></tr>
+    <tr><td>همان شناسه ولی درخواست متفاوت</td><td><code>409 idempotency_conflict</code> — برای سفارش جدید شناسه‌ی جدید بساز</td></tr>
   </table>
+
+  <div class="note">
+    <b>دستور کار وقتی timeout یا 524 گرفتی:</b> نترس و سفارش را دوباره از صفر نساز.
+    همان درخواست را با <b>همان شناسه</b> بفرست. اگر <code>409 request_in_flight</code> گرفتی،
+    ۵ ثانیه صبر کن و دوباره بفرست تا پاسخ واقعی را بگیری. هرگز دو بار پول کم نمی‌شود.
+    (کد آماده‌اش در <a href="#full">بخش ۷</a> هست.)
+  </div>
+  <p class="muted">شناسه‌ها ۲۴ ساعت نگه داشته می‌شوند.</p>
 </section>
 
+<!-- ═══════════════════════ 5 ═══════════════════════ -->
 <section id="endpoints">
-  <h2>لیست Endpointها</h2>
-  <p class="muted">همه‌ی آدرس‌ها با <code>__BASE__/api/rep/v1</code> شروع می‌شوند.</p>
-
-  <div class="ep"><span class="m get">GET</span><span class="path">/ping</span></div>
-  <p>تست سلامت کلید.</p>
+  <h2>۵. دستورها</h2>
 
   <div class="ep"><span class="m get">GET</span><span class="path">/me</span></div>
-  <p>اطلاعات حساب: موجودی، برند، تعرفه‌ها، سهمیه‌ی تست، آمار فروش.</p>
-<pre><code>{
+  <p>موجودی، برند، تعرفه‌ها و آمار تو.</p>
+  <div class="snip">
+<pre data-l="php"><code>$r = atlas('GET', '/me');
+echo $r['data']['representative']['balance'];   // موجودی به تومان</code></pre>
+<pre data-l="python"><code>status, data = atlas("GET", "/me")
+print(data["representative"]["balance"])   # موجودی به تومان</code></pre>
+<pre data-l="node"><code>const r = await atlas("GET", "/me");
+console.log(r.data.representative.balance);   // موجودی به تومان</code></pre>
+  </div>
+<pre class="res"><code>{
   "ok": true,
   "representative": { "id": 12, "brand_name": "MyVPN", "balance": 4200000 },
   "pricing": { "price_per_gb": 3500, "unlimited_price": 180000, "discount_percent": 0 },
@@ -189,173 +351,494 @@ _PAGE = r"""<!doctype html>
 
   <div class="ep"><span class="m get">GET</span><span class="path">/packages</span></div>
   <p>پکیج‌های قابل فروش، با <b>قیمت نمایندگی خودت</b>.</p>
-<pre><code>{
+  <div class="snip">
+<pre data-l="php"><code>$r = atlas('GET', '/packages');
+foreach ($r['data']['packages'] as $p) {
+    echo $p['id'] . ' - ' . $p['name'] . ' - ' . number_format($p['price']) . " تومان\n";
+}</code></pre>
+<pre data-l="python"><code>status, data = atlas("GET", "/packages")
+for p in data["packages"]:
+    print(p["id"], p["name"], f"{p['price']:,} تومان")</code></pre>
+<pre data-l="node"><code>const r = await atlas("GET", "/packages");
+for (const p of r.data.packages) {
+  console.log(p.id, p.name, p.price.toLocaleString() + " تومان");
+}</code></pre>
+  </div>
+<pre class="res"><code>{
   "ok": true,
   "packages": [
     { "id": 3, "name": "۳۰ گیگ یک‌ماهه", "traffic_gb": 30, "duration_days": 30,
       "unlimited": false, "price": 105000, "list_price": 180000 }
   ]
 }</code></pre>
+  <p class="muted"><code>price</code> = چیزی که از تو کم می‌شود · <code>list_price</code> = قیمت عمومی سایت.</p>
 
   <div class="ep"><span class="m post">POST</span><span class="path">/services</span></div>
-  <p>ساخت سرویس برای مشتری و کسر هزینه از کیف پول.</p>
+  <p>ساخت سرویس برای مشتری. پول همان لحظه از کیف پولت کم می‌شود.</p>
   <table>
     <tr><th>فیلد</th><th>نوع</th><th>توضیح</th></tr>
-    <tr><td class="ltr">package_id</td><td>int</td><td>حالت اول: خرید بر اساس پکیج.</td></tr>
-    <tr><td class="ltr">traffic_gb</td><td>number</td><td>حالت دوم: حجم دلخواه. <code>0</code> = نامحدود.</td></tr>
-    <tr><td class="ltr">duration_days</td><td>int</td><td>همراه حالت دوم، الزامی.</td></tr>
-    <tr><td class="ltr">name</td><td>string</td><td>نام نمایشی سرویس (اختیاری).</td></tr>
-    <tr><td class="ltr">names</td><td>string[]</td><td>نام مجزا برای هر سرویس در خرید گروهی.</td></tr>
-    <tr><td class="ltr">count</td><td>int</td><td>تعداد (۱ تا ۱۰، پیش‌فرض ۱).</td></tr>
-    <tr><td class="ltr">note</td><td>string</td><td>یادداشت داخلی روی سفارش.</td></tr>
+    <tr><td class="ltr">package_id</td><td>عدد</td><td><b>روش اول:</b> خرید بر اساس پکیج آماده</td></tr>
+    <tr><td class="ltr">traffic_gb</td><td>عدد</td><td><b>روش دوم:</b> حجم دلخواه. <code>0</code> = نامحدود</td></tr>
+    <tr><td class="ltr">duration_days</td><td>عدد</td><td>همراه روش دوم، الزامی</td></tr>
+    <tr><td class="ltr">name</td><td>متن</td><td>نام سرویس (اسم مشتری) — اختیاری</td></tr>
+    <tr><td class="ltr">count</td><td>عدد</td><td>تعداد، ۱ تا ۱۰ (پیش‌فرض ۱). پشت Cloudflare بیشتر از ۵ نگذار.</td></tr>
+    <tr><td class="ltr">names</td><td>لیست متن</td><td>نام جدا برای هر سرویس در خرید گروهی</td></tr>
   </table>
-<pre><code>POST /api/rep/v1/services
-Idempotency-Key: cust-8891
+  <div class="snip">
+<pre data-l="php"><code>$r = atlas('POST', '/services', [
+    'package_id' =&gt; 3,
+    'name'       =&gt; 'ali-mobile',
+    'count'      =&gt; 1,
+], 'order-1001');
 
-{ "package_id": 3, "name": "ali-mobile", "count": 2 }
-
-→ 201
-{
-  "ok": true, "order_id": 9134, "requested": 2, "created": 2,
-  "charged": 210000, "refunded": 0, "balance": 3990000,
-  "services": [
-    { "id": 4471, "name": "ali-mobile-1", "status": "pending", "unlimited": false,
-      "traffic_gb": 30, "used_bytes": 0, "expires_at": 0, "days_left": null,
-      "starts_on_first_use": true,
-      "subscription_url": "__BASE__/sub/AbCdEf..." }
-  ]
+if (!empty($r['data']['ok'])) {
+    $link = $r['data']['services'][0]['subscription_url'];
+    echo "لینک مشتری: $link";
+} else {
+    echo "خطا: " . $r['data']['message'];
 }</code></pre>
-  <div class="note">اگر بخشی از سرویس‌ها ساخته نشود، کد <code>207</code> برمی‌گردد، <code>partial: true</code> ست می‌شود و <b>پول سرویس‌های ساخته‌نشده همان لحظه برگشت می‌خورد</b> (<code>refunded</code>).</div>
-  <p class="muted"><code>status</code> می‌تواند باشد: <code>active</code> (فعال)، <code>pending</code> (ساخته شده، هنوز اولین اتصال انجام نشده و زمان شروع نشده)، <code>disabled</code>، <code>expired</code>، <code>depleted</code> (حجم تمام شده).</p>
+<pre data-l="python"><code>status, data = atlas("POST", "/services", {
+    "package_id": 3,
+    "name": "ali-mobile",
+    "count": 1,
+}, "order-1001")
+
+if data.get("ok"):
+    link = data["services"][0]["subscription_url"]
+    print("لینک مشتری:", link)
+else:
+    print("خطا:", data["message"])</code></pre>
+<pre data-l="node"><code>const r = await atlas("POST", "/services", {
+  package_id: 3,
+  name: "ali-mobile",
+  count: 1,
+}, "order-1001");
+
+if (r.data.ok) {
+  const link = r.data.services[0].subscription_url;
+  console.log("لینک مشتری:", link);
+} else {
+  console.log("خطا:", r.data.message);
+}</code></pre>
+  </div>
+<pre class="res"><code>{
+  "ok": true, "order_id": 9134, "requested": 1, "created": 1,
+  "charged": 105000, "refunded": 0, "balance": 3990000,
+  "services": [{
+    "id": 4471,
+    "name": "ali-mobile",
+    "status": "pending",
+    "unlimited": false,
+    "traffic_gb": 30,
+    "used_bytes": 0,
+    "expires_at": 0,
+    "days_left": null,
+    "starts_on_first_use": true,
+    "subscription_url": "__BASE__/sub/AbCdEf..."
+  }]
+}</code></pre>
+  <p><b>معنی <code>status</code>:</b></p>
+  <table>
+    <tr><td class="ltr">active</td><td>فعال و در حال استفاده</td></tr>
+    <tr><td class="ltr">pending</td><td>ساخته شده، هنوز مشتری وصل نشده — زمان از اولین اتصال شروع می‌شود</td></tr>
+    <tr><td class="ltr">disabled</td><td>خودت قطعش کرده‌ای</td></tr>
+    <tr><td class="ltr">expired</td><td>زمانش تمام شده</td></tr>
+    <tr><td class="ltr">depleted</td><td>حجمش تمام شده</td></tr>
+  </table>
+  <div class="note">
+    <b>اگر بخشی از سرویس‌ها ساخته نشود</b> (مثلاً ۴ تا از ۵ تا)، کد <code>207</code> می‌گیری،
+    <code>partial: true</code> می‌آید و <b>پول سرویس‌های ساخته‌نشده همان لحظه برمی‌گردد</b> (<code>refunded</code>).
+    لازم نیست خودت حساب‌وکتاب کنی.
+  </div>
 
   <div class="ep"><span class="m get">GET</span><span class="path">/services</span></div>
-  <p>لیست سرویس‌ها. پارامترها: <code>page</code>، <code>per_page</code> (حداکثر ۱۰۰)، <code>q</code> (جستجو در نام)،
-     <code>sort</code> = <code>newest|oldest|name_az|expiry_soon|usage_desc</code>،
-     <code>filter</code> = <code>all|active|inactive|expired|expiring|near_limit|unlimited</code>.</p>
-<pre><code>GET /api/rep/v1/services?filter=expiring&sort=expiry_soon&per_page=50
-
-{ "ok": true, "services": [ ... ],
-  "pagination": { "page": 1, "per_page": 50, "total": 128, "pages": 3 } }</code></pre>
+  <p>لیست سرویس‌های تو، با صفحه‌بندی و فیلتر.</p>
+  <div class="snip">
+<pre data-l="php"><code>// سرویس‌هایی که تا ۳ روز دیگر منقضی می‌شوند (برای یادآوری تمدید به مشتری)
+$r = atlas('GET', '/services?filter=expiring&amp;sort=expiry_soon&amp;per_page=50');
+foreach ($r['data']['services'] as $s) {
+    echo $s['name'] . ' - ' . $s['days_left'] . " روز مانده\n";
+}</code></pre>
+<pre data-l="python"><code># سرویس‌هایی که تا ۳ روز دیگر منقضی می‌شوند (برای یادآوری تمدید به مشتری)
+status, data = atlas("GET", "/services?filter=expiring&sort=expiry_soon&per_page=50")
+for s in data["services"]:
+    print(s["name"], s["days_left"], "روز مانده")</code></pre>
+<pre data-l="node"><code>// سرویس‌هایی که تا ۳ روز دیگر منقضی می‌شوند (برای یادآوری تمدید به مشتری)
+const r = await atlas("GET", "/services?filter=expiring&sort=expiry_soon&per_page=50");
+for (const s of r.data.services) {
+  console.log(s.name, s.days_left, "روز مانده");
+}</code></pre>
+  </div>
+  <table>
+    <tr><th>پارامتر</th><th>مقدارها</th></tr>
+    <tr><td class="ltr">page / per_page</td><td>شماره‌ی صفحه و تعداد در صفحه (حداکثر ۱۰۰)</td></tr>
+    <tr><td class="ltr">q</td><td>جستجو در نام سرویس</td></tr>
+    <tr><td class="ltr">filter</td><td><code>all</code> · <code>active</code> · <code>inactive</code> · <code>expired</code> · <code>expiring</code> · <code>near_limit</code> · <code>unlimited</code></td></tr>
+    <tr><td class="ltr">sort</td><td><code>newest</code> · <code>oldest</code> · <code>name_az</code> · <code>expiry_soon</code> · <code>usage_desc</code></td></tr>
+  </table>
 
   <div class="ep"><span class="m get">GET</span><span class="path">/services/{id}</span></div>
-  <p>جزئیات یک سرویس + لینک تک‌تک سرورها (<code>nodes</code>) برای وقتی مشتری فقط یک کانفیگ می‌خواهد.</p>
+  <p>جزئیات یک سرویس، به‌همراه لینک <b>تک‌تک سرورها</b> (برای وقتی مشتری فقط یک کانفیگ می‌خواهد).</p>
+  <div class="snip">
+<pre data-l="php"><code>$r = atlas('GET', '/services/4471');
+$s = $r['data']['service'];
+echo "مصرف: " . round($s['used_bytes'] / 1073741824, 2) . " GB\n";
+foreach ($s['nodes'] as $n) {
+    echo $n['label'] . ': ' . $n['link'] . "\n";
+}</code></pre>
+<pre data-l="python"><code>status, data = atlas("GET", "/services/4471")
+s = data["service"]
+print("مصرف:", round(s["used_bytes"] / 1024**3, 2), "GB")
+for n in s["nodes"]:
+    print(n["label"], n["link"])</code></pre>
+<pre data-l="node"><code>const r = await atlas("GET", "/services/4471");
+const s = r.data.service;
+console.log("مصرف:", (s.used_bytes / 1073741824).toFixed(2), "GB");
+for (const n of s.nodes) {
+  console.log(n.label, n.link);
+}</code></pre>
+  </div>
 
   <div class="ep"><span class="m post">POST</span><span class="path">/services/{id}/renew</span></div>
-  <p>تمدید. بدنه دقیقاً مثل ساخت است (<code>package_id</code> یا <code>traffic_gb</code>+<code>duration_days</code>).</p>
-<pre><code>{ "package_id": 3 }
-
-→ { "ok": true, "order_id": 9140, "charged": 105000, "balance": 3885000,
-    "nodes_renewed": 6, "carried_over": true, "service": { ... } }</code></pre>
-  <p class="muted"><code>carried_over: true</code> یعنی سرویس هنوز حجم و زمان داشت و باقی‌مانده‌اش به بسته‌ی جدید اضافه شد.</p>
+  <p>تمدید. بدنه دقیقاً مثل ساخت است.</p>
+  <div class="snip">
+<pre data-l="php"><code>$r = atlas('POST', '/services/4471/renew', ['package_id' =&gt; 3], 'renew-1001');
+echo $r['data']['ok'] ? "تمدید شد" : $r['data']['message'];</code></pre>
+<pre data-l="python"><code>status, data = atlas("POST", "/services/4471/renew", {"package_id": 3}, "renew-1001")
+print("تمدید شد" if data.get("ok") else data["message"])</code></pre>
+<pre data-l="node"><code>const r = await atlas("POST", "/services/4471/renew", { package_id: 3 }, "renew-1001");
+console.log(r.data.ok ? "تمدید شد" : r.data.message);</code></pre>
+  </div>
+<pre class="res"><code>{ "ok": true, "order_id": 9140, "charged": 105000, "balance": 3885000,
+  "nodes_renewed": 6, "carried_over": true, "service": { ... } }</code></pre>
+  <p class="muted"><code>carried_over: true</code> یعنی سرویس هنوز حجم و زمان داشت و باقی‌مانده‌اش به بسته‌ی جدید <b>اضافه</b> شد.</p>
 
   <div class="ep"><span class="m post">POST</span><span class="path">/services/{id}/rename</span></div>
-<pre><code>{ "name": "ali-laptop" }</code></pre>
+  <div class="snip">
+<pre data-l="php"><code>atlas('POST', '/services/4471/rename', ['name' =&gt; 'ali-laptop']);</code></pre>
+<pre data-l="python"><code>atlas("POST", "/services/4471/rename", {"name": "ali-laptop"})</code></pre>
+<pre data-l="node"><code>await atlas("POST", "/services/4471/rename", { name: "ali-laptop" });</code></pre>
+  </div>
 
-  <div class="ep"><span class="m post">POST</span><span class="path">/services/{id}/disable</span> · <span class="path">/services/{id}/enable</span></div>
-  <p>قطع/وصل سرویس روی <b>همه‌ی سرورها</b>. برگشت‌پذیر است و پولی برنمی‌گردد. بدنه لازم ندارد.</p>
+  <div class="ep"><span class="m post">POST</span><span class="path">/services/{id}/disable</span> · <span class="path">/enable</span></div>
+  <p>قطع و وصل سرویس روی همه‌ی سرورها. برگشت‌پذیر است و پولی برنمی‌گردد. بدنه لازم ندارد.</p>
+  <div class="snip">
+<pre data-l="php"><code>atlas('POST', '/services/4471/disable');   // مشتری پول نداده؟ قطعش کن
+atlas('POST', '/services/4471/enable');    // پرداخت کرد؟ دوباره وصل</code></pre>
+<pre data-l="python"><code>atlas("POST", "/services/4471/disable")   # مشتری پول نداده؟ قطعش کن
+atlas("POST", "/services/4471/enable")    # پرداخت کرد؟ دوباره وصل</code></pre>
+<pre data-l="node"><code>await atlas("POST", "/services/4471/disable");   // مشتری پول نداده؟ قطعش کن
+await atlas("POST", "/services/4471/enable");    // پرداخت کرد؟ دوباره وصل</code></pre>
+  </div>
 
   <div class="ep"><span class="m post">POST</span><span class="path">/services/{id}/revoke</span></div>
-  <p>وقتی مشتری لینکش را با دیگران به اشتراک گذاشته: لینک قدیمی <b>کاملاً</b> از کار می‌افتد و لینک جدید می‌گیری. حجم، انقضا و مصرف حفظ می‌شود (این تمدید نیست). فقط روی سرویس <b>فعال</b> کار می‌کند.</p>
-<pre><code>→ { "ok": true, "subscription_url": "__BASE__/sub/NEW...", "rotated_nodes": 6, "failed_nodes": 0 }</code></pre>
+  <p>مشتری لینکش را به دوستانش داده؟ این دستور لینک قدیمی را <b>کاملاً</b> از کار می‌اندازد و لینک تازه می‌دهد.
+     حجم، انقضا و مصرف حفظ می‌شود — <b>این تمدید نیست و پولی نمی‌گیرد</b>. فقط روی سرویس <b>فعال</b> کار می‌کند.</p>
+  <div class="snip">
+<pre data-l="php"><code>$r = atlas('POST', '/services/4471/revoke');
+echo "لینک جدید: " . $r['data']['subscription_url'];</code></pre>
+<pre data-l="python"><code>status, data = atlas("POST", "/services/4471/revoke")
+print("لینک جدید:", data["subscription_url"])</code></pre>
+<pre data-l="node"><code>const r = await atlas("POST", "/services/4471/revoke");
+console.log("لینک جدید:", r.data.subscription_url);</code></pre>
+  </div>
 
   <div class="ep"><span class="m post">POST</span><span class="path">/services/{id}/delete</span></div>
-  <p>حذف دائمی از همه‌ی سرورها.</p>
-<pre><code>{ "confirm": true }</code></pre>
-  <div class="danger"><b>برگشت‌ناپذیر است و هیچ مبلغی برنمی‌گردد.</b> بدون <code>confirm: true</code> رد می‌شود. برای قطع موقت از <code>/disable</code> استفاده کن.</div>
+  <div class="snip">
+<pre data-l="php"><code>atlas('POST', '/services/4471/delete', ['confirm' =&gt; true]);</code></pre>
+<pre data-l="python"><code>atlas("POST", "/services/4471/delete", {"confirm": True})</code></pre>
+<pre data-l="node"><code>await atlas("POST", "/services/4471/delete", { confirm: true });</code></pre>
+  </div>
+  <div class="danger"><b>برگشت‌ناپذیر است و هیچ پولی برنمی‌گردد.</b> بدون <code>confirm: true</code> رد می‌شود.
+     برای قطع موقت از <code>/disable</code> استفاده کن.</div>
 
   <div class="ep"><span class="m post">POST</span><span class="path">/services/trial</span></div>
-  <p>ساخت اکانت تست رایگان از سهمیه‌ی روزانه‌ی نمایندگی (اگر ادمین فعال کرده باشد).</p>
-<pre><code>{ "name": "test-ali" }
+  <p>اکانت تست رایگان از سهمیه‌ی روزانه‌ی نمایندگی‌ات (اگر ادمین فعال کرده باشد). رایگان است.</p>
+  <div class="snip">
+<pre data-l="php"><code>$r = atlas('POST', '/services/trial', ['name' =&gt; 'test-ali']);
+echo $r['data']['service']['subscription_url'];</code></pre>
+<pre data-l="python"><code>status, data = atlas("POST", "/services/trial", {"name": "test-ali"})
+print(data["service"]["subscription_url"])</code></pre>
+<pre data-l="node"><code>const r = await atlas("POST", "/services/trial", { name: "test-ali" });
+console.log(r.data.service.subscription_url);</code></pre>
+  </div>
 
-→ { "ok": true, "trial_used_today": 2, "trial_daily_limit": 5, "service": { ... } }</code></pre>
-
-  <div class="ep"><span class="m get">GET</span><span class="path">/wallet</span></div>
-  <p>موجودی و آخرین تراکنش‌ها. پارامتر <code>limit</code> (پیش‌فرض ۲۰).</p>
-
-  <div class="ep"><span class="m get">GET</span><span class="path">/orders</span></div>
-  <p>سفارش‌های اخیر — سند حسابداری هر کسر از کیف پول. پارامتر <code>limit</code> (پیش‌فرض ۲۵).</p>
+  <div class="ep"><span class="m get">GET</span><span class="path">/wallet</span> · <span class="path">/orders</span></div>
+  <p>موجودی و تراکنش‌ها · سفارش‌های اخیر (سند حسابداری هر کسر از کیف پول). هر دو پارامتر <code>limit</code> دارند.</p>
+  <div class="snip">
+<pre data-l="php"><code>$w = atlas('GET', '/wallet?limit=10');
+echo "موجودی: " . number_format($w['data']['balance']) . " تومان";</code></pre>
+<pre data-l="python"><code>status, w = atlas("GET", "/wallet?limit=10")
+print("موجودی:", f"{w['balance']:,} تومان")</code></pre>
+<pre data-l="node"><code>const w = await atlas("GET", "/wallet?limit=10");
+console.log("موجودی:", w.data.balance.toLocaleString(), "تومان");</code></pre>
+  </div>
 </section>
 
-<section id="samples">
-  <h2>نمونه کد</h2>
+<!-- ═══════════════════════ 6 ═══════════════════════ -->
+<section id="errors">
+  <h2>۶. خطاها</h2>
+  <p>هر خطا این شکل را دارد — <code>error</code> برای برنامه‌ات، <code>message</code> برای نشان‌دادن به مشتری:</p>
+<pre class="res"><code>{ "ok": false, "error": "insufficient_balance",
+  "message": "موجودی کیف پول کافی نیست. لازم: 105,000 تومان، موجودی: 40,000 تومان.",
+  "required": 105000, "balance": 40000 }</code></pre>
+  <table>
+    <tr><th class="ltr">error</th><th>کد</th><th>یعنی چه و چه کار کنم</th></tr>
+    <tr><td class="ltr">missing_key</td><td>401</td><td>هدر کلید را نفرستاده‌ای</td></tr>
+    <tr><td class="ltr">invalid_key</td><td>401</td><td>کلید اشتباه یا لغو شده — از ربات کلید تازه بگیر</td></tr>
+    <tr><td class="ltr">not_a_representative</td><td>403</td><td>حساب دیگر نماینده نیست</td></tr>
+    <tr><td class="ltr">account_blocked</td><td>403</td><td>حساب مسدود است — با پشتیبانی تماس بگیر</td></tr>
+    <tr><td class="ltr">insufficient_scope</td><td>403</td><td>کلیدت فقط خواندنی است</td></tr>
+    <tr><td class="ltr">ip_not_allowed</td><td>403</td><td>از IP غیرمجاز درخواست زده‌ای</td></tr>
+    <tr><td class="ltr">topup_required</td><td>403</td><td>هنوز حداقل شارژ اولیه‌ی نمایندگی را انجام نداده‌ای</td></tr>
+    <tr><td class="ltr">rate_limited</td><td>429</td><td>خیلی سریع درخواست زده‌ای — به‌اندازه‌ی <code>Retry-After</code> ثانیه صبر کن</td></tr>
+    <tr><td class="ltr">invalid_request</td><td>400</td><td>پارامترها ناقص یا اشتباه‌اند</td></tr>
+    <tr><td class="ltr">package_unavailable</td><td>400</td><td>این پکیج وجود ندارد یا غیرفعال شده</td></tr>
+    <tr><td class="ltr">custom_pricing_unavailable</td><td>400</td><td>برای حجم دلخواه تعرفه نداری — از <code>package_id</code> استفاده کن</td></tr>
+    <tr><td class="ltr">insufficient_balance</td><td>402</td><td>کیف پولت را شارژ کن</td></tr>
+    <tr><td class="ltr">service_not_found</td><td>404</td><td>این سرویس وجود ندارد یا مال تو نیست</td></tr>
+    <tr><td class="ltr">confirmation_required</td><td>400</td><td>برای حذف باید <code>confirm: true</code> بفرستی</td></tr>
+    <tr><td class="ltr">provisioning_failed</td><td>502</td><td>ساخت روی سرورها انجام نشد — <b>پولت برگشت خورد</b>، دوباره تلاش کن</td></tr>
+    <tr><td class="ltr">renew_failed</td><td>502</td><td>تمدید انجام نشد — <b>پولت برگشت خورد</b></td></tr>
+    <tr><td class="ltr">request_in_flight</td><td>409</td><td>همین درخواست در حال انجام است — چند ثانیه صبر و دوباره</td></tr>
+    <tr><td class="ltr">idempotency_conflict</td><td>409</td><td>این شناسه قبلاً برای درخواست دیگری استفاده شده</td></tr>
+    <tr><td class="ltr">trial_limit_reached</td><td>429</td><td>سهمیه‌ی تست امروزت پر شده</td></tr>
+    <tr><td class="ltr">api_disabled</td><td>503</td><td>API موقتاً توسط ادمین خاموش شده</td></tr>
+  </table>
+</section>
 
-  <h3>cURL — ساخت یک سرویس</h3>
-<pre><code>curl -X POST __BASE__/api/rep/v1/services \
-  -H "Authorization: Bearer $ATLAS_KEY" \
-  -H "Content-Type: application/json" \
-  -H "Idempotency-Key: order-1001" \
-  -d '{"package_id": 3, "name": "ali", "count": 1}'</code></pre>
+<!-- ═══════════════════════ 7 ═══════════════════════ -->
+<section id="full">
+  <h2>۷. مثال کامل: فروش یک سرویس به مشتری</h2>
+  <p>این همان کدی است که در ربات خودت لازم داری: سرویس را می‌سازد، در برابر timeout و 524 مقاوم است،
+     و در هیچ حالتی دو بار پول کم نمی‌کند.</p>
+  <div class="snip">
+<pre data-l="php"><code>&lt;?php
+// تابع atlas() از بخش ۱ را بالای همین فایل بگذار.
 
-  <h3>Python (httpx) — کلاس آماده</h3>
-<pre><code>import httpx, uuid
+/**
+ * برای یک مشتری سرویس می‌سازد و لینک اشتراک را برمی‌گرداند.
+ * $orderId باید برای هر سفارش یکتا باشد (مثلاً شناسه‌ی سفارش در دیتابیس خودت).
+ */
+function sellService($orderId, $packageId, $customerName) {
+    // حداکثر ۳ بار تلاش — برای وقتی Cloudflare وسط کار قطع می‌کند.
+    for ($try = 1; $try &lt;= 3; $try++) {
+        $r = atlas('POST', '/services', [
+            'package_id' =&gt; $packageId,
+            'name'       =&gt; $customerName,
+        ], 'order-' . $orderId);          // ← همان شناسه در هر سه تلاش
 
-BASE = "__BASE__/api/rep/v1"
+        $data = $r['data'];
 
-class AtlasRep:
-    def __init__(self, key: str):
-        self.c = httpx.AsyncClient(
-            base_url=BASE,
-            headers={"Authorization": f"Bearer {key}"},
-            timeout=120,          # ساخت سرویس روی چند سرور زمان‌بر است
-        )
+        // درخواست قبلی هنوز در حال انجام است: صبر کن و دوباره بپرس.
+        if (isset($data['error']) &amp;&amp; $data['error'] === 'request_in_flight') {
+            sleep(8);
+            continue;
+        }
 
-    async def packages(self):
-        r = await self.c.get("/packages")
-        r.raise_for_status()
-        return r.json()["packages"]
+        // پاسخ قطعی گرفتیم (موفق یا ناموفق).
+        if ($data !== null) {
+            if (!empty($data['ok'])) {
+                return ['ok' =&gt; true, 'link' =&gt; $data['services'][0]['subscription_url']];
+            }
+            return ['ok' =&gt; false, 'error' =&gt; $data['message']];
+        }
 
-    async def create(self, package_id: int, name: str = "", count: int = 1):
-        r = await self.c.post(
-            "/services",
-            json={"package_id": package_id, "name": name, "count": count},
-            headers={"Idempotency-Key": str(uuid.uuid4())},
-        )
-        data = r.json()
-        if not data.get("ok"):
-            raise RuntimeError(data.get("message") or data.get("error"))
-        return data["services"]
+        // پاسخی نیامد (timeout / 524). سرور شاید کارش را تمام کرده باشد،
+        // پس با همان شناسه دوباره می‌پرسیم — پول دوباره کم نمی‌شود.
+        sleep(8);
+    }
 
-    async def renew(self, service_id: int, package_id: int):
-        r = await self.c.post(f"/services/{service_id}/renew",
-                              json={"package_id": package_id},
-                              headers={"Idempotency-Key": str(uuid.uuid4())})
-        return r.json()</code></pre>
+    return ['ok' =&gt; false, 'error' =&gt; 'پاسخی از سرور نگرفتیم. چند دقیقه بعد وضعیت سفارش را چک کن.'];
+}
 
-  <h3>Node.js (fetch)</h3>
-<pre><code>const BASE = "__BASE__/api/rep/v1";
+// ---------- استفاده ----------
+$res = sellService(1001, 3, 'ali-mobile');
 
-async function createService(key, packageId, name) {
-  const res = await fetch(`${BASE}/services`, {
-    method: "POST",
-    headers: {
-      "Authorization": `Bearer ${key}`,
-      "Content-Type": "application/json",
-      "Idempotency-Key": crypto.randomUUID(),
-    },
-    body: JSON.stringify({ package_id: packageId, name, count: 1 }),
-  });
-  const data = await res.json();
-  if (!data.ok) throw new Error(data.message || data.error);
-  return data.services[0].subscription_url;
+if ($res['ok']) {
+    echo "لینک اشتراک مشتری:\n" . $res['link'];
+} else {
+    echo "خطا: " . $res['error'];
 }</code></pre>
+<pre data-l="python"><code># تابع atlas() از بخش ۱ را بالای همین فایل بگذار.
+import time
 
-  <div class="note"><b>Timeout را کوتاه نگذار.</b> ساخت هر سرویس روی همه‌ی سرورها انجام می‌شود و ممکن است تا یک دقیقه طول بکشد. مقدار پیشنهادی: ۱۲۰ ثانیه، به‌همراه <code>Idempotency-Key</code> برای تلاش مجدد امن.</div>
+
+# برای یک مشتری سرویس می‌سازد و لینک اشتراک را برمی‌گرداند.
+# order_id باید برای هر سفارش یکتا باشد (مثلاً شناسه‌ی سفارش در دیتابیس خودت).
+def sell_service(order_id, package_id, customer_name):
+    # حداکثر ۳ بار تلاش — برای وقتی Cloudflare وسط کار قطع می‌کند.
+    for attempt in range(3):
+        try:
+            status, data = atlas("POST", "/services", {
+                "package_id": package_id,
+                "name": customer_name,
+            }, f"order-{order_id}")          # ← همان شناسه در هر سه تلاش
+        except requests.RequestException:
+            # پاسخی نیامد (timeout / 524). سرور شاید کارش را تمام کرده باشد،
+            # پس با همان شناسه دوباره می‌پرسیم — پول دوباره کم نمی‌شود.
+            time.sleep(8)
+            continue
+
+        # درخواست قبلی هنوز در حال انجام است: صبر کن و دوباره بپرس.
+        if data.get("error") == "request_in_flight":
+            time.sleep(8)
+            continue
+
+        # پاسخ قطعی گرفتیم (موفق یا ناموفق).
+        if data.get("ok"):
+            return True, data["services"][0]["subscription_url"]
+        return False, data.get("message", "خطای نامشخص")
+
+    return False, "پاسخی از سرور نگرفتیم. چند دقیقه بعد وضعیت سفارش را چک کن."
+
+
+# ---------- استفاده ----------
+ok, result = sell_service(1001, 3, "ali-mobile")
+
+if ok:
+    print("لینک اشتراک مشتری:")
+    print(result)
+else:
+    print("خطا:", result)</code></pre>
+<pre data-l="node"><code>// تابع atlas() از بخش ۱ را بالای همین فایل بگذار.
+
+const sleep = (ms) =&gt; new Promise((r) =&gt; setTimeout(r, ms));
+
+/**
+ * برای یک مشتری سرویس می‌سازد و لینک اشتراک را برمی‌گرداند.
+ * orderId باید برای هر سفارش یکتا باشد (مثلاً شناسه‌ی سفارش در دیتابیس خودت).
+ */
+async function sellService(orderId, packageId, customerName) {
+  // حداکثر ۳ بار تلاش — برای وقتی Cloudflare وسط کار قطع می‌کند.
+  for (let attempt = 0; attempt &lt; 3; attempt++) {
+    let data;
+    try {
+      const r = await atlas("POST", "/services", {
+        package_id: packageId,
+        name: customerName,
+      }, `order-${orderId}`);          // ← همان شناسه در هر سه تلاش
+      data = r.data;
+    } catch (e) {
+      // پاسخی نیامد (timeout / 524). سرور شاید کارش را تمام کرده باشد،
+      // پس با همان شناسه دوباره می‌پرسیم — پول دوباره کم نمی‌شود.
+      await sleep(8000);
+      continue;
+    }
+
+    // درخواست قبلی هنوز در حال انجام است: صبر کن و دوباره بپرس.
+    if (data.error === "request_in_flight") {
+      await sleep(8000);
+      continue;
+    }
+
+    // پاسخ قطعی گرفتیم (موفق یا ناموفق).
+    if (data.ok) return { ok: true, link: data.services[0].subscription_url };
+    return { ok: false, error: data.message };
+  }
+
+  return { ok: false, error: "پاسخی از سرور نگرفتیم. چند دقیقه بعد وضعیت سفارش را چک کن." };
+}
+
+// ---------- استفاده ----------
+const res = await sellService(1001, 3, "ali-mobile");
+
+if (res.ok) {
+  console.log("لینک اشتراک مشتری:");
+  console.log(res.link);
+} else {
+  console.log("خطا:", res.error);
+}</code></pre>
+  </div>
+  <div class="note">
+    اگر بعد از ۳ تلاش هم جواب نگرفتی، سفارش را دوباره نساز.
+    با <code>GET /orders</code> یا <code>GET /services</code> ببین ساخته شده یا نه.
+  </div>
 </section>
 
+<!-- ═══════════════════════ 8 ═══════════════════════ -->
 <section id="security">
-  <h2>امنیت — این‌ها را رعایت کن</h2>
+  <h2>۸. امنیت — این چند نکته را جدی بگیر</h2>
   <ul>
-    <li>کلید را <b>فقط روی سرور خودت</b> نگه دار. هرگز داخل اپلیکیشن موبایل، جاوااسکریپت مرورگر یا مخزن گیت عمومی نگذار — قابل استخراج است.</li>
-    <li>کلید = دسترسی به کیف پول تو. هرکس آن را داشته باشد می‌تواند سرویس بسازد و پولت را خرج کند.</li>
-    <li>اگر کلید لو رفت، همان لحظه از ربات <b>لغوش کن</b> و یکی جدید بساز.</li>
-    <li>حتماً از <b>HTTPS</b> استفاده کن.</li>
-    <li>اگر سرورت IP ثابت دارد، از ادمین بخواه کلیدت را به همان IP محدود کند.</li>
-    <li>برای ربات‌هایی که فقط گزارش می‌گیرند، کلید با دسترسی <code>read</code> بگیر.</li>
+    <li>کلید = <b>دسترسی به کیف پول تو</b>. هرکس آن را داشته باشد می‌تواند از موجودی‌ات سرویس بسازد.</li>
+    <li>کلید را <b>فقط روی سرور خودت</b> نگه دار. هرگز داخل اپ موبایل، کد جاوااسکریپت مرورگر یا مخزن گیت عمومی نگذار — به‌راحتی بیرون کشیده می‌شود.</li>
+    <li>کلید را در فایل تنظیمات یا متغیر محیطی بگذار، نه وسط کد.</li>
+    <li>اگر کلید لو رفت: همان لحظه از داخل ربات <b>لغوش کن</b> و یکی جدید بساز.</li>
+    <li>همیشه از <b>HTTPS</b> استفاده کن (همین آدرس بالا).</li>
+    <li>برای بخش‌هایی که فقط گزارش می‌گیرند، از پشتیبانی کلید <code>read</code> بخواه.</li>
   </ul>
 </section>
 
-<footer>__BRAND__ · API نمایندگان نسخه ۱٫۰</footer>
+<footer>__BRAND__ · API نمایندگان · نسخه ۱٫۰</footer>
 </div>
+
+<script>
+(function () {
+  // ── language switch: every sample on the page follows one choice ─────────
+  var bar = document.getElementById('langbar');
+  function setLang(l) {
+    document.body.dataset.lang = l;
+    bar.querySelectorAll('button').forEach(function (b) {
+      b.classList.toggle('on', b.dataset.l === l);
+    });
+    try { localStorage.setItem('atlas_api_lang', l); } catch (e) {}
+  }
+  bar.addEventListener('click', function (e) {
+    var b = e.target.closest('button');
+    if (b) setLang(b.dataset.l);
+  });
+  var saved = 'php';
+  try { saved = localStorage.getItem('atlas_api_lang') || 'php'; } catch (e) {}
+  setLang(saved);
+
+  // ── copy buttons ─────────────────────────────────────────────────────────
+  // Standalone <pre> blocks get wrapped so they can host a button too.
+  document.querySelectorAll('pre').forEach(function (pre) {
+    if (!pre.parentElement.classList.contains('snip')) {
+      var wrap = document.createElement('div');
+      wrap.className = 'snip';
+      pre.parentNode.insertBefore(wrap, pre);
+      wrap.appendChild(pre);
+    }
+  });
+
+  function copyText(text, btn) {
+    var done = function () {
+      btn.textContent = 'کپی شد ✓';
+      btn.classList.add('done');
+      setTimeout(function () { btn.textContent = 'کپی'; btn.classList.remove('done'); }, 1600);
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(done, function () {});
+      return;
+    }
+    // Older in-app browsers (Telegram's WebView included) have no clipboard
+    // API, so fall back to a throwaway textarea.
+    var ta = document.createElement('textarea');
+    ta.value = text;
+    document.body.appendChild(ta);
+    ta.select();
+    try { document.execCommand('copy'); done(); } catch (e) {}
+    document.body.removeChild(ta);
+  }
+
+  // ONE button per block, copying whichever language is currently on screen —
+  // a button per <pre> would stack three of them at the same coordinates.
+  document.querySelectorAll('.snip').forEach(function (snip) {
+    var btn = document.createElement('button');
+    btn.className = 'copy';
+    btn.type = 'button';
+    btn.textContent = 'کپی';
+    btn.addEventListener('click', function () {
+      var pres = snip.querySelectorAll('pre');
+      var visible = null;
+      pres.forEach(function (p) { if (p.offsetParent !== null && !visible) visible = p; });
+      copyText((visible || pres[0]).innerText, btn);
+    });
+    snip.appendChild(btn);
+  });
+})();
+</script>
 </body>
 </html>
 """
@@ -365,9 +848,10 @@ def docs_html(base_url: str, brand: str) -> str:
     """Render the reference page for this installation.
 
     ``base_url`` is whatever the owner published as ``public_base_url`` — the
-    same host that serves ``/sub/{token}`` — so every example on the page is
+    same host that serves ``/sub/{token}`` — so every sample on the page is
     copy-pasteable rather than a placeholder the reader has to substitute.
     """
     base = (base_url or "").rstrip("/") or "https://your-domain.com"
+    safe_base = base.replace("<", "&lt;").replace(">", "&gt;")
     safe_brand = (brand or "Atlas").replace("<", "&lt;").replace(">", "&gt;")[:60]
-    return _PAGE.replace("__BASE__", base.replace("<", "&lt;")).replace("__BRAND__", safe_brand)
+    return _PAGE.replace("__BASE__", safe_base).replace("__BRAND__", safe_brand)

@@ -60,7 +60,7 @@ bot/
 web/
   app.py           (5049)   FastAPI: admin JSON API + legacy Jinja pages + subscription serving (/sub) + mini-app API (/app/api) + proxy + logo + update. Secret-prefixed routes: /{S}/... where S=WEB_SECRET_PATH.
   rep_api.py       (959)    the `/api/rep/v1/*` routes a representative's own bot calls (§8c).
-  rep_api_docs.py  (373)    the Persian RTL reference page served at `/api/rep/docs`.
+  rep_api_docs.py  (857)    the Persian RTL reference page served at `/api/rep/docs` (PHP/Python/Node tabs).
   admin/src/       React admin panel (see §9). pages/*.jsx, components/{Shell,ui}.jsx, api.js, router.js.
   miniapp/src/App.jsx  Telegram mini-app (single file).
   templates/*.html Legacy Jinja panel (fallback at /{S}/dashboard; most pages migrated to React).
@@ -187,7 +187,8 @@ A representative pastes an API key into **their own bot/panel**, which then sell
 - Pricing comes from `core.pricing`, provisioning from `core.multi_subscription` — never a second implementation, or the API and the bot drift. An "unlimited" package's `traffic_gb` is the fair-use threshold: it changes **pricing** only, and is provisioned verbatim (§7).
 - Custom `traffic_gb`+`duration_days` is refused (`custom_pricing_unavailable`) when the rep has no per-GB/unlimited rate. The bot's bulk flow falls back to a hard-coded 10,000/GB; doing that through an API, where nobody reads a confirmation screen, would be silent mispricing.
 - `SERVICE_SORTS`/`SERVICE_FILTERS` in web/rep_api.py are a **published contract**, deliberately not shared with the panel's `SUB_SORTS` — they change only on purpose.
-- Docs live in TWO places that must move together: `web/rep_api_docs.py` (served at `/api/rep/docs`, public, fills in this install's real base URL) and `docs/REP_API.md` (the forwardable copy).
+- Docs live in TWO places that must move together: `web/rep_api_docs.py` (served at `/api/rep/docs`, public, fills in this install's real base URL) and `docs/REP_API.md` (the forwardable copy). Both carry the SAME samples in PHP, Python and Node.js, all built on one `atlas()` helper the reader pastes once — so an endpoint change is three snippets per doc, not three programs. A `"""` inside a Python sample would close the `r"""` template, so samples use `#` comments.
+- **Behind Cloudflare the docs must keep warning about 524.** CF cuts a request at ~100s while the server finishes provisioning anyway; the advice (`count` ≤ 5, always send `Idempotency-Key`, retry the same key through `request_in_flight`) is what stops a rep double-selling. `client_ip()` already reads `CF-Connecting-IP`, so rate limits and the IP allowlist are per-caller, not per-edge.
 
 ## 9. React admin panel (`web/admin/src`)
 - `api.js`: `BASE = window.__PANEL_BASE__` (secret). `api.get/post` (JSON), `api.form(path,obj)` (FormData; used for endpoints that read `request.form()` and/or redirect — treats redirect/HTML as success). Long-running ops poll job-log endpoints.

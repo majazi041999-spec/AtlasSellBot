@@ -1,10 +1,11 @@
 # راهنمای API نمایندگان
 
-> این همان متنی است که صفحه‌ی `https://<دامنه‌ی-شما>/api/rep/docs` نمایش می‌دهد.
-> آن صفحه آدرس واقعی سرور شما را داخل نمونه‌ها می‌گذارد، پس برای دادن به نماینده
-> **لینک همان صفحه بهتر است**. این فایل نسخه‌ی متنی و قابل فوروارد آن است.
+> **این نسخه‌ی متنی است.** نسخه‌ی اصلی و همیشه‌به‌روز، صفحه‌ی
+> `https://<دامنه‌ی-شما>/api/rep/docs` است که آدرس واقعی سرور تو را داخل
+> نمونه‌کدها می‌گذارد و تب PHP / Python / Node.js دارد — **برای دادن به نماینده
+> همان لینک را بفرست.**
 >
-> **برای توسعه‌دهنده:** اگر endpoint‌ای اضافه یا عوض شد، این فایل و
+> **برای توسعه‌دهنده:** اگر endpointای اضافه یا عوض شد، این فایل و
 > `web/rep_api_docs.py` باید با هم به‌روز شوند. مستنداتی که دروغ می‌گوید از
 > نداشتن مستندات بدتر است.
 
@@ -12,7 +13,7 @@
 
 ## این API چیست
 
-نماینده می‌تواند **ربات یا پنل خودش** را به سامانه وصل کند و به‌صورت خودکار:
+نماینده می‌تواند **ربات یا سایت خودش** را به سامانه وصل کند و خودکار:
 
 - سرویس بسازد (تکی یا گروهی)
 - تمدید کند
@@ -22,8 +23,7 @@
 - اکانت تست بسازد
 - موجودی و سفارش‌هایش را ببیند
 
-هزینه‌ی هر سرویس **از کیف پول نمایندگی خودِ او** کم می‌شود، با همان تعرفه‌ای که
-در ربات می‌بیند.
+هزینه از **کیف پول نمایندگی خودش** کم می‌شود، با همان تعرفه‌ای که در ربات می‌بیند.
 
 ---
 
@@ -36,8 +36,8 @@
 3. **«🔑 ساخت کلید جدید»**
 
 کلید **فقط یک بار** نمایش داده می‌شود (ما فقط hash آن را نگه می‌داریم و بازیابی
-ممکن نیست). هر نماینده تا **۳ کلید فعال** هم‌زمان می‌تواند داشته باشد و هر کدام
-را از همان صفحه لغو کند.
+ممکن نیست). هر نماینده تا **۳ کلید فعال** هم‌زمان، و هر کدام را از همان صفحه
+می‌تواند لغو کند.
 
 آدرس پایه:
 
@@ -45,106 +45,181 @@
 https://<دامنه>/api/rep/v1
 ```
 
-تست:
-
-```bash
-curl -H "Authorization: Bearer atlas_rep_XXXX" https://<دامنه>/api/rep/v1/ping
-```
-
 ---
 
-## ۲. احراز هویت
+## ۲. تابع پایه — یک بار کپی کن
 
-هدر:
+همه‌ی مثال‌های این راهنما فقط همین تابع `atlas()` را صدا می‌زنند.
 
-```http
-Authorization: Bearer atlas_rep_XXXXXXXXXXXXXXXXXXXX
+### PHP
+
+```php
+<?php
+// ---------- تنظیمات ----------
+define('ATLAS_BASE', 'https://<دامنه>/api/rep/v1');
+define('ATLAS_KEY',  'atlas_rep_کلید_خودت');
+
+// یک درخواست به API می‌زند.
+// $idem فقط برای «ساخت» و «تمدید» لازم است (جلوگیری از خرید تکراری).
+// خروجی: ['status' => کد HTTP, 'data' => آرایه‌ی پاسخ]
+function atlas($method, $path, $body = null, $idem = null) {
+    $headers = [
+        'Authorization: Bearer ' . ATLAS_KEY,
+        'Content-Type: application/json',
+    ];
+    if ($idem) {
+        $headers[] = 'Idempotency-Key: ' . $idem;
+    }
+
+    $ch = curl_init(ATLAS_BASE . $path);
+    curl_setopt_array($ch, [
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_CUSTOMREQUEST  => $method,
+        CURLOPT_HTTPHEADER     => $headers,
+        CURLOPT_TIMEOUT        => 100,
+    ]);
+    if ($body !== null) {
+        curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($body, JSON_UNESCAPED_UNICODE));
+    }
+
+    $raw    = curl_exec($ch);
+    $status = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
+
+    return ['status' => $status, 'data' => json_decode($raw, true)];
+}
 ```
 
-یا معادلش: `X-API-Key: atlas_rep_XXXX`
+### Python
 
-| موضوع | توضیح |
-|---|---|
-| Scope | `read` (خواندن) و `write` (ساخت/تغییر). کلید ساخته‌شده از ربات هر دو را دارد. |
-| محدودیت IP | اختیاری، برای کلیدهایی که ادمین به IP مشخص محدود کرده. |
-| لغو فوری | اگر نمایندگی لغو یا حساب مسدود شود، **همه‌ی کلیدها همان لحظه از کار می‌افتند** (بدون نیاز به لغو دستی). |
-| کلید خاموش | ادمین می‌تواند با تنظیم `rep_api_enabled=0` کل API را موقتاً ببندد. |
+```python
+# نصب:  pip install requests
+import requests
+
+# ---------- تنظیمات ----------
+BASE = "https://<دامنه>/api/rep/v1"
+KEY  = "atlas_rep_کلید_خودت"
+
+# یک درخواست به API می‌زند.
+# idem فقط برای «ساخت» و «تمدید» لازم است (جلوگیری از خرید تکراری).
+# خروجی: (کد HTTP، دیکشنری پاسخ)
+def atlas(method, path, body=None, idem=None):
+    headers = {"Authorization": "Bearer " + KEY}
+    if idem:
+        headers["Idempotency-Key"] = idem
+
+    r = requests.request(method, BASE + path, json=body,
+                         headers=headers, timeout=100)
+    return r.status_code, r.json()
+```
+
+### Node.js (نسخه ۱۸ به بالا)
+
+```js
+// ---------- تنظیمات ----------
+const BASE = "https://<دامنه>/api/rep/v1";
+const KEY  = "atlas_rep_کلید_خودت";
+
+// یک درخواست به API می‌زند.
+// idem فقط برای «ساخت» و «تمدید» لازم است (جلوگیری از خرید تکراری).
+// خروجی: { status: کد HTTP, data: پاسخ }
+async function atlas(method, path, body = null, idem = null) {
+  const headers = {
+    "Authorization": "Bearer " + KEY,
+    "Content-Type": "application/json",
+  };
+  if (idem) headers["Idempotency-Key"] = idem;
+
+  const res = await fetch(BASE + path, {
+    method,
+    headers,
+    body: body ? JSON.stringify(body) : undefined,
+    signal: AbortSignal.timeout(100000),
+  });
+
+  return { status: res.status, data: await res.json() };
+}
+```
+
+تست کلید:
+
+```php
+$r = atlas('GET', '/ping');   print_r($r['data']);
+```
+```python
+status, data = atlas("GET", "/ping");   print(data)
+```
+```js
+const r = await atlas("GET", "/ping");   console.log(r.data);
+```
+
+پاسخ: `{ "ok": true, "api_version": "1.0", "representative_id": 12 }`
 
 ---
 
 ## ۳. قواعد عمومی
 
-- درخواست و پاسخ **JSON** است (`Content-Type: application/json`).
-- موفق: `"ok": true` — ناموفق: `"ok": false` + `error` (کد ماشینی) + `message` (متن فارسی).
+- درخواست و پاسخ **JSON** است.
+- موفق: `"ok": true` — ناموفق: `"ok": false` + `error` (کد انگلیسی برای برنامه) + `message` (متن فارسی برای مشتری).
 - مبالغ به **تومان** و عدد صحیح.
-- زمان‌ها **epoch میلی‌ثانیه**‌اند. `0` یعنی «بدون انقضا / هنوز شروع نشده».
-- `traffic_gb: 0` یعنی **نامحدود** — آن را «صفر گیگ» تفسیر نکنید.
-- محدودیت نرخ: پیش‌فرض **۱۲۰ درخواست در دقیقه** برای هر کلید. هدرهای
-  `X-RateLimit-Limit` / `X-RateLimit-Remaining` / `X-RateLimit-Reset` در هر پاسخ می‌آیند.
-- **Timeout سمت خودتان را کوتاه نگذارید.** ساخت هر سرویس روی همه‌ی سرورها انجام
-  می‌شود و ممکن است تا حدود یک دقیقه طول بکشد. مقدار پیشنهادی: **۱۲۰ ثانیه**.
+- زمان‌ها **epoch میلی‌ثانیه**. `0` یعنی «بدون انقضا / هنوز شروع نشده».
+- `traffic_gb: 0` یعنی **نامحدود** — «صفر گیگ» نیست.
+- محدودیت نرخ: **۱۲۰ درخواست در دقیقه** برای هر کلید (`X-RateLimit-Remaining` در پاسخ).
+
+### ⏱ زمان پاسخ و خطای 524 (مهم)
+
+ساخت هر سرویس روی **همه‌ی سرورها** انجام می‌شود و می‌تواند تا حدود یک دقیقه طول
+بکشد. اگر سامانه پشت **Cloudflare** باشد، Cloudflare بعد از حدود **۱۰۰ ثانیه**
+ارتباط را می‌بندد و `524` می‌دهد — **ولی سرور کارش را تمام می‌کند و سرویس ساخته
+می‌شود.** پس:
+
+- در هر درخواست حداکثر **۳ تا ۵ سرویس** بساز (`count`)، نه ۱۰ تا.
+- حتماً `Idempotency-Key` بفرست (بخش بعد).
+- `timeout` سمت خودت را روی ~۱۰۰ ثانیه بگذار.
 
 ---
 
 ## ۴. جلوگیری از خرید تکراری (Idempotency)
 
-اگر درخواست ساخت/تمدید به‌خاطر قطعی timeout شد، ارسال دوباره‌ی آن **نباید** دو بار
-پول کم کند. روی `POST /services` و `POST /services/{id}/renew` این هدر را بفرستید:
+روی `POST /services` و `POST /services/{id}/renew` یک **شناسه‌ی یکتا** بفرست —
+مثلاً شماره‌ی سفارش مشتری در ربات خودت:
 
 ```http
-Idempotency-Key: order-4471
+Idempotency-Key: order-1001
 ```
 
-| حالت | نتیجه |
+| اگر… | نتیجه |
 |---|---|
-| همان کلید + همان بدنه | پاسخ اول عیناً برمی‌گردد، با `idempotent_replay: true`. پول دوباره کم نمی‌شود. |
-| همان کلید + بدنه‌ی متفاوت | `409 idempotency_conflict` |
-| درخواست قبلی هنوز در حال اجرا | `409 request_in_flight` — چند ثانیه بعد دوباره تلاش کنید |
+| همان شناسه + همان بدنه | پاسخ اول عیناً برمی‌گردد (`idempotent_replay: true`). **پول دوباره کم نمی‌شود.** |
+| درخواست قبلی هنوز در حال انجام | `409 request_in_flight` — چند ثانیه صبر و دوباره بپرس |
+| همان شناسه + بدنه‌ی متفاوت | `409 idempotency_conflict` — برای سفارش جدید شناسه‌ی جدید بساز |
 
-کلیدها ۲۴ ساعت نگه‌داری می‌شوند. برای هر سفارش مشتری یک شناسه‌ی یکتا بسازید.
+**وقتی timeout یا 524 گرفتی:** سفارش را از صفر نساز. همان درخواست را با **همان
+شناسه** بفرست؛ اگر `409 request_in_flight` گرفتی، چند ثانیه صبر کن و دوباره
+بفرست تا پاسخ واقعی را بگیری. هرگز دو بار پول کم نمی‌شود. (کد آماده در بخش ۷.)
 
----
-
-## ۵. کدهای خطا
-
-| `error` | HTTP | معنی |
-|---|---|---|
-| `missing_key` | 401 | هدر کلید فرستاده نشده |
-| `invalid_key` | 401 | کلید اشتباه یا لغو شده |
-| `not_a_representative` | 403 | حساب دیگر نماینده نیست |
-| `account_blocked` | 403 | حساب مسدود است |
-| `ip_not_allowed` | 403 | IP در لیست مجاز کلید نیست |
-| `insufficient_scope` | 403 | کلید دسترسی `write` ندارد |
-| `topup_required` | 403 | حداقل شارژ اولیه‌ی نمایندگی انجام نشده |
-| `rate_limited` | 429 | تعداد درخواست بیش از حد (`Retry-After` را ببینید) |
-| `invalid_request` | 400 | پارامتر ناقص یا نامعتبر |
-| `package_unavailable` | 400 | پکیج وجود ندارد یا غیرفعال است |
-| `custom_pricing_unavailable` | 400 | تعرفه‌ی اختصاصی برای حجم دلخواه تنظیم نشده — از `package_id` استفاده کنید |
-| `insufficient_balance` | 402 | موجودی کیف پول کافی نیست |
-| `service_not_found` | 404 | سرویس پیدا نشد یا متعلق به شما نیست |
-| `confirmation_required` | 400 | حذف بدون `confirm: true` |
-| `provisioning_failed` | 502 | ساخت روی سرورها ناموفق — **مبلغ برگشت خورد** |
-| `renew_failed` | 502 | تمدید ناموفق — **مبلغ برگشت خورد** |
-| `revoke_failed` | 409/502 | تعویض لینک انجام نشد |
-| `trial_disabled` | 403 | اکانت تست غیرفعال است |
-| `trial_limit_reached` | 429 | سهمیه‌ی تست امروز پر شده |
-| `api_disabled` | 503 | API توسط ادمین خاموش شده |
+شناسه‌ها ۲۴ ساعت نگه داشته می‌شوند.
 
 ---
 
-## ۶. Endpointها
+## ۵. دستورها
 
 همه با `https://<دامنه>/api/rep/v1` شروع می‌شوند.
 
-### `GET /ping`
-تست سلامت کلید.
+### `GET /me` — حساب من
 
-```json
-{ "ok": true, "api_version": "1.0", "server_time": 1756500000, "representative_id": 12 }
+```php
+$r = atlas('GET', '/me');
+echo $r['data']['representative']['balance'];
 ```
-
-### `GET /me`
-اطلاعات حساب: موجودی، برند، تعرفه، سهمیه‌ی تست، آمار.
+```python
+status, data = atlas("GET", "/me")
+print(data["representative"]["balance"])
+```
+```js
+const r = await atlas("GET", "/me");
+console.log(r.data.representative.balance);
+```
 
 ```json
 {
@@ -156,214 +231,447 @@ Idempotency-Key: order-4471
 }
 ```
 
-### `GET /packages`
-پکیج‌های فعال با **قیمت نمایندگی خودتان** (`price`) در کنار قیمت عمومی (`list_price`).
+### `GET /packages` — پکیج‌ها با قیمت نمایندگی من
 
-### `POST /services`
-ساخت سرویس و کسر از کیف پول.
+```php
+$r = atlas('GET', '/packages');
+foreach ($r['data']['packages'] as $p) {
+    echo $p['id'] . ' - ' . $p['name'] . ' - ' . number_format($p['price']) . " تومان\n";
+}
+```
+```python
+status, data = atlas("GET", "/packages")
+for p in data["packages"]:
+    print(p["id"], p["name"], f"{p['price']:,} تومان")
+```
+```js
+const r = await atlas("GET", "/packages");
+for (const p of r.data.packages) console.log(p.id, p.name, p.price);
+```
+
+`price` = چیزی که از تو کم می‌شود · `list_price` = قیمت عمومی سایت.
+
+### `POST /services` — ساخت سرویس
 
 | فیلد | نوع | توضیح |
 |---|---|---|
-| `package_id` | int | حالت اول: خرید بر اساس پکیج |
-| `traffic_gb` | number | حالت دوم: حجم دلخواه. `0` = نامحدود |
-| `duration_days` | int | همراه حالت دوم، الزامی |
-| `name` | string | نام نمایشی سرویس |
-| `names` | string[] | نام مجزا برای هر سرویس در خرید گروهی |
-| `count` | int | تعداد، ۱ تا ۱۰ (پیش‌فرض ۱) |
-| `note` | string | یادداشت داخلی روی سفارش |
+| `package_id` | عدد | **روش اول:** خرید بر اساس پکیج |
+| `traffic_gb` | عدد | **روش دوم:** حجم دلخواه. `0` = نامحدود |
+| `duration_days` | عدد | همراه روش دوم، الزامی |
+| `name` | متن | نام سرویس (اسم مشتری) |
+| `names` | لیست متن | نام جدا برای هر سرویس در خرید گروهی |
+| `count` | عدد | تعداد، ۱ تا ۱۰ (پیش‌فرض ۱). پشت Cloudflare بیشتر از ۵ نگذار. |
+| `note` | متن | یادداشت داخلی روی سفارش |
 
-> حالت «حجم دلخواه» فقط وقتی کار می‌کند که ادمین برای شما تعرفه‌ی هر گیگ (یا
-> قیمت نامحدود) ثبت کرده باشد؛ در غیر این‌صورت `custom_pricing_unavailable`
-> می‌گیرید و باید از `package_id` استفاده کنید.
+> روش دوم فقط وقتی کار می‌کند که ادمین برایت تعرفه‌ی هر گیگ (یا قیمت نامحدود)
+> ثبت کرده باشد؛ وگرنه `custom_pricing_unavailable` می‌گیری و باید از
+> `package_id` استفاده کنی.
 
-```json
-POST /services   (Idempotency-Key: cust-8891)
-{ "package_id": 3, "name": "ali-mobile", "count": 2 }
+```php
+$r = atlas('POST', '/services', [
+    'package_id' => 3,
+    'name'       => 'ali-mobile',
+    'count'      => 1,
+], 'order-1001');
+
+if (!empty($r['data']['ok'])) {
+    echo "لینک مشتری: " . $r['data']['services'][0]['subscription_url'];
+} else {
+    echo "خطا: " . $r['data']['message'];
+}
+```
+```python
+status, data = atlas("POST", "/services", {
+    "package_id": 3, "name": "ali-mobile", "count": 1,
+}, "order-1001")
+
+if data.get("ok"):
+    print("لینک مشتری:", data["services"][0]["subscription_url"])
+else:
+    print("خطا:", data["message"])
+```
+```js
+const r = await atlas("POST", "/services",
+  { package_id: 3, name: "ali-mobile", count: 1 }, "order-1001");
+
+if (r.data.ok) console.log("لینک مشتری:", r.data.services[0].subscription_url);
+else console.log("خطا:", r.data.message);
 ```
 
 ```json
-201
 {
-  "ok": true, "order_id": 9134, "requested": 2, "created": 2,
-  "charged": 210000, "refunded": 0, "balance": 3990000,
-  "services": [
-    { "id": 4471, "name": "ali-mobile-1", "status": "pending", "unlimited": false,
-      "traffic_gb": 30, "used_bytes": 0, "remaining_bytes": 32212254720,
-      "usage_percent": 0, "expires_at": 0, "days_left": null,
-      "starts_on_first_use": true,
-      "subscription_url": "https://<دامنه>/sub/AbCdEf..." }
-  ]
+  "ok": true, "order_id": 9134, "requested": 1, "created": 1,
+  "charged": 105000, "refunded": 0, "balance": 3990000,
+  "services": [{
+    "id": 4471, "name": "ali-mobile", "status": "pending",
+    "unlimited": false, "traffic_gb": 30, "used_bytes": 0,
+    "expires_at": 0, "days_left": null, "starts_on_first_use": true,
+    "subscription_url": "https://<دامنه>/sub/AbCdEf..."
+  }]
 }
 ```
 
-**موفقیت نسبی:** اگر بخشی از سرویس‌ها ساخته نشود، کد `207` برمی‌گردد،
-`partial: true` می‌آید و **پول سرویس‌های ساخته‌نشده همان لحظه برگشت می‌خورد**
-(`refunded`). هیچ‌وقت لازم نیست خودتان مغایرت‌گیری کنید.
-
-مقادیر `status`:
+**معنی `status`:**
 
 | مقدار | معنی |
 |---|---|
-| `active` | فعال |
-| `pending` | ساخته شده، هنوز اولین اتصال انجام نشده (زمان شروع نشده) |
-| `disabled` | دستی قطع شده |
+| `active` | فعال و در حال استفاده |
+| `pending` | ساخته شده، هنوز مشتری وصل نشده — زمان از اولین اتصال شروع می‌شود |
+| `disabled` | خودت قطعش کرده‌ای |
 | `expired` | زمانش تمام شده |
 | `depleted` | حجمش تمام شده |
 
-### `GET /services`
-پارامترها:
+**موفقیت نسبی:** اگر بخشی از سرویس‌ها ساخته نشود، کد `207` می‌گیری،
+`partial: true` می‌آید و **پول سرویس‌های ساخته‌نشده همان لحظه برمی‌گردد**
+(`refunded`). لازم نیست خودت حساب‌وکتاب کنی.
 
-- `page`، `per_page` (حداکثر ۱۰۰)
-- `q` — جستجو در نام
-- `sort` = `newest` \| `oldest` \| `name_az` \| `expiry_soon` \| `usage_desc`
-- `filter` = `all` \| `active` \| `inactive` \| `expired` \| `expiring` \| `near_limit` \| `unlimited`
+### `GET /services` — لیست سرویس‌ها
 
-```json
-{ "ok": true, "services": [ ... ],
-  "pagination": { "page": 1, "per_page": 50, "total": 128, "pages": 3 } }
+| پارامتر | مقدارها |
+|---|---|
+| `page` / `per_page` | شماره‌ی صفحه و تعداد در صفحه (حداکثر ۱۰۰) |
+| `q` | جستجو در نام سرویس |
+| `filter` | `all` · `active` · `inactive` · `expired` · `expiring` · `near_limit` · `unlimited` |
+| `sort` | `newest` · `oldest` · `name_az` · `expiry_soon` · `usage_desc` |
+
+```php
+// سرویس‌هایی که نزدیک انقضا هستند — برای یادآوری تمدید به مشتری
+$r = atlas('GET', '/services?filter=expiring&sort=expiry_soon&per_page=50');
+foreach ($r['data']['services'] as $s) {
+    echo $s['name'] . ' - ' . $s['days_left'] . " روز مانده\n";
+}
+```
+```python
+# سرویس‌هایی که نزدیک انقضا هستند — برای یادآوری تمدید به مشتری
+status, data = atlas("GET", "/services?filter=expiring&sort=expiry_soon&per_page=50")
+for s in data["services"]:
+    print(s["name"], s["days_left"], "روز مانده")
+```
+```js
+// سرویس‌هایی که نزدیک انقضا هستند — برای یادآوری تمدید به مشتری
+const r = await atlas("GET", "/services?filter=expiring&sort=expiry_soon&per_page=50");
+for (const s of r.data.services) console.log(s.name, s.days_left);
 ```
 
-### `GET /services/{id}`
-جزئیات یک سرویس + آرایه‌ی `nodes` (لینک تک‌تک سرورها)، برای وقتی مشتری فقط یک
-کانفیگ می‌خواهد.
+### `GET /services/{id}` — جزئیات + لینک تک‌تک سرورها
 
-### `POST /services/{id}/renew`
-بدنه دقیقاً مثل ساخت (`package_id` یا `traffic_gb` + `duration_days`).
+```php
+$s = atlas('GET', '/services/4471')['data']['service'];
+foreach ($s['nodes'] as $n) { echo $n['label'] . ': ' . $n['link'] . "\n"; }
+```
+```python
+status, data = atlas("GET", "/services/4471")
+for n in data["service"]["nodes"]:
+    print(n["label"], n["link"])
+```
+```js
+const r = await atlas("GET", "/services/4471");
+for (const n of r.data.service.nodes) console.log(n.label, n.link);
+```
+
+### `POST /services/{id}/renew` — تمدید
+
+بدنه دقیقاً مثل ساخت.
+
+```php
+$r = atlas('POST', '/services/4471/renew', ['package_id' => 3], 'renew-1001');
+```
+```python
+status, data = atlas("POST", "/services/4471/renew", {"package_id": 3}, "renew-1001")
+```
+```js
+const r = await atlas("POST", "/services/4471/renew", { package_id: 3 }, "renew-1001");
+```
 
 ```json
 { "ok": true, "order_id": 9140, "charged": 105000, "balance": 3885000,
-  "nodes_renewed": 6, "carried_over": true, "service": { ... } }
+  "nodes_renewed": 6, "carried_over": true, "service": { } }
 ```
 
 `carried_over: true` یعنی سرویس هنوز حجم و زمان داشت و باقی‌مانده‌اش به بسته‌ی
-جدید اضافه شد.
+جدید **اضافه** شد.
 
-### `POST /services/{id}/rename`
-```json
-{ "name": "ali-laptop" }
+### `POST /services/{id}/rename` — تغییر نام
+
+```php
+atlas('POST', '/services/4471/rename', ['name' => 'ali-laptop']);
+```
+```python
+atlas("POST", "/services/4471/rename", {"name": "ali-laptop"})
+```
+```js
+await atlas("POST", "/services/4471/rename", { name: "ali-laptop" });
 ```
 
-### `POST /services/{id}/disable` و `POST /services/{id}/enable`
-قطع/وصل روی **همه‌ی سرورها**. برگشت‌پذیر، بدون بازگشت وجه. بدنه لازم ندارد.
+### `POST /services/{id}/disable` و `/enable` — قطع و وصل
 
-### `POST /services/{id}/revoke`
-وقتی مشتری لینکش را به اشتراک گذاشته: لینک قدیمی **کاملاً** از کار می‌افتد
-(هم توکن و هم UUID روی همه‌ی سرورها عوض می‌شود) و لینک تازه می‌گیرید. حجم،
-انقضا و مصرف حفظ می‌شود — **این تمدید نیست**. فقط روی سرویس **فعال** کار می‌کند.
+روی همه‌ی سرورها. برگشت‌پذیر، بدون بازگشت وجه. بدنه لازم ندارد.
 
-```json
-{ "ok": true, "subscription_url": "https://<دامنه>/sub/NEW...",
-  "rotated_nodes": 6, "failed_nodes": 0 }
+```php
+atlas('POST', '/services/4471/disable');   // مشتری پول نداده؟ قطعش کن
+atlas('POST', '/services/4471/enable');    // پرداخت کرد؟ دوباره وصل
+```
+```python
+atlas("POST", "/services/4471/disable")
+atlas("POST", "/services/4471/enable")
+```
+```js
+await atlas("POST", "/services/4471/disable");
+await atlas("POST", "/services/4471/enable");
 ```
 
-### `POST /services/{id}/delete`
-حذف دائمی از همه‌ی سرورها.
+### `POST /services/{id}/revoke` — باطل‌کردن لینک لو‌رفته
 
-```json
-{ "confirm": true }
+مشتری لینکش را به دیگران داده؟ این دستور لینک قدیمی را **کاملاً** از کار
+می‌اندازد (هم توکن و هم UUID روی همه‌ی سرورها عوض می‌شود) و لینک تازه می‌دهد.
+حجم، انقضا و مصرف حفظ می‌شود — **تمدید نیست و پولی نمی‌گیرد**. فقط روی سرویس
+**فعال** کار می‌کند.
+
+```php
+$r = atlas('POST', '/services/4471/revoke');
+echo "لینک جدید: " . $r['data']['subscription_url'];
+```
+```python
+status, data = atlas("POST", "/services/4471/revoke")
+print("لینک جدید:", data["subscription_url"])
+```
+```js
+const r = await atlas("POST", "/services/4471/revoke");
+console.log("لینک جدید:", r.data.subscription_url);
+```
+
+### `POST /services/{id}/delete` — حذف دائمی
+
+```php
+atlas('POST', '/services/4471/delete', ['confirm' => true]);
+```
+```python
+atlas("POST", "/services/4471/delete", {"confirm": True})
+```
+```js
+await atlas("POST", "/services/4471/delete", { confirm: true });
 ```
 
 > ⚠️ **برگشت‌ناپذیر و بدون بازگشت وجه.** بدون `confirm: true` رد می‌شود.
-> برای قطع موقت از `/disable` استفاده کنید.
+> برای قطع موقت از `/disable` استفاده کن.
 
-### `POST /services/trial`
-اکانت تست رایگان از سهمیه‌ی روزانه‌ی نمایندگی (اگر ادمین فعال کرده باشد).
+### `POST /services/trial` — اکانت تست رایگان
 
-```json
-{ "name": "test-ali" }
-→ { "ok": true, "trial_used_today": 2, "trial_daily_limit": 5, "service": { ... } }
+از سهمیه‌ی روزانه‌ی نمایندگی (اگر ادمین فعال کرده باشد). رایگان است.
+
+```php
+$r = atlas('POST', '/services/trial', ['name' => 'test-ali']);
+```
+```python
+status, data = atlas("POST", "/services/trial", {"name": "test-ali"})
+```
+```js
+const r = await atlas("POST", "/services/trial", { name: "test-ali" });
 ```
 
-### `GET /wallet`
-موجودی + آخرین تراکنش‌ها. پارامتر `limit` (پیش‌فرض ۲۰).
+### `GET /wallet` و `GET /orders`
 
-### `GET /orders`
-سفارش‌های اخیر — سند حسابداری هر کسر از کیف پول. پارامتر `limit` (پیش‌فرض ۲۵).
+موجودی و تراکنش‌ها · سفارش‌های اخیر (سند حسابداری هر کسر از کیف پول).
+هر دو پارامتر `limit` دارند.
+
+```php
+$w = atlas('GET', '/wallet?limit=10');
+echo number_format($w['data']['balance']);
+```
+```python
+status, w = atlas("GET", "/wallet?limit=10");   print(w["balance"])
+```
+```js
+const w = await atlas("GET", "/wallet?limit=10");   console.log(w.data.balance);
+```
 
 ---
 
-## ۷. نمونه کد
+## ۶. خطاها
 
-### cURL
+هر خطا این شکل را دارد — `error` برای برنامه‌ات، `message` برای نمایش به مشتری:
 
-```bash
-curl -X POST https://<دامنه>/api/rep/v1/services \
-  -H "Authorization: Bearer $ATLAS_KEY" \
-  -H "Content-Type: application/json" \
-  -H "Idempotency-Key: order-1001" \
-  -d '{"package_id": 3, "name": "ali", "count": 1}'
+```json
+{ "ok": false, "error": "insufficient_balance",
+  "message": "موجودی کیف پول کافی نیست. لازم: 105,000 تومان، موجودی: 40,000 تومان.",
+  "required": 105000, "balance": 40000 }
 ```
 
-### Python (httpx)
+| `error` | کد | یعنی چه و چه کار کنم |
+|---|---|---|
+| `missing_key` | 401 | هدر کلید را نفرستاده‌ای |
+| `invalid_key` | 401 | کلید اشتباه یا لغو شده — از ربات کلید تازه بگیر |
+| `not_a_representative` | 403 | حساب دیگر نماینده نیست |
+| `account_blocked` | 403 | حساب مسدود است — با پشتیبانی تماس بگیر |
+| `insufficient_scope` | 403 | کلیدت فقط خواندنی است |
+| `ip_not_allowed` | 403 | از IP غیرمجاز درخواست زده‌ای |
+| `topup_required` | 403 | هنوز حداقل شارژ اولیه‌ی نمایندگی را انجام نداده‌ای |
+| `rate_limited` | 429 | خیلی سریع درخواست زده‌ای — `Retry-After` ثانیه صبر کن |
+| `invalid_request` | 400 | پارامترها ناقص یا اشتباه‌اند |
+| `package_unavailable` | 400 | پکیج وجود ندارد یا غیرفعال است |
+| `custom_pricing_unavailable` | 400 | برای حجم دلخواه تعرفه نداری — از `package_id` استفاده کن |
+| `insufficient_balance` | 402 | کیف پولت را شارژ کن |
+| `service_not_found` | 404 | این سرویس وجود ندارد یا مال تو نیست |
+| `confirmation_required` | 400 | برای حذف باید `confirm: true` بفرستی |
+| `provisioning_failed` | 502 | ساخت انجام نشد — **پولت برگشت خورد**، دوباره تلاش کن |
+| `renew_failed` | 502 | تمدید انجام نشد — **پولت برگشت خورد** |
+| `request_in_flight` | 409 | همین درخواست در حال انجام است — چند ثانیه صبر و دوباره |
+| `idempotency_conflict` | 409 | این شناسه قبلاً برای درخواست دیگری استفاده شده |
+| `trial_limit_reached` | 429 | سهمیه‌ی تست امروزت پر شده |
+| `api_disabled` | 503 | API موقتاً توسط ادمین خاموش شده |
+
+---
+
+## ۷. مثال کامل: فروش یک سرویس به مشتری
+
+مقاوم در برابر timeout و 524، و در هیچ حالتی دو بار پول کم نمی‌کند.
+
+### PHP
+
+```php
+<?php
+// تابع atlas() از بخش ۲ را بالای همین فایل بگذار.
+
+// برای یک مشتری سرویس می‌سازد و لینک اشتراک را برمی‌گرداند.
+// $orderId باید برای هر سفارش یکتا باشد (شناسه‌ی سفارش در دیتابیس خودت).
+function sellService($orderId, $packageId, $customerName) {
+    // حداکثر ۳ بار تلاش — برای وقتی Cloudflare وسط کار قطع می‌کند.
+    for ($try = 1; $try <= 3; $try++) {
+        $r = atlas('POST', '/services', [
+            'package_id' => $packageId,
+            'name'       => $customerName,
+        ], 'order-' . $orderId);          // همان شناسه در هر سه تلاش
+
+        $data = $r['data'];
+
+        // درخواست قبلی هنوز در حال انجام است: صبر کن و دوباره بپرس.
+        if (isset($data['error']) && $data['error'] === 'request_in_flight') {
+            sleep(8);
+            continue;
+        }
+
+        // پاسخ قطعی گرفتیم (موفق یا ناموفق).
+        if ($data !== null) {
+            if (!empty($data['ok'])) {
+                return ['ok' => true, 'link' => $data['services'][0]['subscription_url']];
+            }
+            return ['ok' => false, 'error' => $data['message']];
+        }
+
+        // پاسخی نیامد (timeout / 524). سرور شاید کارش را تمام کرده باشد،
+        // پس با همان شناسه دوباره می‌پرسیم — پول دوباره کم نمی‌شود.
+        sleep(8);
+    }
+
+    return ['ok' => false, 'error' => 'پاسخی از سرور نگرفتیم. چند دقیقه بعد وضعیت سفارش را چک کن.'];
+}
+
+// ---------- استفاده ----------
+$res = sellService(1001, 3, 'ali-mobile');
+
+if ($res['ok']) {
+    echo "لینک اشتراک مشتری:\n" . $res['link'];
+} else {
+    echo "خطا: " . $res['error'];
+}
+```
+
+### Python
 
 ```python
-import httpx, uuid
+# تابع atlas() از بخش ۲ را بالای همین فایل بگذار.
+import time
 
-BASE = "https://<دامنه>/api/rep/v1"
+# برای یک مشتری سرویس می‌سازد و لینک اشتراک را برمی‌گرداند.
+# order_id باید برای هر سفارش یکتا باشد (شناسه‌ی سفارش در دیتابیس خودت).
+def sell_service(order_id, package_id, customer_name):
+    # حداکثر ۳ بار تلاش — برای وقتی Cloudflare وسط کار قطع می‌کند.
+    for attempt in range(3):
+        try:
+            status, data = atlas("POST", "/services", {
+                "package_id": package_id,
+                "name": customer_name,
+            }, f"order-{order_id}")          # همان شناسه در هر سه تلاش
+        except requests.RequestException:
+            # پاسخی نیامد (timeout / 524). سرور شاید کارش را تمام کرده باشد،
+            # پس با همان شناسه دوباره می‌پرسیم — پول دوباره کم نمی‌شود.
+            time.sleep(8)
+            continue
 
-class AtlasRep:
-    def __init__(self, key: str):
-        self.c = httpx.AsyncClient(
-            base_url=BASE,
-            headers={"Authorization": f"Bearer {key}"},
-            timeout=120,          # ساخت سرویس روی چند سرور زمان‌بر است
-        )
+        # درخواست قبلی هنوز در حال انجام است: صبر کن و دوباره بپرس.
+        if data.get("error") == "request_in_flight":
+            time.sleep(8)
+            continue
 
-    async def packages(self):
-        r = await self.c.get("/packages")
-        r.raise_for_status()
-        return r.json()["packages"]
+        # پاسخ قطعی گرفتیم (موفق یا ناموفق).
+        if data.get("ok"):
+            return True, data["services"][0]["subscription_url"]
+        return False, data.get("message", "خطای نامشخص")
 
-    async def create(self, package_id: int, name: str = "", count: int = 1):
-        r = await self.c.post(
-            "/services",
-            json={"package_id": package_id, "name": name, "count": count},
-            headers={"Idempotency-Key": str(uuid.uuid4())},
-        )
-        data = r.json()
-        if not data.get("ok"):
-            raise RuntimeError(data.get("message") or data.get("error"))
-        return data["services"]
+    return False, "پاسخی از سرور نگرفتیم. چند دقیقه بعد وضعیت سفارش را چک کن."
 
-    async def renew(self, service_id: int, package_id: int):
-        r = await self.c.post(
-            f"/services/{service_id}/renew",
-            json={"package_id": package_id},
-            headers={"Idempotency-Key": str(uuid.uuid4())},
-        )
-        return r.json()
+
+# ---------- استفاده ----------
+ok, result = sell_service(1001, 3, "ali-mobile")
+print("لینک اشتراک مشتری:\n" + result if ok else "خطا: " + result)
 ```
 
 ### Node.js
 
 ```js
-const BASE = "https://<دامنه>/api/rep/v1";
+// تابع atlas() از بخش ۲ را بالای همین فایل بگذار.
 
-async function createService(key, packageId, name) {
-  const res = await fetch(`${BASE}/services`, {
-    method: "POST",
-    headers: {
-      "Authorization": `Bearer ${key}`,
-      "Content-Type": "application/json",
-      "Idempotency-Key": crypto.randomUUID(),
-    },
-    body: JSON.stringify({ package_id: packageId, name, count: 1 }),
-  });
-  const data = await res.json();
-  if (!data.ok) throw new Error(data.message || data.error);
-  return data.services[0].subscription_url;
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// برای یک مشتری سرویس می‌سازد و لینک اشتراک را برمی‌گرداند.
+// orderId باید برای هر سفارش یکتا باشد (شناسه‌ی سفارش در دیتابیس خودت).
+async function sellService(orderId, packageId, customerName) {
+  // حداکثر ۳ بار تلاش — برای وقتی Cloudflare وسط کار قطع می‌کند.
+  for (let attempt = 0; attempt < 3; attempt++) {
+    let data;
+    try {
+      const r = await atlas("POST", "/services", {
+        package_id: packageId,
+        name: customerName,
+      }, `order-${orderId}`);          // همان شناسه در هر سه تلاش
+      data = r.data;
+    } catch (e) {
+      // پاسخی نیامد (timeout / 524). سرور شاید کارش را تمام کرده باشد،
+      // پس با همان شناسه دوباره می‌پرسیم — پول دوباره کم نمی‌شود.
+      await sleep(8000);
+      continue;
+    }
+
+    // درخواست قبلی هنوز در حال انجام است: صبر کن و دوباره بپرس.
+    if (data.error === "request_in_flight") {
+      await sleep(8000);
+      continue;
+    }
+
+    // پاسخ قطعی گرفتیم (موفق یا ناموفق).
+    if (data.ok) return { ok: true, link: data.services[0].subscription_url };
+    return { ok: false, error: data.message };
+  }
+
+  return { ok: false, error: "پاسخی از سرور نگرفتیم. چند دقیقه بعد وضعیت سفارش را چک کن." };
 }
+
+// ---------- استفاده ----------
+const res = await sellService(1001, 3, "ali-mobile");
+console.log(res.ok ? "لینک اشتراک مشتری:\n" + res.link : "خطا: " + res.error);
 ```
+
+> اگر بعد از ۳ تلاش هم جواب نگرفتی، سفارش را دوباره نساز.
+> با `GET /orders` یا `GET /services` ببین ساخته شده یا نه.
 
 ---
 
 ## ۸. امنیت
 
-- کلید را **فقط روی سرور خودتان** نگه دارید. هرگز داخل اپ موبایل، جاوااسکریپت
-  مرورگر یا مخزن گیت عمومی نگذارید — قابل استخراج است.
-- کلید = دسترسی به کیف پول شما. هرکس آن را داشته باشد می‌تواند از موجودی‌تان
-  سرویس بسازد.
-- اگر کلید لو رفت، همان لحظه از داخل ربات لغوش کنید و کلید تازه بسازید.
-- حتماً از **HTTPS** استفاده کنید.
-- اگر سرورتان IP ثابت دارد، از ادمین بخواهید کلید را به همان IP محدود کند.
-- برای ربات‌هایی که فقط گزارش می‌گیرند، کلید با دسترسی `read` بگیرید.
+- کلید = **دسترسی به کیف پول تو**. هرکس آن را داشته باشد می‌تواند از موجودی‌ات سرویس بسازد.
+- کلید را **فقط روی سرور خودت** نگه دار. هرگز داخل اپ موبایل، کد جاوااسکریپت مرورگر یا مخزن گیت عمومی نگذار — به‌راحتی بیرون کشیده می‌شود.
+- کلید را در فایل تنظیمات یا متغیر محیطی بگذار، نه وسط کد.
+- اگر کلید لو رفت: همان لحظه از داخل ربات **لغوش کن** و یکی جدید بساز.
+- همیشه از **HTTPS** استفاده کن.
+- اگر سرورت IP ثابت دارد، از ادمین بخواه کلید را به همان IP قفل کند.
+- برای بخش‌هایی که فقط گزارش می‌گیرند، کلید `read` بگیر.

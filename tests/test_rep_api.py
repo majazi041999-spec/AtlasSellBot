@@ -265,6 +265,12 @@ async def main():
         check_true("shows this install's base URL", "https://vpn.example.com/api/rep/v1" in d.text)
         check_true("documents the idempotency header", "Idempotency-Key" in d.text)
         check_true("never leaks the admin secret path", os.environ["WEB_SECRET_PATH"] not in d.text)
+        check_true("all three languages are offered",
+                   all(t in d.text for t in (">PHP<", ">Python<", ">Node.js<")))
+        # An un-replaced placeholder would ship a literal "__BASE__" to every
+        # representative — the samples are meant to be copy-pasted as-is.
+        check("no unreplaced placeholders", "__BASE__" in d.text or "__BRAND__" in d.text, False)
+        check_true("warns about the Cloudflare 100s cutoff", "524" in d.text)
 
         print("\n18. the minimum-topup rule applies to the API too")
         await update_user(rep["id"], rep_topup_required=1)
