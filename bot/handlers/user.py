@@ -109,6 +109,8 @@ from bot.keyboards import (
     rep_buy_choice_kb,
     rep_brand_kb,
     rep_back_kb,
+    rep_api_kb,
+    rep_api_key_kb,
     legacy_claim_admin_kb,
     wallet_kb,
     flow_cancel_kb,
@@ -2135,6 +2137,142 @@ async def rep_report(cb: CallbackQuery):
         "سود تو = قیمتی که به مشتری می‌فروشی منهای این هزینه."
     )
     await cb.message.edit_text(text, reply_markup=rep_back_kb(), parse_mode="Markdown")
+    await cb.answer()
+
+
+def _jalali_short(epoch_seconds: int) -> str:
+    """Epoch seconds → a short Jalali stamp for the key list."""
+    from datetime import datetime
+    from core.jalali import jalali_datetime_display
+    try:
+        return jalali_datetime_display(datetime.fromtimestamp(int(epoch_seconds)))
+    except Exception:
+        return "—"
+
+
+async def _rep_api_docs_url() -> str:
+    """Public docs URL, on the same host that serves the API itself."""
+    from core.multi_subscription import public_base_url_async
+    base = (await public_base_url_async() or "").rstrip("/")
+    if not base or "YOUR_SERVER_IP" in base:
+        return ""
+    return f"{base}/api/rep/docs"
+
+
+async def _rep_api_screen(cb: CallbackQuery, flash: str = ""):
+    """The representative's own API console.
+
+    Key values are unrecoverable by design (only a hash is stored), so this
+    screen can show a prefix and usage counters and nothing more — which is
+    exactly why the plaintext is sent as its own message at creation time.
+    """
+    from core import rep_api as rep_api_core
+    from core.multi_subscription import public_base_url_async
+    user = await get_or_create_user(cb.from_user.id)
+    keys = await rep_api_core.list_keys(user["id"])
+    base = (await public_base_url_async() or "").rstrip("/")
+    docs_url = await _rep_api_docs_url()
+
+    lines = [
+        "🔌 *اتصال ربات خودت به سامانه (API)*",
+        "",
+        "با کلید API می‌توانی از ربات یا پنل خودت سرویس بسازی، تمدید کنی و مدیریت کنی. "
+        "هزینه‌ی هر سرویس از همین کیف پول نمایندگی کم می‌شود.",
+        "",
+        f"🌐 آدرس پایه:\n`{base}/api/rep/v1`",
+        "",
+    ]
+    if keys:
+        lines.append(f"🔑 *کلیدهای فعال تو ({len(keys)} از {rep_api_core.MAX_KEYS_PER_REP}):*")
+        for k in keys:
+            used = int(k.get("last_used_at") or 0)
+            when = _jalali_short(used) if used else "هنوز استفاده نشده"
+            lines.append(f"• `{k.get('prefix')}…` — {int(k.get('calls') or 0)} درخواست — آخرین: {when}")
+    else:
+        lines.append("🔑 هنوز کلیدی نساخته‌ای. با دکمه‌ی زیر بساز.")
+    lines.append("")
+    lines.append("⚠️ کلید فقط *یک بار* هنگام ساخت نمایش داده می‌شود؛ جای امنی ذخیره‌اش کن.")
+    if not docs_url:
+        lines.append("")
+        lines.append("_آدرس عمومی سامانه هنوز تنظیم نشده؛ برای گرفتن آدرس API با پشتیبانی هماهنگ کن._")
+    if flash:
+        lines.append("")
+        lines.append(flash)
+
+    text = "\n".join(lines)
+    try:
+        await cb.message.edit_text(text, reply_markup=rep_api_kb(keys, docs_url), parse_mode="Markdown")
+    except Exception:
+        await cb.message.answer(text, reply_markup=rep_api_kb(keys, docs_url), parse_mode="Markdown")
+
+
+@router.callback_query(F.data == "rep:api")
+async def rep_api_home(cb: CallbackQuery):
+    user = await get_or_create_user(cb.from_user.id)
+    if not user.get("is_wholesale", 0):
+        await cb.answer("فقط برای نمایندگان.", show_alert=True)
+        return
+    await _rep_api_screen(cb)
+    await cb.answer()
+
+
+@router.callback_query(F.data == "rep:api_new")
+async def rep_api_new(cb: CallbackQuery):
+    """Issue a key, self-service.
+
+    Sent as its OWN message rather than an edit of the console: the plaintext
+    exists exactly once and an edited message is lost the moment the rep taps
+    anything else.
+    """
+    from core import rep_api as rep_api_core
+    from core.multi_subscription import public_base_url_async
+    user = await get_or_create_user(cb.from_user.id)
+    if not user.get("is_wholesale", 0):
+        await cb.answer("فقط برای نمایندگان.", show_alert=True)
+        return
+
+    result = await rep_api_core.create_key(user["id"], name=f"tg:{cb.from_user.id}")
+    if not result.get("ok"):
+        if result.get("error") == "key_limit_reached":
+            await cb.answer(f"سقف {result.get('limit')} کلید فعال پر شده است. اول یکی را لغو کن.",
+                            show_alert=True)
+        else:
+            await cb.answer("ساخت کلید ناموفق بود.", show_alert=True)
+        return
+
+    key = result["key"]
+    base = (await public_base_url_async() or "").rstrip("/")
+    docs_url = await _rep_api_docs_url()
+    await cb.message.answer(
+        "✅ *کلید API ساخته شد*\n\n"
+        "این کلید فقط همین یک بار نمایش داده می‌شود:\n\n"
+        f"`{key}`\n\n"
+        f"🌐 آدرس پایه:\n`{base}/api/rep/v1`\n\n"
+        "تست سریع (در ترمینال سرور خودت):\n"
+        f"`curl -H \"Authorization: Bearer {key}\" {base}/api/rep/v1/ping`\n\n"
+        "⚠️ *مهم:* این کلید مثل رمز کیف پول توست — هرکس داشته باشد می‌تواند از موجودی‌ات "
+        "سرویس بسازد. فقط روی سرور خودت نگه‌اش دار؛ داخل اپ موبایل یا کد سمت مرورگر نگذار. "
+        "اگر لو رفت، همین‌جا لغوش کن و یکی جدید بساز.",
+        reply_markup=rep_api_key_kb(key, docs_url), parse_mode="Markdown",
+    )
+    await cb.answer("کلید ساخته شد ✅")
+
+
+@router.callback_query(F.data.startswith("rep:api_del:"))
+async def rep_api_delete(cb: CallbackQuery):
+    from core import rep_api as rep_api_core
+    user = await get_or_create_user(cb.from_user.id)
+    if not user.get("is_wholesale", 0):
+        await cb.answer("فقط برای نمایندگان.", show_alert=True)
+        return
+    try:
+        key_id = int(cb.data.split(":")[2])
+    except (IndexError, ValueError):
+        await cb.answer("درخواست نامعتبر.", show_alert=True)
+        return
+    # Scoped by user_id so a crafted callback cannot revoke another rep's key.
+    done = await rep_api_core.revoke_key(key_id, user["id"])
+    await _rep_api_screen(cb, "🗑 کلید لغو شد." if done else "❌ کلید پیدا نشد یا قبلاً لغو شده بود.")
     await cb.answer()
 
 

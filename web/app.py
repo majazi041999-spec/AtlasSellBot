@@ -223,6 +223,14 @@ async def health_check():
     return JSONResponse({"ok": True, "panel": f"/{S}/login"})
 
 
+# Representative API (`/api/rep/v1/*`) — a rep's own bot connects here with an
+# API key. Mounted on a plain prefix on purpose: the base URL is handed to third
+# parties, so it must never contain WEB_SECRET_PATH. See web/rep_api.py.
+from web.rep_api import router as _rep_api_router  # noqa: E402  (after `app` exists)
+
+app.include_router(_rep_api_router)
+
+
 _SUB_CLIENT_UAS = (
     "v2ray", "v2rayng", "nekobox", "nekoray", "sing-box", "singbox", "sagernet",
     "clash", "clashmeta", "mihomo", "stash", "streisand", "shadowrocket", "v2box",
@@ -2080,6 +2088,78 @@ async def api_rep_purchases_xlsx(request: Request, user_id: int):
     data = rep_report_xlsx(report)
     headers = {"Content-Disposition": f'attachment; filename="{rep_report_filename(report)}"'}
     return StreamingResponse(iter([data]), media_type=_XLSX_MEDIA_TYPE, headers=headers)
+
+
+@app.get(f"/{S}/api/rep-api")
+async def api_rep_api_status(request: Request):
+    """Owner view of the representative API: on/off plus every issued key.
+
+    Not part of `_settings_snapshot` on purpose — the React Settings page posts
+    the whole snapshot back, so a key that lives there without a form field gets
+    blanked on every save. Same treatment as the auto-node knobs.
+    """
+    if not _api_guard(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    from core import rep_api as _rep_api
+    rows = await _rep_api.list_all_keys(200)
+    return JSONResponse({
+        "enabled": await get_setting("rep_api_enabled", "1") != "0",
+        "max_keys_per_rep": _rep_api.MAX_KEYS_PER_REP,
+        "default_rate_per_min": _rep_api.DEFAULT_RATE_PER_MIN,
+        "keys": [{
+            "id": int(k["id"]), "user_id": int(k["user_id"]),
+            "telegram_id": int(k.get("telegram_id") or 0),
+            "owner": k.get("full_name") or k.get("username") or "",
+            "name": k.get("name") or "", "prefix": k.get("prefix") or "",
+            "scopes": k.get("scopes") or "", "ip_allowlist": k.get("ip_allowlist") or "",
+            "rate_per_min": int(k.get("rate_per_min") or 0),
+            "is_active": bool(int(k.get("is_active") or 0)),
+            "created_at": int(k.get("created_at") or 0),
+            "last_used_at": int(k.get("last_used_at") or 0),
+            "last_ip": k.get("last_ip") or "", "calls": int(k.get("calls") or 0),
+        } for k in rows],
+    })
+
+
+@app.post(f"/{S}/api/rep-api/enabled")
+async def api_rep_api_toggle(request: Request):
+    """Kill switch for the whole representative API."""
+    if not _api_guard(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    enabled = "1" if str(body.get("enabled")).lower() in ("1", "true", "on", "yes") else "0"
+    await set_setting("rep_api_enabled", enabled)
+    return JSONResponse({"success": True, "enabled": enabled == "1"})
+
+
+@app.get(f"/{S}/api/reps/{{user_id}}/apikeys")
+async def api_rep_apikeys(request: Request, user_id: int):
+    """API keys issued to one representative. The key itself is unrecoverable —
+    only its prefix and usage are stored, so this lists metadata only."""
+    if not _api_guard(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    from core import rep_api as _rep_api
+    rows = await _rep_api.list_keys(user_id, include_revoked=True)
+    return JSONResponse({"keys": [{
+        "id": int(k["id"]), "name": k.get("name") or "", "prefix": k.get("prefix") or "",
+        "scopes": k.get("scopes") or "", "ip_allowlist": k.get("ip_allowlist") or "",
+        "rate_per_min": int(k.get("rate_per_min") or 0),
+        "is_active": bool(int(k.get("is_active") or 0)),
+        "created_at": int(k.get("created_at") or 0), "last_used_at": int(k.get("last_used_at") or 0),
+        "last_ip": k.get("last_ip") or "", "calls": int(k.get("calls") or 0),
+    } for k in rows]})
+
+
+@app.post(f"/{S}/api/reps/{{user_id}}/apikeys/{{key_id}}/revoke")
+async def api_rep_apikey_revoke(request: Request, user_id: int, key_id: int):
+    """Admin kill switch for a single leaked/abused key."""
+    if not _api_guard(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    from core import rep_api as _rep_api
+    return JSONResponse({"success": await _rep_api.revoke_key(key_id, user_id)})
 
 
 @app.get(f"/{S}/backups/download")

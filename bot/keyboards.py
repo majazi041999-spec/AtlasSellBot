@@ -182,8 +182,9 @@ def representative_panel_kb() -> InlineKeyboardMarkup:
     _button(b, text="📈 گزارش مالی", callback_data="rep:report")
     _button(b, text="💳 کیف پول من", callback_data="rep:wallet")
     _button(b, text="💰 قیمت‌های من", callback_data="rep:pricing")
+    _button(b, text="🔌 اتصال ربات (API)", callback_data="rep:api", style="primary")
     _button(b, text="ℹ️ راهنمای نماینده", callback_data="rep:help")
-    b.adjust(2, 2, 2, 1)
+    b.adjust(2, 2, 2, 1, 1)
     return b.as_markup()
 
 
@@ -199,6 +200,39 @@ def rep_brand_kb(has_brand: bool, hidden: bool) -> InlineKeyboardMarkup:
             callback_data="rep:brand_toggle")
     _button(b, text="⬅️ بازگشت به پنل نمایندگی", callback_data="rep:home")
     b.adjust(1)
+    return b.as_markup()
+
+
+def rep_api_kb(keys: List[Dict], docs_url: str = "") -> InlineKeyboardMarkup:
+    """API-key management for a representative, self-service.
+
+    One revoke button per key, labelled by its visible prefix — the full key is
+    never recoverable (only its hash is stored), so the prefix is the only way a
+    rep can tell two keys apart.
+    """
+    b = InlineKeyboardBuilder()
+    _button(b, text="🔑 ساخت کلید جدید", callback_data="rep:api_new", style="success")
+    for k in keys:
+        _button(b, text=f"🗑 لغو کلید {k.get('prefix') or k.get('id')}…",
+                callback_data=f"rep:api_del:{int(k['id'])}", style="danger")
+    if docs_url:
+        b.button(text="📄 مستندات API", url=docs_url)
+    _button(b, text="⬅️ بازگشت به پنل نمایندگی", callback_data="rep:home")
+    b.adjust(1)
+    return b.as_markup()
+
+
+def rep_api_key_kb(key: str, docs_url: str = "") -> InlineKeyboardMarkup:
+    """Shown once, with the plaintext key. The copy button matters here: a key
+    is 53 characters and selecting it by hand on a phone is how it gets
+    truncated and then reported as 'the API is broken'."""
+    b = InlineKeyboardBuilder()
+    copy_btn = _copy_text_button("📋 کپی کلید", key, style="primary")
+    if copy_btn:
+        b.row(copy_btn)
+    if docs_url:
+        b.row(_inline_button(text="📄 مستندات و نمونه کد", url=docs_url))
+    b.row(_inline_button(text="⬅️ بازگشت", callback_data="rep:api"))
     return b.as_markup()
 
 

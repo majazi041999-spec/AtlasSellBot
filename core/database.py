@@ -355,6 +355,10 @@ async def init_db():
         # core.app_analytics imports core.config, same as this module.
         from core.app_analytics import ensure_schema as _ensure_app_analytics
         await _ensure_app_analytics(db)
+        # Same rule for the representative API: its keys/idempotency tables live
+        # with its own logic in core/rep_api.py.
+        from core.rep_api import ensure_schema as _ensure_rep_api
+        await _ensure_rep_api(db)
         await _ensure_columns(db)
         await db.execute("UPDATE orders SET status='receipt_submitted', approved_at=NULL WHERE status='processing'")
         await db.commit()

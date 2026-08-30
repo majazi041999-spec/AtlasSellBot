@@ -9,7 +9,8 @@ Telegram bot + web admin panel + Telegram mini-app for **selling VPN
 subscriptions** (V2Ray/x-ui). Sells time+traffic "subscription" links that fan a
 user out across many x-ui servers ("nodes"). Has wallet, discounts, referrals,
 campaigns, and a **representative (reseller / "نماینده")** system with white-label
-branding. Single-process app (bot + FastAPI) backed by **SQLite** (aiosqlite).
+branding, plus a keyed **reseller API** so a rep can drive the platform from
+their own bot (§8c). Single-process app (bot + FastAPI) backed by **SQLite** (aiosqlite).
 
 Stack: Python 3.13, aiogram 3.x (bot), FastAPI + uvicorn (web), aiosqlite,
 React 18 + Vite (admin panel & mini-app, committed `dist/`), httpx (x-ui calls),
@@ -18,7 +19,7 @@ Pillow (via `qrcode[pil]`).
 ## 2. Run / build / deploy
 - Entry: `python main.py` (runs bot + web concurrently). Port from `WEB_PORT` env (default 8000).
 - **Local dev:** `pip install aiogram uvicorn fastapi jinja2 python-jose[cryptography] passlib[bcrypt] python-multipart aiofiles "qrcode[pil]"` makes `web/app.py` importable and lets you actually boot the API for testing (`uvicorn` on any port with `WEB_SECRET_PATH`/`WEB_ADMIN_*`/`BOT_TOKEN` set, run from a scratch dir so it creates its own `atlas.db`). Without those, `python -m py_compile` + `python -m pyflakes` are the fallback; `core/*` is import-testable either way.
-- **Tests:** `tests/` holds plain runnable scripts (no pytest — the server has none). `python tests/test_autonode.py`. Add regression guards here rather than claiming coverage in this file.
+- **Tests:** `tests/` holds plain runnable scripts (no pytest — the server has none). `python tests/test_autonode.py`. `tests/test_rep_api.py` boots the real FastAPI app against a throwaway DB (needs the local-dev deps above). Add regression guards here rather than claiming coverage in this file.
 - React builds (committed dist so server needs no Node):
   - `npm --prefix web/admin run build` → `web/admin/dist/`
   - `npm --prefix web/miniapp run build` → `web/miniapp/dist/`
@@ -37,6 +38,7 @@ core/
   xui_api.py       (860)    XUIClient: talks to 3x-ui panels (add/update/del client, get_inbound, update_inbound, get_onlines/get_online_count, get_client_link).
   autonode.py      (520)    "نود خودکار": online-count poller + load balancer that keeps each sub on the least-busy server (see §6b).
   rep_report.py    (215)    date-filtered representative purchase report + its Excel export (see §8b).
+  rep_api.py       (419)    reseller API credentials: key issue/verify/revoke, rate limit, idempotency, per-rep lock (§8c).
   xlsx.py          (215)    dependency-free .xlsx writer (stdlib zipfile). RTL sheet, styled header, merged titles.
   pricing.py        (64)    per-user package price (rep/custom). One source of truth.
   rewards.py       (300)    referral tiers/claims reward logic.
@@ -57,9 +59,12 @@ bot/
   states.py, nav.py
 web/
   app.py           (5049)   FastAPI: admin JSON API + legacy Jinja pages + subscription serving (/sub) + mini-app API (/app/api) + proxy + logo + update. Secret-prefixed routes: /{S}/... where S=WEB_SECRET_PATH.
+  rep_api.py       (959)    the `/api/rep/v1/*` routes a representative's own bot calls (§8c).
+  rep_api_docs.py  (373)    the Persian RTL reference page served at `/api/rep/docs`.
   admin/src/       React admin panel (see §9). pages/*.jsx, components/{Shell,ui}.jsx, api.js, router.js.
   miniapp/src/App.jsx  Telegram mini-app (single file).
   templates/*.html Legacy Jinja panel (fallback at /{S}/dashboard; most pages migrated to React).
+docs/REP_API.md    forwardable copy of the reseller API reference — keep in step with web/rep_api_docs.py.
 setup_mtproxy.sh   MTProto proxy installer (mtg v1.0.11). atlas_menu.sh, install.sh, update.sh, setup_*.sh.
 ```
 
@@ -68,6 +73,7 @@ setup_mtproxy.sh   MTProto proxy installer (mtg v1.0.11). atlas_menu.sh, install
 - **React is the MAIN panel**, served at root `/{S}/`. Assets at `/{S}/assets` (bundle uses relative base). `/{S}/v2` → redirects to root. Legacy Jinja dashboard stays at `/{S}/dashboard` as fallback (also used if React build missing).
 - SPA served by `admin_root_index` / `_serve_admin_spa()` which injects `window.__PANEL_BASE__="/{S}"` and the favicon (admin logo).
 - Mini-app served at `/app` (+ `/app/api/*`), assets `/app/assets`.
+- **Reseller API at a plain `/api/rep/v1` prefix** (never under `/{S}`) + public docs at `/api/rep/docs`. See §8c.
 - Subscription links served at `/sub/{token}` → base64 config list for VPN clients; browser page = `_render_sub_status_html` (branded per owner, rep-safe).
 - Auth: JWT cookie; `_auth(request)` for Jinja routes, `_api_guard(request)` for `/{S}/api/*`. Bot admin = ADMIN_IDS / owner_admin_id / users.is_admin.
 
@@ -83,6 +89,7 @@ setup_mtproxy.sh   MTProto proxy installer (mtg v1.0.11). atlas_menu.sh, install
 - **configs**: legacy single-server configs (mostly superseded by subscriptions).
 - **test_accounts** (UNIQUE user_id → one lifetime trial) vs **rep_test_accounts** (per-day rep allowance, no unique).
 - discount_codes, discount_redemptions, referral_tiers, wallet_transactions, topup_requests, campaign_events, daily_reports.
+- **rep_api_keys / rep_api_idempotency**: reseller API credentials + replayed money responses. Schema lives in `core/rep_api.py` (its own `ensure_schema`, called by `init_db`), not in `SCHEMA` — same pattern as app_analytics. See §8c.
 - **custom_campaigns**: panel-authored targeted blasts (Campaigns tab). `slug` is the join key to
   campaign_events (sends, once-per-user guard) AND discount_codes.campaign (attribution + targeted-code
   lock). Segments in `CUSTOM_SEGMENTS` + `get_segment_users(segment, limit, include_reps=False)` (database.py) —
@@ -168,6 +175,20 @@ Date-filtered "what did this representative buy" report, shown on their page in 
 - **Timezone (this is the accuracy-critical part):** `created_at` columns are the SERVER's local wall clock (`datetime('now','localtime')`), epoch-ms columns are absolute. `jalali.db_datetime_to_tehran` converts naive strings via `.astimezone()` (which reads them as system-local — exactly what they are) then to Tehran; `tehran_to_db_string` does the inverse so a Jalali range filters the right rows even on a UTC VPS. Verified across the +3:30 day rollover.
 - `core/jalali.py` gained `jalali_to_gregorian`, `jalali_is_leap` (decided by round-trip, so it can never disagree with the conversions), `jalali_month_days`, `jalali_add_months`, `parse_jalali`, `jalali_datetime_display`. `web/{admin,miniapp}/src/jalali.js` is the **same algorithm in JS** (verified to agree day-for-day) — use it, don't add a date npm package.
 
+## 8c. Representative API — `/api/rep/v1/*` (reseller integration)
+A representative pastes an API key into **their own bot/panel**, which then sells on our infrastructure: create/renew/disable/revoke services and read usage, spending the rep's wallet. Three files: `core/rep_api.py` (keys, rate limit, idempotency, per-rep lock), `web/rep_api.py` (routes), `web/rep_api_docs.py` (the Persian reference page). Covered by `tests/test_rep_api.py` (plain `python tests/test_rep_api.py`, boots the real app against a throwaway DB).
+- **Self-service keys.** The rep makes their own key in the bot: `representative_panel_kb` → `rep:api` → `rep:api_new` / `rep:api_del:{id}` (bot/handlers/user.py, `rep_api_kb`/`rep_api_key_kb` in keyboards.py). Max 3 active keys each. Admin sees/kills any key via `/{S}/api/rep-api` (+ `/enabled` kill switch) and `/{S}/api/reps/{uid}/apikeys[...]/revoke`.
+- **NEVER mount under `/{S}/`.** The base URL goes to third parties; the secret prefix would leak the panel address. Same rule as `core/client_app.py`.
+- **Only a sha256 of the key is stored** — plaintext is shown once, at creation, and is unrecoverable. That shortcut is safe *only* because the key is 32 bytes of `secrets` entropy; never copy it for anything a human chooses.
+- **Authorisation is re-read from `users` on every call** (`authenticate()`), so losing `is_wholesale` or getting blocked kills every key instantly with no revocation step. Add nothing that caches it.
+- **Money paths must stay idempotent and serialised.** `Idempotency-Key` on `POST /services` and `/renew` stores the first response and replays it (24h TTL) — a reseller bot retries on timeout, and without this that retry is a second charge. `rep_api.user_lock(user_id)` serialises balance writes (single-process; scaling out means moving it to the DB).
+- **Partial success refunds in-request.** A batch that provisions 4 of 5 returns `207`, charges for 4, and refunds the 5th before responding. Every failure path restores the balance exactly — that is what `tests/test_rep_api.py` asserts, to the rial.
+- **No Telegram messages on API actions** (a rep creating 40 services must not get 40 DMs), but everything is still a normal order row, so the admin panel and the rep report (§8b) show it.
+- Pricing comes from `core.pricing`, provisioning from `core.multi_subscription` — never a second implementation, or the API and the bot drift. An "unlimited" package's `traffic_gb` is the fair-use threshold: it changes **pricing** only, and is provisioned verbatim (§7).
+- Custom `traffic_gb`+`duration_days` is refused (`custom_pricing_unavailable`) when the rep has no per-GB/unlimited rate. The bot's bulk flow falls back to a hard-coded 10,000/GB; doing that through an API, where nobody reads a confirmation screen, would be silent mispricing.
+- `SERVICE_SORTS`/`SERVICE_FILTERS` in web/rep_api.py are a **published contract**, deliberately not shared with the panel's `SUB_SORTS` — they change only on purpose.
+- Docs live in TWO places that must move together: `web/rep_api_docs.py` (served at `/api/rep/docs`, public, fills in this install's real base URL) and `docs/REP_API.md` (the forwardable copy).
+
 ## 9. React admin panel (`web/admin/src`)
 - `api.js`: `BASE = window.__PANEL_BASE__` (secret). `api.get/post` (JSON), `api.form(path,obj)` (FormData; used for endpoints that read `request.form()` and/or redirect — treats redirect/HTML as success). Long-running ops poll job-log endpoints.
 - `router.js`: hash router; `App.jsx` routes by first path segment. `Shell.jsx`: sidebar NAV + legacy deep-links + fetches `/api/branding` (logo).
@@ -185,7 +206,7 @@ Telegram WebApp; auth via `X-Telegram-Init-Data` header → `validate_init_data`
 - `_resolve_sub_logo(profile)`: rep's logo for rep subs, else admin logo — never leaks ours to a rep.
 
 ## 12. Settings keys (get_setting/set_setting; defaults in panel_content.SETTINGS_DEFAULTS)
-Brand/UI: `ui.brand_name`, `ui.logo_data`, `ui.panel_subtitle`, `ui.custom_css/js`. Subs: `public_base_url`, `sub_info_enabled`, `sub_info_template`, `sub_brand_template`, `sub_auto_sync_*`, `sub_info_sync_on_render` (kick a sync when a client fetches the sub), `sub_render_sync_min_seconds` (floor between those syncs per token — default 900; lowering it multiplies panel load, see §6), `multi_sub_node_count/min_nodes` (LEGACY/unused — caps removed). Test: `test_account_enabled/traffic_gb/duration_days`, `rep_test_daily_limit`. Rep: `rep_min_topup`, `rep_price_per_gb` (global rep per-GB default). Channel: `force_channel`, `channel_username`. Card: `card_number/holder/bank`. Campaigns: `campaign_trial_*`, `campaign_winback_*`. Referral: `referral_*`. Proxy: `proxy_port/secret/domain/tag/host`. Cert: `panel_domain`, `cert_email`, `atlas_tls_https_port`. Miniapp: `miniapp_enabled/domain/title/logo`. Auto node: `autonode_enabled`, `autonode_poll_seconds`, `autonode_stale_seconds`, `autonode_margin`, `autonode_min_delta`, `autonode_cooldown_minutes`, `autonode_max_moves`, `autonode_poll_concurrency` (defaults live in `core.autonode.DEFAULTS`, edited on the Subscriptions page — NOT part of `_settings_snapshot`).
+Brand/UI: `ui.brand_name`, `ui.logo_data`, `ui.panel_subtitle`, `ui.custom_css/js`. Subs: `public_base_url`, `sub_info_enabled`, `sub_info_template`, `sub_brand_template`, `sub_auto_sync_*`, `sub_info_sync_on_render` (kick a sync when a client fetches the sub), `sub_render_sync_min_seconds` (floor between those syncs per token — default 900; lowering it multiplies panel load, see §6), `multi_sub_node_count/min_nodes` (LEGACY/unused — caps removed). Test: `test_account_enabled/traffic_gb/duration_days`, `rep_test_daily_limit`. Rep: `rep_min_topup`, `rep_price_per_gb` (global rep per-GB default), `rep_api_enabled` (kill switch for §8c; edited via `/{S}/api/rep-api/enabled`, NOT part of `_settings_snapshot`). Channel: `force_channel`, `channel_username`. Card: `card_number/holder/bank`. Campaigns: `campaign_trial_*`, `campaign_winback_*`. Referral: `referral_*`. Proxy: `proxy_port/secret/domain/tag/host`. Cert: `panel_domain`, `cert_email`, `atlas_tls_https_port`. Miniapp: `miniapp_enabled/domain/title/logo`. Auto node: `autonode_enabled`, `autonode_poll_seconds`, `autonode_stale_seconds`, `autonode_margin`, `autonode_min_delta`, `autonode_cooldown_minutes`, `autonode_max_moves`, `autonode_poll_concurrency` (defaults live in `core.autonode.DEFAULTS`, edited on the Subscriptions page — NOT part of `_settings_snapshot`).
 
 ## 13. Conventions & gotchas
 - **RTL trap:** logical `inset-inline-end` = physical LEFT in RTL. Mobile sidebar drawer must use physical `right:0` + `translateX(105%)`. `html/body { overflow-x: clip }` prevents drawer-induced horizontal scroll (clip, not hidden, to keep sticky working).
@@ -205,6 +226,7 @@ Brand/UI: `ui.brand_name`, `ui.logo_data`, `ui.panel_subtitle`, `ui.custom_css/j
 - Change/revoke a customer's subscription link ("تغییر لینک اشتراک") → `rotate_subscription_link` (multi_subscription.py) + `sub_relink*` handlers/keyboards (bot). See §6.
 - Exclude/include reps in a campaign → `get_segment_users(..., include_reps)` + `custom_campaigns.include_reps` (database.py), `run_custom_campaign` (campaigns.py), Campaigns.jsx toggle. See §5 custom_campaigns.
 - Auto-node routing / load metric / hysteresis → `core/autonode.py` (`LoadView.score`, `resolve_auto_target`, `rebalance_auto_node`); its provisioning hook is `expand_node_configs` inside `ensure_subscription_profile_nodes`.
+- Reseller API endpoint / error code / limit → `web/rep_api.py`; credentials & idempotency → `core/rep_api.py`; the docs → `web/rep_api_docs.py` AND `docs/REP_API.md` (both, always). See §8c.
 - Rep purchase report columns or date window → `core/rep_report.py` (`_COLUMNS`, `resolve_range`) + `get_rep_purchases` in database.py.
 - Anything Jalali → `core/jalali.py` AND the mirrored `web/{admin,miniapp}/src/jalali.js` (keep them in step).
 - Excel output → `core/xlsx.py` (no third-party dependency — don't add openpyxl).
