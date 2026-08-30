@@ -3027,7 +3027,7 @@ async def get_all_configs() -> List[Dict]:
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         async with db.execute("""
-            SELECT c.*,s.name as server_name,u.full_name,u.telegram_id
+            SELECT c.*,s.name as server_name,u.full_name,u.username,u.telegram_id
             FROM configs c
             JOIN servers s ON c.server_id=s.id
             JOIN users u ON c.user_id=u.id

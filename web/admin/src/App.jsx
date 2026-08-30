@@ -22,6 +22,12 @@ import Reps from "./pages/Reps.jsx";
 import ClientApp from "./pages/ClientApp.jsx";
 import AppStats from "./pages/AppStats.jsx";
 import AppDiag from "./pages/AppDiag.jsx";
+import Configs from "./pages/Configs.jsx";
+import MiniApp from "./pages/MiniApp.jsx";
+import Backups from "./pages/Backups.jsx";
+import Transactions from "./pages/Transactions.jsx";
+import LegacyClaims from "./pages/LegacyClaims.jsx";
+import Reports from "./pages/Reports.jsx";
 
 export default function App() {
   const [authed, setAuthed] = useState(null); // null=checking, false=login, true=in
@@ -58,6 +64,12 @@ export default function App() {
   else if (base === "/clientapp") page = <ClientApp />;
   else if (base === "/appstats") page = <AppStats />;
   else if (base === "/appdiag") page = <AppDiag />;
+  else if (base === "/configs") page = <Configs />;
+  else if (base === "/miniapp") page = <MiniApp />;
+  else if (base === "/backups") page = <Backups />;
+  else if (base === "/transactions") page = <Transactions />;
+  else if (base === "/legacy-claims") page = <LegacyClaims />;
+  else if (base === "/reports") page = <Reports />;
   else if (base === "/update") page = <Update />;
   else page = <Dashboard onBadges={onBadges} go={go} />;
 

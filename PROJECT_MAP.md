@@ -58,24 +58,26 @@ bot/
   middlewares/channel_required.py  forced-channel-join gate + "بررسی عضویت" button flow.
   states.py, nav.py
 web/
-  app.py           (5049)   FastAPI: admin JSON API + legacy Jinja pages + subscription serving (/sub) + mini-app API (/app/api) + proxy + logo + update. Secret-prefixed routes: /{S}/... where S=WEB_SECRET_PATH.
+  app.py           (5548)   FastAPI: admin JSON API + SPA serving + subscription serving (/sub) + mini-app API (/app/api) + proxy + logo + update. Secret-prefixed routes: /{S}/... where S=WEB_SECRET_PATH.
   rep_api.py       (959)    the `/api/rep/v1/*` routes a representative's own bot calls (§8c).
   rep_api_docs.py  (857)    the Persian RTL reference page served at `/api/rep/docs` (PHP/Python/Node tabs).
   admin/src/       React admin panel (see §9). pages/*.jsx, components/{Shell,ui}.jsx, api.js, router.js.
   miniapp/src/App.jsx  Telegram mini-app (single file).
-  templates/*.html Legacy Jinja panel (fallback at /{S}/dashboard; most pages migrated to React).
 docs/REP_API.md    forwardable copy of the reseller API reference — keep in step with web/rep_api_docs.py.
 setup_mtproxy.sh   MTProto proxy installer (mtg v1.0.11). atlas_menu.sh, install.sh, update.sh, setup_*.sh.
 ```
 
 ## 4. Web serving model (important)
 - Secret path prefix: every panel route is `/{S}/...` where `S = WEB_SECRET_PATH` (default `AtlasPanel2024`).
-- **React is the MAIN panel**, served at root `/{S}/`. Assets at `/{S}/assets` (bundle uses relative base). `/{S}/v2` → redirects to root. Legacy Jinja dashboard stays at `/{S}/dashboard` as fallback (also used if React build missing).
+- **React is the ONLY panel**, served at root `/{S}/`; every page is a hash route inside it. Assets at `/{S}/assets` (bundle uses relative base). The server-rendered Jinja panel was deleted (Aug 2026) — `web/templates/` and every `response_class=HTMLResponse` route are gone, along with Jinja2Templates itself.
+- **A catch-all at the BOTTOM of web/app.py serves the SPA for any unmatched `/{S}/…` path**, so bookmarks of the old pages (`/{S}/dashboard`, `/{S}/users`, `/{S}/login`…) still land in the panel instead of 404ing. It must stay last — FastAPI matches in definition order — and it deliberately 404s `/{S}/api/…` as JSON so a caller bug is not disguised as HTML.
+- **What survived the deletion are the POST action endpoints** (`/{S}/servers/add`, `/packages/add`, `/settings`, `/subs/profiles/{id}/edit`, …). React posts to them via `api.form`. They used to answer with a 302 back to the page that submitted them; they now all return JSON, because a redirect would land on the catch-all and make every save download the whole panel HTML. **Any new action endpoint returns JSON too.**
+- If `web/admin/dist` is missing the panel serves a 503 telling you to run the build — there is no second panel to fall back to.
 - SPA served by `admin_root_index` / `_serve_admin_spa()` which injects `window.__PANEL_BASE__="/{S}"` and the favicon (admin logo).
 - Mini-app served at `/app` (+ `/app/api/*`), assets `/app/assets`.
 - **Reseller API at a plain `/api/rep/v1` prefix** (never under `/{S}`) + public docs at `/api/rep/docs`. See §8c.
 - Subscription links served at `/sub/{token}` → base64 config list for VPN clients; browser page = `_render_sub_status_html` (branded per owner, rep-safe).
-- Auth: JWT cookie; `_auth(request)` for Jinja routes, `_api_guard(request)` for `/{S}/api/*`. Bot admin = ADMIN_IDS / owner_admin_id / users.is_admin.
+- Auth: JWT cookie. `_api_guard(request)` for `/{S}/api/*`; `_auth(request)` for the few endpoints a browser navigates to directly (file downloads, banner preview), which bounce to `/{S}/` via `_redir_login()` so the SPA shows its own login form. Login/logout are `/{S}/api/login` + `/api/logout`. Bot admin = ADMIN_IDS / owner_admin_id / users.is_admin.
 
 ## 5. Data model (key tables & custom columns)
 `core/database.py` — `SCHEMA` creates tables; `_ensure_columns()` ALTER-adds columns idempotently (add new cols THERE).
@@ -193,8 +195,9 @@ A representative pastes an API key into **their own bot/panel**, which then sell
 ## 9. React admin panel (`web/admin/src`)
 - `api.js`: `BASE = window.__PANEL_BASE__` (secret). `api.get/post` (JSON), `api.form(path,obj)` (FormData; used for endpoints that read `request.form()` and/or redirect — treats redirect/HTML as success). Long-running ops poll job-log endpoints.
 - `router.js`: hash router; `App.jsx` routes by first path segment. `Shell.jsx`: sidebar NAV + legacy deep-links + fetches `/api/branding` (logo).
-- Pages (native React): Dashboard(+Analytics), Users, UserDetail, Reps, Orders, Subscriptions (nodes, real-time ops + inbound editor + domain), SubProfiles, Servers, Packages, Proxy, Discounts, Campaigns, Referrals, Settings, Update. Legacy Jinja still: configs, miniapp settings.
-- **Endpoint pattern:** JSON GET `/{S}/api/<thing>` for data; actions reuse existing form/JSON endpoints. add/edit for servers/packages/discounts use `api.form` → existing Jinja form endpoints (redirect=success). Node add/edit accept BOTH form and JSON.
+- Pages (all native React — nothing is server-rendered any more): Dashboard(+Analytics), Users, UserDetail, Reps, Orders, Subscriptions (nodes, real-time ops + inbound editor + domain), SubProfiles, Servers, Packages, Proxy, Discounts, Campaigns, Referrals, ClientApp, AppStats, AppDiag, Transactions, MiniApp, Reports, Configs, LegacyClaims, Backups, Settings, Update.
+- `Shell.jsx` has TWO nav groups: `NAV` (day-to-day) and `TOOLS` (setup/records/maintenance — miniapp, reports, legacy configs, transfer claims, backups, settings, update). Adding a page means: route in `App.jsx`, entry in one of those lists, and a label in `TITLES`.
+- **Endpoint pattern:** JSON GET `/{S}/api/<thing>` for data; actions POST to `/{S}/<thing>/<action>`. `api.form` sends FormData for endpoints that read `request.form()` (servers/packages/discounts add+edit, settings, referral tiers, backups, miniapp); `api.post` sends JSON. **Every action endpoint answers with JSON now** — see §4. Node add/edit accept BOTH form and JSON.
 - **Settings pattern:** `_settings_snapshot()` builds the full settings dict (shared by Jinja + `/api/settings`). React Settings submits the COMPLETE snapshot (partial submit resets omitted fields!). SSL/domain still done on legacy page.
 - Job logs (`_read_job_log`/`_run_logged_job`/`_run_python_job`, `_JOB_LOG_PATHS`): "sync","nodeops","proxy","cert","update","miniapp_cert". Poll `/.../log` while running.
 
@@ -233,7 +236,7 @@ Brand/UI: `ui.brand_name`, `ui.logo_data`, `ui.panel_subtitle`, `ui.custom_css/j
 - Excel output → `core/xlsx.py` (no third-party dependency — don't add openpyxl).
 - A new user column → `_ensure_columns` in database.py + expose in `_slim_user`/user-detail API.
 - A new setting → `SETTINGS_DEFAULTS` (panel_content) + `_settings_snapshot` + settings_save Form param + React Settings field.
-- New admin page → web/app.py `/{S}/api/<x>` JSON + `web/admin/src/pages/<X>.jsx` + wire in App.jsx + Shell.jsx nav, then `npm --prefix web/admin run build`.
+- New admin page → web/app.py `/{S}/api/<x>` JSON + `web/admin/src/pages/<X>.jsx` + wire in App.jsx and Shell.jsx (`NAV` or `TOOLS`, plus `TITLES`), then `npm --prefix web/admin run build`. Never add an HTML page route — §4.
 - Bot keyboards/menus → bot/keyboards.py. Bot flows/FSM → bot/handlers/user.py + bot/states.py.
 - A new sort/filter option → see §5 "Sorting & filtering": add the key to the Python key set (`USER_SORTS`,
   `SUB_SORTS`, `SERVICE_SORTS`, …) AND the matching label list in the JSX page — the two must stay in sync.

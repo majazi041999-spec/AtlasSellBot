@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { BASE, api } from "../api.js";
+import { api } from "../api.js";
 
 const NAV = [
   { k: "/dashboard", icon: "📊", label: "داشبورد" },
@@ -17,18 +17,23 @@ const NAV = [
   { k: "/clientapp", icon: "📱", label: "اپ اندروید" },
   { k: "/appstats", icon: "📈", label: "آمار و اعلان اپ" },
   { k: "/appdiag", icon: "🩺", label: "تشخیص سرورها" },
+  { k: "/transactions", icon: "🧾", label: "رسیدها" },
+];
+
+// Second group: setup, records and maintenance. Everything the retired
+// server-rendered panel used to own lives here now — there is no second panel
+// to deep-link into any more.
+const TOOLS = [
+  { k: "/miniapp", icon: "📱", label: "مینی‌اپ" },
+  { k: "/reports", icon: "📅", label: "گزارش روزانه" },
+  { k: "/configs", icon: "🔑", label: "کانفیگ‌های قدیمی" },
+  { k: "/legacy-claims", icon: "📥", label: "درخواست انتقال" },
+  { k: "/backups", icon: "💾", label: "پشتیبان‌گیری" },
   { k: "/settings", icon: "⚙️", label: "تنظیمات" },
   { k: "/update", icon: "🔄", label: "به‌روزرسانی" },
 ];
 
-// Pages not migrated yet → deep-link into the existing (legacy) panel so the
-// admin keeps full access during the parallel rollout.
-const LEGACY = [
-  { path: "/configs", icon: "🔑", label: "کانفیگ‌ها" },
-  { path: "/miniapp", icon: "📱", label: "مینی‌اپ" },
-];
-
-const TITLES = { "/dashboard": "داشبورد", "/users": "کاربران", "/reps": "نمایندگان", "/orders": "سفارش‌ها", "/subs": "نودهای ساب", "/subprofiles": "ساب‌های کاربران", "/servers": "سرورها", "/packages": "پکیج‌ها", "/proxy": "پروکسی تلگرام", "/discounts": "تخفیف‌ها", "/campaigns": "کمپین‌ها", "/referrals": "رفرال", "/clientapp": "اپ اندروید", "/settings": "تنظیمات", "/update": "به‌روزرسانی" };
+const TITLES = { "/dashboard": "داشبورد", "/users": "کاربران", "/reps": "نمایندگان", "/orders": "سفارش‌ها", "/subs": "نودهای ساب", "/subprofiles": "ساب‌های کاربران", "/servers": "سرورها", "/packages": "پکیج‌ها", "/proxy": "پروکسی تلگرام", "/discounts": "تخفیف‌ها", "/campaigns": "کمپین‌ها", "/referrals": "رفرال", "/clientapp": "اپ اندروید", "/appstats": "آمار و اعلان اپ", "/appdiag": "تشخیص سرورها", "/transactions": "رسیدها", "/miniapp": "مینی‌اپ", "/reports": "گزارش روزانه", "/configs": "کانفیگ‌های قدیمی", "/legacy-claims": "درخواست انتقال", "/backups": "پشتیبان‌گیری", "/settings": "تنظیمات", "/update": "به‌روزرسانی" };
 
 export default function Shell({ path, go, badges = {}, children, onLogout }) {
   const [open, setOpen] = useState(false);
@@ -60,12 +65,11 @@ export default function Shell({ path, go, badges = {}, children, onLogout }) {
           </div>
         ))}
 
-        <div className="nav-group-label">هنوز در پنل قدیم</div>
-        {LEGACY.map((n) => (
-          <a key={n.path} className="nav-item" href={`${BASE}${n.path}`}>
+        <div className="nav-group-label">تنظیمات و ابزارها</div>
+        {TOOLS.map((n) => (
+          <div key={n.k} className={"nav-item" + (base === n.k ? " active" : "")} onClick={() => nav(n.k)}>
             <span className="nav-ico">{n.icon}</span><span>{n.label}</span>
-            <span className="nav-badge" style={{ background: "rgba(255,255,255,.08)", color: "var(--txt3)" }}>↗</span>
-          </a>
+          </div>
         ))}
 
         <div className="sidebar-foot">
@@ -83,7 +87,6 @@ export default function Shell({ path, go, badges = {}, children, onLogout }) {
             <div className="crumb">Atlas · مدیریت</div>
           </div>
           <div className="topbar-spacer" />
-          <a className="btn sm ghost" href={`${BASE}/dashboard`}>پنل قدیم</a>
         </header>
         <main className="content">{children}</main>
       </div>

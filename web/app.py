@@ -1,6 +1,9 @@
 """Atlas Account — Web Admin Panel (FastAPI)
 
-All CSS/JS is embedded directly in HTML templates.
+Serves the React admin panel (single page app, `web/admin/dist`), its JSON API,
+the customer-facing subscription links, the Telegram mini-app and the
+representative API. There is no server-rendered panel any more — see the
+"REACT ADMIN PANEL" section below before adding an HTML route.
 """
 
 import logging
@@ -28,7 +31,6 @@ from aiogram.enums import ParseMode
 from aiogram.types import BufferedInputFile
 from fastapi import FastAPI, File, Form, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, StreamingResponse
-from fastapi.templating import Jinja2Templates
 from jose import JWTError, jwt
 
 from core.config import (
@@ -86,7 +88,6 @@ from core.database import (
     USER_FILTERS,
     USER_PERIODS,
     DEFAULT_USER_SORT,
-    find_user,
     get_user_orders_full,
     get_rep_financials,
     get_user_configs_full,
@@ -111,7 +112,6 @@ from core.database import (
     server_has_capacity,
     get_user_by_id,
     get_wholesale_users,
-    search_users,
     get_user_by_telegram,
     has_previous_purchase,
     save_config,
@@ -124,7 +124,6 @@ from core.database import (
     get_subscription_node_configs,
     get_subscription_profile,
     get_subscription_profiles_full,
-    get_subscription_nodes,
     subscription_node_config_status,
     count_active_subscription_nodes_by_target,
     init_db,
@@ -155,7 +154,7 @@ from core.xui_api import XUIClient, expiry_ms_from_days
 from core.renewal import find_and_renew_config
 from core.qr import build_qr_image
 from bot.keyboards import config_links_kb
-from core.update_notes import DEFAULT_UPDATE_BROADCAST_TEXT, get_update_broadcast_text
+from core.update_notes import get_update_broadcast_text
 from core.multi_subscription import render_subscription
 from core.multi_subscription import (
     create_profile_for_order,
@@ -204,7 +203,6 @@ _repo_dir = os.path.dirname(_dir)
 _db_path = DB_PATH if os.path.isabs(DB_PATH) else os.path.join(_repo_dir, DB_PATH)
 _env_path = os.path.join(_repo_dir, ".env")
 _backup_dir = os.path.join(_repo_dir, "backups")
-_templates = Jinja2Templates(directory=os.path.join(_dir, "templates"))
 
 S = WEB_SECRET_PATH  # short alias
 
@@ -215,12 +213,12 @@ S = WEB_SECRET_PATH  # short alias
 @app.get("/admin")
 @app.get("/admin/")
 async def easy_panel_entry():
-    return RedirectResponse(f"/{S}/login", status_code=302)
+    return RedirectResponse(f"/{S}/", status_code=302)
 
 
 @app.get("/health")
 async def health_check():
-    return JSONResponse({"ok": True, "panel": f"/{S}/login"})
+    return JSONResponse({"ok": True, "panel": f"/{S}/"})
 
 
 # Representative API (`/api/rep/v1/*`) — a rep's own bot connects here with an
@@ -838,27 +836,10 @@ def _auth(request: Request) -> Optional[str]:
 
 
 def _redir_login():
-    return RedirectResponse(f"/{S}/login", status_code=302)
-
-
-def _ctx(request: Request, **kw) -> dict:
-    """Build template context with common vars injected."""
-    return {"request": request, "S": S, "now_ts": int(time.time()), **kw}
-
-
-async def _load_ui_settings() -> dict:
-    ui: dict = {}
-    for key, default in UI_DEFAULTS.items():
-        ui[key.split(".", 1)[1]] = await get_setting(key, default)
-    ui["custom_css"] = await get_setting("ui.custom_css", CUSTOM_STYLE_DEFAULT)
-    ui["custom_js"] = await get_setting("ui.custom_js", CUSTOM_SCRIPT_DEFAULT)
-    return ui
-
-
-async def _ctx_ui(request: Request, **kw) -> dict:
-    ctx = _ctx(request, **kw)
-    ctx["ui"] = await _load_ui_settings()
-    return ctx
+    """Bounce an unauthenticated browser to the panel, which shows the login
+    form itself. Used by the few endpoints a browser navigates to directly
+    (file downloads, the banner preview) rather than fetches as JSON."""
+    return RedirectResponse(f"/{S}/", status_code=302)
 
 
 async def _update_broadcast_text() -> str:
@@ -1205,51 +1186,26 @@ nginx -s reload >/dev/null 2>&1 || systemctl reload nginx >/dev/null 2>&1 || ser
 
 
 # ═══════════════════════════════ AUTH ROUTES ════════════════════════
-@app.get(f"/{S}/login", response_class=HTMLResponse)
-async def login_page(request: Request):
-    return _templates.TemplateResponse("login.html", await _ctx_ui(request))
 
 
-@app.post(f"/{S}/login")
-async def login_post(request: Request, username: str = Form(...), password: str = Form(...)):
-    if username == WEB_ADMIN_USERNAME and password == WEB_ADMIN_PASSWORD:
-        token = _make_token(username)
-        r = RedirectResponse(f"/{S}/", status_code=302)
-        r.set_cookie(
-            "_atlas_t",
-            token,
-            httponly=True,
-            max_age=JWT_EXPIRE_HOURS * 3600,
-            samesite="lax",
-        )
-        return r
-    return _templates.TemplateResponse(
-        "login.html",
-        await _ctx_ui(request, error="نام کاربری یا رمز عبور اشتباه است"),
-    )
 
 
-@app.get(f"/{S}/logout")
-async def logout():
-    r = RedirectResponse(f"/{S}/login", status_code=302)
-    r.delete_cookie("_atlas_t")
-    return r
 
 
 # ═══════════════════ REACT ADMIN PANEL — JSON API + SPA ═══════════════════
-# React is the MAIN panel, served at the secret root /<secret>/. Data flows
-# through JSON endpoints under /<secret>/api/*. Pages not yet ported still exist
-# as server-rendered routes (e.g. /<secret>/configs) and are deep-linked from the
-# React nav; /<secret>/dashboard also stays as a legacy fallback. The old /v2
-# path now just redirects to the root.
+# React is the ONLY panel. It is served at the secret root /<secret>/ and every
+# page is a hash route inside it; all data flows through JSON endpoints under
+# /<secret>/api/*. The server-rendered Jinja panel it replaced is gone — what
+# survives from it are the POST action endpoints (/<secret>/servers/add,
+# /packages/add, /settings, …), which the React pages still post to. Do not
+# re-add an HTML page route here: the catch-all at the bottom of this file sends
+# every unmatched /<secret>/… path into the SPA.
 _admin_dist = os.path.join(_dir, "admin", "dist")
 try:
     from fastapi.staticfiles import StaticFiles as _StaticFiles
     if os.path.isdir(os.path.join(_admin_dist, "assets")):
         # Bundle uses a relative base ("./assets/…") → served at /<secret>/assets.
-        # Keep the /v2/assets mount too so any still-open v2 tab keeps working.
         app.mount(f"/{S}/assets", _StaticFiles(directory=os.path.join(_admin_dist, "assets")), name="admin_assets")
-        app.mount(f"/{S}/v2/assets", _StaticFiles(directory=os.path.join(_admin_dist, "assets")), name="admin_assets_v2")
 except Exception as _e:  # pragma: no cover
     logger.warning("admin static mount skipped: %s", _e)
 
@@ -1267,8 +1223,23 @@ def _admin_index_html() -> str:
 async def _serve_admin_spa():
     html = _admin_index_html()
     if not html:
-        # Build missing → don't strand the admin: bounce to the legacy dashboard.
-        return RedirectResponse(f"/{S}/dashboard", status_code=302)
+        # There is no second panel to fall back to any more, so say plainly what
+        # is wrong and how to fix it rather than serving a blank page.
+        return HTMLResponse(
+            "<!doctype html><html lang='fa' dir='rtl'><meta charset='utf-8'>"
+            "<title>پنل ساخته نشده</title>"
+            "<body style=\"font-family:Tahoma,sans-serif;background:#0d1017;color:#e8ecf8;"
+            "display:flex;align-items:center;justify-content:center;height:100vh;margin:0\">"
+            "<div style='text-align:center;max-width:420px;padding:24px'>"
+            "<h2>پنل هنوز build نشده است</h2>"
+            "<p style='color:#94a0bd;line-height:2'>روی سرور این دستور را بزنید:</p>"
+            "<code style='display:block;background:#151b28;padding:12px;border-radius:10px;"
+            "direction:ltr'>npm --prefix web/admin run build</code>"
+            "<p style='color:#94a0bd;margin-top:18px'>یا آخرین نسخه را با "
+            "<code style='direction:ltr'>bash update.sh</code> بگیرید.</p>"
+            "</div></body></html>",
+            status_code=503,
+        )
     # Inject the custom favicon (admin logo) so the browser tab shows your brand.
     logo = await _admin_logo()
     if logo:
@@ -1288,15 +1259,8 @@ async def admin_root_index():
     return await _serve_admin_spa()
 
 
-# Legacy /v2 links now land on the main (root) React panel.
-@app.get(f"/{S}/v2")
-async def admin_v2_redirect():
-    return RedirectResponse(f"/{S}/", status_code=307)
 
 
-@app.get(f"/{S}/v2/")
-async def admin_v2_index():
-    return RedirectResponse(f"/{S}/", status_code=307)
 
 
 def _api_guard(request: Request):
@@ -1953,27 +1917,6 @@ async def api_user_detail(request: Request, uid: int):
 
 # ═══════════════════════════════ DASHBOARD (legacy fallback) ═════════════════
 # Root /<secret>/ now serves the React SPA; this stays as a legacy fallback.
-@app.get(f"/{S}/dashboard", response_class=HTMLResponse)
-async def dashboard(request: Request):
-    if not _auth(request):
-        return _redir_login()
-    stats = await get_stats()
-    pending = await get_pending_orders()
-    pending_update_build = await get_setting("pending_update_build", "")
-    last_update_broadcast = await get_setting("last_update_broadcast", "")
-    pending_update_text = await get_setting("pending_update_text", DEFAULT_UPDATE_BROADCAST_TEXT)
-    return _templates.TemplateResponse(
-        "dashboard.html",
-        await _ctx_ui(
-            request,
-            stats=stats,
-            pending=pending[:6],
-            active="dashboard",
-            pending_update_build=pending_update_build,
-            last_update_broadcast=last_update_broadcast,
-            pending_update_text=pending_update_text,
-        ),
-    )
 
 
 @app.post(f"/{S}/updates/approve_send")
@@ -1983,7 +1926,7 @@ async def approve_and_send_update(request: Request, update_text: str = Form(""))
 
     build = (await get_setting("pending_update_build", "")).strip()
     if not build:
-        return RedirectResponse(f"/{S}/dashboard", status_code=302)
+        return JSONResponse({"error": "هیچ آپدیت منتظر تاییدی وجود ندارد."}, status_code=400)
 
     if update_text.strip():
         await set_setting("pending_update_text", update_text.strip())
@@ -1994,8 +1937,9 @@ async def approve_and_send_update(request: Request, update_text: str = Form(""))
         logger.info(f"update broadcast approved and sent from panel | build={build} sent={sent}")
     except Exception as e:
         logger.exception("failed to send approved update broadcast: %s", e)
+        return JSONResponse({"error": f"ارسال ناموفق بود: {e}"}, status_code=500)
 
-    return RedirectResponse(f"/{S}/dashboard", status_code=302)
+    return JSONResponse({"success": True, "sent": sent, "build": build})
 
 
 @app.post(f"/{S}/updates/reject")
@@ -2010,15 +1954,16 @@ async def reject_update_broadcast(request: Request):
     await set_setting("pending_update_text", "")
     await set_setting("pending_update_text_build", "")
     await set_setting("update_broadcast_approved_build", "")
-    return RedirectResponse(f"/{S}/dashboard", status_code=302)
+    return JSONResponse({"success": True})
 
 
 # ═══════════════════════════════ SERVERS ════════════════════════════
 # ═════════════════════════════ BACKUP / RESTORE ═════════════════════════════
-@app.get(f"/{S}/backups", response_class=HTMLResponse)
-async def backups_page(request: Request):
-    if not _auth(request):
-        return _redir_login()
+@app.get(f"/{S}/api/backups")
+async def api_backups(request: Request):
+    """Emergency snapshots on disk + the automatic server-backup schedule."""
+    if not _api_guard(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
     backups = []
     if os.path.isdir(_backup_dir):
         for item in sorted(os.listdir(_backup_dir), reverse=True)[:20]:
@@ -2029,23 +1974,13 @@ async def backups_page(request: Request):
                     "size": os.path.getsize(path),
                     "created": datetime.fromtimestamp(os.path.getmtime(path)).isoformat(),
                 })
-    backup_settings = {
-        "server_backup_enabled": await get_setting("server_backup_enabled", SETTINGS_DEFAULTS["server_backup_enabled"]),
-        "server_backup_interval_hours": await get_setting("server_backup_interval_hours", SETTINGS_DEFAULTS["server_backup_interval_hours"]),
-    }
-    return _templates.TemplateResponse(
-        "backups.html",
-        await _ctx_ui(
-            request,
-            active="backups",
-            result=request.query_params.get("result", ""),
-            pre=request.query_params.get("pre", ""),
-            ssl_ok=request.query_params.get("ssl_ok", ""),
-            ssl_fail=request.query_params.get("ssl_fail", ""),
-            backups=backups,
-            settings=backup_settings,
-        ),
-    )
+    return JSONResponse({
+        "backups": backups,
+        "settings": {
+            "server_backup_enabled": await get_setting("server_backup_enabled", SETTINGS_DEFAULTS["server_backup_enabled"]),
+            "server_backup_interval_hours": await get_setting("server_backup_interval_hours", SETTINGS_DEFAULTS["server_backup_interval_hours"]),
+        },
+    })
 
 
 _XLSX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -2202,7 +2137,7 @@ async def backups_servers_settings(
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     await set_setting("server_backup_enabled", "1" if server_backup_enabled == "1" else "0")
     await set_setting("server_backup_interval_hours", str(max(1, min(168, int(server_backup_interval_hours or 6)))))
-    return RedirectResponse(f"/{S}/backups", status_code=302)
+    return JSONResponse({"success": True})
 
 
 @app.post(f"/{S}/backups/servers/send")
@@ -2265,38 +2200,31 @@ async def backup_restore(
             os.replace(db_restore, _db_path)
             if restore_env == "1" and env_restore:
                 os.replace(env_restore, _env_path)
-            ssl_q = ""
+            ssl = {}
             if restore_ssl == "1" and sys_staged:
                 res = _restore_system_files(sys_staged)
-                ssl_q = f"&ssl_ok={res['restored']}&ssl_fail={res['failed']}"
+                ssl = {"ssl_restored": res["restored"], "ssl_failed": res["failed"]}
             await init_db()
-            return RedirectResponse(f"/{S}/backups?result=restored&pre={pre_name}{ssl_q}", status_code=302)
+            # `pre` is the snapshot taken of the CURRENT database before it was
+            # overwritten — the caller needs its name to undo a bad restore.
+            return JSONResponse({"success": True, "pre_restore_backup": pre_name, **ssl})
         except Exception as e:
             logger.exception("backup restore failed: %s", e)
-            return RedirectResponse(f"/{S}/backups?result=restore_error", status_code=302)
+            return JSONResponse({"error": f"بازیابی ناموفق بود: {e}"}, status_code=400)
 
 
-@app.get(f"/{S}/reports", response_class=HTMLResponse)
-async def reports_page(request: Request):
-    if not _auth(request):
-        return _redir_login()
-    today = await snapshot_daily_report()
-    reports = await get_recent_daily_reports(60)
-    return _templates.TemplateResponse(
-        "reports.html",
-        await _ctx_ui(request, today=today, reports=reports, active="reports"),
-    )
+@app.get(f"/{S}/api/reports")
+async def api_reports(request: Request):
+    """Daily snapshots. Reading the page also takes today's snapshot, which is
+    what makes "today" a live row rather than yesterday's leftovers."""
+    if not _api_guard(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    return JSONResponse({
+        "today": await snapshot_daily_report(),
+        "reports": await get_recent_daily_reports(60),
+    })
 
 
-@app.get(f"/{S}/servers", response_class=HTMLResponse)
-async def servers_page(request: Request):
-    if not _auth(request):
-        return _redir_login()
-    servers = await get_servers(active_only=False)
-    return _templates.TemplateResponse(
-        "servers.html",
-        await _ctx_ui(request, servers=servers, active="servers"),
-    )
 
 
 @app.post(f"/{S}/servers/add")
@@ -2317,7 +2245,7 @@ async def server_add(
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     sid = await add_server(name, url.rstrip("/"), username, password, sub_path.strip("/"), inbound_id, note, inbound_ids=inbound_ids, api_token=api_token.strip())
     await update_server(sid, max_active_configs=max_active_configs)
-    return RedirectResponse(f"/{S}/servers", status_code=302)
+    return JSONResponse({"success": True})
 
 
 @app.post(f"/{S}/servers/{{sid}}/toggle")
@@ -2366,7 +2294,7 @@ async def server_edit(
     if api_token.strip():
         updates["api_token"] = api_token.strip()
     await update_server(sid, **updates)
-    return RedirectResponse(f"/{S}/servers", status_code=302)
+    return JSONResponse({"success": True})
 
 
 @app.post(f"/{S}/servers/{{sid}}/delete")
@@ -2414,65 +2342,8 @@ async def api_servers(request: Request):
 
 
 # ═════════════════════════════ SUBSCRIPTIONS ═══════════════════════
-@app.get(f"/{S}/subs", response_class=HTMLResponse)
-async def subscriptions_page(request: Request):
-    if not _auth(request):
-        return _redir_login()
-    nodes = await get_subscription_node_configs(active_only=False)
-    for node in nodes:
-        node["active_profiles"] = await count_active_subscription_nodes_by_target(node["server_id"], node["inbound_id"])
-        status = await subscription_node_config_status(node)
-        node["usable"] = status["usable"]
-        node["usable_label"] = status["label"]
-        node["usable_reason"] = status["reason"]
-    settings = {
-        "multi_sub_enabled": await get_setting("multi_sub_enabled", SETTINGS_DEFAULTS["multi_sub_enabled"]),
-        "multi_sub_node_count": await get_setting("multi_sub_node_count", SETTINGS_DEFAULTS["multi_sub_node_count"]),
-        "multi_sub_min_nodes": await get_setting("multi_sub_min_nodes", SETTINGS_DEFAULTS["multi_sub_min_nodes"]),
-        "sub_auto_sync_enabled": await get_setting("sub_auto_sync_enabled", SETTINGS_DEFAULTS["sub_auto_sync_enabled"]),
-        "sub_auto_sync_interval_hours": await get_setting("sub_auto_sync_interval_hours", SETTINGS_DEFAULTS["sub_auto_sync_interval_hours"]),
-        "public_base_url": await get_setting("public_base_url", ""),
-        "sub_info_enabled": await get_setting("sub_info_enabled", SETTINGS_DEFAULTS["sub_info_enabled"]),
-        "sub_info_sync_on_render": await get_setting("sub_info_sync_on_render", SETTINGS_DEFAULTS["sub_info_sync_on_render"]),
-        "sub_info_template": await get_setting("sub_info_template", SETTINGS_DEFAULTS["sub_info_template"]),
-        "sub_brand_template": await get_setting("sub_brand_template", SETTINGS_DEFAULTS["sub_brand_template"]),
-        "sub_start_on_first_use": await get_setting("sub_start_on_first_use", SETTINGS_DEFAULTS["sub_start_on_first_use"]),
-        "convert_single_on_renew": await get_setting("convert_single_on_renew", "0"),
-        "single_to_sub_nudge_enabled": await get_setting("single_to_sub_nudge_enabled", SETTINGS_DEFAULTS["single_to_sub_nudge_enabled"]),
-    }
-    return _templates.TemplateResponse(
-        "subscriptions.html",
-        await _ctx_ui(
-            request,
-            active="subs",
-            nodes=nodes,
-            servers=await get_servers(active_only=False),
-            settings=settings,
-            saved=request.query_params.get("saved", "") == "1",
-        ),
-    )
 
 
-@app.get(f"/{S}/subs/profiles", response_class=HTMLResponse)
-async def subscription_profiles_page(request: Request):
-    if not _auth(request):
-        return _redir_login()
-    page = max(1, int(request.query_params.get("page", "1") or 1))
-    per_page = 40
-    profiles_all = await get_subscription_profiles_full(limit=1000)
-    for profile in profiles_all:
-        try:
-            profile["url"] = await subscription_url(profile["token"])
-        except Exception:
-            profile["url"] = f"/sub/{profile['token']}"
-    total = len(profiles_all)
-    total_pages = max(1, (total + per_page - 1) // per_page)
-    page = min(page, total_pages)
-    profiles = profiles_all[(page - 1) * per_page: page * per_page]
-    return _templates.TemplateResponse(
-        "subscription_profiles.html",
-        await _ctx_ui(request, profiles=profiles, total=total, page=page, total_pages=total_pages, active="subs"),
-    )
 
 
 @app.post(f"/{S}/subs/profiles/{{profile_id}}/toggle")
@@ -2508,7 +2379,7 @@ async def subscription_profile_edit(
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     profile = await get_subscription_profile(profile_id)
     if not profile:
-        return RedirectResponse(f"/{S}/subs/profiles?saved=not_found", status_code=302)
+        return JSONResponse({"error": "سرویس پیدا نشد."}, status_code=404)
 
     clean_email = re.sub(r"[^A-Za-z0-9_.@:-]+", "_", (email or "").strip())[:96] or str(profile.get("email") or f"sub_{profile_id}")
     traffic_gb = max(0.1, float(traffic_gb or 0.1))
@@ -2521,8 +2392,8 @@ async def subscription_profile_edit(
 
     result = await edit_subscription_profile(profile, clean_email, traffic_gb, expire_ms, is_active == "1")
     if not result.get("ok"):
-        return RedirectResponse(f"/{S}/subs/profiles?saved=edit_error", status_code=302)
-    return RedirectResponse(f"/{S}/subs/profiles?saved=edited", status_code=302)
+        return JSONResponse({"error": "اعمال تغییرات روی سرورها ناموفق بود."}, status_code=502)
+    return JSONResponse({"success": True})
 
 
 @app.post(f"/{S}/subs/profiles/{{profile_id}}/reset-usage")
@@ -2701,7 +2572,7 @@ async def subscriptions_settings_save(
     await set_setting("sub_start_on_first_use", "1" if sub_start_on_first_use == "1" else "0")
     await set_setting("convert_single_on_renew", "1" if convert_single_on_renew == "1" else "0")
     await set_setting("single_to_sub_nudge_enabled", "1" if single_to_sub_nudge_enabled == "1" else "0")
-    return RedirectResponse(f"/{S}/subs?saved=1", status_code=302)
+    return JSONResponse({"success": True})
 
 
 @app.post(f"/{S}/subs/sync-nodes")
@@ -2779,7 +2650,7 @@ async def subscription_node_add(request: Request):
     started = _start_nodeops(node_id, remove=False, force_refresh=False)
     if "application/json" in request.headers.get("content-type", ""):
         return JSONResponse({"success": True, "node_id": node_id, "job_started": started})
-    return RedirectResponse(f"/{S}/subs?saved=1", status_code=302)
+    return JSONResponse({"success": True})
 
 
 def _as_flag(value) -> int:
@@ -2840,7 +2711,7 @@ async def subscription_node_edit(request: Request, node_id: int):
         started = _start_nodeops(node_id, remove=False, force_refresh=True)
         if "application/json" in request.headers.get("content-type", ""):
             return JSONResponse({"success": True, "job_started": started})
-        return RedirectResponse(f"/{S}/subs?saved=1", status_code=302)
+        return JSONResponse({"success": True})
 
     server_id = int(d.get("server_id"))
     inbound_id = int(d.get("inbound_id"))
@@ -2869,7 +2740,7 @@ async def subscription_node_edit(request: Request, node_id: int):
         started = _start_nodeops(node_id, remove=False, force_refresh=True)
     if "application/json" in request.headers.get("content-type", ""):
         return JSONResponse({"success": True, "job_started": started})
-    return RedirectResponse(f"/{S}/subs?saved=1", status_code=302)
+    return JSONResponse({"success": True})
 
 
 @app.post(f"/{S}/subs/nodes/{{node_id}}/toggle")
@@ -3138,23 +3009,6 @@ async def subscription_node_test(request: Request, node_id: int):
 
 
 # ═══════════════════════════════ PACKAGES ═══════════════════════════
-@app.get(f"/{S}/packages", response_class=HTMLResponse)
-async def packages_page(request: Request):
-    if not _auth(request):
-        return _redir_login()
-    page = max(1, int(request.query_params.get("page", "1") or 1))
-    per_page = 20
-    pkgs_all = await get_packages(active_only=False)
-    total = len(pkgs_all)
-    total_pages = max(1, (total + per_page - 1) // per_page)
-    page = min(page, total_pages)
-    start = (page - 1) * per_page
-    pkgs = pkgs_all[start:start + per_page]
-    servers = await get_servers(active_only=False)
-    return _templates.TemplateResponse(
-        "packages.html",
-        await _ctx_ui(request, packages=pkgs, total=total, page=page, total_pages=total_pages, servers=servers, active="packages"),
-    )
 
 
 @app.post(f"/{S}/packages/add")
@@ -3172,7 +3026,7 @@ async def pkg_add(
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     await add_package(name, traffic_gb, duration_days, price, description, inbound_id=inbound_id,
                       is_unlimited=1 if is_unlimited == "1" else 0)
-    return RedirectResponse(f"/{S}/packages", status_code=302)
+    return JSONResponse({"success": True})
 
 
 @app.post(f"/{S}/packages/{{pid}}/edit")
@@ -3199,7 +3053,7 @@ async def pkg_edit(
         inbound_id=inbound_id,
         is_unlimited=1 if is_unlimited == "1" else 0,
     )
-    return RedirectResponse(f"/{S}/packages", status_code=302)
+    return JSONResponse({"success": True})
 
 
 @app.post(f"/{S}/packages/{{pid}}/toggle")
@@ -3258,20 +3112,6 @@ def _ms_to_date(ms) -> str:
         return ""
 
 
-@app.get(f"/{S}/discounts", response_class=HTMLResponse)
-async def discounts_page(request: Request):
-    if not _auth(request):
-        return _redir_login()
-    codes = await get_discount_codes()
-    packages = await get_packages(active_only=False)
-    pkg_names = {int(p["id"]): p["name"] for p in packages}
-    for c in codes:
-        c["expires_input"] = _ms_to_date(c.get("expires_at"))
-        c["expires_label"] = c["expires_input"] or ""
-    return _templates.TemplateResponse(
-        "discounts.html",
-        await _ctx_ui(request, codes=codes, packages=packages, pkg_names=pkg_names, active="discounts"),
-    )
 
 
 @app.post(f"/{S}/discounts/add")
@@ -3298,7 +3138,7 @@ async def discount_add(
             min_amount=min_amount, package_id=package_id, expires_at=_date_to_ms(expires),
             note=note, campaign=(campaign or "").strip(), targeted=1 if targeted == "1" else 0,
         )
-    return RedirectResponse(f"/{S}/discounts", status_code=302)
+    return JSONResponse({"success": True})
 
 
 @app.post(f"/{S}/discounts/{{cid}}/edit")
@@ -3328,7 +3168,7 @@ async def discount_edit(
         note=(note or "").strip(), campaign=(campaign or "").strip(),
         targeted=1 if targeted == "1" else 0,
     )
-    return RedirectResponse(f"/{S}/discounts", status_code=302)
+    return JSONResponse({"success": True})
 
 
 @app.post(f"/{S}/discounts/{{cid}}/toggle")
@@ -3379,34 +3219,6 @@ _CAMPAIGN_LABELS = {
 }
 
 
-@app.get(f"/{S}/campaigns", response_class=HTMLResponse)
-async def campaigns_page(request: Request):
-    if not _auth(request):
-        return _redir_login()
-    overview = await get_campaign_overview()
-    for c in overview:
-        c["label"] = _CAMPAIGN_LABELS.get(c["campaign"], c["campaign"])
-    series = await get_revenue_timeseries(14)
-    codes = [c["code"] for c in await get_discount_codes() if int(c.get("is_active") or 0)]
-    s = {
-        "campaign_trial_enabled": await get_setting("campaign_trial_enabled", "1"),
-        "campaign_trial_code": await get_setting("campaign_trial_code", ""),
-        "campaign_trial_template": await get_setting("campaign_trial_template", ""),
-        "campaign_winback_enabled": await get_setting("campaign_winback_enabled", "1"),
-        "campaign_winback_code": await get_setting("campaign_winback_code", ""),
-        "campaign_winback_days": await get_setting("campaign_winback_days", "14"),
-        "campaign_winback_template": await get_setting("campaign_winback_template", ""),
-    }
-    kpi = {
-        "revenue": sum(c["revenue"] for c in overview),
-        "conversions": sum(c["conversions"] for c in overview),
-        "discount": sum(c["discount"] for c in overview),
-        "sent": sum(c["sent"] for c in overview),
-    }
-    return _templates.TemplateResponse(
-        "campaigns.html",
-        await _ctx_ui(request, overview=overview, series=series, codes=codes, s=s, kpi=kpi, active="campaigns"),
-    )
 
 
 @app.post(f"/{S}/campaigns/settings")
@@ -3433,7 +3245,7 @@ async def campaigns_settings(
         wd = 14
     await set_setting("campaign_winback_days", str(wd))
     await set_setting("campaign_winback_template", campaign_winback_template or "")
-    return RedirectResponse(f"/{S}/campaigns", status_code=302)
+    return JSONResponse({"success": True})
 
 
 @app.post(f"/{S}/campaigns/{{name}}/run")
@@ -4093,24 +3905,24 @@ async def miniapp_receipt(
 
 
 # ── Mini App management (admin-only, behind the secret path) ──
-@app.get(f"/{S}/miniapp", response_class=HTMLResponse)
-async def miniapp_admin_page(request: Request):
-    if not _auth(request):
-        return _redir_login()
+@app.get(f"/{S}/api/miniapp")
+async def api_miniapp(request: Request):
+    if not _api_guard(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
     domain = await get_setting("miniapp_domain", "")
-    built = os.path.isfile(os.path.join(_miniapp_dist, "index.html"))
-    app_url = f"https://{domain}/app" if domain else ""
-    s = {
-        "miniapp_enabled": await get_setting("miniapp_enabled", "0"),
-        "miniapp_title": await get_setting("miniapp_title", ""),
-        "miniapp_logo": await get_setting("miniapp_logo", "🌐"),
-        "miniapp_domain": domain,
-        "cert_email": await get_setting("cert_email", ""),
-    }
-    return _templates.TemplateResponse(
-        "miniapp.html",
-        await _ctx_ui(request, s=s, built=built, app_url=app_url, active="miniapp"),
-    )
+    return JSONResponse({
+        "settings": {
+            "miniapp_enabled": await get_setting("miniapp_enabled", "0"),
+            "miniapp_title": await get_setting("miniapp_title", ""),
+            "miniapp_logo": await get_setting("miniapp_logo", "🌐"),
+            "miniapp_domain": domain,
+            "cert_email": await get_setting("cert_email", ""),
+        },
+        # Without a build there is nothing to serve at /app, so the panel has to
+        # say so rather than hand out a link that renders "not built yet".
+        "built": os.path.isfile(os.path.join(_miniapp_dist, "index.html")),
+        "app_url": f"https://{domain}/app" if domain else "",
+    })
 
 
 @app.post(f"/{S}/miniapp/settings")
@@ -4127,7 +3939,7 @@ async def miniapp_admin_settings(
     await set_setting("miniapp_title", (miniapp_title or "").strip())
     await set_setting("miniapp_logo", (miniapp_logo or "🌐").strip() or "🌐")
     await set_setting("miniapp_domain", _clean_domain(miniapp_domain))
-    return RedirectResponse(f"/{S}/miniapp", status_code=302)
+    return JSONResponse({"success": True})
 
 
 @app.post(f"/{S}/miniapp/cert/start")
@@ -4163,37 +3975,6 @@ async def miniapp_cert_log(request: Request):
 
 
 # ═══════════════════════════════ REFERRALS ══════════════════════════
-@app.get(f"/{S}/referrals", response_class=HTMLResponse)
-async def referrals_page(request: Request):
-    if not _auth(request):
-        return _redir_login()
-    tiers = await get_referral_tiers(active_only=False)
-    banner_file_id = await get_setting("referral_banner_file_id", "")
-    banner_url = await get_setting("referral_banner_url", "")
-    s = {
-        "referral_enabled": await get_setting("referral_enabled", "1"),
-        "referral_per_referral_amount": await get_setting("referral_per_referral_amount", "0"),
-        "referral_caption": await get_setting("referral_caption", ""),
-        "referral_reminder_enabled": await get_setting("referral_reminder_enabled", "1"),
-        "referral_reminder_code": await get_setting("referral_reminder_code", ""),
-    }
-    codes = [c["code"] for c in await get_discount_codes() if int(c.get("is_active") or 0)]
-    from core.database import get_referral_analytics, get_pending_referral_claims
-    from core.rewards import referral_tier_reward_text
-    analytics = await get_referral_analytics(14)
-    pending = await get_pending_referral_claims(50)
-    for cl in pending:
-        cl["reward_text"] = referral_tier_reward_text(cl)
-    return _templates.TemplateResponse(
-        "referrals.html",
-        await _ctx_ui(
-            request, tiers=tiers, s=s, active="referrals", codes=codes,
-            analytics=analytics, pending_claims=pending,
-            brand=await get_setting("ui.brand_name", "Atlas Account"),
-            banner_set=bool((banner_file_id or "").strip() or (banner_url or "").strip()),
-            banner_status=request.query_params.get("banner", ""),
-        ),
-    )
 
 
 @app.post(f"/{S}/referrals/claims/{{cid}}/approve")
@@ -4240,7 +4021,7 @@ async def referrals_settings(
     await set_setting("referral_caption", referral_caption or "")
     await set_setting("referral_reminder_enabled", "1" if referral_reminder_enabled == "1" else "0")
     await set_setting("referral_reminder_code", (referral_reminder_code or "").strip())
-    return RedirectResponse(f"/{S}/referrals", status_code=302)
+    return JSONResponse({"success": True})
 
 
 @app.post(f"/{S}/referrals/tiers/add")
@@ -4260,7 +4041,7 @@ async def referral_tier_add(
         referrals_needed, reward_kind, reward_gb=reward_gb, duration_days=duration_days,
         is_unlimited=1 if is_unlimited == "1" else 0, label=label, reward_amount=reward_amount,
     )
-    return RedirectResponse(f"/{S}/referrals", status_code=302)
+    return JSONResponse({"success": True})
 
 
 @app.post(f"/{S}/referrals/tiers/{{tid}}/edit")
@@ -4284,7 +4065,7 @@ async def referral_tier_edit(
         reward_gb=float(reward_gb or 0), duration_days=int(duration_days or 0),
         is_unlimited=1 if is_unlimited == "1" else 0, label=(label or "").strip(),
     )
-    return RedirectResponse(f"/{S}/referrals", status_code=302)
+    return JSONResponse({"success": True})
 
 
 @app.post(f"/{S}/referrals/tiers/{{tid}}/toggle")
@@ -4347,10 +4128,10 @@ async def referral_banner_upload(request: Request, banner: UploadFile = File(...
     if not _auth(request):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     if not BOT_TOKEN or len(BOT_TOKEN) < 20:
-        return RedirectResponse(f"/{S}/referrals?banner=notoken", status_code=302)
+        return JSONResponse({"error": "توکن ربات تنظیم نشده است."}, status_code=400)
     data = await banner.read()
     if not data:
-        return RedirectResponse(f"/{S}/referrals?banner=empty", status_code=302)
+        return JSONResponse({"error": "فایل خالی است."}, status_code=400)
     owner = int(await get_setting("owner_admin_id", "0") or 0)
     targets = list(dict.fromkeys(([owner] if owner else []) + list(ADMIN_IDS)))
     bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.MARKDOWN))
@@ -4375,10 +4156,10 @@ async def referral_banner_upload(request: Request, banner: UploadFile = File(...
     finally:
         await bot.session.close()
     if not file_id:
-        return RedirectResponse(f"/{S}/referrals?banner=sendfail", status_code=302)
+        return JSONResponse({"error": "ارسال بنر به تلگرام ناموفق بود."}, status_code=502)
     await set_setting("referral_banner_file_id", file_id)
     await set_setting("referral_banner_url", "")
-    return RedirectResponse(f"/{S}/referrals?banner=ok", status_code=302)
+    return JSONResponse({"success": True})
 
 
 @app.get(f"/{S}/referrals/banner/preview")
@@ -4417,23 +4198,6 @@ async def referral_banner_clear(request: Request):
 
 
 # ═══════════════════════════════ ORDERS ═════════════════════════════
-@app.get(f"/{S}/orders", response_class=HTMLResponse)
-async def orders_page(request: Request):
-    if not _auth(request):
-        return _redir_login()
-    page = max(1, int(request.query_params.get("page", "1") or 1))
-    per_page = 30
-    orders_all = await get_all_orders(1000)
-    total = len(orders_all)
-    total_pages = max(1, (total + per_page - 1) // per_page)
-    page = min(page, total_pages)
-    start = (page - 1) * per_page
-    orders = orders_all[start:start + per_page]
-    pending = await get_pending_orders()
-    return _templates.TemplateResponse(
-        "orders.html",
-        await _ctx_ui(request, orders=orders, total=total, page=page, total_pages=total_pages, pending_count=len(pending), active="orders"),
-    )
 
 
 @app.post(f"/{S}/orders/{{oid}}/reject")
@@ -4442,10 +4206,10 @@ async def order_reject_web(request: Request, oid: int):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     order = await get_order(oid)
     if not order:
-        return RedirectResponse(f"/{S}/orders", status_code=302)
+        return JSONResponse({"error": "سفارش پیدا نشد."}, status_code=404)
     await update_order(oid, status="rejected")
     await _clear_review_buttons("order", oid)
-    return RedirectResponse(f"/{S}/orders", status_code=302)
+    return JSONResponse({"success": True})
 
 
 @app.post(f"/{S}/orders/{{oid}}/approve")
@@ -4457,7 +4221,7 @@ async def order_approve_web(request: Request, oid: int):
     except Exception as e:
         logger.exception("order approve failed oid=%s: %s", oid, e)
         await release_order_processing(oid)
-    return RedirectResponse(f"/{S}/orders", status_code=302)
+    return JSONResponse({"success": True})
 
 
 async def _fulfill_order(oid: int, order: dict | None = None) -> dict:
@@ -4648,15 +4412,23 @@ async def _fulfill_order(oid: int, order: dict | None = None) -> dict:
 
 
 # ═══════════════════════════════ CONFIGS ════════════════════════════
-@app.get(f"/{S}/configs", response_class=HTMLResponse)
-async def configs_page(request: Request):
-    if not _auth(request):
-        return _redir_login()
+@app.get(f"/{S}/api/configs")
+async def api_configs(request: Request):
+    """Legacy single-server configs, grouped by their base email.
+
+    A config that has been migrated between servers keeps a row per move
+    (`{email}_m2`, `_m3`…). Listing those raw would show one customer three
+    times, so they collapse into one entry carrying the move history, and the
+    ACTIVE row wins as the representative one.
+    """
+    if not _api_guard(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
     page = max(1, int(request.query_params.get("page", "1") or 1))
     per_page = 30
-    raw = await get_all_configs()
-    grouped = {}
-    for c in raw:
+    q = (request.query_params.get("q") or "").strip().lower()
+
+    grouped: dict = {}
+    for c in await get_all_configs():
         base = (c.get("email") or "").split("_m")[0]
         g = grouped.setdefault(base, {**c, "history_count": 0, "history_servers": []})
         g["history_count"] += 1
@@ -4664,16 +4436,36 @@ async def configs_page(request: Request):
             g["history_servers"].append(c["server_name"])
         if c.get("is_active") and not g.get("is_active"):
             g.update(c)
-    configs_all = list(grouped.values())
-    total = len(configs_all)
+    rows = list(grouped.values())
+    if q:
+        rows = [c for c in rows
+                if q in str(c.get("email") or "").lower()
+                or q in str(c.get("full_name") or "").lower()
+                or q in str(c.get("username") or "").lower()
+                or q in str(c.get("telegram_id") or "")]
+
+    total = len(rows)
     total_pages = max(1, (total + per_page - 1) // per_page)
     page = min(page, total_pages)
-    start = (page - 1) * per_page
-    configs = configs_all[start:start + per_page]
-    return _templates.TemplateResponse(
-        "configs.html",
-        await _ctx_ui(request, configs=configs, total=total, page=page, total_pages=total_pages, active="configs"),
-    )
+    window = rows[(page - 1) * per_page: page * per_page]
+    return JSONResponse({
+        "configs": [{
+            "id": int(c["id"]),
+            "email": c.get("email") or "",
+            "user_id": int(c.get("user_id") or 0),
+            "telegram_id": int(c.get("telegram_id") or 0),
+            "full_name": c.get("full_name") or "",
+            "username": c.get("username") or "",
+            "server_name": c.get("server_name") or "",
+            "traffic_gb": float(c.get("traffic_gb") or 0),
+            "expire_timestamp": int(c.get("expire_timestamp") or 0),
+            "is_active": int(c.get("is_active") or 0),
+            "created_at": c.get("created_at") or "",
+            "history_count": int(c.get("history_count") or 0),
+            "history_servers": c.get("history_servers") or [],
+        } for c in window],
+        "total": total, "page": page, "total_pages": total_pages,
+    })
 
 
 @app.post(f"/{S}/configs/{{cid}}/toggle")
@@ -4731,106 +4523,12 @@ async def config_delete(request: Request, cid: int):
 
 
 # ═══════════════════════════════ USERS ══════════════════════════════
-@app.get(f"/{S}/users", response_class=HTMLResponse)
-async def users_page(request: Request):
-    if not _auth(request):
-        return _redir_login()
-    page = max(1, int(request.query_params.get("page", "1") or 1))
-    per_page = 50
-    total = await count_users()
-    total_pages = max(1, (total + per_page - 1) // per_page)
-    page = min(page, total_pages)
-    users = await get_all_users((page - 1) * per_page, per_page)
-    for u in users:
-        u["business"] = await get_user_business_stats(u["id"])
-    wholesale_users = await get_wholesale_users(200)
-    for u in wholesale_users:
-        u["business"] = await get_user_business_stats(u["id"])
-    wholesale_stats = {
-        "active": sum(1 for u in wholesale_users if u.get("is_wholesale")),
-        "pending": sum(1 for u in wholesale_users if u.get("wholesale_request_pending")),
-        "approved_orders": sum(int((u.get("business") or {}).get("approved_orders") or 0) for u in wholesale_users),
-        "active_configs": sum(int((u.get("business") or {}).get("active_configs") or 0) for u in wholesale_users),
-    }
-    pending_topups = await get_pending_topup_requests(200)
-    return _templates.TemplateResponse(
-        "users.html",
-        await _ctx_ui(
-            request,
-            users=users,
-            wholesale_users=wholesale_users,
-            wholesale_stats=wholesale_stats,
-            pending_topups=pending_topups,
-            total=total,
-            page=page,
-            total_pages=total_pages,
-            active="users",
-        ),
-    )
 
 
-@app.get(f"/{S}/users/find")
-async def user_find_page(request: Request, q: str = ""):
-    if not _auth(request):
-        return _redir_login()
-    user = await find_user(q)
-    if user:
-        return RedirectResponse(f"/{S}/users/{user['id']}", status_code=302)
-    return RedirectResponse(f"/{S}/users?not_found=1", status_code=302)
 
 
-@app.get(f"/{S}/users/search")
-async def users_search_api(request: Request, q: str = ""):
-    if not _auth(request):
-        return JSONResponse({"error": "unauthorized"}, status_code=401)
-    q = (q or "").strip()
-    if len(q) < 2:
-        return JSONResponse([])
-    results = await search_users(q, limit=15)
-    out = []
-    for u in results:
-        out.append({
-            "id": u["id"],
-            "telegram_id": u.get("telegram_id", ""),
-            "full_name": u.get("full_name") or "—",
-            "username": u.get("username") or "",
-            "balance_toman": u.get("balance_toman") or 0,
-            "is_blocked": bool(u.get("is_blocked")),
-            "is_wholesale": bool(u.get("is_wholesale")),
-            "url": f"/{S}/users/{u['id']}",
-        })
-    return JSONResponse(out)
 
 
-@app.get(f"/{S}/users/{{uid}}", response_class=HTMLResponse)
-async def user_detail_page(request: Request, uid: int):
-    if not _auth(request):
-        return _redir_login()
-    user = await get_user_by_id(uid)
-    if not user:
-        return RedirectResponse(f"/{S}/users?not_found=1", status_code=302)
-    orders = await get_user_orders_full(uid, 300)
-    configs = await get_user_configs_full(uid)
-    profiles = await get_subscription_profiles_full(uid, 300)
-    for profile in profiles:
-        profile["nodes"] = await get_subscription_nodes(profile["id"])
-        try:
-            profile["url"] = await subscription_url(profile["token"])
-        except Exception:
-            profile["url"] = ""
-    business = await get_user_business_stats(uid)
-    return _templates.TemplateResponse(
-        "user_detail.html",
-        await _ctx_ui(
-            request,
-            user=user,
-            orders=orders,
-            configs=configs,
-            profiles=profiles,
-            business=business,
-            active="users",
-        ),
-    )
 
 
 @app.post(f"/{S}/users/{{uid}}/toggle_block")
@@ -4914,7 +4612,7 @@ async def user_set_admin_role(request: Request, uid: int):
     await update_user(uid, is_admin=0 if role == "none" else 1, admin_role=role)
     if is_ajax:
         return JSONResponse({"success": True, "role": role})
-    return RedirectResponse(f"/{S}/users", status_code=302)
+    return JSONResponse({"success": True})
 
 
 @app.post(f"/{S}/users/transfer_owner")
@@ -4925,10 +4623,10 @@ async def transfer_owner(request: Request, telegram_id: int = Form(...)):
 
     user = await get_user_by_telegram(telegram_id)
     if not user:
-        return RedirectResponse(f"/{S}/users?owner_error=1", status_code=302)
+        return JSONResponse({"error": "کاربری با این آیدی پیدا نشد."}, status_code=404)
     await update_user(user["id"], is_admin=1, admin_role="full")
     await set_setting("owner_admin_id", str(telegram_id))
-    return RedirectResponse(f"/{S}/users?owner_ok=1", status_code=302)
+    return JSONResponse({"success": True})
 @app.post(f"/{S}/users/{{uid}}/balance_adjust")
 async def user_balance_adjust(request: Request, uid: int):
     if not _auth(request):
@@ -4947,13 +4645,13 @@ async def user_balance_adjust(request: Request, uid: int):
     if amount == 0:
         if is_ajax:
             return JSONResponse({"error": "مبلغ نمی‌تواند صفر باشد"}, status_code=400)
-        return RedirectResponse(f"/{S}/users", status_code=302)
+        return JSONResponse({"error": "مبلغ نمی‌تواند صفر باشد"}, status_code=400)
     await add_user_balance(uid, amount, kind="manual", note=note, actor_telegram_id=0)
     if is_ajax:
         from core.database import get_user_by_id
         u = await get_user_by_id(uid)
         return JSONResponse({"success": True, "new_balance": u.get("balance_toman", 0) if u else 0})
-    return RedirectResponse(f"/{S}/users", status_code=302)
+    return JSONResponse({"success": True})
 
 
 @app.post(f"/{S}/topups/{{rid}}/approve")
@@ -4965,7 +4663,7 @@ async def topup_approve_web(request: Request, rid: int):
         await add_user_balance(req["user_id"], int(req["amount"]), kind="topup", note=f"topup_request:{rid}", actor_telegram_id=0)
         await update_topup_request(rid, status="approved", reviewer_telegram_id=0, reviewed_at=datetime.now().isoformat())
         await _clear_review_buttons("topup", rid)
-    return RedirectResponse(f"/{S}/users", status_code=302)
+    return JSONResponse({"success": True})
 
 
 @app.post(f"/{S}/topups/{{rid}}/reject")
@@ -4976,7 +4674,7 @@ async def topup_reject_web(request: Request, rid: int):
     if req and req.get("status") == "pending":
         await update_topup_request(rid, status="rejected", reviewer_telegram_id=0, reviewed_at=datetime.now().isoformat(), admin_note="rejected_web")
         await _clear_review_buttons("topup", rid)
-    return RedirectResponse(f"/{S}/users", status_code=302)
+    return JSONResponse({"success": True})
 
 
 @app.post(f"/{S}/users/{{uid}}/pricing")
@@ -5003,7 +4701,7 @@ async def user_set_pricing(request: Request, uid: int):
     await update_user(uid, discount_percent=discount_percent, price_per_gb=price_per_gb, unlimited_price=unlimited_price)
     if is_ajax:
         return JSONResponse({"success": True})
-    return RedirectResponse(f"/{S}/users", status_code=302)
+    return JSONResponse({"success": True})
 
 
 # ═══════════════════════════════ TRANSACTIONS ═══════════════════════
@@ -5020,15 +4718,21 @@ async def _notify_legacy_sync_user(telegram_id: int, text: str):
         await bot.session.close()
 
 
-@app.get(f"/{S}/legacy-claims", response_class=HTMLResponse)
-async def legacy_claims_page(request: Request):
-    if not _auth(request):
-        return _redir_login()
-    claims = await get_pending_legacy_claims()
-    return _templates.TemplateResponse(
-        "legacy_claims.html",
-        await _ctx_ui(request, claims=claims, active="legacy_claims", result=request.query_params.get("result", "")),
-    )
+@app.get(f"/{S}/api/legacy-claims")
+async def api_legacy_claims(request: Request):
+    """Customers asking us to adopt a config they bought before this panel."""
+    if not _api_guard(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    return JSONResponse({"claims": [{
+        "id": int(c["id"]),
+        "telegram_id": int(c.get("telegram_id") or 0),
+        "full_name": c.get("full_name") or "",
+        "username": c.get("username") or "",
+        "email": c.get("email") or "",
+        "uuid": c.get("uuid") or "",
+        "config_link": c.get("config_link") or "",
+        "created_at": c.get("created_at") or "",
+    } for c in await get_pending_legacy_claims()]})
 
 
 @app.post(f"/{S}/legacy-claims/{{cid}}/approve")
@@ -5038,13 +4742,13 @@ async def legacy_claim_approve_web(request: Request, cid: int):
 
     claim = await get_legacy_claim(cid)
     if not claim or claim.get("status") != "pending":
-        return RedirectResponse(f"/{S}/legacy-claims?result=missing", status_code=302)
+        return JSONResponse({"error": "این درخواست دیگر در انتظار بررسی نیست."}, status_code=404)
 
     email = (claim.get("email") or "").strip()
     claim_uuid = (claim.get("uuid") or "").strip()
     if not email and not claim_uuid:
         await update_legacy_claim(cid, status="rejected", reviewed_at=datetime.now().isoformat(), admin_note="missing_identity_web")
-        return RedirectResponse(f"/{S}/legacy-claims?result=bad_identity", status_code=302)
+        return JSONResponse({"error": "لینک ارسالی نه ایمیل دارد نه UUID — قابل شناسایی نیست."}, status_code=400)
 
     cfg = await get_config_by_email(email) if email else None
     if not cfg and claim_uuid:
@@ -5057,7 +4761,7 @@ async def legacy_claim_approve_web(request: Request, cid: int):
         remote = await _find_remote_legacy_client(email, claim_uuid)
         if not remote or not remote.get("email") or not remote.get("uuid"):
             await update_legacy_claim(cid, admin_note=f"not_found_web:{datetime.now().isoformat()}", reviewed_at=datetime.now().isoformat())
-            return RedirectResponse(f"/{S}/legacy-claims?result=not_found", status_code=302)
+            return JSONResponse({"error": "این کانفیگ روی هیچ‌کدام از پنل‌ها پیدا نشد."}, status_code=404)
         try:
             cfg_id = await save_config(
                 claim["user_id"],
@@ -5077,7 +4781,7 @@ async def legacy_claim_approve_web(request: Request, cid: int):
 
     if not cfg:
         await update_legacy_claim(cid, admin_note=f"not_found_web:{datetime.now().isoformat()}", reviewed_at=datetime.now().isoformat())
-        return RedirectResponse(f"/{S}/legacy-claims?result=not_found", status_code=302)
+        return JSONResponse({"error": "این کانفیگ روی هیچ‌کدام از پنل‌ها پیدا نشد."}, status_code=404)
 
     if not remote:
         try:
@@ -5103,7 +4807,7 @@ async def legacy_claim_approve_web(request: Request, cid: int):
         int(claim["telegram_id"]),
         "✅ کانفیگ قبلی شما تایید و به حساب ربات متصل شد.\n\nاز بخش «📡 وضعیت سرویس» می‌توانید آن را ببینید.",
     )
-    return RedirectResponse(f"/{S}/legacy-claims?result=approved", status_code=302)
+    return JSONResponse({"success": True, "config_id": int(cfg["id"])})
 
 
 @app.post(f"/{S}/legacy-claims/{{cid}}/reject")
@@ -5114,18 +4818,31 @@ async def legacy_claim_reject_web(request: Request, cid: int):
     if claim and claim.get("status") == "pending":
         await update_legacy_claim(cid, status="rejected", reviewed_at=datetime.now().isoformat(), admin_note="rejected_web")
         await _notify_legacy_sync_user(int(claim["telegram_id"]), "❌ درخواست سینک کانفیگ شما رد شد. برای بررسی بیشتر با پشتیبانی هماهنگ کنید.")
-    return RedirectResponse(f"/{S}/legacy-claims?result=rejected", status_code=302)
+    return JSONResponse({"success": True})
 
 
-@app.get(f"/{S}/transactions", response_class=HTMLResponse)
-async def transactions_page(request: Request):
-    if not _auth(request):
-        return _redir_login()
-    txs = await get_recent_receipt_transactions(200)
-    return _templates.TemplateResponse(
-        "transactions.html",
-        await _ctx_ui(request, transactions=txs, active="transactions"),
-    )
+@app.get(f"/{S}/api/transactions")
+async def api_transactions(request: Request):
+    """Every payment receipt a customer uploaded — wallet top-ups and orders in
+    one stream, which is how an admin actually reviews them."""
+    if not _api_guard(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    limit = max(1, min(500, int(request.query_params.get("limit", "200") or 200)))
+    return JSONResponse({"transactions": [{
+        "tx_type": t.get("tx_type") or "",
+        "tx_id": int(t.get("tx_id") or 0),
+        "user_id": int(t.get("user_id") or 0),
+        "telegram_id": int(t.get("telegram_id") or 0),
+        "full_name": t.get("full_name") or "",
+        "username": t.get("username") or "",
+        "amount": int(t.get("amount") or 0),
+        "status": t.get("status") or "",
+        "created_at": t.get("created_at") or "",
+        "reviewed_at": t.get("reviewed_at") or "",
+        # The image itself is fetched from Telegram on demand — see
+        # /receipts/{type}/{id} — so the list stays small and fast.
+        "has_receipt": bool((t.get("receipt_file_id") or "").strip()),
+    } for t in await get_recent_receipt_transactions(limit)]})
 
 
 @app.get(f"/{S}/receipts/{'{'}tx_type{'}'}/{'{'}tx_id{'}'}")
@@ -5220,18 +4937,6 @@ async def _settings_snapshot() -> dict:
     return settings
 
 
-@app.get(f"/{S}/settings", response_class=HTMLResponse)
-async def settings_page(request: Request):
-    if not _auth(request):
-        return _redir_login()
-    settings = await _settings_snapshot()
-    servers = await get_servers(active_only=False)
-    saved = request.query_params.get("saved")
-    cert_result = request.query_params.get("cert")
-    return _templates.TemplateResponse(
-        "settings.html",
-        await _ctx_ui(request, settings=settings, servers=servers, saved=saved, cert_result=cert_result, active="settings"),
-    )
 
 
 @app.get(f"/{S}/api/settings")
@@ -5411,7 +5116,7 @@ async def settings_save(
     await set_setting("cert_email", cert_email.strip().lower())
     await set_setting("atlas_tls_https_port", str(max(1, min(65535, int(atlas_tls_https_port or 443)))))
 
-    return RedirectResponse(f"/{S}/settings?saved=1", status_code=302)
+    return JSONResponse({"success": True})
 
 
 def _public_url_for(domain: str, https_port: int) -> str:
@@ -5718,14 +5423,6 @@ def _run_update_bg(repo_dir: str):
     _launch_detached_job("update", script)
 
 
-@app.get(f"/{S}/update", response_class=HTMLResponse)
-async def update_page(request: Request):
-    if not _auth(request):
-        return _redir_login()
-    return _templates.TemplateResponse(
-        "update.html",
-        await _ctx_ui(request, active="update"),
-    )
 
 
 @app.get(f"/{S}/update/check")
@@ -5831,4 +5528,21 @@ async def update_log(request: Request):
 # ═══════════════════════════════ ROOT ═══════════════════════════════
 @app.get("/")
 async def root():
-    return RedirectResponse(f"/{S}/login", status_code=302)
+    return RedirectResponse(f"/{S}/", status_code=302)
+
+
+# ── SPA catch-all — MUST stay the last route in this file ─────────────────────
+# The panel is a hash router, so every real page is `/{S}/#/...`. This exists for
+# the paths the OLD server-rendered panel owned (`/{S}/users`, `/{S}/settings`,
+# …): admins have those bookmarked, and a 404 would read as "the panel is gone"
+# rather than "that page moved". Anything unmatched lands in the SPA instead.
+#
+# Registered last because FastAPI matches in definition order — declared any
+# earlier it would swallow every route defined below it.
+@app.get(f"/{S}/{{path:path}}")
+async def admin_spa_catch_all(path: str):
+    # An unknown /api/ path is a caller bug, not a stale bookmark; answering it
+    # with the SPA's HTML would turn a clear 404 into a JSON parse error.
+    if path.startswith("api/"):
+        return JSONResponse({"error": "not_found"}, status_code=404)
+    return await _serve_admin_spa()

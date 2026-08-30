@@ -51,13 +51,10 @@ show_panel_link(){
   port="$(env_get WEB_PORT)"; port="${port:-8000}"
   ip="$(public_ipv4)"; ip="${ip:-<SERVER-IP>}"
   echo ""
-  echo -e "${BLUE}────────────── Panel links (IPv4) ──────────────${NC}"
-  ok "Main panel (React):"
+  echo -e "${BLUE}────────────── Panel link (IPv4) ──────────────${NC}"
+  ok "Admin panel:"
   echo -e "   ${GREEN}http://${ip}:${port}/${secret}/${NC}"
-  echo ""
-  info "Legacy panel (classic fallback):"
-  echo -e "   ${YELLOW}http://${ip}:${port}/${secret}/dashboard${NC}"
-  echo -e "${BLUE}────────────────────────────────────────────────${NC}"
+  echo -e "${BLUE}───────────────────────────────────────────────${NC}"
 }
 
 run_action(){
@@ -117,7 +114,7 @@ Commands:
   logs              Follow service logs
   update            Safe update (pull mode)
   update-hard       Force update (hard reset)
-  panel-link        Show admin panel links (new v2 + classic) with IPv4
+  panel-link        Show the admin panel link with IPv4
   reinstall-service Recreate systemd service file
   install           Run installer
   configure         Configure .env (token/admin/password)
@@ -156,7 +153,7 @@ show_menu(){
   echo "10) Configure .env (token/admin/password)"
   echo "11) Uninstall"
   echo "12) Full reset uninstall (remove project dir)"
-  echo "13) Show panel links (new v2 + classic)"
+  echo "13) Show panel link"
   echo " 0) Exit"
   echo ""
 }
