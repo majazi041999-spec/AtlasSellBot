@@ -124,16 +124,30 @@ async def main():
                 # CDN's edge, never the customer, and one customer lands on dozens
                 # of edges. Counting those as people would punish the customers on
                 # the server that works best.
+                #
+                # Measured on FRESH addresses only. The panel keeps every address
+                # for 30 minutes, so the all-time ratio keeps showing yesterday's
+                # problem for half an hour after it is fixed — which made this
+                # report say "still broken" while the fix was visibly working.
                 from core.ip_guard import is_cdn_ip
-                seen = {ip for m in ips.values() for ip in m}
-                cdn = {ip for ip in seen if is_cdn_ip(ip)}
-                if cdn:
-                    pct = round(len(cdn) / max(1, len(seen)) * 100)
-                    print(f"       🌐 {len(cdn)} of {len(seen)} addresses are CDN edges ({pct}%)"
-                          " — traffic through this server CANNOT be attributed to a customer.")
+                now_s = int(time.time())
+                fresh_ips = {ip for m in ips.values()
+                             for ip, ts in m.items() if int(ts or 0) >= now_s - 120}
+                held = {ip for m in ips.values() for ip in m}
+                cdn = {ip for ip in fresh_ips if is_cdn_ip(ip)}
+                if cdn or any(is_cdn_ip(ip) for ip in held):
+                    pct = round(len(cdn) / max(1, len(fresh_ips)) * 100)
+                    old = round(sum(1 for ip in held if is_cdn_ip(ip)) / max(1, len(held)) * 100)
+                    print(f"       🌐 CDN edges: {pct}% of the {len(fresh_ips)} addresses seen in "
+                          f"the last 2 min  (30-min history: {old}%)")
                     if pct > 80:
-                        print("          this inbound is served through a CDN. connection limits "
-                              "cannot police it, and are not applied to it.")
+                        print("          this inbound is served through a CDN and the customer's "
+                              "real address never reaches xray.")
+                        print("          fix: set sockopt.trustedXForwardedFor = [\"CF-Connecting-IP\"] "
+                              "on this inbound.")
+                    elif pct > 0:
+                        print("          partly fixed — connections opened before the change still "
+                              "report the CDN until they cycle.")
         except Exception as e:
             row(s["name"], "UNREACHABLE", str(e)[:60])
         finally:
