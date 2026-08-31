@@ -1266,6 +1266,23 @@ async def _render_sub_panel(message, pid: int):
     is_active = bool(int(profile.get("is_active") or 0))
     owner_name = (owner or {}).get("full_name") or "—"
     owner_tid = (owner or {}).get("telegram_id") or "—"
+    # Concurrent-connection allowance. Shown here because this panel is exactly
+    # where the owner lands when a customer says "it disconnected me".
+    ip_line = ""
+    try:
+        from core.database import get_setting as _gs, get_ip_guard_state as _gis
+        if await _gs("ip_limit_enabled", "0") == "1":
+            own = int(profile.get("ip_limit") or 0)
+            ip_txt = str(own) if own else f"پیش‌فرض ({await _gs('ip_limit_default', '5')})"
+            st = await _gis(pid)
+            left = int((st or {}).get("penalty_until") or 0) - int(time.time())
+            if left > 0:
+                ip_txt += f" — ⛔️ الان قطع، {max(1, left // 60)} دقیقه مانده"
+            elif st and int(st.get("last_ip_count") or 0):
+                ip_txt += f" — الان {st['last_ip_count']} مکان"
+            ip_line = f"سقف اتصال هم‌زمان: {ip_txt}\n"
+    except Exception:
+        ip_line = ""
     text = (
         "📡 پنل مدیریت ساب\n"
         "━━━━━━━━━━━━━━━━━━\n"
@@ -1274,7 +1291,8 @@ async def _render_sub_panel(message, pid: int):
         f"وضعیت: {'🟢 فعال' if is_active else '🔴 غیرفعال'}\n"
         f"حجم: {fmt_bytes(used)} از {fmt_bytes(total) if total>0 else 'نامحدود'} (باقی {fmt_bytes(remaining) if total>0 else '∞'})\n"
         f"زمان باقی‌مانده: {dl_text}\n"
-        f"نودهای فعال: {len(active_nodes)} از {len(nodes)}\n\n"
+        f"نودهای فعال: {len(active_nodes)} از {len(nodes)}\n"
+        + ip_line + "\n"
         f"لینک ساب:\n{sub_url}"
     )
     await message.edit_text(text, reply_markup=adm_sub_panel_kb(pid, is_active, int(profile.get("user_id") or 0)), parse_mode=None)
@@ -1419,6 +1437,80 @@ async def adm_sub_edit_duration(msg: Message, state: FSMContext):
         except Exception:
             pass
     sent = await msg.answer("✅ ساب ویرایش شد. در حال بارگذاری پنل...", parse_mode=None)
+    await _render_sub_panel(sent, pid)
+
+
+@router.callback_query(F.data.startswith("adm_sub_iplimit:"))
+async def adm_sub_iplimit_start(cb: CallbackQuery, state: FSMContext):
+    """Per-subscription override for the concurrent-connection allowance.
+
+    Lives here because this is where the owner already is when a customer
+    complains: paste their sub link, the panel opens, change the one number.
+    """
+    if not is_admin(cb.from_user.id):
+        return
+    pid = int(cb.data.split(":")[1])
+    profile = await get_subscription_profile(pid)
+    if not profile:
+        await cb.answer("یافت نشد", show_alert=True)
+        return
+    from core.database import get_setting, get_ip_guard_state
+    default = await get_setting("ip_limit_default", "5")
+    enabled = await get_setting("ip_limit_enabled", "0") == "1"
+    warn_only = await get_setting("ip_limit_warn_only", "1") == "1"
+    own = int(profile.get("ip_limit") or 0)
+    st = await get_ip_guard_state(pid)
+
+    if not enabled:
+        status = "⚠️ این سیستم در پنل خاموش است، پس فعلاً روی هیچ‌کس اعمال نمی‌شود."
+    elif warn_only:
+        status = "ℹ️ حالت آزمایشی روشن است — فقط ثبت می‌شود و کسی قطع نمی‌شود."
+    else:
+        status = "✅ سیستم فعال است و اعمال می‌شود."
+
+    extra = ""
+    if st:
+        left = int(st.get("penalty_until") or 0) - int(time.time())
+        if left > 0:
+            extra = f"\n\n⛔️ این ساب همین حالا قطع است — {max(1, left // 60)} دقیقه مانده."
+        elif int(st.get("last_ip_count") or 0):
+            extra = f"\n\nآخرین شمارش: {st['last_ip_count']} مکان هم‌زمان."
+
+    await state.set_state(EditSubProfile.ip_limit)
+    await state.update_data(pid=pid)
+    await cb.message.answer(
+        "🔐 سقف اتصال هم‌زمان این ساب\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        f"{status}\n\n"
+        f"سقف فعلی این ساب: {own if own else f'پیش‌فرض ({default})'}\n\n"
+        "عدد جدید را بفرست. برای برگشتن به پیش‌فرض، ۰ بفرست."
+        + extra,
+        parse_mode=None,
+        reply_markup=flow_cancel_kb(),
+    )
+    await cb.answer()
+
+
+@router.message(EditSubProfile.ip_limit)
+async def adm_sub_iplimit_save(msg: Message, state: FSMContext):
+    raw = (msg.text or "").strip()
+    try:
+        value = int(float(raw))
+    except ValueError:
+        await msg.answer("عدد معتبر بفرست (مثلاً 5). برای پیش‌فرض ۰.", parse_mode=None)
+        return
+    if value < 0 or value > 1000:
+        await msg.answer("عدد بین ۰ تا ۱۰۰۰ باشد.", parse_mode=None)
+        return
+    data = await state.get_data()
+    await state.clear()
+    pid = int(data.get("pid") or 0)
+    from core.database import set_profile_ip_limit, get_setting
+    await set_profile_ip_limit(pid, value)
+    default = await get_setting("ip_limit_default", "5")
+    sent = await msg.answer(
+        f"✅ سقف این ساب روی {value if value else f'پیش‌فرض ({default})'} تنظیم شد.",
+        parse_mode=None)
     await _render_sub_panel(sent, pid)
 
 

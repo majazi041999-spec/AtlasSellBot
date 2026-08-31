@@ -1056,6 +1056,21 @@ async def ensure_subscription_profile_nodes(profile: Dict, force_refresh: bool =
     if not profile or not int(profile.get("is_active") or 0):
         return {"created": 0, "skipped": 0, "failed": 0}
 
+    # A subscription the IP guard has switched off is left completely alone
+    # until its penalty ends. Every repair path below pushes enable=True, so
+    # without this the usage sweep would quietly undo a ten-minute penalty about
+    # ninety seconds after it started — and then the guard would re-apply it,
+    # and the two would trade panel writes for the rest of the hour. The guard
+    # restores the customer itself when the time is served, and reconciliation
+    # resumes on the next pass. See core/ip_guard.py.
+    from core.database import get_cut_profile_ids
+    try:
+        if int(profile["id"]) in await get_cut_profile_ids():
+            return {"created": 0, "skipped": 0, "failed": 0, "ip_guard_hold": True}
+    except Exception as e:
+        # Never let the guard's bookkeeping stop ordinary reconciliation.
+        logger.debug("ip guard hold check failed: %s", e)
+
     expire_ms = int(profile.get("expire_timestamp") or 0)
     now_ms = int(time.time() * 1000)
     if expire_ms > 0 and expire_ms <= now_ms:

@@ -523,6 +523,40 @@ async def _subscription_lifecycle_worker(bot):
 
 
 
+async def _ip_guard_worker(bot):
+    """Enforce the per-subscription concurrent-connection limit.
+
+    Deliberately its own loop rather than a passenger on `_online_poll_worker`:
+    that one exists to keep a dashboard number fresh and the owner is free to
+    slow it down, while this one decides whether to switch a paying customer
+    off and needs its own cadence. The cost is the same order — one login and
+    two cheap reads per panel per cycle, five panels, no writes unless somebody
+    is actually being cut. See core/ip_guard.py for why detection is free.
+    """
+    from core.database import get_setting
+    from core.ip_guard import run_cycle
+
+    await asyncio.sleep(90)
+    while True:
+        seconds = 60
+        try:
+            seconds = max(15, int(float(await get_setting("ip_limit_poll_seconds", "60") or 60)))
+        except Exception:
+            seconds = 60
+        try:
+            r = await run_cycle(bot)
+            acted = r.get("acted") or []
+            if acted:
+                logger.info("ip guard: %s", ", ".join(
+                    f"#{a['profile_id']} {a['action']}" for a in acted[:20]))
+            if r.get("blind"):
+                logger.warning("ip guard: %s server(s) cannot report addresses: %s",
+                               r["blind"], ", ".join(r.get("blind_servers") or []))
+        except Exception as e:
+            logger.exception("ip guard worker failed: %s", e)
+        await asyncio.sleep(seconds)
+
+
 async def run_bot():
     from aiogram import Bot, Dispatcher
     from aiogram.fsm.storage.memory import MemoryStorage
@@ -573,6 +607,7 @@ async def run_bot():
     asyncio.create_task(_auto_node_worker())
     asyncio.create_task(_subscription_lifecycle_worker(bot))
     asyncio.create_task(_server_backup_worker(bot))
+    asyncio.create_task(_ip_guard_worker(bot))
     await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
 

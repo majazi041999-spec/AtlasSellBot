@@ -44,6 +44,175 @@ function Select({ s, set, k, label, options }) {
   );
 }
 
+/** Per-subscription concurrent-connection limit.
+ *
+ *  Its own state and its own save button, separate from the big settings form:
+ *  this switches paying customers off, and an accidental save of the whole
+ *  settings page must never be able to arm it as a side effect.
+ */
+const KIND_LABEL = {
+  warned: ["b-yellow", "هشدار"],
+  cut: ["b-red", "قطع شد"],
+  would_cut: ["b-gray", "قطع می‌شد"],
+  restored: ["b-green", "برگشت"],
+  restore_failed: ["b-red", "برگشت ناموفق"],
+};
+
+function fmtWhen(ts) {
+  if (!ts) return "—";
+  const d = new Date(ts * 1000);
+  return d.toLocaleString("fa-IR", { month: "2-digit", day: "2-digit",
+                                     hour: "2-digit", minute: "2-digit" });
+}
+function fmtLeft(sec) {
+  if (sec >= 3600) return `${Math.round(sec / 3600)} ساعت`;
+  if (sec >= 60) return `${Math.round(sec / 60)} دقیقه`;
+  return `${sec} ثانیه`;
+}
+
+function IpGuardCard() {
+  const [d, setD] = useState(null);
+  const [s, setS] = useState({});
+  const [busy, setBusy] = useState(false);
+  const [showLog, setShowLog] = useState(false);
+
+  const load = () => api.get("/api/ipguard").then((r) => { setD(r); setS(r.settings); })
+                        .catch(() => setD({ error: true }));
+  useEffect(() => { load(); }, []);
+
+  const set = (k, v) => setS((p) => ({ ...p, [k]: v }));
+  const save = async () => {
+    setBusy(true);
+    try {
+      const r = await api.post("/api/ipguard", s);
+      toast(r.released ? `ذخیره شد — ${r.released} اشتراک از حالت قطع خارج شد` : "ذخیره شد");
+      await load();
+    } catch (e) { toast(e.message || "خطا در ذخیره", "err"); }
+    finally { setBusy(false); }
+  };
+  const release = async (pid) => {
+    try { await api.post(`/api/ipguard/release/${pid}`); toast("آزاد شد"); await load(); }
+    catch (e) { toast(e.message || "خطا", "err"); }
+  };
+
+  if (!d) return null;
+  const on = String(s.ip_limit_enabled) === "1";
+  const dry = String(s.ip_limit_warn_only) === "1";
+  const events = d.events || [];
+  const cut = d.cut_now || [];
+
+  return (
+    <Card title="🔐 محدودیت اتصال هم‌زمان" sub="سقف تعداد مکان‌هایی که هم‌زمان به یک اشتراک وصل می‌شوند"
+          right={<button className="btn sm primary" disabled={busy} onClick={save}>
+                   {busy ? "…" : "💾 ذخیره"}</button>}>
+      <div className="grid" style={{ gap: 10 }}>
+        <Toggle s={s} set={set} k="ip_limit_enabled" label="این سیستم فعال باشد" />
+
+        {on && (
+          <div style={{ background: dry ? "rgba(251,191,36,.09)" : "rgba(251,113,133,.09)",
+                        border: `1px solid ${dry ? "rgba(251,191,36,.3)" : "rgba(251,113,133,.3)"}`,
+                        borderRadius: 12, padding: 12 }}>
+            <Toggle s={s} set={set} k="ip_limit_warn_only"
+                    label="فقط ثبت و هشدار — هیچ اشتراکی قطع نشود" />
+            <p className="muted tiny" style={{ margin: "6px 0 0", lineHeight: 2 }}>
+              {dry ? (
+                <>
+                  <b>حالت آزمایشی روشن است</b> و هیچ مشتری‌ای قطع نمی‌شود. چند روز همین‌طور
+                  بگذار، بعد «سابقه» را باز کن و ببین چه کسانی قطع <i>می‌شدند</i>. اگر
+                  اسم مشتری‌های سالم آنجا نبود، این گزینه را خاموش کن تا واقعاً اعمال شود.
+                </>
+              ) : (
+                <><b>اعمال واقعی روشن است.</b> از این پس اشتراکی که مکرراً از سقف رد شود،
+                   پلکانی قطع می‌شود. قبل از این، حتماً چند روز حالت آزمایشی را دیده باش.</>
+              )}
+            </p>
+          </div>
+        )}
+
+        {on && (
+          <>
+            <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: 10 }}>
+              <Text s={s} set={set} k="ip_limit_default" label="سقف پیش‌فرض (تعداد مکان)" ltr />
+              <Text s={s} set={set} k="ip_limit_steps" label="پله‌های قطع (ثانیه)" ltr />
+              <Text s={s} set={set} k="ip_limit_strikes" label="چند بررسی پشت‌سرهم تا اقدام" ltr />
+              <Text s={s} set={set} k="ip_limit_poll_seconds" label="فاصله‌ی بررسی (ثانیه)" ltr />
+            </div>
+
+            {cut.length > 0 && (
+              <div>
+                <div className="muted tiny" style={{ marginBottom: 6 }}>
+                  الان قطع هستند ({cut.length})
+                </div>
+                <div className="grid" style={{ gap: 6 }}>
+                  {cut.map((c) => (
+                    <div key={c.profile_id} className="row between"
+                         style={{ background: "rgba(251,113,133,.08)", border: "1px solid var(--line)",
+                                  borderRadius: 10, padding: "8px 10px", gap: 8, flexWrap: "wrap" }}>
+                      <span style={{ fontSize: ".85rem" }}>
+                        اشتراک #{c.profile_id} — {c.last_ip_count} مکان — پله {c.level}
+                      </span>
+                      <span className="row" style={{ gap: 8 }}>
+                        <span className="badge b-red">{fmtLeft(c.seconds_left)} مانده</span>
+                        <button className="btn xs" onClick={() => release(c.profile_id)}>آزاد کن</button>
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <button className="btn sm" onClick={() => setShowLog((v) => !v)}>
+              {showLog ? "بستن سابقه" : `📜 سابقه (${events.length})`}
+            </button>
+
+            {showLog && (
+              <div className="table-wrap" style={{ maxHeight: 340, overflowY: "auto" }}>
+                <table>
+                  <thead><tr><th>زمان</th><th>اشتراک</th><th>رویداد</th><th>مکان‌ها</th><th>سقف</th></tr></thead>
+                  <tbody>
+                    {events.length === 0 && (
+                      <tr><td colSpan={5} className="muted tiny">هنوز چیزی ثبت نشده</td></tr>
+                    )}
+                    {events.map((e) => {
+                      const k = KIND_LABEL[e.kind] || ["b-gray", e.kind];
+                      return (
+                        <tr key={e.id}>
+                          <td className="tiny">{fmtWhen(e.created_at)}</td>
+                          <td className="tiny">{e.profile_name || e.profile_email || `#${e.profile_id}`}</td>
+                          <td><span className={"badge " + k[0]}>{k[1]}</span></td>
+                          <td className="mono">{e.ip_count || "—"}</td>
+                          <td className="mono">{e.limit_used || "—"}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </>
+        )}
+
+        <p className="muted tiny" style={{ margin: 0, lineHeight: 2 }}>
+          <b>ملاک، اتصال هم‌زمان است، نه تعداد آی‌پی در طول روز.</b> کاربری که با سیم‌کارت
+          است و آی‌پی‌اش عوض می‌شود، یک مکان حساب می‌شود — چون آی‌پی قبلی‌اش دیگر ترافیک
+          ندارد و کنار گذاشته می‌شود.
+          <br />
+          هیچ باری روی سرورها اضافه نمی‌شود: پنل 3x-ui خودش هر ۱۰ ثانیه این اطلاعات را
+          دارد و ما فقط <b>یک درخواست برای هر سرور</b> می‌فرستیم.
+          <br />
+          <b>«قطع» یعنی اتصال جدید برقرار نمی‌شود</b>؛ اتصال‌های باز فعلی تا وقتی خودشان
+          بسته شوند ادامه دارند (چند ثانیه تا چند دقیقه). زمان و حجم اشتراک مشتری از
+          بین نمی‌رود.
+          <br />
+          برای تغییر سقف <b>یک اشتراک خاص</b>، لینک همان ساب را در ربات بفرست و از پنل
+          مدیریت ساب، «سقف اتصال» را عوض کن.
+        </p>
+      </div>
+    </Card>
+  );
+}
+
+
 export default function Settings() {
   const [s, setS] = useState(null);
   const [servers, setServers] = useState([]);
@@ -250,6 +419,8 @@ export default function Settings() {
           </p>
         </div>
       </Card>
+
+      <IpGuardCard />
 
       <Card title="📢 عضویت اجباری و پشتیبانی">
         <div className="grid" style={{ gap: 8 }}>

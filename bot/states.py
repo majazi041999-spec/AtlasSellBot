@@ -32,6 +32,7 @@ class EditConfig(StatesGroup):
 class EditSubProfile(StatesGroup):
     traffic = State()
     duration = State()
+    ip_limit = State()
 
 
 class BuyService(StatesGroup):

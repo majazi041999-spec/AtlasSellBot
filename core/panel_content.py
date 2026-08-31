@@ -55,6 +55,24 @@ SETTINGS_DEFAULTS: Dict[str, str] = {
     # Admin-login protection — see core/login_guard.py
     "login_captcha_always": "0",   # owner can demand the image on EVERY login
     "login_alert_enabled": "1",    # Telegram alert on failed attempts
+    # Per-subscription concurrent-connection limit (core/ip_guard.py).
+    # Ships off, and warn-only when first switched on — it disconnects
+    # paying customers, so nothing here may arm itself on upgrade.
+    "ip_limit_enabled": "0",
+    "ip_limit_warn_only": "1",
+    "ip_limit_default": "5",
+    "ip_limit_poll_seconds": "60",
+    "ip_limit_fresh_seconds": "90",
+    "ip_limit_strikes": "4",
+    "ip_limit_active_seconds": "120",
+    "ip_limit_ipv4_bits": "32",
+    "ip_limit_ipv6_bits": "64",
+    "ip_limit_steps": "60,600,3600",
+    "ip_limit_decay_hours": "24",
+    "ip_limit_warn_cooldown": "3600",
+    "ip_limit_grace_seconds": "300",
+    "ip_limit_reassert_after": "300",
+    "ip_limit_event_keep_days": "30",
     "server_backup_enabled": "1",
     "server_backup_interval_hours": "6",
     "sub_connection_guide": (

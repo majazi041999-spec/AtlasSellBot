@@ -335,6 +335,37 @@ CREATE TABLE IF NOT EXISTS custom_campaigns (
     sent_at TEXT DEFAULT ''
 );
 
+CREATE TABLE IF NOT EXISTS ip_guard_state (
+    profile_id INTEGER PRIMARY KEY,
+    level INTEGER DEFAULT 0,              -- rung of the penalty ladder currently reached
+    strikes INTEGER DEFAULT 0,            -- consecutive polls over the limit, cleared by one clean poll
+    over_since INTEGER DEFAULT 0,         -- epoch s of the first poll in this run of overages
+    penalty_until INTEGER DEFAULT 0,      -- epoch s the cut ends. 0 means not cut
+    cut_at INTEGER DEFAULT 0,             -- epoch s the current cut started
+    last_violation_at INTEGER DEFAULT 0,  -- epoch s of the most recent confirmed violation
+    last_warned_at INTEGER DEFAULT 0,     -- epoch s of the last message to the customer
+    last_ip_count INTEGER DEFAULT 0,      -- what the last poll counted, for the panel to show
+    peak_ip_count INTEGER DEFAULT 0,      -- worst count seen since the ladder last reset
+    restore_fails INTEGER DEFAULT 0,      -- consecutive failures to switch the sub back on
+    updated_at INTEGER DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS ip_guard_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    profile_id INTEGER NOT NULL,
+    kind TEXT NOT NULL,                   -- warned | cut | restored | restore_failed | would_cut
+    level INTEGER DEFAULT 0,
+    ip_count INTEGER DEFAULT 0,
+    limit_used INTEGER DEFAULT 0,
+    detail TEXT DEFAULT '',
+    created_at INTEGER DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS idx_ipguard_events_profile ON ip_guard_events(profile_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_ipguard_events_created ON ip_guard_events(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_ipguard_penalty ON ip_guard_state(penalty_until);
+CREATE INDEX IF NOT EXISTS idx_subnodes_profile_active ON subscription_nodes(profile_id, is_active);
+
 INSERT OR IGNORE INTO settings VALUES
     ('welcome_message','به Atlas Account خوش آمدید! 🌐\nبهترین سرویس VPN با سرعت بالا.'),
     ('support_username',''),
@@ -441,6 +472,9 @@ async def _ensure_columns(db):
             ("starts_on_first_use", "INTEGER DEFAULT 0"),
             ("first_use_at", "INTEGER DEFAULT 0"),
             ("prewarn_sent", "INTEGER DEFAULT 0"),
+            # 0 = use the global ip_limit_default. A positive number overrides it
+            # for this one customer, set from the bot's admin sub panel.
+            ("ip_limit", "INTEGER DEFAULT 0"),
         ],
         "subscription_node_configs": [
             ("label", "TEXT DEFAULT ''"),
@@ -3782,3 +3816,263 @@ async def reset_legacy_claims() -> int:
         c = await db.execute("DELETE FROM legacy_claims")
         await db.commit()
         return c.rowcount or 0
+
+
+# ------------------------------------------------------------------ IP guard
+# Per-subscription concurrent-connection limit. See core/ip_guard.py for what
+# these feed and why the whole cycle costs one HTTP request per server.
+
+async def get_ip_guard_profile_nodes() -> List[Dict]:
+    """Every active subscription with its node emails, in ONE query.
+
+    Returns one row per profile: the owner's telegram id (so the worker can
+    message them without a second lookup), the per-subscription allowance
+    override, and a compact "server_id:email" list of its nodes. The guard runs
+    every minute over the whole base, so this must not become a query per
+    profile — at ~244 profiles and ~3117 nodes that would be the slow thing in
+    the loop, and the loop is supposed to be invisible.
+    """
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            """SELECT sp.id            AS profile_id,
+                      sp.user_id       AS user_id,
+                      sp.name          AS name,
+                      sp.email         AS email,
+                      sp.ip_limit      AS ip_limit,
+                      u.telegram_id    AS telegram_id,
+                      GROUP_CONCAT(n.server_id || ':' || n.email, char(10)) AS nodes
+                 FROM subscription_profiles sp
+                 JOIN users u ON u.id = sp.user_id
+                 LEFT JOIN subscription_nodes n
+                        ON n.profile_id = sp.id AND n.is_active = 1
+                WHERE sp.is_active = 1
+                GROUP BY sp.id"""
+        ) as c:
+            rows = await c.fetchall()
+    out: List[Dict] = []
+    for r in rows:
+        pairs: List[tuple] = []
+        for chunk in (r["nodes"] or "").split("\n"):
+            sid, _, email = chunk.partition(":")
+            email = email.strip()
+            if not email:
+                continue
+            try:
+                pairs.append((int(sid), email))
+            except (TypeError, ValueError):
+                continue
+        if not pairs:
+            continue
+        out.append({
+            "profile_id": int(r["profile_id"]),
+            "user_id": int(r["user_id"] or 0),
+            "telegram_id": int(r["telegram_id"] or 0),
+            "name": r["name"] or r["email"] or "",
+            "ip_limit": int(r["ip_limit"] or 0),
+            "nodes": pairs,
+        })
+    return out
+
+
+async def get_ip_guard_states() -> Dict[int, Dict]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute("SELECT * FROM ip_guard_state") as c:
+            return {int(r["profile_id"]): dict(r) for r in await c.fetchall()}
+
+
+async def get_ip_guard_state(profile_id: int) -> Optional[Dict]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute("SELECT * FROM ip_guard_state WHERE profile_id=?",
+                              (int(profile_id),)) as c:
+            row = await c.fetchone()
+    return dict(row) if row else None
+
+
+_IP_GUARD_FIELDS = (
+    "level", "strikes", "over_since", "penalty_until", "cut_at",
+    "last_violation_at", "last_warned_at", "last_ip_count", "peak_ip_count",
+    "restore_fails",
+)
+
+
+async def save_ip_guard_state(profile_id: int, **fields) -> None:
+    """Upsert one subscription's guard state. Unknown keys are ignored so the
+    caller can hand the decision dict straight through."""
+    data = {k: int(v or 0) for k, v in fields.items() if k in _IP_GUARD_FIELDS}
+    if not data:
+        return
+    data["updated_at"] = int(time.time())
+    cols = ", ".join(data)
+    ph = ", ".join("?" for _ in data)
+    upd = ", ".join(f"{k}=excluded.{k}" for k in data)
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            f"""INSERT INTO ip_guard_state (profile_id, {cols}) VALUES (?, {ph})
+                ON CONFLICT(profile_id) DO UPDATE SET {upd}""",
+            (int(profile_id), *data.values()),
+        )
+        await db.commit()
+
+
+async def save_ip_guard_states_bulk(rows: List[tuple]) -> int:
+    """Write many guard states in ONE transaction.
+
+    `rows` is [(profile_id, {field: value}), ...]. Fields absent from a dict
+    keep whatever is already stored.
+
+    This exists because the obvious loop is catastrophically slow here, and the
+    slowness is invisible in a unit test. `save_ip_guard_state` opens its own
+    connection and commits, so calling it once per subscription is one fsync per
+    subscription: measured at 666 ms for 244 rows against 2.6 ms for the same
+    work batched — 256x. SQLite has a single writer, so that 666 ms is not just
+    this worker being slow, it is 666 ms every minute during which the BOT
+    cannot write either. The guard is supposed to be invisible, so it batches.
+    """
+    if not rows:
+        return 0
+    now = int(time.time())
+    cols = list(_IP_GUARD_FIELDS)
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        ids = [int(pid) for pid, _ in rows]
+        ph = ",".join("?" for _ in ids)
+        async with db.execute(
+            f"SELECT * FROM ip_guard_state WHERE profile_id IN ({ph})", ids
+        ) as c:
+            existing = {int(r["profile_id"]): dict(r) for r in await c.fetchall()}
+
+        payload = []
+        for pid, fields in rows:
+            base = existing.get(int(pid), {})
+            merged = []
+            for k in cols:
+                v = fields.get(k, base.get(k, 0))
+                try:
+                    merged.append(int(v or 0))
+                except (TypeError, ValueError):
+                    merged.append(0)
+            payload.append((int(pid), *merged, now))
+
+        names = ", ".join(cols)
+        marks = ", ".join("?" for _ in cols)
+        upd = ", ".join(f"{k}=excluded.{k}" for k in cols)
+        await db.executemany(
+            f"""INSERT INTO ip_guard_state (profile_id, {names}, updated_at)
+                VALUES (?, {marks}, ?)
+                ON CONFLICT(profile_id) DO UPDATE SET {upd}, updated_at=excluded.updated_at""",
+            payload,
+        )
+        await db.commit()
+    return len(payload)
+
+
+async def add_ip_guard_events_bulk(events: List[dict]) -> int:
+    """Append many audit rows in one transaction, for the same reason."""
+    if not events:
+        return 0
+    now = int(time.time())
+    payload = [
+        (int(e.get("profile_id") or 0), str(e.get("kind") or ""), int(e.get("level") or 0),
+         int(e.get("ip_count") or 0), int(e.get("limit_used") or 0),
+         str(e.get("detail") or "")[:500], now)
+        for e in events
+    ]
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.executemany(
+            """INSERT INTO ip_guard_events
+                   (profile_id, kind, level, ip_count, limit_used, detail, created_at)
+               VALUES (?,?,?,?,?,?,?)""",
+            payload,
+        )
+        await db.commit()
+    return len(payload)
+
+
+async def clear_ip_guard_state(profile_id: int) -> None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("DELETE FROM ip_guard_state WHERE profile_id=?", (int(profile_id),))
+        await db.commit()
+
+
+async def get_cut_profile_ids(now: Optional[int] = None) -> set:
+    """Subscriptions the guard has switched off right now.
+
+    `ensure_subscription_profile_nodes` consults this before it reconciles: its
+    repair paths push enable=True, and without this check the next sync pass
+    would quietly undo a penalty a minute after it started, then the guard would
+    re-apply it, and the two would trade panel writes forever.
+    """
+    now = int(now if now is not None else time.time())
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT profile_id FROM ip_guard_state WHERE penalty_until > ?", (now,)
+        ) as c:
+            return {int(r[0]) for r in await c.fetchall()}
+
+
+async def get_cut_profiles(now: Optional[int] = None) -> List[Dict]:
+    """The rows behind get_cut_profile_ids, for the panel to display."""
+    now = int(now if now is not None else time.time())
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT * FROM ip_guard_state WHERE penalty_until > ? ORDER BY penalty_until",
+            (now,),
+        ) as c:
+            return [dict(r) for r in await c.fetchall()]
+
+
+async def add_ip_guard_event(profile_id: int, kind: str, *, level: int = 0,
+                             ip_count: int = 0, limit_used: int = 0,
+                             detail: str = "") -> None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """INSERT INTO ip_guard_events
+                   (profile_id, kind, level, ip_count, limit_used, detail, created_at)
+               VALUES (?,?,?,?,?,?,?)""",
+            (int(profile_id), str(kind), int(level), int(ip_count), int(limit_used),
+             str(detail or "")[:500], int(time.time())),
+        )
+        await db.commit()
+
+
+async def get_ip_guard_events(limit: int = 200, profile_id: int = 0) -> List[Dict]:
+    """Newest first. This is the evidence the owner reads before arming the
+    feature, so it joins the customer on so the panel can name them."""
+    where, args = "", []
+    if profile_id:
+        where = "WHERE e.profile_id = ?"
+        args.append(int(profile_id))
+    args.append(max(1, min(1000, int(limit))))
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            f"""SELECT e.*, sp.name AS profile_name, sp.email AS profile_email,
+                       u.telegram_id AS telegram_id, u.full_name AS full_name
+                  FROM ip_guard_events e
+                  LEFT JOIN subscription_profiles sp ON sp.id = e.profile_id
+                  LEFT JOIN users u ON u.id = sp.user_id
+                  {where}
+                 ORDER BY e.created_at DESC, e.id DESC LIMIT ?""",
+            args,
+        ) as c:
+            return [dict(r) for r in await c.fetchall()]
+
+
+async def prune_ip_guard_events(keep_days: int = 30) -> int:
+    cutoff = int(time.time()) - max(1, int(keep_days)) * 86400
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute("DELETE FROM ip_guard_events WHERE created_at < ?", (cutoff,))
+        await db.commit()
+        return cur.rowcount or 0
+
+
+async def set_profile_ip_limit(profile_id: int, value: int) -> None:
+    """Per-subscription override. 0 puts this customer back on the global default."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE subscription_profiles SET ip_limit=? WHERE id=?",
+                         (max(0, min(1000, int(value))), int(profile_id)))
+        await db.commit()

@@ -111,6 +111,7 @@ class XUIClient:
         "/panel/api/inbounds/onlines",
         "/panel/api/clients/onlines",
         "/panel/api/clients/onlinesByGuid",
+        "/panel/api/clients/clientIpsByGuid",
         "/panel/api/inbounds/lastOnline",
         "/panel/api/clients/lastOnline",
         "/panel/api/server/status",
@@ -118,7 +119,10 @@ class XUIClient:
     )
 
     def _allow_token_read(self, path: str) -> bool:
-        return bool(self.api_token) and path in self._TOKEN_READ_POST_PATHS
+        if not self.api_token:
+            return False
+        # /clients/ips/{email} only reads one client's observed addresses.
+        return path in self._TOKEN_READ_POST_PATHS or path.startswith("/panel/api/clients/ips/")
 
     def _allow_token_write(self, path: str) -> bool:
         if not self.api_token:
@@ -393,6 +397,144 @@ class XUIClient:
             errors.append(f"{path}: {self.last_error or 'failed'}")
         self.last_error = " | ".join(errors)[-500:]
         return [], False
+
+    # One request, every client's live source IPs. Verified against 3x-ui v3.7.0
+    # source (internal/web/controller/client.go:84 → InboundService.GetClientIpsByGuid,
+    # internal/web/service/inbound_node_ips.go:155).
+    _CLIENT_IPS_PATH = "/panel/api/clients/clientIpsByGuid"
+
+    async def get_client_ips_bulk(self) -> Optional[Dict[str, Dict[str, int]]]:
+        """Every client's currently-observed source IPs — ONE request, no writes.
+
+        Returns ``{email: {ip: last_seen_unix_seconds}}``, or None when the panel
+        did not answer. An empty dict is a real answer meaning "nobody is
+        connected"; None is "we do not know" and callers must not confuse them.
+
+        WHERE THIS DATA COMES FROM, and why it is free. 3x-ui runs
+        `CheckClientIpJob` every 10 seconds on a default install. Since v3.7 that
+        job no longer tails xray's access log — it asks the running core's
+        online-stats gRPC API for the live connection table (email + source IPs)
+        and writes what it sees into `node_client_ip`. That happens whether or
+        not any client carries a `limitIp` and whether or not fail2ban is
+        installed, because the recording step runs before the enforcement gate.
+        So this endpoint hands us a fresh, connection-based view of who is
+        connected from where, and the panel was already computing it for its own
+        reasons. We add one HTTP GET-sized round trip and nothing else — no
+        access log to enable, no panel setting to change, no writes.
+
+        The panel keeps an IP for 30 minutes after it was last seen, which is far
+        too coarse for "simultaneous". Timestamps are refreshed on every 10s scan
+        while a connection is live, so the CALLER must apply its own freshness
+        window (see core/ip_guard.py) rather than trusting mere presence here.
+
+        Returns None on an old panel (no such route) or an old xray core: when
+        the core lacks the online-stats API the job skips every run and this
+        comes back empty forever. `core/ip_guard.py` treats a persistently empty
+        answer from a panel with online clients as "cannot observe", and says so
+        instead of silently never enforcing.
+        """
+        r = await self._req("POST", self._CLIENT_IPS_PATH)
+        if not r or not r.get("success"):
+            return None
+        obj = r.get("obj")
+        if obj is None:
+            return {}
+        if not isinstance(obj, dict):
+            self.last_error = f"clientIpsByGuid: unexpected obj type {type(obj).__name__}"
+            return None
+        # Shape is {panel_guid: {email: [{"ip": str, "timestamp": int}, ...]}}.
+        # A panel that fronts other nodes reports several guids; the same client
+        # can appear under more than one, so union them and keep the newest
+        # sighting of each address.
+        out: Dict[str, Dict[str, int]] = {}
+        for per_email in obj.values():
+            if not isinstance(per_email, dict):
+                continue
+            for email, entries in per_email.items():
+                if not email or not isinstance(entries, list):
+                    continue
+                bucket = out.setdefault(str(email), {})
+                for e in entries:
+                    if not isinstance(e, dict):
+                        continue
+                    ip = str(e.get("ip") or "").strip()
+                    if not ip:
+                        continue
+                    try:
+                        ts = int(e.get("timestamp") or 0)
+                    except (TypeError, ValueError):
+                        continue
+                    if ts > bucket.get(ip, 0):
+                        bucket[ip] = ts
+        return out
+
+    async def get_client_ips(self, email: str) -> Optional[Dict[str, int]]:
+        """One client's live addresses with their TRUE last-seen times.
+
+        Returns ``{ip: last_seen_unix_seconds}``, or None if the panel did not
+        answer. Costs one request per client, so this is for CONFIRMING a
+        suspicion about a handful of clients — never for scanning. Use
+        `get_client_ips_bulk()` to find the suspects.
+
+        WHY BOTH EXIST, and it is not redundancy. 3x-ui writes the same
+        observation to two tables with different timestamps:
+
+          * `node_client_ip` (what `clientIpsByGuid` serves) stamps every address
+            with the time of the scan. Its own comment explains why: attribution
+            has a 30-minute eviction rule, and a live-but-idle connection carries
+            an old lastSeen that would be evicted wrongly. Sound for its purpose,
+            but it means the bulk endpoint cannot tell a busy address from one
+            whose connections are merely half-open.
+          * `inbound_client_ips` (what this serves) keeps xray's REAL lastSeen.
+            On a panel with no limitIp set — ours — `updateInboundClientIps`
+            takes its collection-only branch and overwrites the row with the raw
+            observation, unmerged.
+
+        That difference is the whole false-positive defence. Xray refreshes
+        lastSeen only when a connection dispatches something new, so a customer
+        who switched from Wi-Fi to mobile leaves an old address sitting in the
+        online map with a FROZEN timestamp until xray reaps it (connIdle, 300s
+        by default), while a second person genuinely using the subscription has
+        a timestamp that keeps advancing. Stale means gone, fresh means present.
+        """
+        e = str(email or "").strip()
+        if not e:
+            return None
+        r = await self._req("POST", f"/panel/api/clients/ips/{quote(e, safe='')}")
+        if not r or not r.get("success"):
+            return None
+        obj = r.get("obj")
+        if obj is None:
+            return {}
+        # v3.7 returns [{"ip","timestamp",...}]. Much older panels answered with
+        # a bare list of strings, or the literal "No IP Record" — all of which
+        # mean "nothing to confirm" rather than an error.
+        out: Dict[str, int] = {}
+        if isinstance(obj, str):
+            return {}
+        if isinstance(obj, dict):
+            obj = obj.get("ips") or obj.get("obj") or []
+        if not isinstance(obj, list):
+            return {}
+        for entry in obj:
+            if isinstance(entry, str):
+                # No timestamp available: treat as seen now, which is the
+                # conservative reading for a panel we cannot interrogate.
+                if entry.strip():
+                    out[entry.strip()] = int(time.time())
+                continue
+            if not isinstance(entry, dict):
+                continue
+            ip = str(entry.get("ip") or "").strip()
+            if not ip:
+                continue
+            try:
+                ts = int(entry.get("timestamp") or 0)
+            except (TypeError, ValueError):
+                ts = 0
+            if ts > out.get(ip, 0):
+                out[ip] = ts
+        return out
 
     async def get_online_count(self) -> Optional[int]:
         """How many clients are online on this panel, or None if unknown."""

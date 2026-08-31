@@ -5936,6 +5936,130 @@ async def root():
     return RedirectResponse(f"/{S}/", status_code=302)
 
 
+# ---------------------------------------------------------------- IP guard
+# Per-subscription concurrent-connection limit. Deliberately NOT part of
+# `_settings_snapshot`: like the auto node and the reseller API kill switch,
+# this is a self-contained feature block with its own validation, and folding
+# fifteen more fields into the big settings form would mean every unrelated
+# save round-trips them too.
+
+@app.get(f"/{S}/api/ipguard")
+async def api_ipguard_get(request: Request):
+    """Settings, live state, and the evidence log the owner reads before arming it."""
+    if not _auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    from core.ip_guard import DEFAULTS as IPG_DEFAULTS
+    from core.database import get_ip_guard_events, get_cut_profiles
+
+    settings = {}
+    for key, default in IPG_DEFAULTS.items():
+        settings[key] = await get_setting(key, default)
+    events = await get_ip_guard_events(200)
+    cut = await get_cut_profiles()
+    now = int(time.time())
+    return JSONResponse({
+        "settings": settings,
+        "defaults": IPG_DEFAULTS,
+        "cut_now": [{**c, "seconds_left": max(0, int(c["penalty_until"]) - now)} for c in cut],
+        "events": events,
+        "now": now,
+    })
+
+
+@app.post(f"/{S}/api/ipguard")
+async def api_ipguard_save(request: Request):
+    """Save the guard's knobs. Every value is validated and clamped here as well
+    as in core/ip_guard.py — a setting that reaches the worker as nonsense would
+    either disarm the feature silently or cut somebody for a week."""
+    if not _auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    from core.ip_guard import DEFAULTS as IPG_DEFAULTS, parse_steps
+
+    d = await _node_form_body(request)
+    flags = ("ip_limit_enabled", "ip_limit_warn_only")
+    bounds = {
+        "ip_limit_default": (1, 1000),
+        "ip_limit_poll_seconds": (15, 3600),
+        "ip_limit_fresh_seconds": (20, 1800),
+        "ip_limit_active_seconds": (30, 1800),
+        "ip_limit_strikes": (1, 20),
+        "ip_limit_ipv4_bits": (8, 32),
+        "ip_limit_ipv6_bits": (16, 128),
+        "ip_limit_decay_hours": (1, 8760),
+        "ip_limit_warn_cooldown": (60, 86400),
+        "ip_limit_grace_seconds": (30, 86400),
+        "ip_limit_reassert_after": (30, 7200),
+        "ip_limit_event_keep_days": (1, 3650),
+    }
+    was_on = await get_setting("ip_limit_enabled", "0") == "1"
+
+    for key in IPG_DEFAULTS:
+        if key not in d:
+            continue
+        if key in flags:
+            await set_setting(key, "1" if _as_flag(d.get(key)) else "0")
+            continue
+        if key == "ip_limit_steps":
+            # Store the parsed form, so a typo cannot reach the worker.
+            await set_setting(key, ",".join(str(v) for v in parse_steps(str(d.get(key) or ""))))
+            continue
+        lo, hi = bounds.get(key, (0, 10 ** 9))
+        try:
+            value = int(float(str(d.get(key) or "").strip()))
+        except ValueError:
+            continue
+        await set_setting(key, str(max(lo, min(hi, value))))
+
+    # Switching the feature off must be a real undo: release anybody serving a
+    # penalty right now instead of leaving them cut until someone notices.
+    released = 0
+    if was_on and await get_setting("ip_limit_enabled", "0") != "1":
+        from core.ip_guard import restore_all
+        try:
+            released = await restore_all("switched off from the panel")
+        except Exception as e:
+            logger.warning("ip guard: release on disable failed: %s", e)
+    return JSONResponse({"success": True, "released": released})
+
+
+@app.post(f"/{S}/api/ipguard/release/{{profile_id}}")
+async def api_ipguard_release(request: Request, profile_id: int):
+    """Let the owner overrule the guard for one customer, right now."""
+    if not _auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    from core.database import (get_ip_guard_state, clear_ip_guard_state,
+                               add_ip_guard_event, get_subscription_nodes)
+    from core.multi_subscription import set_nodes_enabled
+
+    state = await get_ip_guard_state(int(profile_id))
+    if not state:
+        return JSONResponse({"success": False, "error": "not found"}, status_code=404)
+    nodes = await get_subscription_nodes(int(profile_id))
+    if int(state.get("penalty_until") or 0) > int(time.time()) and nodes:
+        try:
+            await set_nodes_enabled(int(profile_id), True)
+        except Exception as e:
+            return JSONResponse({"success": False, "error": str(e)[:300]}, status_code=502)
+    await clear_ip_guard_state(int(profile_id))
+    await add_ip_guard_event(int(profile_id), "restored", detail="released by the admin")
+    return JSONResponse({"success": True})
+
+
+@app.post(f"/{S}/api/ipguard/limit/{{profile_id}}")
+async def api_ipguard_set_limit(request: Request, profile_id: int):
+    """Per-subscription allowance override. 0 puts them back on the default."""
+    if not _auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    from core.database import set_profile_ip_limit
+    d = await _node_form_body(request)
+    try:
+        value = int(float(str(d.get("ip_limit") or 0)))
+    except ValueError:
+        return JSONResponse({"success": False, "error": "bad value"}, status_code=400)
+    await set_profile_ip_limit(int(profile_id), max(0, min(1000, value)))
+    return JSONResponse({"success": True, "ip_limit": max(0, min(1000, value))})
+
+
 # ── SPA catch-all — MUST stay the last route in this file ─────────────────────
 # The panel is a hash router, so every real page is `/{S}/#/...`. This exists for
 # the paths the OLD server-rendered panel owned (`/{S}/users`, `/{S}/settings`,
