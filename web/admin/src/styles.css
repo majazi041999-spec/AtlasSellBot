@@ -272,10 +272,241 @@ tbody tr:hover { background: rgba(255, 255, 255, 0.03); }
 .bar { height: 7px; border-radius: 20px; background: rgba(255, 255, 255, 0.08); overflow: hidden; }
 .bar > i { display: block; height: 100%; border-radius: 20px; }
 
-/* ───────────── login ───────────── */
-.login-wrap { min-height: 100vh; display: grid; place-items: center; padding: 20px; }
-.login-card { width: 100%; max-width: 400px; }
-.login-logo { width: 64px; height: 64px; border-radius: 19px; display: grid; place-items: center; font-size: 1.9rem; color: #fff; margin: 0 auto 16px; background: linear-gradient(135deg, var(--p), var(--acc)); box-shadow: var(--glow); }
+/* ───────────── login ─────────────
+   A deliberately heavier treatment than the rest of the panel: this is the one
+   screen an outsider might ever see, and the one the owner sees before trusting
+   the thing with their business. Everything here is scoped under .lg- so it
+   cannot leak into the dashboard. */
+.login-wrap {
+  min-height: 100vh; min-height: 100dvh;   /* dvh: mobile browser chrome */
+  display: grid; place-items: center; padding: 22px;
+  position: relative; overflow: hidden;
+}
+
+/* Two slow, counter-rotating colour fields. They are the only thing moving on
+   the screen, at a speed you notice only if you look for it. */
+.login-wrap::before,
+.login-wrap::after {
+  content: ""; position: absolute; inset: -35%;
+  pointer-events: none; z-index: 0;
+  background:
+    radial-gradient(38% 44% at 26% 30%, rgba(124, 111, 255, 0.30), transparent 62%),
+    radial-gradient(34% 40% at 74% 66%, rgba(34, 211, 238, 0.22), transparent 60%);
+  animation: lg-drift 34s cubic-bezier(.45, 0, .55, 1) infinite;
+  will-change: transform;
+}
+.login-wrap::after {
+  background:
+    radial-gradient(30% 36% at 70% 24%, rgba(167, 139, 250, 0.22), transparent 60%),
+    radial-gradient(32% 38% at 24% 72%, rgba(52, 211, 153, 0.14), transparent 58%);
+  animation-duration: 46s; animation-direction: reverse;
+}
+@keyframes lg-drift {
+  0%   { transform: rotate(0deg)   scale(1); }
+  50%  { transform: rotate(180deg) scale(1.14); }
+  100% { transform: rotate(360deg) scale(1); }
+}
+
+/* Fine engineering grid, faded out towards the edges. */
+.login-grid {
+  position: absolute; inset: 0; z-index: 0; pointer-events: none;
+  background-image:
+    linear-gradient(rgba(255, 255, 255, 0.032) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.032) 1px, transparent 1px);
+  background-size: 46px 46px;
+  -webkit-mask-image: radial-gradient(68% 60% at 50% 45%, #000 20%, transparent 78%);
+          mask-image: radial-gradient(68% 60% at 50% 45%, #000 20%, transparent 78%);
+}
+
+.login-card {
+  position: relative; z-index: 1;
+  width: 100%; max-width: 430px;
+  padding: 34px 30px 26px;
+  border-radius: 26px;
+  background: linear-gradient(180deg, rgba(26, 33, 56, 0.88), rgba(15, 20, 36, 0.92));
+  backdrop-filter: blur(22px) saturate(140%);
+  -webkit-backdrop-filter: blur(22px) saturate(140%);
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  box-shadow:
+    0 40px 90px -30px rgba(0, 0, 0, 0.85),
+    0 0 0 1px rgba(124, 111, 255, 0.06),
+    inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  line-height: 1.65;
+  animation: lg-rise .55s cubic-bezier(.2, .8, .25, 1) both;
+}
+
+/* Firefox with backdrop-filter disabled, and older Android WebViews, would
+   render the card at 0.88 alpha straight over a bright gradient blob. */
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .login-card { background: rgba(18, 24, 41, .965); }
+}
+@keyframes lg-rise { from { opacity: 0; transform: translateY(14px) scale(.985); } }
+
+/* Gradient hairline along the top edge of the card. */
+.login-card::before {
+  content: ""; position: absolute; inset-inline: 26px; top: -1px; height: 1px;
+  background: linear-gradient(90deg, transparent, var(--p2), var(--acc), transparent);
+  opacity: .75;
+}
+
+.lg-mark {
+  width: 66px; height: 66px; margin: 0 auto 18px;
+  display: grid; place-items: center;
+  border-radius: 21px;
+  background: linear-gradient(140deg, var(--p), #8b5cf6 45%, var(--acc));
+  box-shadow: 0 16px 38px -12px rgba(124, 111, 255, .75), inset 0 1px 0 rgba(255, 255, 255, .3);
+  position: relative;
+}
+.lg-mark svg { width: 32px; height: 32px; display: block; }
+/* Soft pulse ring — a sign of life, not an attention grab. */
+.lg-mark::after {
+  content: ""; position: absolute; inset: -6px; border-radius: 27px;
+  border: 1px solid rgba(124, 111, 255, .4);
+  animation: lg-pulse 3.4s ease-out infinite;
+}
+@keyframes lg-pulse {
+  0%   { opacity: .7; transform: scale(1); }
+  70%  { opacity: 0;  transform: scale(1.16); }
+  100% { opacity: 0;  transform: scale(1.16); }
+}
+
+.lg-title { text-align: center; margin: 0 0 5px; font-size: 1.42rem; font-weight: 800; letter-spacing: -.01em; }
+.lg-sub { text-align: center; margin: 0 0 24px; color: var(--txt3); font-size: .82rem; }
+
+.lg-field { position: relative; margin-bottom: 13px; }
+.lg-field > label {
+  display: block; font-size: .74rem; font-weight: 600;
+  color: var(--txt2); margin-bottom: 6px;
+}
+.lg-input-wrap { position: relative; display: flex; align-items: center; }
+/* PHYSICAL left/right, not inline-start/end: the inputs are dir="ltr" inside an
+   RTL page, so logical properties resolve against the wrong axis here.
+   PROJECT_MAP §13 documents this trap. */
+.lg-input-wrap > .lg-ico {
+  position: absolute; left: 13px; display: grid; place-items: center;
+  color: var(--txt3); pointer-events: none; transition: color .18s ease;
+}
+.lg-input-wrap > .lg-ico svg { width: 17px; height: 17px; display: block; }
+.lg-input {
+  width: 100%; padding: 13px 14px 13px 40px;
+  background: rgba(9, 13, 24, 0.6);
+  border: 1px solid var(--bd);
+  border-radius: 14px; color: var(--txt);
+  font: 500 .93rem/1 "Vazirmatn", system-ui, sans-serif;
+  direction: ltr; text-align: left;
+  transition: border-color .18s ease, box-shadow .18s ease, background .18s ease;
+}
+.lg-input::placeholder { color: #4d5678; }
+.lg-input:hover { border-color: var(--bd2); }
+.lg-input:focus {
+  outline: none; background: rgba(9, 13, 24, 0.85);
+  border-color: var(--p);
+  box-shadow: 0 0 0 3px rgba(124, 111, 255, .17), 0 8px 24px -12px rgba(124, 111, 255, .6);
+}
+.lg-input-wrap:focus-within > .lg-ico { color: var(--p2); }
+.lg-field.bad .lg-input { border-color: var(--red); box-shadow: 0 0 0 3px rgba(251, 113, 133, .14); }
+
+/* Reveal button sits on the trailing (right) edge of an LTR input. */
+.lg-eye {
+  position: absolute; right: 9px; background: none; border: 0; cursor: pointer;
+  color: var(--txt3); padding: 6px; border-radius: 8px; display: grid; place-items: center;
+}
+.lg-eye:hover { color: var(--txt2); background: rgba(255, 255, 255, .06); }
+.lg-eye svg { width: 17px; height: 17px; display: block; }
+
+.lg-submit {
+  width: 100%; margin-top: 6px; padding: 13px 16px;
+  border: 0; border-radius: 14px; cursor: pointer;
+  color: #fff; font: 700 .95rem/1 "Vazirmatn", system-ui, sans-serif;
+  background: linear-gradient(135deg, #4f42cf, #6f5fe8);
+  box-shadow: 0 14px 32px -12px rgba(124, 111, 255, .8);
+  display: flex; align-items: center; justify-content: center; gap: 9px;
+  transition: transform .14s ease, box-shadow .2s ease, filter .2s ease;
+}
+.lg-submit:hover:not(:disabled) { filter: brightness(1.08); box-shadow: 0 18px 40px -12px rgba(124, 111, 255, .95); }
+.lg-submit:active:not(:disabled) { transform: scale(.985); }
+.lg-submit:disabled { opacity: .62; cursor: default; box-shadow: none; }
+
+/* Error: shakes once, then sits still. */
+.lg-error {
+  display: flex; align-items: center; gap: 8px;
+  background: rgba(251, 113, 133, .11);
+  border: 1px solid rgba(251, 113, 133, .32);
+  color: #fda4af; border-radius: 13px;
+  padding: 10px 13px; margin-bottom: 13px; font-size: .82rem;
+  animation: lg-shake .42s cubic-bezier(.36, .07, .19, .97) both;
+}
+.lg-error.warn { background: rgba(251, 191, 36, .1); border-color: rgba(251, 191, 36, .35); color: #fcd34d; }
+
+@keyframes lg-shake {
+  10%, 90% { transform: translateX(-1px); }
+  20%, 80% { transform: translateX(2px); }
+  30%, 50%, 70% { transform: translateX(-4px); }
+  40%, 60% { transform: translateX(4px); }
+}
+
+/* ── the security strip ──
+   The protection is invisible by design, so it is stated here instead. It is a
+   trust signal, not a control: nothing about it is clickable in the normal case. */
+.lg-guard {
+  display: flex; align-items: center; gap: 9px;
+  margin-top: 16px; padding: 10px 12px;
+  border-radius: 13px; font-size: .74rem;
+  background: rgba(255, 255, 255, .028);
+  border: 1px solid var(--bd);
+  color: var(--txt3);
+  transition: border-color .3s ease, background .3s ease;
+}
+.lg-guard.ok { border-color: rgba(52, 211, 153, .3); background: rgba(52, 211, 153, .07); color: #6ee7b7; }
+.lg-guard.work { border-color: rgba(56, 189, 248, .28); background: rgba(56, 189, 248, .06); color: #7dd3fc; }
+.lg-guard-dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; flex: 0 0 auto; }
+.lg-guard.work .lg-guard-dot { animation: lg-blink 1s ease-in-out infinite; }
+@keyframes lg-blink { 50% { opacity: .25; } }
+
+/* ── captcha, shown only after repeated failures ── */
+.lg-captcha-slot {
+  display: grid; grid-template-rows: 0fr;
+  transition: grid-template-rows .26s cubic-bezier(.22, 1, .36, 1);
+}
+.lg-captcha-slot.open { grid-template-rows: 1fr; }
+.lg-captcha { overflow: hidden; min-height: 0; }
+.lg-captcha-slot.open > .lg-captcha { margin: 4px 0 13px; }
+.lg-captcha-img {
+  display: block; width: 100%; height: auto; border-radius: 12px;
+  border: 1px solid var(--bd2); background: #121626;
+}
+.lg-captcha-row { display: flex; gap: 8px; margin-top: 8px; }
+.lg-captcha-row .lg-input-wrap { flex: 1; }
+.lg-captcha-row .lg-input { padding-left: 14px; letter-spacing: .3em; font-weight: 700; text-transform: uppercase; }
+.lg-refresh {
+  flex: 0 0 auto; width: 44px; border-radius: 12px; cursor: pointer;
+  background: rgba(255, 255, 255, .05); border: 1px solid var(--bd);
+  color: var(--txt2); display: grid; place-items: center;
+}
+.lg-refresh:hover { background: rgba(255, 255, 255, .1); color: var(--txt); }
+.lg-refresh svg { width: 16px; height: 16px; }
+
+.lg-foot { text-align: center; margin: 16px 0 0; font-size: .7rem; color: var(--txt3); }
+
+.lg-submit:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
+.lg-eye:focus-visible, .lg-refresh:focus-visible { outline: 2px solid var(--p2); outline-offset: 2px; }
+
+/* iOS zooms the whole page when a focused input is under 16px. The global
+   .inp rule does not reach .lg-input, so it is restated here. */
+@media (max-width: 640px) { .lg-input { font-size: 16px; } }
+
+@media (max-width: 420px) {
+  .login-card { padding: 26px 20px 20px; border-radius: 22px; }
+  .lg-title { font-size: 1.26rem; }
+}
+
+/* Someone who asked the OS for less motion gets a still page — the gradients
+   and the pulse are decoration, and none of them carry information. */
+@media (prefers-reduced-motion: reduce) {
+  .login-wrap::before, .login-wrap::after,
+  .lg-mark::after, .lg-guard.work .lg-guard-dot { animation: none !important; }
+  .login-card, .lg-captcha, .lg-error { animation-duration: .01ms !important; }
+}
 
 /* ───────────── responsive ───────────── */
 /* Never let the page scroll sideways; wide content (tables) scrolls inside its

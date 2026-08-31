@@ -45,6 +45,9 @@ SETTINGS_DEFAULTS: Dict[str, str] = {
     "sub_brand_template": "📣 {brand}",
     "sub_grace_days": "3",
     "sub_start_on_first_use": "1",
+    # Admin-login protection — see core/login_guard.py
+    "login_captcha_always": "0",   # owner can demand the image on EVERY login
+    "login_alert_enabled": "1",    # Telegram alert on failed attempts
     "server_backup_enabled": "1",
     "server_backup_interval_hours": "6",
     "sub_connection_guide": (

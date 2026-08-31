@@ -15,8 +15,13 @@ async function request(path, { method = "GET", body, form } = {}) {
   let data = null;
   try { data = await r.json(); } catch (e) { data = null; }
   if (r.status === 401) {
-    const e = new Error("unauthorized");
+    // Keep the parsed body: the login page needs `captcha_required` and
+    // `retry_after` off a 401, and dropping them meant the captcha silently
+    // failed to appear after a wrong password.
+    const e = new Error((data && data.error) || "unauthorized");
     e.unauthorized = true;
+    e.data = data;
+    e.status = 401;
     throw e;
   }
   if (!r.ok || (data && data.error)) {

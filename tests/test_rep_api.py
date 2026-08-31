@@ -70,7 +70,10 @@ def check_true(label, got):
 
 
 async def main():
-    client = TestClient(app)
+    # Peer set to loopback so this mirrors the real deployment (a proxy on the
+    # same box). client_ip() only honours forwarded headers from a trusted
+    # peer, and TestClient otherwise reports the literal "testclient".
+    client = TestClient(app, client=("127.0.0.1", 40000))
     with client:  # triggers startup → init_db() → creates the schema
         print("1. seed a representative with a wallet and a tariff")
         rep = await get_or_create_user(700100, "reseller", "Reza Reseller")
@@ -234,6 +237,18 @@ async def main():
         check("…ip_not_allowed", r.json()["error"], "ip_not_allowed")
         r = client.get("/api/rep/v1/ping", headers={**PH, "CF-Connecting-IP": "203.0.113.7"})
         check("allowed IP passes", r.status_code, 200)
+        # The allowlist is only worth anything if the IP cannot be self-declared.
+        # A forwarded header is honoured ONLY from a trusted peer — see
+        # core/client_app.py:client_ip. Without that, a rep could walk straight
+        # past their own pin by adding one header.
+        from core.client_app import client_ip as _cip
+
+        class _Direct:
+            client = type("C", (), {"host": "198.51.100.4"})()
+            headers = {"cf-connecting-ip": "203.0.113.7"}
+
+        check("a direct caller cannot self-declare the allowed IP",
+              _cip(_Direct()), "198.51.100.4")
         check("a malformed allowlist entry is dropped, not trusted",
               rep_api.normalize_allowlist("1.2.3.4, not-an-ip, 10.0.0.0/8"), "1.2.3.4,10.0.0.0/8")
         check("an empty allowlist means 'any'", rep_api.ip_allowed("", "8.8.8.8"), True)

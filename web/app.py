@@ -12,6 +12,7 @@ import os
 import re
 import glob
 import shlex
+import hashlib
 import secrets
 import time
 import subprocess
@@ -218,7 +219,10 @@ async def easy_panel_entry():
 
 @app.get("/health")
 async def health_check():
-    return JSONResponse({"ok": True, "panel": f"/{S}/"})
+    # Deliberately does NOT include the panel path: /health is public, and
+    # handing out the secret prefix to anyone who asks would undo the only thing
+    # that prefix is for.
+    return JSONResponse({"ok": True})
 
 
 # Representative API (`/api/rep/v1/*`) — a rep's own bot connects here with an
@@ -814,21 +818,93 @@ async def _clear_review_buttons(tx_type: str, tx_id: int, status_text: str = "")
 async def _startup_init_db():
     # تضمین ایجاد جداول حتی اگر وب مستقل اجرا شود
     await init_db()
+    # Must run AFTER init_db: it reads/writes the settings table.
+    await _ensure_signing_secret()
+    _warn_weak_config()
 
 
 
 # ═══════════════════════════════ AUTH ═══════════════════════════════
+# The signing key actually used. Normally this IS JWT_SECRET, but see
+# _ensure_signing_secret(): a deployment still carrying the committed default
+# would have forgeable admin sessions, which would make the whole login —
+# password, captcha and all — decorative.
+_SIGNING_SECRET = JWT_SECRET
+_DEFAULT_JWT_SECRET = "please_change_this_secret_key_in_production"
+
+# Binds a token to the credentials that issued it, at zero storage cost:
+# changing the admin password or username invalidates every session already out
+# there, including an attacker's. Truncated because it only needs to change, not
+# to be secret — it rides inside a signed token.
+_CRED_VERSION = hashlib.sha256(
+    f"{WEB_ADMIN_USERNAME}:{WEB_ADMIN_PASSWORD}".encode("utf-8")
+).hexdigest()[:16]
+
+
+def _warn_weak_config() -> None:
+    """Say out loud when the install is still running on shipped defaults.
+
+    Deliberately a log line and not an exception: refusing to boot would take a
+    live bot and its paying customers down during an update, and the owner would
+    discover it from customers rather than from us. The login itself is hardened
+    either way — this is about the two values that hardening cannot compensate
+    for, because they are what an attacker would be guessing.
+    """
+    if WEB_ADMIN_PASSWORD in ("", "ChangeMe123!"):
+        logger.critical(
+            "WEB_ADMIN_PASSWORD is still the shipped default. Anyone who has seen "
+            "this project knows it. Set it in .env and restart."
+        )
+    if S == "AtlasPanel2024":
+        logger.critical(
+            "WEB_SECRET_PATH is still the shipped default, so the panel URL is "
+            "guessable. Set it in .env and restart."
+        )
+
+
+async def _ensure_signing_secret() -> None:
+    """Never sign with the default secret that ships in the repo.
+
+    Anyone who has read this codebase knows that string, and with it can mint an
+    admin cookie without ever touching the login form. Rather than refuse to
+    boot — which would take a live bot and its paying customers down on an
+    update — generate a real key once, keep it in settings, and use that. The
+    only visible effect is that existing sessions need one fresh login.
+    """
+    global _SIGNING_SECRET
+    if JWT_SECRET and JWT_SECRET != _DEFAULT_JWT_SECRET and len(JWT_SECRET) >= 24:
+        return
+    stored = (await get_setting("jwt_signing_secret", "")).strip()
+    if not stored:
+        stored = secrets.token_urlsafe(48)
+        await set_setting("jwt_signing_secret", stored)
+        logger.critical(
+            "JWT_SECRET is unset or still the repo default — generated a private "
+            "signing key and stored it. Set JWT_SECRET in .env to control it yourself."
+        )
+    else:
+        logger.critical("JWT_SECRET is still the repo default — using the generated key from settings.")
+    _SIGNING_SECRET = stored
+
+
 def _make_token(username: str) -> str:
     exp = datetime.utcnow() + timedelta(hours=JWT_EXPIRE_HOURS)
-    return jwt.encode({"sub": username, "exp": exp}, JWT_SECRET, algorithm=JWT_ALGORITHM)
+    return jwt.encode({"sub": username, "exp": exp, "v": _CRED_VERSION},
+                      _SIGNING_SECRET, algorithm=JWT_ALGORITHM)
 
 
 def _verify_token(token: str) -> Optional[str]:
     try:
-        p = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
-        return p.get("sub")
+        p = jwt.decode(token, _SIGNING_SECRET, algorithms=[JWT_ALGORITHM])
     except JWTError:
         return None
+    # Reject sessions minted under different credentials. Tokens issued before
+    # this field existed have no "v" and are also rejected — a one-time
+    # re-login, which is the correct outcome for an upgrade that changes how
+    # sessions are trusted.
+    if p.get("v") != _CRED_VERSION:
+        return None
+    return p.get("sub")
 
 
 def _auth(request: Request) -> Optional[str]:
@@ -1269,24 +1345,164 @@ def _api_guard(request: Request):
 
 @app.post(f"/{S}/api/login")
 async def api_login(request: Request):
+    """Authenticate an admin.
+
+    Everything protective lives in core/login_guard.py; this endpoint's job is
+    to call it in the right ORDER. The order matters: the lockout and the
+    challenge are checked BEFORE the password is compared, so a locked-out or
+    unchallenged caller learns nothing about credentials, and every rejection
+    past the lockout gate counts as a failure — including a wrong captcha,
+    without which the small captcha answer space could be brute-forced for free.
+    """
+    from core import login_guard
+    ip = _client_app.client_ip(request)
+    force_captcha = await get_setting("login_captcha_always", "0") == "1"
+
+    # Bounded read before anything else parses attacker-controlled JSON.
+    if int(request.headers.get("content-length") or 0) > 4096:
+        return JSONResponse({"error": "invalid_credentials"}, status_code=401)
     try:
         body = await request.json()
     except Exception:
         body = {}
-    username = str(body.get("username") or "")
-    password = str(body.get("password") or "")
-    if username == WEB_ADMIN_USERNAME and password == WEB_ADMIN_PASSWORD:
+    if not isinstance(body, dict):
+        body = {}
+
+    problem = login_guard.check(ip, body, force_captcha)
+    if problem:
+        if problem.startswith("locked:"):
+            wait = int(problem.split(":", 1)[1])
+            logger.warning("admin login blocked (locked) ip=%s wait=%ss", ip, wait)
+            return JSONResponse({"error": "locked", "retry_after": wait}, status_code=429)
+        if problem in ("challenge_missing", "challenge_expired"):
+            # NOT a failed attempt. A challenge goes missing when it times out or
+            # is evicted under load, which happens to real logins too — counting
+            # it would let anyone who floods the challenge endpoint drive the
+            # owner's own lockout without guessing a single password.
+            logger.info("admin login needs a fresh challenge ip=%s (%s)", ip, problem)
+            return JSONResponse({"error": problem,
+                                 "captcha_required": login_guard.captcha_required(ip, force_captcha),
+                                 "retry_after": 0}, status_code=400)
+        state = login_guard.record_failure(ip)
+        logger.warning("admin login rejected ip=%s reason=%s", ip, problem)
+        await _maybe_alert_admins_login(ip, state, problem, str(body.get("username") or ""))
+        return JSONResponse({"error": problem, **_login_hint(state)}, status_code=400)
+
+    username = str(body.get("username") or "")[:256]
+    password = str(body.get("password") or "")[:256]
+    # Both compared in constant time, and deliberately WITHOUT short-circuiting,
+    # so response time never reveals whether the username alone was right.
+    ok_user = login_guard.constant_time_eq(username, WEB_ADMIN_USERNAME)
+    ok_pass = login_guard.constant_time_eq(password, WEB_ADMIN_PASSWORD)
+    if ok_user and ok_pass:
+        login_guard.record_success(ip)
+        logger.info("admin login ok user=%s ip=%s", username, ip)
         token = _make_token(username)
         r = JSONResponse({"ok": True, "username": username})
-        r.set_cookie("_atlas_t", token, httponly=True, max_age=JWT_EXPIRE_HOURS * 3600, samesite="lax")
+        _set_session_cookie(r, request, token)
         return r
-    return JSONResponse({"error": "invalid_credentials"}, status_code=401)
+
+    state = login_guard.record_failure(ip)
+    logger.warning("admin login failed user=%r ip=%s failures=%s", username[:64], ip, state["failures"])
+    await _maybe_alert_admins_login(ip, state, "نام کاربری یا رمز اشتباه", username)
+    return JSONResponse({"error": "invalid_credentials", **_login_hint(state)}, status_code=401)
+
+
+def _login_hint(state: dict) -> dict:
+    """What the client needs to render next — never why the attempt failed."""
+    return {"captcha_required": bool(state.get("captcha_next")),
+            "retry_after": int(state.get("locked_for") or 0)}
+
+
+def _set_session_cookie(response, request: Request, token: str) -> None:
+    """Set the admin session cookie with the tightest flags that still work here.
+
+    `secure` is decided from the actual request scheme rather than hard-coded:
+    the panel is genuinely reachable over plain http://IP:PORT (that is what
+    `atlas panel-link` prints), and an unconditional `secure=True` there would
+    set a cookie the browser refuses to send back — an owner locked out of their
+    own panel. Behind Cloudflare the original scheme arrives in
+    X-Forwarded-Proto, so HTTPS users still get the flag.
+    """
+    proto = (request.headers.get("x-forwarded-proto") or request.url.scheme or "").split(",")[0].strip()
+    response.set_cookie(
+        "_atlas_t", token, httponly=True, max_age=JWT_EXPIRE_HOURS * 3600,
+        samesite="lax", secure=(proto == "https"), path=f"/{S}/",
+    )
+
+
+async def _maybe_alert_admins_login(ip: str, state: dict, reason: str, username: str = "") -> None:
+    """Tell the owner in Telegram that someone failed to log into the panel.
+
+    Throttled per IP by `login_guard.should_alert`: a sustained attack would
+    otherwise fill the owner's chat, and an alert channel someone mutes is worth
+    less than no alert at all. A LOCKOUT always sends regardless of the
+    cooldown — that is the message that actually needs reading.
+    """
+    from core import login_guard
+    if not BOT_TOKEN or len(BOT_TOKEN) < 20:
+        return
+    if await get_setting("login_alert_enabled", "1") != "1":
+        return
+    locked = bool(state.get("locked_for"))
+    if not login_guard.should_alert(ip, locked):
+        return
+    try:
+        from core.database import get_all_admin_telegram_ids
+        targets = list(dict.fromkeys(list(ADMIN_IDS) + await get_all_admin_telegram_ids()))
+        if not targets:
+            return
+        from core.jalali import jalali_datetime_display
+        lines = [
+            "🔐 *تلاش ناموفق ورود به پنل*",
+            "",
+            f"IP: `{ip}`",
+            f"نام کاربری واردشده: `{(username or '—')[:40]}`",
+            f"علت: {reason}",
+            f"تعداد تلاش ناموفق: {state.get('failures', 0)}",
+            f"زمان: {jalali_datetime_display(datetime.now()) or ''}",
+        ]
+        if locked:
+            lines += ["", f"⛔ این IP برای *{state['locked_for']} ثانیه* قفل شد."]
+        if state.get("captcha_next"):
+            lines.append("🖼 از این پس برای این IP کد تصویری خواسته می‌شود.")
+        lines += ["", "_اگر خودت نبودی، رمز پنل را عوض کن._"]
+        bot = Bot(token=BOT_TOKEN)
+        try:
+            for aid in targets:
+                try:
+                    await bot.send_message(aid, "\n".join(lines), parse_mode="Markdown")
+                except Exception:
+                    pass
+        finally:
+            await bot.session.close()
+    except Exception as e:
+        logger.warning("login alert failed: %s", e)
+
+
+@app.get(f"/{S}/api/login/challenge")
+async def api_login_challenge(request: Request):
+    """Hand out a fresh single-use challenge. Public by necessity — it is what
+    you need BEFORE you can log in — so it must stay cheap and leak nothing."""
+    from core import login_guard
+    ip = _client_app.client_ip(request)
+    if not login_guard.issue_allowed(ip):
+        return JSONResponse({"error": "rate_limited"}, status_code=429,
+                            headers={"Retry-After": "60"})
+    force = await get_setting("login_captcha_always", "0") == "1"
+    # issue() draws a PNG when a captcha is due. Pillow is synchronous, and this
+    # process also runs the bot on the same loop, so it goes to a worker thread.
+    loop = _asyncio.get_running_loop()
+    return JSONResponse(await loop.run_in_executor(None, login_guard.issue, ip, force))
 
 
 @app.post(f"/{S}/api/logout")
-async def api_logout():
+async def api_logout(request: Request):
     r = JSONResponse({"ok": True})
-    r.delete_cookie("_atlas_t")
+    # Path and samesite MUST match _set_session_cookie — a mismatch leaves the
+    # original cookie in place and makes logout a no-op.
+    r.delete_cookie("_atlas_t", path=f"/{S}/", samesite="lax")
+    r.delete_cookie("_atlas_t")          # also clear any pre-upgrade "/" cookie
     return r
 
 
@@ -4995,6 +5211,8 @@ async def _settings_snapshot() -> dict:
         "cert_email": await get_setting("cert_email", ""),
         "atlas_tls_https_port": await get_setting("atlas_tls_https_port", "443"),
         "cert_status": await get_setting("cert_status", ""),
+        "login_captcha_always": await get_setting("login_captcha_always", SETTINGS_DEFAULTS["login_captcha_always"]),
+        "login_alert_enabled": await get_setting("login_alert_enabled", SETTINGS_DEFAULTS["login_alert_enabled"]),
     }
 
     # ✅ کارت بانکی از دیتابیس Settings خوانده می‌شود (با fallback از .env)
@@ -5120,6 +5338,8 @@ async def settings_save(
     cert_email: str = Form(""),
     atlas_tls_https_port: int = Form(443),
     rep_min_topup: str = Form("500000"),
+    login_captcha_always: str = Form("0"),
+    login_alert_enabled: str = Form("1"),
 ):
     if not _auth(request):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
@@ -5127,6 +5347,9 @@ async def settings_save(
         await set_setting("rep_min_topup", str(max(0, int(str(rep_min_topup or "0").replace(",", "")))))
     except (TypeError, ValueError):
         await set_setting("rep_min_topup", "500000")
+
+    await set_setting("login_captcha_always", "1" if login_captcha_always == "1" else "0")
+    await set_setting("login_alert_enabled", "1" if login_alert_enabled == "1" else "0")
 
     await set_setting("text.welcome_message", welcome_message)
     await set_setting("support_username", support_username)

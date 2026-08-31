@@ -32,6 +32,7 @@ heuristic a sideloaded VPN can trip.
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 import time
 from typing import Dict, Tuple
 
@@ -99,15 +100,57 @@ def rate_limited(ip: str) -> bool:
     return count > _RATE_LIMIT
 
 
-def client_ip(request) -> str:
-    """Real client IP, honouring the reverse proxy in front of the panel.
+# Networks whose forwarded-for headers we believe. Anything arriving from
+# outside these is treated as a direct hit and its headers are ignored.
+#
+# Loopback/private cover the normal deployment (nginx or Cloudflare Tunnel on
+# the same box); the public ranges are Cloudflare's own published edges, for
+# installs where the app is exposed straight to Cloudflare.
+_TRUSTED_PROXIES = tuple(ipaddress.ip_network(n) for n in (
+    "127.0.0.0/8", "::1/128", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "fc00::/7",
+    # Cloudflare IPv4 — https://www.cloudflare.com/ips/
+    "173.245.48.0/20", "103.21.244.0/22", "103.22.200.0/22", "103.31.4.0/22",
+    "141.101.64.0/18", "108.162.192.0/18", "190.93.240.0/20", "188.114.96.0/20",
+    "197.234.240.0/22", "198.41.128.0/17", "162.158.0.0/15", "104.16.0.0/13",
+    "104.24.0.0/14", "172.64.0.0/13", "131.0.72.0/22",
+    # Cloudflare IPv6
+    "2400:cb00::/32", "2606:4700::/32", "2803:f800::/32", "2405:b500::/32",
+    "2405:8100::/32", "2a06:98c0::/29", "2c0f:f248::/32",
+))
 
-    The panel sits behind Cloudflare in the reference deployment, so
-    ``request.client.host`` is Cloudflare's edge and would put every user in one
-    rate-limit bucket. ``CF-Connecting-IP`` is set by Cloudflare itself and
-    cannot be spoofed past it; the ``X-Forwarded-For`` fallback takes the first
-    hop for the same reason.
+
+def _from_trusted_proxy(peer: str) -> bool:
+    try:
+        addr = ipaddress.ip_address(peer)
+    except ValueError:
+        return False
+    return any(addr in net for net in _TRUSTED_PROXIES)
+
+
+def client_ip(request) -> str:
+    """Real client IP — but only believing forwarded headers we can vouch for.
+
+    THIS FUNCTION IS A SECURITY BOUNDARY. Everything keyed on it (the client
+    rate limiter, the representative API's per-key limits, and the admin login's
+    lockout) is only as trustworthy as the value it returns.
+
+    The previous version trusted ``CF-Connecting-IP`` unconditionally, on the
+    reasoning that Cloudflare sets it and a client cannot spoof it *past
+    Cloudflare*. That is true — and irrelevant, because the origin is also
+    reachable directly on its public IP:PORT (the startup banner prints exactly
+    that URL). An attacker who skips Cloudflare can therefore send any
+    ``CF-Connecting-IP`` they like: a fresh random one per request lands every
+    guess in a brand-new bucket so the login lockout never fires, and the
+    victim's own IP locks the owner out of their panel on demand.
+
+    So the header is honoured only when the CONNECTION came from a network we
+    trust to set it. A direct hit falls back to the socket peer, which cannot be
+    forged over TCP.
     """
+    peer = (getattr(request.client, "host", "") or "").strip()
+    if not _from_trusted_proxy(peer):
+        return (peer or "unknown")[:64]
+
     headers = request.headers
     cf = (headers.get("cf-connecting-ip") or "").strip()
     if cf:
@@ -115,7 +158,7 @@ def client_ip(request) -> str:
     xff = (headers.get("x-forwarded-for") or "").strip()
     if xff:
         return xff.split(",")[0].strip()[:64]
-    return (getattr(request.client, "host", "") or "unknown")[:64]
+    return (peer or "unknown")[:64]
 
 
 async def api_key_ok(request) -> bool:

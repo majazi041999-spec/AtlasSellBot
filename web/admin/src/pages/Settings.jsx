@@ -179,6 +179,20 @@ export default function Settings() {
         </div>
       </Card>
 
+      <Card title="🔐 امنیت ورود به پنل">
+        <div className="grid" style={{ gap: 8 }}>
+          <Toggle s={s} set={set} k="login_alert_enabled"
+                  label="خبردادن در تلگرام وقتی تلاش ورود ناموفق بود" />
+          <Toggle s={s} set={set} k="login_captcha_always"
+                  label="کد تصویری در هر ورود اجباری باشد" />
+          <p className="muted tiny" style={{ margin: "4px 0 0", lineHeight: 2 }}>
+            • بدون این گزینه، بررسی امنیتی نامرئی است و کد تصویری فقط پس از چند تلاش ناموفق نشان داده می‌شود.<br />
+            • هشدارها برای جلوگیری از سیل پیام، برای هر IP حداکثر هر ۱۰ دقیقه یک بار فرستاده می‌شوند — ولی قفل‌شدن یک IP همیشه خبر می‌دهد.<br />
+            • محدودیت نرخ و قفل تدریجی همیشه فعال‌اند و خاموش‌کردنی نیستند.
+          </p>
+        </div>
+      </Card>
+
       <Card title="📢 عضویت اجباری و پشتیبانی">
         <div className="grid" style={{ gap: 8 }}>
           <Toggle s={s} set={set} k="force_channel" label="عضویت اجباری در کانال" />
