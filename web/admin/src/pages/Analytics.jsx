@@ -138,6 +138,199 @@ function SegTile({ icon, label, count, hint, onClick }) {
   );
 }
 
+/** What the forecast is, how accurate it has actually been, and what it is built
+ *  from. The old copy named an algorithm ("رگرسیون خطی"), which told the owner
+ *  nothing about whether to trust the number. A backtested error rate does. */
+function ForecastNotes({ meta }) {
+  if (!meta) return null;
+  if (meta.ok === false) {
+    return (
+      <div style={{ background: "rgba(251,191,36,.1)", border: "1px solid rgba(251,191,36,.3)",
+                    borderRadius: 12, padding: 12, marginTop: 12 }}>
+        <b>هنوز داده‌ی کافی برای پیش‌بینی نیست.</b>
+        <p className="muted tiny" style={{ margin: "5px 0 0" }}>
+          {meta.history_days} روز داده داریم؛ برای پیش‌بینی قابل‌اتکا حداقل ۱۴ روز لازم است.
+          عدد بالا فقط میانگین روزهای موجود است.
+        </p>
+      </div>
+    );
+  }
+  const acc = meta.accuracy, vs = meta.versus_linear, d = meta.drivers || {}, b7 = meta.band7;
+  return (
+    <div className="grid" style={{ gap: 10, marginTop: 12 }}>
+      {b7 && (
+        <div className="muted tiny">
+          بازه‌ی معمول ۷ روز آینده:{" "}
+          <b style={{ color: "var(--txt2)" }}>{fmt(b7.low)}</b> تا{" "}
+          <b style={{ color: "var(--txt2)" }}>{fmt(b7.high)}</b> تومان — این بازه از
+          خطای واقعی همین مدل در گذشته درآمده، نه از یک فرمول.
+        </div>
+      )}
+      <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
+        {acc && <span className="badge b-blue">خطای اندازه‌گیری‌شده: {acc.smape}٪ روی {acc.folds} بازه‌ی آزمون</span>}
+        {vs && vs.error_reduction_pct > 0 && (
+          <span className="badge b-green">{vs.error_reduction_pct}٪ دقیق‌تر از مدل خطی قبلی</span>
+        )}
+      </div>
+      <p className="muted tiny" style={{ margin: 0, lineHeight: 2 }}>
+        روی همین سرور محاسبه می‌شود؛ بدون هزینه و بدون ارسال داده به بیرون. مبنا:
+        میانه‌ی <b>{d.orders_per_day}</b> سفارش در روز × سبد خرید <b>{fmt(d.avg_basket)}</b> تومان،
+        تعدیل‌شده با الگوی هفتگی خودت.
+        <br />
+        عمداً «روند» را امتداد نمی‌دهد: در آزمون روی داده‌ی خودت، مدل‌هایی که روند را
+        ادامه می‌دادند <b>بدتر</b> جواب دادند.
+      </p>
+    </div>
+  );
+}
+
+function RevenueMix({ mix, totals }) {
+  if (!mix) return null;
+  const rep = mix.reseller_share_pct, ren = mix.renewal_share_pct;
+  return (
+    <Card title="🧭 ترکیب درآمد" sub="۹۰ روز گذشته — از کجا می‌آید و چقدرش قابل‌پیش‌بینی است">
+      <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: 10 }}>
+        {rep != null && (
+          <div style={{ background: "rgba(124,111,255,.08)", border: "1px solid var(--line)", borderRadius: 12, padding: 12 }}>
+            <div style={{ fontWeight: 800, fontSize: "1.3rem", color: "var(--p2)" }}>{rep}٪</div>
+            <div className="muted tiny">سهم نمایندگان از درآمد</div>
+          </div>
+        )}
+        {ren != null && (
+          <div style={{ background: "rgba(52,211,153,.08)", border: "1px solid var(--line)", borderRadius: 12, padding: 12 }}>
+            <div style={{ fontWeight: 800, fontSize: "1.3rem", color: "#34d399" }}>{ren}٪</div>
+            <div className="muted tiny">سهم تمدیدها — قابل‌پیش‌بینی‌ترین بخش</div>
+          </div>
+        )}
+        <div style={{ background: "rgba(251,191,36,.08)", border: "1px solid var(--line)", borderRadius: 12, padding: 12 }}>
+          <div style={{ fontWeight: 800, fontSize: "1.3rem", color: "#fbbf24" }}>{fmt(totals.expiring_30d)}</div>
+          <div className="muted tiny">منقضی‌شونده در ۳۰ روز — فرصت تمدید</div>
+        </div>
+      </div>
+      {(mix.top_packages || []).length > 0 && (
+        <div className="table-wrap" style={{ marginTop: 12 }}>
+          <table>
+            <thead><tr><th>پکیج</th><th>سفارش</th><th>درآمد</th></tr></thead>
+            <tbody>
+              {mix.top_packages.slice(0, 6).map((p, i) => (
+                <tr key={i}>
+                  <td>{p.name || "—"}</td>
+                  <td className="mono">{fmt(p.orders)}</td>
+                  <td className="mono">{fmt(p.revenue)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </Card>
+  );
+}
+
+const SEV = { good: ["b-green", "✅"], watch: ["b-yellow", "👀"], risk: ["b-red", "⚠️"] };
+const EFFORT = { low: "کم", medium: "متوسط", high: "زیاد" };
+
+/** The model reads the numbers this panel computed. It never produces one —
+ *  see core/ai_analyst.py for why that split is the whole design. */
+function AiAnalysis() {
+  const [status, setStatus] = useState(null);
+  const [res, setRes] = useState(null);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    api.get("/api/analytics/ai/status").then(setStatus).catch(() => setStatus({ enabled: false }));
+  }, []);
+
+  const run = async () => {
+    setBusy(true); setRes(null);
+    try { setRes(await api.get("/api/analytics/ai")); }
+    catch (e) { setRes({ ok: false, message: e.message || "خطا" }); }
+    finally { setBusy(false); }
+  };
+
+  if (!status) return null;
+  if (!status.enabled || !status.configured) {
+    return (
+      <Card title="🤖 تحلیل هوش مصنوعی" sub="خاموش است">
+        <p className="muted tiny" style={{ margin: 0, lineHeight: 2 }}>
+          می‌توانی یک مدل هوش مصنوعی وصل کنی تا همین اعداد را تحلیل کند و بگوید این هفته
+          چه کار کنی. <b>اعداد را مدل نمی‌سازد</b> — پیش‌بینی و آمار روی همین سرور محاسبه
+          می‌شود و مدل فقط تفسیرشان می‌کند.
+          <br />
+          از «تنظیمات ← تحلیل هوش مصنوعی» روشنش کن. Gemini با مدل Flash رایگان است و
+          کارت اعتباری نمی‌خواهد.
+        </p>
+      </Card>
+    );
+  }
+
+  const a = res?.analysis;
+  return (
+    <Card title="🤖 تحلیل هوش مصنوعی" sub={`${status.provider} · ${status.model}`}
+          right={<button className="btn sm primary" disabled={busy} onClick={run}>
+                   {busy ? "در حال تحلیل…" : res ? "↻ دوباره" : "▶ تحلیل کن"}
+                 </button>}>
+      {!res && !busy && (
+        <p className="muted tiny" style={{ margin: 0 }}>
+          دکمه را بزن تا مدل، آمار و پیش‌بینی همین صفحه را تحلیل کند.
+        </p>
+      )}
+      {res && !res.ok && (
+        <div style={{ background: "rgba(251,113,133,.1)", border: "1px solid rgba(251,113,133,.3)",
+                      borderRadius: 12, padding: 12, lineHeight: 2 }}>{res.message}</div>
+      )}
+      {a && (
+        <div className="grid" style={{ gap: 12 }}>
+          <div>
+            <div style={{ fontWeight: 800, fontSize: "1.05rem" }}>{a.headline}</div>
+            <p className="muted" style={{ margin: "6px 0 0", fontSize: ".88rem", lineHeight: 2 }}>{a.summary}</p>
+          </div>
+          {(a.findings || []).length > 0 && (
+            <div className="grid" style={{ gap: 8 }}>
+              {a.findings.map((f, i) => {
+                const sev = SEV[f.severity] || SEV.watch;
+                return (
+                  <div key={i} style={{ background: "rgba(255,255,255,.03)", border: "1px solid var(--line)",
+                                        borderRadius: 12, padding: "10px 12px" }}>
+                    <div className="row" style={{ gap: 8 }}>
+                      <span className={"badge " + sev[0]}>{sev[1]}</span>
+                      <b style={{ fontSize: ".9rem" }}>{f.title}</b>
+                    </div>
+                    <p className="muted tiny" style={{ margin: "5px 0 0", lineHeight: 1.9 }}>{f.detail}</p>
+                    {f.based_on ? <div className="muted tiny" style={{ marginTop: 4, opacity: .75 }}>مبنا: {f.based_on}</div> : null}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+          {(a.actions || []).length > 0 && (
+            <div>
+              <div className="muted tiny" style={{ marginBottom: 6 }}>پیشنهاد اقدام</div>
+              <div className="grid" style={{ gap: 8 }}>
+                {a.actions.map((ac, i) => (
+                  <div key={i} className="row between" style={{ background: "rgba(124,111,255,.07)",
+                        border: "1px solid var(--line)", borderRadius: 12, padding: "10px 12px", gap: 10, flexWrap: "wrap" }}>
+                    <div style={{ minWidth: 0 }}>
+                      <b style={{ fontSize: ".9rem" }}>{ac.title}</b>
+                      <p className="muted tiny" style={{ margin: "4px 0 0", lineHeight: 1.9 }}>{ac.why}</p>
+                    </div>
+                    <span className="badge b-gray">زحمت: {EFFORT[ac.effort] || ac.effort}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+          <div className="muted tiny" style={{ opacity: .8, lineHeight: 1.9 }}>
+            اطمینان مدل: {a.confidence === "high" ? "بالا" : a.confidence === "low" ? "پایین" : "متوسط"}
+            {a.confidence_reason ? ` — ${a.confidence_reason}` : ""}
+            <br />همه‌ی اعداد از محاسبات همین پنل است؛ مدل عددی نساخته.
+          </div>
+        </div>
+      )}
+    </Card>
+  );
+}
+
 export default function Analytics() {
   const [a, setA] = useState(null);
   const [seg, setSeg] = useState(null);
@@ -184,8 +377,12 @@ export default function Analytics() {
             <div style={{ fontWeight: 800, fontSize: "1.2rem", color: "#34d399" }}>{fmt(t.forecast_next30)} <span className="muted tiny">ت</span></div>
           </div>
         </div>
-        <p className="muted tiny" style={{ margin: "10px 0 0" }}>پیش‌بینی با رگرسیون خطی روی ۳۰ روز اخیر (روی همین سرور، بدون هزینه). تخمین است نه تضمین.</p>
+        <ForecastNotes meta={a.forecast_meta} />
       </Card>
+
+      <RevenueMix mix={a.mix} totals={t} />
+
+      <AiAnalysis />
 
       <Card title="👥 کاربران جدید (۳۰ روز)" sub="نشانگر را روی نمودار نگه دار تا مقدار هر روز را ببینی">
         <Chart points={userPoints} kind="bar" valueFmt={(v) => String(Math.round(v))} height={150} />

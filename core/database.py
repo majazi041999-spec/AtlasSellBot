@@ -1590,6 +1590,46 @@ async def get_campaign_overview() -> List[Dict]:
         return out
 
 
+async def get_revenue_mix(days: int = 90) -> Dict:
+    """Reseller-vs-direct and renewal-vs-new revenue splits, plus top packages.
+
+    These two ratios explain most of what moves this business: resellers buy in
+    bulk (bigger, burstier baskets) and renewals are the predictable part. A
+    revenue number without them is hard to act on.
+    """
+    since = f"-{max(1, int(days))} days"
+    out: Dict = {"reseller_share_pct": None, "renewal_share_pct": None, "top_packages": []}
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute("""
+            SELECT SUM(CASE WHEN u.is_wholesale=1 THEN x.v ELSE 0 END) rep,
+                   SUM(x.v) total,
+                   SUM(CASE WHEN x.renew THEN x.v ELSE 0 END) renew_rev
+            FROM (SELECT o.user_id,
+                         COALESCE(NULLIF(o.custom_price,0), p.price, 0) v,
+                         (COALESCE(o.renew_config_id,0)>0 OR COALESCE(o.renew_sub_profile_id,0)>0) renew
+                  FROM orders o LEFT JOIN packages p ON p.id=o.package_id
+                  WHERE o.status='approved' AND o.approved_at IS NOT NULL
+                    AND date(o.approved_at) >= date('now', ?, 'localtime')) x
+            JOIN users u ON u.id = x.user_id
+        """, (since,)) as c:
+            r = await c.fetchone()
+        if r and (r["total"] or 0) > 0:
+            out["reseller_share_pct"] = round((r["rep"] or 0) / r["total"] * 100, 1)
+            out["renewal_share_pct"] = round((r["renew_rev"] or 0) / r["total"] * 100, 1)
+        async with db.execute("""
+            SELECT COALESCE(NULLIF(o.custom_name,''), p.name) name,
+                   COUNT(*) orders,
+                   SUM(COALESCE(NULLIF(o.custom_price,0), p.price, 0)) revenue
+            FROM orders o LEFT JOIN packages p ON p.id=o.package_id
+            WHERE o.status='approved' AND o.approved_at IS NOT NULL
+              AND date(o.approved_at) >= date('now', ?, 'localtime')
+            GROUP BY name ORDER BY revenue DESC LIMIT 8
+        """, (since,)) as c:
+            out["top_packages"] = [dict(x) for x in await c.fetchall()]
+    return out
+
+
 async def get_revenue_timeseries(days: int = 14) -> List[Dict]:
     """Daily approved-order revenue for the last N days (gaps filled with zero)."""
     async with aiosqlite.connect(DB_PATH) as db:

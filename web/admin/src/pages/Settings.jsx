@@ -179,6 +179,64 @@ export default function Settings() {
         </div>
       </Card>
 
+      <Card title="🤖 تحلیل هوش مصنوعی" sub="اختیاری — پیش‌فرض خاموش">
+        <div className="grid" style={{ gap: 10 }}>
+          <div style={{ background: "rgba(251,191,36,.09)", border: "1px solid rgba(251,191,36,.3)",
+                        borderRadius: 12, padding: 12 }}>
+            <b>قبل از روشن‌کردن، این را بدان:</b>
+            <p className="muted tiny" style={{ margin: "6px 0 0", lineHeight: 2 }}>
+              با روشن‌کردن، <b>آمار درآمد کسب‌وکارت</b> (مجموع‌های روزانه، پیش‌بینی، نام پکیج‌ها)
+              به سرویس‌دهنده‌ی هوش مصنوعی فرستاده می‌شود. هیچ اطلاعات مشتری، آیدی تلگرام،
+              شماره یا توکن اشتراکی فرستاده نمی‌شود.
+              <br />
+              روی طرح‌های <b>رایگان</b> داده‌ات هزینه‌ی سرویس است. شرایط رسمی Gemini برای طرح
+              رایگان می‌گوید گوگل از آنچه می‌فرستی برای بهبود محصولاتش استفاده می‌کند و
+              <b>ممکن است بازبین انسانی</b> ورودی و خروجی را بخواند. روی طرح پولی این‌طور نیست.
+              اگر از OpenRouter استفاده می‌کنی، خاموش‌کردن آموزش برای مدل‌های رایگان
+              <b>تنظیم جداگانه‌ای</b> دارد و با تنظیم مدل‌های پولی یکی نیست.
+              اگر این برایت مهم است، روشنش نکن؛ پیش‌بینی و آمار بدون آن هم کامل کار می‌کند.
+            </p>
+          </div>
+
+          <Toggle s={s} set={set} k="ai_enabled" label="تحلیل هوش مصنوعی فعال باشد" />
+
+          <div className="grid" style={{ gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+            <Select s={s} set={set} k="ai_provider" label="سرویس‌دهنده" options={[
+              { v: "gemini", t: "Google Gemini (رایگان)" },
+              { v: "openai", t: "سازگار با OpenAI (OpenRouter / Groq / پروکسی)" },
+            ]} />
+            <Text s={s} set={set} k="ai_model" label="نام مدل" ltr />
+          </div>
+
+          {String(s.ai_provider) === "openai" && (
+            <Text s={s} set={set} k="ai_base_url" label="آدرس پایه (Base URL)" ltr />
+          )}
+
+          <div className="field">
+            <label>کلید API {String(s.ai_key_set) === "1" ? "— کلیدی ذخیره شده است" : ""}</label>
+            <input className="inp mono" dir="ltr" type="password" autoComplete="new-password"
+                   placeholder={String(s.ai_key_set) === "1" ? "برای تغییر، کلید جدید را بنویس" : "کلید را اینجا بگذار"}
+                   onChange={(e) => set("ai_api_key", e.target.value)} />
+            <p className="muted tiny" style={{ margin: "5px 0 0" }}>
+              کلید هرگز به مرورگر برگردانده نمی‌شود. اگر این فیلد را خالی بگذاری، کلید فعلی
+              دست‌نخورده می‌ماند.
+            </p>
+          </div>
+
+          <p className="muted tiny" style={{ margin: 0, lineHeight: 2 }}>
+            <b>Gemini:</b> از <span className="mono" dir="ltr">aistudio.google.com</span> کلید رایگان بگیر
+            (بدون کارت اعتباری). مدل پیشنهادی <span className="mono" dir="ltr">gemini-2.5-flash</span> —
+            حدود ۱۰ تا ۱۵ درخواست در دقیقه و چند صد درخواست در روز، که برای این کار خیلی بیش از کافی است.
+            <br />
+            <b>اگر Gemini جواب نداد:</b> این سرویس در ایران مسدود است. اگر سرور ربات داخل ایران باشد،
+            خطای دسترسی می‌گیری — در آن صورت گزینه‌ی «سازگار با OpenAI» را انتخاب کن و آدرس یک
+            سرویس در دسترس را بگذار.
+            <br />
+            <b>اعداد را مدل نمی‌سازد.</b> پیش‌بینی و آمار روی همین سرور محاسبه می‌شود؛ مدل فقط تفسیر می‌کند.
+          </p>
+        </div>
+      </Card>
+
       <Card title="🔐 امنیت ورود به پنل">
         <div className="grid" style={{ gap: 8 }}>
           <Toggle s={s} set={set} k="login_alert_enabled"

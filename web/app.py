@@ -907,8 +907,34 @@ def _verify_token(token: str) -> Optional[str]:
     return p.get("sub")
 
 
+def _session_tokens(request: Request) -> list:
+    """Every `_atlas_t` value the browser sent, not just the one that won.
+
+    A browser can legitimately hold two cookies of the same name at different
+    paths — the pre-upgrade `/` one and the current `/{S}/` one — and it sends
+    BOTH. Starlette collapses them into a dict, so one silently shadows the
+    other. Reading the raw header means a valid session is never hidden behind a
+    stale one; the login response deletes the old cookie too, but that only helps
+    once the admin has managed to log in.
+    """
+    raw = request.headers.get("cookie") or ""
+    out = []
+    for part in raw.split(";"):
+        name, _, value = part.strip().partition("=")
+        if name == "_atlas_t" and value:
+            out.append(value.strip())
+    parsed = request.cookies.get("_atlas_t", "")
+    if parsed and parsed not in out:
+        out.append(parsed)
+    return out
+
+
 def _auth(request: Request) -> Optional[str]:
-    return _verify_token(request.cookies.get("_atlas_t", ""))
+    for token in _session_tokens(request):
+        who = _verify_token(token)
+        if who:
+            return who
+    return None
 
 
 def _redir_login():
@@ -1425,6 +1451,13 @@ def _set_session_cookie(response, request: Request, token: str) -> None:
     X-Forwarded-Proto, so HTTPS users still get the flag.
     """
     proto = (request.headers.get("x-forwarded-proto") or request.url.scheme or "").split(",")[0].strip()
+    # Kill any cookie left at the OLD root path FIRST. Before the session was
+    # scoped to /{S}/, this cookie lived at "/". A browser that still holds that
+    # one sends both, and RFC 6265 orders the longer path first — so the stale
+    # root cookie arrives LAST and wins the dict Starlette parses them into. The
+    # symptom is brutal and silent: login returns 200, the panel still says
+    # unauthorised, and the admin loops forever with no error to read.
+    response.delete_cookie("_atlas_t", path="/")
     response.set_cookie(
         "_atlas_t", token, httponly=True, max_age=JWT_EXPIRE_HOURS * 3600,
         samesite="lax", secure=(proto == "https"), path=f"/{S}/",
@@ -1574,91 +1607,147 @@ async def api_dashboard(request: Request):
     })
 
 
-def _linear_forecast(values: list[float], ahead: int) -> tuple[list[float], float]:
-    """Least-squares linear trend fit → forecast the next `ahead` points.
+async def _analytics_stats() -> dict:
+    """Everything both the analytics page AND the AI analyst read.
 
-    A small, dependency-free "smart estimate": fits revenue-vs-day to a line and
-    extrapolates. Returns (forecast_points, daily_slope). Non-negative clamped.
+    One builder so the two can never disagree: the figure the owner sees on the
+    chart is the same object handed to the model, which is the whole reason the
+    model is not allowed to compute its own.
     """
-    n = len(values)
-    if n < 2:
-        base = float(values[0]) if values else 0.0
-        return [max(0.0, base)] * ahead, 0.0
-    xs = list(range(n))
-    mean_x = sum(xs) / n
-    mean_y = sum(values) / n
-    denom = sum((x - mean_x) ** 2 for x in xs) or 1.0
-    slope = sum((xs[i] - mean_x) * (values[i] - mean_y) for i in range(n)) / denom
-    intercept = mean_y - slope * mean_x
-    # Blend the pure trend with the recent 7-day average so a single spike doesn't
-    # dominate the projection (a light, robust smoothing).
-    recent = values[-7:] or values
-    recent_avg = sum(recent) / len(recent)
-    out = []
-    for k in range(1, ahead + 1):
-        trend = intercept + slope * (n - 1 + k)
-        out.append(max(0.0, 0.6 * trend + 0.4 * recent_avg))
-    return out, slope
+    from core.database import (get_new_users_timeseries, count_users,
+                               count_active_subscription_profiles, count_expiring_profiles)
+    from core.forecast import forecast as run_forecast, compare_to_line
+
+    # 120 days so the backtest inside the forecaster has folds to measure with.
+    rev = await get_revenue_timeseries(120)
+    users_ts = await get_new_users_timeseries(30)
+    days = [datetime.strptime(r["date"], "%Y-%m-%d").date() for r in rev]
+    revenue = [float(r["revenue"]) for r in rev]
+    counts = [float(r["orders"]) for r in rev]
+
+    fc7 = run_forecast(revenue, counts, days, 7)
+    fc30 = run_forecast(revenue, counts, days, 30)
+    versus = compare_to_line(revenue, counts, days, 7)
+
+    last30 = rev[-30:]
+    prev30 = rev[-60:-30] if len(rev) >= 60 else []
+    revenue_30d = int(sum(r["revenue"] for r in last30))
+    revenue_prev_30d = int(sum(r["revenue"] for r in prev30))
+
+    async def _safe(coro, default=0):
+        try:
+            return await coro
+        except Exception:
+            return default
+
+    from core.database import get_revenue_mix
+    try:
+        mix = await get_revenue_mix(90)
+    except Exception as e:
+        logger.warning('revenue mix failed: %s', e)
+        mix = {}
+    return {
+        "today": datetime.now().strftime("%Y-%m-%d"),
+        "revenue_series": last30,
+        "revenue_series_long": rev,
+        "users": users_ts,
+        "forecast": fc7,
+        "forecast30": fc30,
+        "versus_linear": versus,
+        "revenue_30d": revenue_30d,
+        "revenue_prev_30d": revenue_prev_30d,
+        "orders_30d": int(sum(r["orders"] for r in last30)),
+        "new_users_30d": int(sum(u["new_users"] for u in users_ts)),
+        "total_users": await _safe(count_users()),
+        "active_subs": await _safe(count_active_subscription_profiles()),
+        "expiring_7d": await _safe(count_expiring_profiles(7)),
+        "expiring_30d": await _safe(count_expiring_profiles(30)),
+        **mix,
+    }
 
 
 @app.get(f"/{S}/api/analytics")
 async def api_analytics(request: Request):
-    """User/sales analytics + a lightweight on-device revenue forecast."""
+    """Sales analytics + the revenue forecast.
+
+    Response keys are kept backward-compatible with the previous shape so the
+    existing chart code keeps working; the forecast underneath it is now
+    core/forecast.py, which reports the accuracy it actually measured.
+    """
     if not _api_guard(request):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
-    from core.database import (get_new_users_timeseries, count_users,
-                               count_active_subscription_profiles, count_expiring_profiles)
-    rev = await get_revenue_timeseries(30)
-    users_ts = await get_new_users_timeseries(30)
-    rev_vals = [float(r["revenue"]) for r in rev]
-    forecast, slope = _linear_forecast(rev_vals, 7)
-    today = datetime.now()
-    forecast_series = [
-        {"date": (today + timedelta(days=k + 1)).strftime("%Y-%m-%d"), "revenue": int(round(v))}
-        for k, v in enumerate(forecast)
-    ]
-    total_rev_30 = int(sum(rev_vals))
-    total_orders_30 = int(sum(r["orders"] for r in rev))
-    new_users_30 = int(sum(u["new_users"] for u in users_ts))
-    avg_daily = total_rev_30 / max(1, len(rev))
-    forecast_next7 = int(sum(f["revenue"] for f in forecast_series))
-    forecast_next30 = int(round(avg_daily * 30 + slope * 30 * 15))  # trend-adjusted month
-    try:
-        total_users = await count_users()
-    except Exception:
-        total_users = 0
-    try:
-        active_subs = await count_active_subscription_profiles()
-    except Exception:
-        active_subs = 0
-    try:
-        near_expiry = await count_expiring_profiles(3)
-    except Exception:
-        near_expiry = 0
-    # Momentum: compare last 7 days vs the 7 before.
-    last7 = sum(rev_vals[-7:])
-    prev7 = sum(rev_vals[-14:-7]) if len(rev_vals) >= 14 else 0
-    momentum = 0.0
-    if prev7 > 0:
-        momentum = round((last7 - prev7) / prev7 * 100, 1)
-    elif last7 > 0:
-        momentum = 100.0
+    st = await _analytics_stats()
+    fc7, fc30 = st["forecast"], st["forecast30"]
+
+    rev_vals = [float(r["revenue"]) for r in st["revenue_series"]]
+    last7, prev7 = sum(rev_vals[-7:]), sum(rev_vals[-14:-7]) if len(rev_vals) >= 14 else 0
+    momentum = round((last7 - prev7) / prev7 * 100, 1) if prev7 > 0 else (100.0 if last7 else 0.0)
+
     return JSONResponse({
-        "revenue": rev,
-        "users": users_ts,
-        "forecast": forecast_series,
-        "totals": {
-            "total_users": total_users,
-            "active_subs": active_subs,
-            "revenue_30d": total_rev_30,
-            "orders_30d": total_orders_30,
-            "new_users_30d": new_users_30,
-            "avg_daily_revenue": int(round(avg_daily)),
-            "momentum_pct": momentum,
-            "forecast_next7": forecast_next7,
-            "forecast_next30": max(0, forecast_next30),
-            "near_expiry": near_expiry,
+        "revenue": st["revenue_series"],
+        "users": st["users"],
+        "forecast": fc7["points"],
+        "forecast_meta": {
+            "method": fc7.get("method"),
+            "ok": fc7.get("ok"),
+            "reason": fc7.get("reason"),
+            "history_days": fc7.get("history_days"),
+            # Measured on this owner's own data, so the panel can state the
+            # accuracy instead of implying one.
+            "accuracy": fc7.get("accuracy"),
+            "band7": fc7.get("band"),
+            "band30": fc30.get("band"),
+            "drivers": fc7.get("drivers"),
+            "versus_linear": st.get("versus_linear"),
         },
+        "mix": {
+            "reseller_share_pct": st.get("reseller_share_pct"),
+            "renewal_share_pct": st.get("renewal_share_pct"),
+            "top_packages": st.get("top_packages") or [],
+        },
+        "totals": {
+            "total_users": st["total_users"],
+            "active_subs": st["active_subs"],
+            "revenue_30d": st["revenue_30d"],
+            "revenue_prev_30d": st["revenue_prev_30d"],
+            "orders_30d": st["orders_30d"],
+            "new_users_30d": st["new_users_30d"],
+            "avg_daily_revenue": int(round(st["revenue_30d"] / max(1, len(st["revenue_series"])))),
+            "momentum_pct": momentum,
+            "forecast_next7": fc7["total"],
+            "forecast_next30": fc30["total"],
+            "near_expiry": st["expiring_7d"],
+            "expiring_30d": st["expiring_30d"],
+        },
+    })
+
+
+@app.get(f"/{S}/api/analytics/ai")
+async def api_analytics_ai(request: Request):
+    """Ask the configured model to interpret the numbers we computed.
+
+    Every figure in the payload is already final — see core/ai_analyst.py for why
+    the model is not permitted to produce one of its own.
+    """
+    if not _api_guard(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    from core import ai_analyst
+    result = await ai_analyst.analyze(await _analytics_stats())
+    return JSONResponse(result, status_code=200 if result.get("ok") else 200)
+
+
+@app.get(f"/{S}/api/analytics/ai/status")
+async def api_analytics_ai_status(request: Request):
+    if not _api_guard(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    from core import ai_analyst
+    cfg = await ai_analyst.settings()
+    return JSONResponse({
+        "enabled": cfg["ai_enabled"] == "1",
+        "configured": bool(cfg["ai_api_key"]),
+        "provider": cfg["ai_provider"],
+        "model": cfg["ai_model"],
+        "base_url": cfg["ai_base_url"],
     })
 
 
@@ -5211,6 +5300,12 @@ async def _settings_snapshot() -> dict:
         "cert_email": await get_setting("cert_email", ""),
         "atlas_tls_https_port": await get_setting("atlas_tls_https_port", "443"),
         "cert_status": await get_setting("cert_status", ""),
+        "ai_enabled": await get_setting("ai_enabled", SETTINGS_DEFAULTS["ai_enabled"]),
+        "ai_provider": await get_setting("ai_provider", SETTINGS_DEFAULTS["ai_provider"]),
+        "ai_model": await get_setting("ai_model", SETTINGS_DEFAULTS["ai_model"]),
+        "ai_base_url": await get_setting("ai_base_url", SETTINGS_DEFAULTS["ai_base_url"]),
+        # The key itself is never sent back to the browser — only whether one exists.
+        "ai_key_set": "1" if (await get_setting("ai_api_key", "")).strip() else "0",
         "login_captcha_always": await get_setting("login_captcha_always", SETTINGS_DEFAULTS["login_captcha_always"]),
         "login_alert_enabled": await get_setting("login_alert_enabled", SETTINGS_DEFAULTS["login_alert_enabled"]),
     }
@@ -5338,6 +5433,11 @@ async def settings_save(
     cert_email: str = Form(""),
     atlas_tls_https_port: int = Form(443),
     rep_min_topup: str = Form("500000"),
+    ai_enabled: str = Form("0"),
+    ai_provider: str = Form("gemini"),
+    ai_model: str = Form(""),
+    ai_base_url: str = Form(""),
+    ai_api_key: str = Form(""),
     login_captcha_always: str = Form("0"),
     login_alert_enabled: str = Form("1"),
 ):
@@ -5347,6 +5447,15 @@ async def settings_save(
         await set_setting("rep_min_topup", str(max(0, int(str(rep_min_topup or "0").replace(",", "")))))
     except (TypeError, ValueError):
         await set_setting("rep_min_topup", "500000")
+
+    await set_setting("ai_enabled", "1" if ai_enabled == "1" else "0")
+    await set_setting("ai_provider", "openai" if ai_provider == "openai" else "gemini")
+    await set_setting("ai_model", (ai_model or "").strip() or SETTINGS_DEFAULTS["ai_model"])
+    await set_setting("ai_base_url", (ai_base_url or "").strip())
+    # A blank field means "leave the stored key alone", so saving other settings
+    # cannot silently wipe a key the form never received.
+    if (ai_api_key or "").strip():
+        await set_setting("ai_api_key", ai_api_key.strip())
 
     await set_setting("login_captcha_always", "1" if login_captcha_always == "1" else "0")
     await set_setting("login_alert_enabled", "1" if login_alert_enabled == "1" else "0")

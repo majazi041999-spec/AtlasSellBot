@@ -413,6 +413,27 @@ def main():
         check("lowercase + Persian digits + stray spaces still works", r.status_code, 200)
         client.post(f"/{S}/api/logout")
 
+        print("\n31. a stale pre-upgrade cookie cannot shadow a fresh session")
+        # The bug this guards, found by driving a real browser: the session
+        # cookie used to live at "/" and now lives at "/{S}/". A browser holding
+        # both sends both; RFC 6265 orders the LONGER path first, so the stale
+        # one arrives last and wins the dict Starlette parses cookies into.
+        # Symptom: login returns 200 and the panel still says unauthorised —
+        # forever, with no error anywhere for the admin to read.
+        lg.reset_all()
+        r = login()
+        check("logged in", r.status_code, 200)
+        good = client.cookies.get("_atlas_t")
+        check_true("a session cookie was issued", bool(good))
+        stale = "_atlas_t=left-over-from-before-the-upgrade"
+        for label, jar in (("stale first", stale + "; _atlas_t=" + good),
+                           ("stale last", "_atlas_t=" + good + "; " + stale)):
+            rr = client.get(f"/{S}/api/me", headers={"Cookie": jar})
+            check("valid session wins with the " + label, rr.status_code, 200)
+        only_stale = client.get(f"/{S}/api/me", headers={"Cookie": stale})
+        check("a stale cookie alone is still rejected", only_stale.status_code, 401)
+        client.post(f"/{S}/api/logout")
+
     print("\n" + ("ALL PASSED" if not FAILED else f"{len(FAILED)} FAILED: {FAILED}"))
     return 1 if FAILED else 0
 

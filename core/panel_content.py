@@ -45,6 +45,13 @@ SETTINGS_DEFAULTS: Dict[str, str] = {
     "sub_brand_template": "📣 {brand}",
     "sub_grace_days": "3",
     "sub_start_on_first_use": "1",
+    # Optional AI analyst — see core/ai_analyst.py. Ships OFF: enabling it
+    # sends revenue aggregates to a third party.
+    "ai_enabled": "0",
+    "ai_provider": "gemini",
+    "ai_model": "gemini-2.5-flash",
+    "ai_base_url": "",
+    "ai_api_key": "",
     # Admin-login protection — see core/login_guard.py
     "login_captcha_always": "0",   # owner can demand the image on EVERY login
     "login_alert_enabled": "1",    # Telegram alert on failed attempts
