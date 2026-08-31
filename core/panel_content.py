@@ -45,7 +45,6 @@ SETTINGS_DEFAULTS: Dict[str, str] = {
     "sub_brand_template": "📣 {brand}",
     "sub_grace_days": "3",
     "sub_start_on_first_use": "1",
-    "single_to_sub_nudge_enabled": "0",
     "server_backup_enabled": "1",
     "server_backup_interval_hours": "6",
     "sub_connection_guide": (

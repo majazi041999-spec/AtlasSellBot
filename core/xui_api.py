@@ -128,6 +128,8 @@ class XUIClient:
             "/panel/api/clients/update/",
             "/panel/api/clients/del/",
             "/panel/api/clients/bulkDel",
+            "/panel/api/clients/bulkDisable",
+            "/panel/api/clients/bulkEnable",
             "/panel/api/clients/resetTraffic/",
             "/panel/api/inbounds/addClient",
             "/panel/api/inbounds/updateClient/",
@@ -280,6 +282,39 @@ class XUIClient:
     async def get_inbound(self, iid: int) -> Optional[Dict]:
         r = await self._req("GET", f"/panel/api/inbounds/get/{iid}")
         return r.get("obj") if r and r.get("success") else None
+
+    async def bulk_set_clients_enabled(self, emails: List[str], enabled: bool) -> Optional[Dict]:
+        """Enable/disable many clients in ONE call — 3x-ui v3.7+.
+
+        Why this and not a loop of `update_client`: every client write makes the
+        panel rewrite that inbound and reload xray, which drops every live
+        connection on the server. Disabling 200 legacy clients one at a time is
+        200 reloads and a visible outage for every OTHER customer there. This
+        endpoint groups the emails by inbound and does a single read-modify-write
+        per inbound, so the whole sweep costs one reload per inbound.
+
+        Returns ``{"changed": int, "skipped": [{"email","reason"}]}``, or None if
+        the panel is too old to have the endpoint (caller must then fall back to
+        the per-client path and accept the reload cost).
+
+        Emails are the only selector, so the caller is responsible for passing
+        ONLY emails it means to touch — see core/legacy_configs.py, which
+        subtracts every subscription-node email before calling this.
+        """
+        clean = [str(e).strip() for e in (emails or []) if str(e or "").strip()]
+        if not clean:
+            return {"changed": 0, "skipped": []}
+        path = "/panel/api/clients/bulkDisable" if not enabled else "/panel/api/clients/bulkEnable"
+        r = await self._req("POST", path, json={"emails": clean})
+        if not r or not r.get("success"):
+            # A 404 here means an older panel, which is a different situation
+            # from a rejected request; both surface through last_error.
+            return None
+        obj = r.get("obj") or {}
+        return {
+            "changed": int(obj.get("changed") or 0),
+            "skipped": list(obj.get("skipped") or []),
+        }
 
     async def update_inbound(self, iid: int, payload: Dict) -> bool:
         """Update an inbound in place (remark/port/enable/settings/streamSettings…).

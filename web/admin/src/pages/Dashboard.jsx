@@ -3,6 +3,82 @@ import { api, fmt, BASE } from "../api.js";
 import { Stat, Card, Loading, Empty, toast, timeAgo } from "../components/ui.jsx";
 import Analytics from "./Analytics.jsx";
 
+/** Live connected users, read from each x-ui panel.
+ *
+ *  A server whose panel did not answer reports `online: null`. That is NOT
+ *  zero — showing it as zero would turn "the panel is unreachable" into
+ *  "nobody is connected", which reads as a quiet business collapse. Unknown
+ *  servers are rendered as «؟» and counted separately, and the headline number
+ *  says how many panels it actually covers.
+ */
+function OnlineNow({ data, onRefresh }) {
+  const o = data || {};
+  const servers = o.servers || [];
+  const partial = o.servers_known < o.servers_total;
+  const ageMin = o.checked_at ? Math.floor((Date.now() - o.checked_at) / 60000) : null;
+  const max = Math.max(1, ...servers.map((s) => s.online || 0));
+
+  return (
+    <Card
+      title="🟢 آنلاین‌های همین لحظه"
+      sub={
+        o.servers_total
+          ? (partial
+              ? `${o.servers_known} پنل از ${o.servers_total} پاسخ داد`
+              : `روی ${o.servers_total} سرور`)
+          : "سروری تنظیم نشده"
+      }
+      right={<button className="btn xs" onClick={onRefresh}>↻ تازه‌سازی</button>}
+    >
+      {!servers.length ? (
+        <Empty emoji="🖥">هنوز از سرورها آماری نگرفته‌ایم.</Empty>
+      ) : (
+        <>
+          <div className="row" style={{ gap: 12, alignItems: "baseline", marginBottom: 14, flexWrap: "wrap" }}>
+            <span style={{ fontSize: "2.4rem", fontWeight: 800, lineHeight: 1 }}>{fmt(o.total)}</span>
+            <span className="muted">کاربر متصل</span>
+            {partial && (
+              <span className="badge b-yellow">
+                {o.servers_total - o.servers_known} پنل پاسخ نداد — عدد ناقص است
+              </span>
+            )}
+            {ageMin !== null && ageMin > 10 && (
+              <span className="badge b-gray">آخرین بررسی: {ageMin} دقیقه پیش</span>
+            )}
+          </div>
+
+          <div className="grid" style={{ gap: 8 }}>
+            {servers.map((s) => {
+              const unknown = s.online === null || s.online === undefined;
+              return (
+                <div key={s.id} className="row" style={{ gap: 10 }}>
+                  <span style={{ minWidth: 130, flexShrink: 0 }}>{s.name}</span>
+                  <div style={{ flex: 1, height: 8, borderRadius: 6, background: "rgba(255,255,255,.06)", overflow: "hidden" }}>
+                    {!unknown && (
+                      <div style={{
+                        width: `${Math.round((s.online / max) * 100)}%`, height: "100%",
+                        background: "linear-gradient(90deg,#34d399,#10b981)", borderRadius: 6,
+                      }} />
+                    )}
+                  </div>
+                  {unknown ? (
+                    <span className="badge b-yellow" style={{ minWidth: 74, justifyContent: "center" }}
+                          title={s.stale ? "آخرین پاسخ پنل قدیمی شده است" : "پنل به درخواست پاسخ نداد"}>
+                      ؟ نامعلوم
+                    </span>
+                  ) : (
+                    <b className="mono" style={{ minWidth: 74, textAlign: "left", color: "var(--txt1)" }}>{fmt(s.online)}</b>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </>
+      )}
+    </Card>
+  );
+}
+
 export default function Dashboard({ onBadges, go }) {
   const [d, setD] = useState(null);
   const [busy, setBusy] = useState(0);
@@ -44,6 +120,8 @@ export default function Dashboard({ onBadges, go }) {
         <Stat icon="📦" value={fmt(s.total_orders)} label="کل فروش موفق" grad="linear-gradient(135deg,#2dd4bf,#14b8a6)" />
         <Stat icon="💳" value={fmt(rep.wallet_topup_amount)} label="شارژ کیف پول امروز" grad="linear-gradient(135deg,#c084fc,#a855f7)" />
       </div>
+
+      <OnlineNow data={d.online} onRefresh={load} />
 
       <Analytics />
 

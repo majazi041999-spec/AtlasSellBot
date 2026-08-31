@@ -1,6 +1,155 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { api, fmt } from "../api.js";
 import { Card, Loading, Empty, Pager, Search, Toolbar, toast, timeAgo, Avatar } from "../components/ui.jsx";
+
+/** Bulk-disable every legacy config, across every panel.
+ *
+ *  The preview is deliberately shown before the button does anything: this
+ *  touches live servers, and the admin needs to see how many clients are
+ *  protected (they belong to subscriptions) and how many sit on a server that
+ *  no longer exists before committing.
+ */
+function BulkDisable({ onDone }) {
+  const [scope, setScope] = useState("expired");
+  const [prev, setPrev] = useState(null);
+  const [log, setLog] = useState({ lines: [], running: false, status: "idle" });
+  const [busy, setBusy] = useState(false);
+  const box = useRef();
+  const tmr = useRef();
+
+  const loadPreview = (sc = scope) => {
+    setPrev(null);
+    api.get(`/api/configs/disable/preview?scope=${sc}`).then(setPrev).catch(() => setPrev({ error: true }));
+  };
+  useEffect(() => { loadPreview(); return () => clearTimeout(tmr.current); /* eslint-disable-next-line */ }, []);
+  useEffect(() => { if (box.current) box.current.scrollTop = box.current.scrollHeight; }, [log]);
+
+  const poll = () => {
+    api.get("/api/configs/disable/log").then((l) => {
+      setLog(l);
+      if (l.running) tmr.current = setTimeout(poll, 1500);
+      else {
+        setBusy(false);
+        toast(l.status === "ok" ? "عملیات تمام شد ✅" : "عملیات با خطا تمام شد", l.status === "ok" ? "success" : "error");
+        loadPreview();
+        onDone?.();
+      }
+    }).catch(() => { tmr.current = setTimeout(poll, 2500); });
+  };
+
+  const run = async () => {
+    const n = (prev?.on_panels || 0) + (prev?.orphaned || 0);
+    if (!n) { toast("چیزی برای غیرفعال‌کردن نیست", "error"); return; }
+    if (!confirm(
+      `${n} کانفیگ تکی غیرفعال می‌شود.\n\n` +
+      (scope === "all"
+        ? "⚠️ دامنه «همه» انتخاب شده — کانفیگ‌هایی که هنوز منقضی نشده‌اند هم قطع می‌شوند.\n\n"
+        : "") +
+      "این کار روی خود پنل‌ها اعمال می‌شود و برگشت آن ساده نیست.\n" +
+      "سابسکریپشن‌ها دست نمی‌خورند.\n\nادامه می‌دهی؟"
+    )) return;
+    setBusy(true);
+    try {
+      await api.post("/api/configs/disable", { scope });
+      setLog({ lines: [], running: true, status: "running" });
+      poll();
+    } catch (e) { toast(e.message || "خطا", "error"); setBusy(false); }
+  };
+
+  const total = (prev?.on_panels || 0) + (prev?.orphaned || 0);
+
+  return (
+    <Card title="⛔ غیرفعال‌کردن گروهی کانفیگ‌های تکی"
+          sub="روی همه‌ی پنل‌ها اعمال می‌شود — سابسکریپشن‌ها دست نمی‌خورند">
+      <div className="row" style={{ gap: 7, marginBottom: 12 }}>
+        {[["expired", "فقط منقضی‌شده‌ها"], ["all", "همه‌ی کانفیگ‌های فعال"]].map(([k, label]) => (
+          <button key={k} className={"btn sm" + (scope === k ? " primary" : "")}
+                  disabled={busy}
+                  onClick={() => { setScope(k); loadPreview(k); }}>{label}</button>
+        ))}
+      </div>
+
+      {!prev ? <Loading /> : prev.error ? (
+        <div className="muted">خواندن پیش‌نمایش ناموفق بود.</div>
+      ) : (
+        <>
+          <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: 10, marginBottom: 12 }}>
+            <Tile n={prev.on_panels} label="روی پنل‌ها غیرفعال می‌شود" />
+            <Tile n={prev.orphaned} label="سرورشان حذف شده — فقط در دیتابیس" muted />
+            <Tile n={prev.protected} label="محافظت‌شده (متعلق به ساب)" good />
+          </div>
+
+          {prev.protected > 0 && (
+            <div style={{ background: "rgba(52,211,153,.08)", border: "1px solid rgba(52,211,153,.3)",
+                          borderRadius: 12, padding: 12, marginBottom: 12 }}>
+              <b>🛡 {prev.protected} کانفیگ کنار گذاشته می‌شود</b>
+              <p className="muted tiny" style={{ margin: "6px 0 0" }}>
+                ایمیل این‌ها متعلق به سابسکریپشن است (یا شبیه آن است). چون بعضی اینباندها بین
+                کانفیگ‌های تکی و ساب‌ها مشترک‌اند، غیرفعال‌کردنشان می‌توانست سرویس یک مشتری فعال را قطع کند.
+              </p>
+              {(prev.protected_samples || []).map((p) => (
+                <div key={p.id} className="mono tiny" style={{ direction: "ltr", textAlign: "left", marginTop: 4 }}>
+                  {p.email}
+                </div>
+              ))}
+            </div>
+          )}
+
+          {(prev.servers || []).length > 0 && (
+            <div className="table-wrap" style={{ marginBottom: 12 }}>
+              <table>
+                <thead><tr><th>سرور</th><th>تعداد</th><th>اینباندها</th></tr></thead>
+                <tbody>
+                  {prev.servers.map((s) => (
+                    <tr key={s.id}>
+                      <td>{s.name}</td>
+                      <td className="mono">{fmt(s.count)}</td>
+                      <td className="mono tiny">{(s.inbounds || []).join("، ")}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          <div style={{ background: "rgba(251,191,36,.1)", border: "1px solid rgba(251,191,36,.35)",
+                        borderRadius: 12, padding: 12, marginBottom: 12 }}>
+            <p className="tiny" style={{ margin: 0, lineHeight: 2 }}>
+              • برای هر اینباند فقط <b>یک بار</b> روی پنل نوشته می‌شود (<code>bulkDisable</code> در 3x-ui 3.7+)،
+              پس xray به‌ازای هر کانفیگ ری‌استارت نمی‌شود و اتصال ساب‌ها قطع نمی‌شود.<br />
+              • اگر پنلی قدیمی‌تر باشد، خودکار به حالت تک‌به‌تک برمی‌گردد و در گزارش هشدار می‌دهد.<br />
+              • بازگرداندن یک کلاینت غیرفعال‌شده در بعضی نسخه‌های 3x-ui درست کار نمی‌کند، پس این کار را
+              نهایی در نظر بگیر.
+            </p>
+          </div>
+
+          <button className="btn danger" disabled={busy || !total} onClick={run}>
+            {busy ? "در حال اجرا…" : `⛔ غیرفعال کن (${fmt(total)} کانفیگ)`}
+          </button>
+        </>
+      )}
+
+      {(log.lines || []).length > 0 && (
+        <div ref={box} className="mono tiny" style={{ marginTop: 12, background: "rgba(0,0,0,.28)",
+               border: "1px solid var(--line)", borderRadius: 10, padding: 10, maxHeight: 320,
+               overflow: "auto", whiteSpace: "pre-wrap", lineHeight: 1.7 }}>
+          {(log.lines || []).join("\n")}{log.running ? "\n⏳ …" : ""}
+        </div>
+      )}
+    </Card>
+  );
+}
+
+function Tile({ n, label, muted, good }) {
+  const color = good ? "#6ee7b7" : muted ? "var(--txt3)" : "var(--txt1)";
+  return (
+    <div style={{ background: "rgba(255,255,255,.03)", border: "1px solid var(--bd)",
+                  borderRadius: 12, padding: "12px 14px" }}>
+      <div style={{ fontSize: "1.6rem", fontWeight: 800, color }}>{fmt(n)}</div>
+      <div className="muted tiny" style={{ marginTop: 2 }}>{label}</div>
+    </div>
+  );
+}
 
 const daysLeft = (ms) => {
   if (!ms) return null;
@@ -56,6 +205,8 @@ export default function Configs() {
           این صفحه فقط برای رسیدگی به مشتری‌های قدیمی است.
         </p>
       </div>
+
+      <BulkDisable onDone={() => load(1, q)} />
 
       <Toolbar right={data && <span className="muted tiny">{fmt(data.total)} کانفیگ</span>}>
         <Search value={q} onChange={search} placeholder="جستجو: ایمیل، نام یا آیدی کاربر…" />

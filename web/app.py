@@ -1317,8 +1317,34 @@ async def api_dashboard(request: Request):
             "created_at": o.get("created_at"),
             "is_renew": bool(int(o.get("renew_config_id") or 0) or int(o.get("renew_sub_profile_id") or 0)),
         }
+    # Live online users, per server. `online` is None when that panel did not
+    # answer (or its last answer went stale) — NEVER folded into the total as a
+    # zero, because "we don't know" and "nobody is connected" look identical on a
+    # dashboard and are opposite facts. The unanswered panels are counted
+    # separately so the number can be read honestly.
+    try:
+        from core.autonode import server_load_snapshot
+        servers_online = [s for s in await server_load_snapshot() if s.get("is_active")]
+    except Exception as e:
+        logger.warning("dashboard online snapshot failed: %s", e)
+        servers_online = []
+    known = [s for s in servers_online if s.get("online") is not None]
+    newest_check = max((int(s.get("checked_at") or 0) for s in servers_online), default=0)
+
     return JSONResponse({
         "stats": stats,
+        "online": {
+            "total": sum(int(s["online"]) for s in known),
+            "servers_known": len(known),
+            "servers_total": len(servers_online),
+            "checked_at": newest_check,
+            "servers": [{
+                "id": s["id"], "name": s["name"],
+                "online": s["online"],            # null = unknown, not zero
+                "avg": s.get("online_avg"),
+                "stale": bool(s.get("stale")),
+            } for s in servers_online],
+        },
         "pending": [_slim(o) for o in pending[:8]],
         "pending_total": len(pending),
         "report": {
@@ -2549,7 +2575,6 @@ async def subscriptions_settings_save(
     sub_brand_template: str = Form(""),
     sub_start_on_first_use: str = Form("0"),
     convert_single_on_renew: str = Form("0"),
-    single_to_sub_nudge_enabled: str = Form("0"),
 ):
     if not _auth(request):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
@@ -2571,7 +2596,6 @@ async def subscriptions_settings_save(
     await set_setting("sub_brand_template", sub_brand_template.strip() or SETTINGS_DEFAULTS["sub_brand_template"])
     await set_setting("sub_start_on_first_use", "1" if sub_start_on_first_use == "1" else "0")
     await set_setting("convert_single_on_renew", "1" if convert_single_on_renew == "1" else "0")
-    await set_setting("single_to_sub_nudge_enabled", "1" if single_to_sub_nudge_enabled == "1" else "0")
     return JSONResponse({"success": True})
 
 
@@ -4522,6 +4546,54 @@ async def config_delete(request: Request, cid: int):
     return JSONResponse({"success": True, "deleted_local": deleted_local, "deleted_remote": deleted_remote})
 
 
+@app.get(f"/{S}/api/configs/disable/preview")
+async def api_configs_disable_preview(request: Request):
+    """What a bulk disable would touch — computed without calling any panel."""
+    if not _api_guard(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    from core.legacy_configs import preview
+    scope = request.query_params.get("scope") or "expired"
+    return JSONResponse(await preview(scope))
+
+
+@app.post(f"/{S}/api/configs/disable")
+async def api_configs_disable(request: Request):
+    """Switch off legacy single-server configs across every panel.
+
+    Streamed as a background job because it talks to every server in turn; the
+    safety rules (never touch a subscription client, one write per inbound) live
+    in core/legacy_configs.py.
+    """
+    if not _api_guard(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    if _read_job_log("legacy").get("running"):
+        return JSONResponse({"error": "یک عملیات غیرفعال‌سازی همین الان در حال اجراست."}, status_code=409)
+    # Both rewrite clients on the same inbounds; running them together would
+    # make each one's read-modify-write clobber the other's.
+    for other, label in (("sync", "همگام‌سازی ساب‌ها"), ("nodeops", "عملیات نودها")):
+        if _read_job_log(other).get("running"):
+            return JSONResponse(
+                {"error": f"«{label}» در حال اجراست. صبر کنید تا تمام شود، بعد دوباره بزنید."},
+                status_code=409,
+            )
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    scope = str((body or {}).get("scope") or "expired")
+
+    from core.legacy_configs import disable_all
+    _asyncio.create_task(_run_python_job("legacy", lambda log: disable_all(scope, log)))
+    return JSONResponse({"success": True, "scope": scope})
+
+
+@app.get(f"/{S}/api/configs/disable/log")
+async def api_configs_disable_log(request: Request):
+    if not _api_guard(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    return JSONResponse(_read_job_log("legacy"))
+
+
 # ═══════════════════════════════ USERS ══════════════════════════════
 
 
@@ -5218,6 +5290,7 @@ _JOB_LOG_PATHS = {
     "sync": os.path.join(_repo_dir, "atlas-sync.log"),
     "nodeops": os.path.join(_repo_dir, "atlas-nodeops.log"),
     "proxy": os.path.join(_repo_dir, "atlas-proxy.log"),
+    "legacy": os.path.join(_repo_dir, "atlas-legacy.log"),
 }
 _JOB_DONE_OK = "__ATLAS_JOB_OK__"
 _JOB_DONE_FAIL = "__ATLAS_JOB_FAIL__"

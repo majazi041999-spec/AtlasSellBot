@@ -331,15 +331,47 @@ async def _multi_subscription_worker():
         await asyncio.sleep(180)
 
 
+async def _online_poll_worker():
+    """Keep every server's live online count fresh, for the panel to display.
+
+    Deliberately NOT gated on the auto node. This used to live inside
+    `_auto_node_worker`, behind its `autonode_enabled` check — so an owner who
+    (correctly) left load-balancing off got a dashboard whose online numbers
+    silently froze at whatever they were the last time the auto node ran. The
+    reading is one cheap HTTP call per panel; it is display data, and the
+    dashboard needs it whether or not anything is being rebalanced.
+
+    `refresh_server_online_counts` stores `None` as "unknown, panel did not
+    answer" rather than zero — see core/autonode.py. Nothing here may collapse
+    that distinction.
+    """
+    from core.autonode import refresh_server_online_counts, _setting_int
+
+    await asyncio.sleep(30)
+    while True:
+        seconds = 120
+        try:
+            seconds = max(30, await _setting_int("online_poll_seconds", 120))
+            counts = await refresh_server_online_counts()
+            if counts:
+                known = sum(1 for v in counts.values() if v is not None)
+                total = sum(v for v in counts.values() if v is not None)
+                logger.info("online poll: %s/%s panels answered, %s online",
+                            known, len(counts), total)
+        except Exception as e:
+            logger.exception("online poll worker failed: %s", e)
+        await asyncio.sleep(seconds)
+
+
 async def _auto_node_worker():
     """Keep the auto node pointed at the least-busy server.
 
-    Two cadences on purpose: the online counts are re-read every cycle (cheap —
-    one HTTP call per panel) so the admin panel always shows live numbers, while
-    an actual rebalance runs only every few cycles, because moving a customer
-    between servers costs them a reconnect and should stay rare.
+    Only rebalances — the online counts it decides on are gathered by
+    `_online_poll_worker`, so they stay fresh even when this is switched off.
+    A rebalance is deliberately rare: moving a customer between servers costs
+    them a reconnect (see core/autonode.py).
     """
-    from core.autonode import is_enabled, rebalance_all_auto_nodes, refresh_server_online_counts, _setting_int
+    from core.autonode import is_enabled, rebalance_all_auto_nodes, _setting_int
     from core.database import get_auto_node_configs
 
     await asyncio.sleep(45)
@@ -349,10 +381,6 @@ async def _auto_node_worker():
         try:
             if await is_enabled() and await get_auto_node_configs(active_only=True):
                 poll_seconds = max(30, await _setting_int("autonode_poll_seconds", 30))
-                counts = await refresh_server_online_counts()
-                known = sum(1 for v in counts.values() if v is not None)
-                logger.info("autonode: polled %s servers (%s answered)", len(counts), known)
-
                 now = time.time()
                 # Rebalance at 3× the polling interval so decisions are made on
                 # counts we have seen settle, not on a single noisy sample.
@@ -370,48 +398,6 @@ async def _auto_node_worker():
         await asyncio.sleep(poll_seconds)
 
 
-async def _single_to_sub_nudge_worker(bot):
-    """Periodically nudge users who still have single configs to convert to a sub."""
-    import time as _t
-    from core.database import get_active_configs_for_alerts, get_setting, set_setting
-    from bot.keyboards import single_to_sub_nudge_kb
-
-    await asyncio.sleep(120)
-    while True:
-        try:
-            enabled = await get_setting("single_to_sub_nudge_enabled", "0") == "1"
-            multi = await get_setting("multi_sub_enabled", "0") == "1"
-            if enabled and multi:
-                interval_days = max(1, int(await get_setting("single_to_sub_nudge_days", "3") or 3))
-                last = float(await get_setting("single_to_sub_nudge_last", "0") or 0)
-                now = _t.time()
-                if now - last >= interval_days * 86400 - 60:
-                    text = await get_setting(
-                        "single_to_sub_nudge_text",
-                        "♻️ سرویس تکی شما قابل ارتقا به «لینک ساب چندسروره» است.\n"
-                        "با تبدیل، اگر یک سرور قطع شد، سرورهای دیگر همچنان وصل می‌مانند و مدیریت ساده‌تر می‌شود.\n"
-                        "حجم و زمان باقی‌مانده‌تان دقیقاً منتقل می‌شود.",
-                    )
-                    sent = 0
-                    seen_users = set()
-                    for cfg in await get_active_configs_for_alerts(1000):
-                        try:
-                            await bot.send_message(
-                                cfg["telegram_id"], text,
-                                reply_markup=single_to_sub_nudge_kb(int(cfg["id"])),
-                                parse_mode=None,
-                            )
-                            sent += 1
-                            seen_users.add(cfg["telegram_id"])
-                            await asyncio.sleep(0.1)
-                        except Exception:
-                            pass
-                    await set_setting("single_to_sub_nudge_last", str(now))
-                    if sent:
-                        logger.info(f"single→sub nudge sent={sent} users={len(seen_users)}")
-        except Exception as e:
-            logger.exception("single→sub nudge worker failed: %s", e)
-        await asyncio.sleep(3600)
 
 
 async def _owner_targets() -> list[int]:
@@ -503,6 +489,7 @@ async def _subscription_lifecycle_worker(bot):
     from core.multi_subscription import run_subscription_lifecycle, run_subscription_expiry_warnings
     from core.rewards import run_referral_reminders
     from core.campaigns import run_trial_to_paid, run_winback, run_cart_recovery
+    from core.legacy_configs import sweep_expired
 
     await asyncio.sleep(60)
     while True:
@@ -511,6 +498,14 @@ async def _subscription_lifecycle_worker(bot):
             # handle the ones that already ended.
             await run_subscription_expiry_warnings(bot)
             await run_subscription_lifecycle(bot)
+            # Legacy single-server configs had no such lifecycle at all: nothing
+            # ever switched one off when it expired, so they stayed enabled on
+            # the panels and flagged active here for months. This keeps the tail
+            # short; a large backlog is deliberately left to the panel's own
+            # bulk action, which shows a preview and a progress log first.
+            legacy = await sweep_expired()
+            if legacy.get("disabled"):
+                logger.info("legacy sweep: disabled %s expired single configs", legacy["disabled"])
             # Smart 24h referral nudge (ask inviters to send a discount code).
             await run_referral_reminders(bot)
             # Recover abandoned carts (order created but never paid).
@@ -574,9 +569,9 @@ async def run_bot():
     asyncio.create_task(_config_alert_worker(bot))
     asyncio.create_task(_daily_report_worker(bot))
     asyncio.create_task(_multi_subscription_worker())
+    asyncio.create_task(_online_poll_worker())
     asyncio.create_task(_auto_node_worker())
     asyncio.create_task(_subscription_lifecycle_worker(bot))
-    asyncio.create_task(_single_to_sub_nudge_worker(bot))
     asyncio.create_task(_server_backup_worker(bot))
     await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())

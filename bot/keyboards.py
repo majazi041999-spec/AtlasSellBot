@@ -535,13 +535,6 @@ def subscription_detail_kb(profile_id: int, sub_url: str = "", nodes: List[Dict]
     return b.as_markup()
 
 
-def single_to_sub_nudge_kb(config_id: int) -> InlineKeyboardMarkup:
-    b = InlineKeyboardBuilder()
-    _button(b, text="🧬 همین حالا تبدیل به لینک ساب", callback_data=f"cfg_to_sub:{config_id}", style="success")
-    b.adjust(1)
-    return b.as_markup()
-
-
 def subscription_delete_confirm_kb(profile_id: int) -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
     _button(b, text="✅ بله، حذف شود", callback_data=f"sub_del_do:{profile_id}", style="danger")

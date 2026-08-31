@@ -3036,6 +3036,64 @@ async def get_all_configs() -> List[Dict]:
             return [dict(r) for r in await cu.fetchall()]
 
 
+async def get_legacy_configs_for_disable(only_expired: bool, now_ms: int) -> List[Dict]:
+    """Active legacy configs, with the panel credentials needed to reach them.
+
+    LEFT JOIN on servers on purpose: a config whose server row was deleted must
+    still come back. It cannot be reached on any panel any more, but its local
+    `is_active` flag is still wrong and still inflates every count that reads it
+    — dropping those rows here would make the sweep silently miss them. The
+    caller tells them apart by `server_url` being NULL.
+    """
+    sql = """
+        SELECT c.id, c.user_id, c.email, c.uuid, c.server_id, c.inbound_id,
+               c.traffic_gb, c.expire_timestamp, c.created_at,
+               s.name as server_name, s.url as server_url,
+               s.username as srv_user, s.password as srv_pass,
+               s.api_token as srv_api_token, s.sub_path,
+               s.is_active as srv_active
+        FROM configs c
+        LEFT JOIN servers s ON c.server_id = s.id
+        WHERE c.is_active = 1
+    """
+    args: list = []
+    if only_expired:
+        sql += " AND COALESCE(c.expire_timestamp,0) > 0 AND c.expire_timestamp <= ?"
+        args.append(int(now_ms))
+    sql += " ORDER BY c.server_id, c.inbound_id, c.id"
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(sql, tuple(args)) as cu:
+            return [dict(r) for r in await cu.fetchall()]
+
+
+async def get_subscription_node_emails() -> set:
+    """Every email the subscription engine owns, for exclusion checks.
+
+    The legacy sweep selects clients by email, and legacy configs share inbounds
+    with subscription nodes on some servers — so this set is what stops a sweep
+    from switching off a paying customer's subscription.
+    """
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT DISTINCT email FROM subscription_nodes WHERE COALESCE(email,'') <> ''"
+        ) as c:
+            return {str(r[0]) for r in await c.fetchall()}
+
+
+async def set_configs_inactive(config_ids: List[int]) -> int:
+    if not config_ids:
+        return 0
+    ids = [int(i) for i in config_ids]
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute(
+            f"UPDATE configs SET is_active=0 WHERE id IN ({','.join('?' * len(ids))})",
+            tuple(ids),
+        )
+        await db.commit()
+        return cur.rowcount
+
+
 async def get_active_configs_for_alerts(limit: int = 500) -> List[Dict]:
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
