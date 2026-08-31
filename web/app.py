@@ -1751,6 +1751,21 @@ async def api_analytics_ai_status(request: Request):
     })
 
 
+@app.get(f"/{S}/api/analytics/ai/models")
+async def api_analytics_ai_models(request: Request):
+    """Which models this key can actually use.
+
+    Exists because "model not found" is the one AI misconfiguration the owner
+    cannot fix by re-reading their key: model ids are Google's to rename, and
+    the only durable answer is to ask the key. Lets the settings page offer a
+    list to pick from instead of a text box to guess into.
+    """
+    if not _api_guard(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    from core import ai_analyst
+    return JSONResponse(await ai_analyst.list_models())
+
+
 @app.get(f"/{S}/api/analytics/segment/{{kind}}")
 async def api_analytics_segment(request: Request, kind: str):
     """Lazy-loaded user lists behind the dashboard tiles."""

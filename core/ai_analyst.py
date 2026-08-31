@@ -204,8 +204,85 @@ def _extract_json(text: str) -> Optional[Dict]:
     return None
 
 
+def _clean_model(name: str) -> str:
+    """Accept what people actually paste.
+
+    Google's own console shows model ids as `models/gemini-x`, and the docs
+    show them bare. Pasting the first form produced a URL with `models/` twice
+    and a 404 that blamed the model rather than the paste.
+    """
+    m = str(name or "").strip()
+    if m.lower().startswith("models/"):
+        m = m[7:]
+    return m.strip()
+
+
+async def list_models(cfg: Optional[Dict] = None) -> Dict:
+    """Which models can THIS key actually use?
+
+    Exists because a 404 from Gemini means "no such model for this project",
+    and the only honest answer to that is a list of the ones that do exist —
+    Google renames and retires model ids on its own schedule, so any name
+    hard-coded here is a future 404. Asking the key is the version that keeps
+    working.
+    """
+    cfg = cfg or await settings()
+    key = (cfg.get("ai_api_key") or "").strip()
+    if not key:
+        return {"ok": False, "error": "no_key", "message": "اول کلید API را ذخیره کن."}
+
+    provider = cfg.get("ai_provider") or "gemini"
+    if provider == "openai":
+        base = (cfg.get("ai_base_url") or "https://api.openai.com/v1").rstrip("/")
+        url, headers = f"{base}/models", {"Authorization": f"Bearer {key}"}
+    else:
+        url = "https://generativelanguage.googleapis.com/v1beta/models"
+        headers = {"x-goog-api-key": key}
+
+    try:
+        async with httpx.AsyncClient(timeout=20) as client:
+            r = await client.get(url, headers=headers)
+            r.raise_for_status()
+            data = r.json()
+    except httpx.HTTPStatusError as e:
+        code = e.response.status_code
+        if code in (401, 403):
+            return {"ok": False, "error": "auth_or_region",
+                    "message": ("کلید پذیرفته نشد، یا این سرویس از کشور این سرور در "
+                                "دسترس نیست (Gemini در ایران مسدود است).")}
+        return {"ok": False, "error": f"http_{code}",
+                "message": f"فهرست مدل‌ها خوانده نشد ({code})."}
+    except Exception as e:
+        logger.warning("ai model list failed: %s", e)
+        return {"ok": False, "error": "network",
+                "message": "ارتباط با سرویس برقرار نشد."}
+
+    models = []
+    if provider == "openai":
+        for m in (data.get("data") or []):
+            mid = str(m.get("id") or "").strip()
+            if mid:
+                models.append({"id": mid, "label": mid})
+    else:
+        for m in (data.get("models") or []):
+            # Only the ones that can actually answer a generateContent call —
+            # embedding models are in this list too and would 400 at run time.
+            if "generateContent" not in (m.get("supportedGenerationMethods") or []):
+                continue
+            mid = _clean_model(m.get("name") or "")
+            if not mid:
+                continue
+            models.append({"id": mid,
+                           "label": (m.get("displayName") or mid).strip()})
+    # Cheapest-looking first: a flash-class model is the right default for one
+    # page of numbers, and putting it at the top makes the good choice the easy one.
+    models.sort(key=lambda m: (0 if "flash" in m["id"].lower() else 1, m["id"]))
+    return {"ok": True, "provider": provider, "models": models,
+            "current": _clean_model(cfg.get("ai_model") or "")}
+
+
 async def _call_gemini(cfg: Dict, prompt: str) -> str:
-    model = cfg["ai_model"] or "gemini-2.5-flash"
+    model = _clean_model(cfg["ai_model"]) or "gemini-2.5-flash"
     url = (f"https://generativelanguage.googleapis.com/v1beta/models/"
            f"{model}:generateContent")
     body = {
@@ -321,6 +398,26 @@ async def analyze(stats: Dict) -> Dict:
         if code == 429:
             return {"ok": False, "error": "quota",
                     "message": "سهمیه‌ی رایگان امروز تمام شده. فردا دوباره امتحان کن."}
+        if code == 404:
+            # For Gemini this is never the key and never the URL — it is "this
+            # project has no model by that name". Google renames and retires
+            # model ids on its own schedule, so the useful answer is the list of
+            # ones that DO exist on this key, not a status code.
+            listed = await list_models(cfg)
+            if listed.get("ok") and listed.get("models"):
+                names = "، ".join(m["id"] for m in listed["models"][:6])
+                return {"ok": False, "error": "model_not_found",
+                        "models": listed["models"],
+                        "message": (f"مدل «{_clean_model(cfg['ai_model'])}» روی این کلید وجود ندارد. "
+                                    f"مدل‌های در دسترس تو: {names}. "
+                                    "یکی از این‌ها را در تنظیمات بگذار.")}
+            if cfg["ai_provider"] == "openai":
+                return {"ok": False, "error": "model_not_found",
+                        "message": ("آدرس پایه یا نام مدل درست نیست. آدرس باید تا "
+                                    "/v1 باشد، مثل https://openrouter.ai/api/v1")}
+            return {"ok": False, "error": "model_not_found",
+                    "message": (f"مدل «{_clean_model(cfg['ai_model'])}» پیدا نشد و فهرست "
+                                "مدل‌ها هم خوانده نشد. نام مدل را در تنظیمات بررسی کن.")}
         logger.warning("ai analyst HTTP %s: %s", code, e.response.text[:300])
         return {"ok": False, "error": f"http_{code}",
                 "message": f"سرویس هوش مصنوعی خطا داد ({code})."}

@@ -70,6 +70,56 @@ function fmtLeft(sec) {
   return `${sec} ثانیه`;
 }
 
+/** "Which models can my key use?" — the answer to the one AI misconfiguration
+ *  that cannot be fixed by re-reading the key.
+ *
+ *  A 404 from Gemini means the project has no model by that name, and model ids
+ *  are Google's to rename whenever they like. So rather than shipping a name
+ *  that will eventually be wrong, this asks the key and lets the owner click
+ *  one. Save the key first — it is read from the server, never from this form.
+ */
+function AiModelPicker({ s, set }) {
+  const [state, setState] = useState(null);   // null | "loading" | result
+  const load = async () => {
+    setState("loading");
+    try { setState(await api.get("/api/analytics/ai/models")); }
+    catch (e) { setState({ ok: false, message: e.message || "خطا" }); }
+  };
+  return (
+    <div>
+      <button className="btn sm" onClick={load} disabled={state === "loading"}>
+        {state === "loading" ? "در حال بررسی…" : "🔍 بررسی کلید و مدل‌های در دسترس"}
+      </button>
+      {state && state !== "loading" && !state.ok && (
+        <p className="tiny" style={{ margin: "6px 0 0", color: "#fb7185", lineHeight: 1.9 }}>
+          {state.message}
+        </p>
+      )}
+      {state && state !== "loading" && state.ok && (
+        <div style={{ marginTop: 8 }}>
+          <p className="muted tiny" style={{ margin: "0 0 6px" }}>
+            کلید سالم است. روی هرکدام بزنی، در فیلد بالا گذاشته می‌شود
+            (بعد ذخیره را نزنی اعمال نمی‌شود):
+          </p>
+          <div className="row" style={{ gap: 6, flexWrap: "wrap" }}>
+            {state.models.map((m) => (
+              <button key={m.id}
+                      className={"btn xs " + (String(s.ai_model).trim() === m.id ? "success" : "")}
+                      onClick={() => set("ai_model", m.id)}
+                      title={m.label}>
+                <span className="mono" dir="ltr">{m.id}</span>
+              </button>
+            ))}
+            {!state.models.length && (
+              <span className="muted tiny">این کلید به هیچ مدلی دسترسی ندارد.</span>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function IpGuardCard() {
   const [d, setD] = useState(null);
   const [s, setS] = useState({});
@@ -376,6 +426,8 @@ export default function Settings() {
             ]} />
             <Text s={s} set={set} k="ai_model" label="نام مدل" ltr />
           </div>
+
+          <AiModelPicker s={s} set={set} />
 
           {String(s.ai_provider) === "openai" && (
             <Text s={s} set={set} k="ai_base_url" label="آدرس پایه (Base URL)" ltr />
