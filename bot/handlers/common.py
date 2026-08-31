@@ -150,3 +150,30 @@ async def panel_url(msg: Message):
         return
     panel_help = await get_text("panel_url_help", port=WEB_PORT, secret=WEB_SECRET_PATH)
     await msg.answer(panel_help, parse_mode="Markdown")
+
+
+@router.callback_query(F.data == "check_channel_join")
+async def check_channel_join(cb: CallbackQuery):
+    """The "بررسی عضویت" button.
+
+    THIS HANDLER MUST EXIST, even though ChannelRequiredMiddleware answers the
+    button itself and this body usually never runs. aiogram 3 draws a hard line
+    between OUTER middleware, which runs for every update, and INNER middleware,
+    which runs only after a handler has been MATCHED by filters. main.py
+    registers ChannelRequiredMiddleware with `.middleware()` — inner. So with no
+    handler bound to this callback data the router matched nothing, the
+    middleware never ran, and the button was answered by nobody: the user saw a
+    spinner and silence, and had to send /start again (a command that DOES have
+    a handler) before the bot noticed they had joined. That was the bug.
+
+    When the channel requirement is ON, the middleware intercepts first and this
+    body is unreachable. It runs only when the requirement has since been turned
+    off and someone presses a stale button — so it answers instead of leaving
+    them on the same spinner.
+    """
+    user = await get_or_create_user(cb.from_user.id, cb.from_user.username, cb.from_user.full_name)
+    required, channel_username = await ChannelRequiredMiddleware.is_required()
+    if required and not await ChannelRequiredMiddleware.can_access(cb.bot, cb.from_user.id, channel_username):
+        await cb.answer("❌ هنوز عضو کانال نشده‌اید.", show_alert=True)
+        return
+    await ChannelRequiredMiddleware._render_join_success(cb, user)
