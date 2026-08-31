@@ -235,13 +235,21 @@ def cycle_tests():
         importlib.reload(guard)
         guard.XUIClient = FakePanel
 
+        async def cycle():
+            # Production cycles are a minute apart, so the shared snapshot has
+            # always expired. These run microseconds apart and re-script the
+            # panel between them, so the cached reading has to be dropped or the
+            # second cycle would decide on the first one's data.
+            guard.reset_snapshot()
+            return await guard.run_cycle(None)
+
         async def main_async():
             urls = await _seed(work, profiles=3, nodes_per=3)
             from core.database import set_setting, get_ip_guard_events, get_ip_guard_state
 
             print("\n12. switched off, it does nothing at all")
             FakePanel.reset()
-            r = await guard.run_cycle(None)
+            r = await cycle()
             check("reports itself off", r.get("enabled"), False)
             check("and makes no requests", len(FakePanel.CALLS), 0)
 
@@ -255,7 +263,7 @@ def cycle_tests():
             FakePanel.IPS = {u: {} for u in urls}
             FakePanel.ONLINE = {u: [] for u in urls}
             FakePanel.reset()
-            await guard.run_cycle(None)
+            await cycle()
             check("one bulk read per server", FakePanel.count("bulk_ips"), len(urls))
             check("one online check per server", FakePanel.count("onlines"), len(urls))
             check("no per-client reads", FakePanel.count("per_email"), 0)
@@ -265,7 +273,7 @@ def cycle_tests():
             # The claim being protected: cost is per SERVER, not per subscription.
             # If this ever becomes per-node it is 3117 requests a minute.
             FakePanel.reset()
-            await guard.run_cycle(None)
+            await cycle()
             check("adding customers does not add requests", len(FakePanel.CALLS), quiet)
 
             print("\n14. one busy customer is confirmed before anything happens")
@@ -278,10 +286,10 @@ def cycle_tests():
             }}
             FakePanel.ONLINE[urls[0]] = ["sub0_n0"]
             FakePanel.reset()
-            await guard.run_cycle(None)   # strike 1
+            await cycle()   # strike 1
             check("no per-client read on a non-deciding cycle", FakePanel.count("per_email"), 0)
             FakePanel.reset()
-            await guard.run_cycle(None)   # strike 2 — the deciding one
+            await cycle()   # strike 2 — the deciding one
             check("now it confirms against the honest timestamps",
                   FakePanel.count("per_email") > 0, True)
             check("and only for the suspect's own nodes", FakePanel.count("per_email"), 1)
@@ -293,8 +301,8 @@ def cycle_tests():
                 f"91.99.1.{i}": now for i in range(1, 8)
             }}
             FakePanel.reset()
-            await guard.run_cycle(None)
-            await guard.run_cycle(None)
+            await cycle()
+            await cycle()
             ev = await get_ip_guard_events(10)
             kinds = [e["kind"] for e in ev]
             check("the first action is a warning", kinds[:1], ["warned"])
@@ -305,8 +313,8 @@ def cycle_tests():
             await db.save_ip_guard_state(1, last_warned_at=int(time.time()) - 120,
                                          strikes=int(st["strikes"] or 0))
             FakePanel.reset()
-            await guard.run_cycle(None)
-            await guard.run_cycle(None)
+            await cycle()
+            await cycle()
             ev = await get_ip_guard_events(10)
             check("then it cuts", "cut" in [e["kind"] for e in ev], True)
             check("with one disable per server the customer is on",
@@ -319,7 +327,7 @@ def cycle_tests():
             await db.save_ip_guard_state(1, penalty_until=int(time.time()) - 1)
             FakePanel.IPS[urls[0]] = {}
             FakePanel.reset()
-            await guard.run_cycle(None)
+            await cycle()
             check("it switches the customer back on", FakePanel.count("enable"), 3)
             st = await get_ip_guard_state(1)
             check("and the cut is cleared", int(st["penalty_until"]), 0)
@@ -331,7 +339,7 @@ def cycle_tests():
                                                   for i in range(1, 9)}}
             FakePanel.reset()
             for _ in range(6):
-                await guard.run_cycle(None)
+                await cycle()
             check("no client was ever disabled", FakePanel.count("disable"), 0)
             ev = await get_ip_guard_events(20)
             check("but the evidence is recorded",
@@ -341,17 +349,65 @@ def cycle_tests():
             await set_setting("ip_limit_warn_only", "0")
             FakePanel.reset()
             FakePanel.FAIL_BULK = set(urls)   # reset() clears this, so arm it after
-            r = await guard.run_cycle(None)
+            r = await cycle()
             check("the cycle is skipped entirely", r.get("skipped"), True)
             check("and nothing is written to any panel",
                   FakePanel.count("disable") + FakePanel.count("enable"), 0)
+
+            print("\n21. many people asking costs one reading, not one each")
+            # This is the whole reason fleet_snapshot exists. A customer button
+            # in the bot, the same button in the mini-app, the owner checking a
+            # config, and the reseller API all want the same fact. Without
+            # sharing, twenty customers tapping it is a hundred requests.
+            guard.reset_snapshot()
+            now = int(time.time())
+            FakePanel.IPS[urls[0]] = {"sub0_n0": {"91.99.5.1": now, "91.99.5.2": now}}
+            FakePanel.reset()
+            first = await guard.live_connections(1, confirm=False)
+            after_one = FakePanel.count("bulk_ips")
+            check("the first ask reads every server once", after_one, len(urls))
+            for _ in range(20):
+                await guard.live_connections(1, confirm=False)
+                guard._LIVE_CACHE.clear()          # force the count, not the cache
+            check("twenty more asks read nothing again",
+                  FakePanel.count("bulk_ips"), after_one)
+            check("and the answer is the real count", first["count"], 2)
+
+            print("\n22. what the customer is shown is their own, and masked")
+            guard.reset_snapshot(); FakePanel.reset()
+            masked = await guard.live_connections(1, confirm=False)
+            check("addresses are masked by default",
+                  all("···" in p["ip"] for p in masked["places"]), True)
+            guard.forget_live(1)
+            full = await guard.live_connections(1, confirm=False, reveal=True)
+            check("the owner can see the real thing",
+                  any(p["ip"] == "91.99.5.1" for p in full["places"]), True)
+            check("both agree on the count", masked["count"], full["count"])
+
+            print("\n23. a half-answered fleet says so instead of undercounting")
+            guard.reset_snapshot(); FakePanel.reset()
+            FakePanel.FAIL_BULK = {urls[1], urls[2]}
+            partial = await guard.live_connections(1, confirm=False)
+            check("it reports the reading as partial", partial["partial"], True)
+            check("and names how many servers answered", partial["answered"], 1)
+            FakePanel.FAIL_BULK = set()
+
+            print("\n24. the customer's own allowance comes back with the count")
+            guard.reset_snapshot(); guard.forget_live(1)
+            await db.set_profile_ip_limit(1, 9)
+            r = await guard.live_connections(1, confirm=False)
+            check("the per-subscription override is used", r["limit"], 9)
+            await db.set_profile_ip_limit(1, 0)
+            guard.forget_live(1)
+            r = await guard.live_connections(1, confirm=False)
+            check("and zero falls back to the default", r["limit"], 5)
 
             print("\n19. turning it off releases everyone immediately")
             FakePanel.FAIL_BULK = set()
             await db.save_ip_guard_state(1, penalty_until=int(time.time()) + 3600, level=2)
             await set_setting("ip_limit_enabled", "0")
             FakePanel.reset()
-            r = await guard.run_cycle(None)
+            r = await cycle()
             check("the cut customer is restored", r.get("restored"), 1)
             check("with one enable per server", FakePanel.count("enable"), 3)
             check("and their ladder is forgotten", await get_ip_guard_state(1), None)

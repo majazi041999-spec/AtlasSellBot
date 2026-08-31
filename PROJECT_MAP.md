@@ -192,6 +192,26 @@ Caps how many distinct places connect to ONE subscription at the same time (defa
 - Tables: `ip_guard_state` (one row per subscription, sparse) and `ip_guard_events` (the evidence log the owner reads before arming it). Per-subscription override lives in `subscription_profiles.ip_limit` (0 = use the default).
 - Endpoints: `GET/POST /{S}/api/ipguard`, `POST /{S}/api/ipguard/release/{profile_id}`, `POST /{S}/api/ipguard/limit/{profile_id}`. NOT part of `_settings_snapshot` — this switches customers off, and an unrelated settings save must never be able to arm it. Bot: `adm_sub_iplimit:` on the admin sub panel (`_render_sub_panel` also shows the current allowance and any live penalty).
 
+## 6e. Live connection view + reseller sandbox
+Two things built on §6d's machinery. Covered by `tests/test_ip_guard.py` §21-24 and `tests/test_rep_sandbox.py`.
+
+**"Who is connected to my service right now"** — `core/ip_guard.py::live_connections(profile_id)`, exposed in four places at once: the customer's bot button (`sub_conns:`), the same button in the mini-app (`POST /app/api/services/connections`), the owner's view in the bot (`adm_sub_conns:`) and in the panel (`GET /{S}/api/subs/{id}/connections`, per-service on the user page), and the reseller API (`GET /api/rep/v1/services/{id}/connections`).
+- **One shared fleet snapshot serves all of them** (`fleet_snapshot`, 25s TTL, single lock with a re-check inside). Without it, a hundred customers tapping the button is five hundred requests. §21 asserts that twenty asks after the first cost zero extra reads — keep that test.
+- Customer- and reseller-facing views get MASKED addresses (`5.113.20.···`); only the owner's two views pass `reveal=True`. The count, timing and server are enough to act on a sharing complaint.
+- The owner's views pass `fresh=1` / call `reset_snapshot()`: they are pressed because the previous answer is being disputed, so they must not be served from a cache.
+- A panel that did not answer sets `partial`, and every surface says the number is a floor. Never present a partial reading as exact.
+- `render_connections()` is shared by the bot and mini-app so the wording — especially the mobile-IP caveat — cannot drift between them.
+
+**Measured on the live fleet (2026-08-31, one reading, 5/5 panels in 1.8s):** 107 of 244 active subscriptions had at least one connection. 63 of those had exactly ONE place; the median was 1. **20 were over the default allowance of 5**, with a long tail at 28, 35, 35, 37, 40 and 58 simultaneous places — numbers mobile churn cannot produce. Also note the raw, unfiltered view showed one subscription at 647 addresses: that is the panel's 30-minute retention, and it is exactly why the freshness filter is not optional.
+
+**The reseller sandbox** (`core/rep_sandbox.py`) — a key prefixed `atlas_test_` gets every endpoint against a scratch dataset that touches no wallet and no panel.
+- Diverted AFTER authentication, scope and rate-limit checks, so 401/403/429 are still reachable — a sandbox that skipped those would only be half a rehearsal.
+- **Deliberately real:** pricing, the wallet (play money, really debited, so `insufficient_funds` is reachable), usage that climbs with time, expiry and first-use.
+- **Deliberately fake and labelled:** links point at `sandbox.invalid` (RFC 6761, can never resolve), nothing is provisioned, and every response carries `"sandbox": true`.
+- **The one promise is "swap the key and change nothing".** `tests/test_rep_sandbox.py` §3 diffs the sandbox service object against the real `_service_payload` field for field — it already caught `create` returning a `nodes` key production does not. If you add a field to `_service_payload`, add it to `rep_sandbox.payload` too.
+- A tripwire in the test replaces `XUIClient` and fails the run if a sandbox call reaches a panel.
+- Sandbox keys do not count against `MAX_KEYS_PER_REP` (own ceiling of 1) — making someone revoke a working production key to get a test one would defeat the point. Issued from the bot's rep console (`rep:api_new_test`).
+
 ## 7. Pricing (`core/pricing.py`)
 `package_price_for_user(user_id, pkg)` → {base, final, discount, ...}. Rules:
 - Unlimited pkg (`is_unlimited` flag or traffic_gb<=0): base = user `unlimited_price` if >0 else pkg price. NEVER per-GB.

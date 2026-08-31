@@ -4050,6 +4050,35 @@ async def miniapp_service_rename(request: Request):
     return JSONResponse({"ok": True, "name": name})
 
 
+@app.post("/app/api/services/connections")
+async def miniapp_service_connections(request: Request):
+    """"How many devices are on my service right now" — the mini-app's version.
+
+    Same answer, same masking and the same shared fleet snapshot as the bot
+    button, so the two can never disagree in front of the same customer.
+    """
+    if await get_setting("miniapp_enabled", "0") != "1":
+        return JSONResponse({"error": "disabled"}, status_code=403)
+    user = await _miniapp_user(request)
+    if not user:
+        return JSONResponse({"error": "invalid_init_data"}, status_code=401)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    from core.database import get_subscription_profile
+    profile = await get_subscription_profile(int(body.get("profile_id") or 0))
+    if not profile or int(profile.get("user_id") or 0) != int(user["id"]):
+        return JSONResponse({"error": "not_your_service"}, status_code=403)
+    from core.ip_guard import live_connections
+    try:
+        live = await live_connections(int(profile["id"]), confirm=True, reveal=False)
+    except Exception as e:
+        logger.warning("miniapp connections failed: %s", e)
+        return JSONResponse({"ok": False}, status_code=502)
+    return JSONResponse(live)
+
+
 @app.post("/app/api/services/renew")
 async def miniapp_service_renew(request: Request):
     if await get_setting("miniapp_enabled", "0") != "1":
@@ -5942,6 +5971,33 @@ async def root():
 # this is a self-contained feature block with its own validation, and folding
 # fifteen more fields into the big settings form would mean every unrelated
 # save round-trips them too.
+
+@app.get(f"/{S}/api/subs/{{profile_id}}/connections")
+async def api_sub_connections(request: Request, profile_id: int):
+    """Who is connected to this one subscription, right now.
+
+    The owner's view, so addresses are NOT masked — this is the screen you open
+    when a customer says "it keeps disconnecting" or when you suspect a link has
+    been shared, and a partial address answers neither question.
+
+    Cheap regardless of how often it is opened: every panel is read at most once
+    every few seconds and that reading is shared with the guard worker, the bot,
+    the mini-app and the reseller API. See core/ip_guard.py.
+    """
+    if not _auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    from core.ip_guard import live_connections, forget_live, reset_snapshot
+    if request.query_params.get("fresh") == "1":
+        # An explicit "check again" from the owner skips every cache, because
+        # the reason they pressed it is that they do not believe the last answer.
+        reset_snapshot()
+    forget_live(int(profile_id))
+    try:
+        return JSONResponse(await live_connections(int(profile_id), confirm=True, reveal=True))
+    except Exception as e:
+        logger.warning("connections lookup failed for %s: %s", profile_id, e)
+        return JSONResponse({"ok": False, "error": str(e)[:300]}, status_code=502)
+
 
 @app.get(f"/{S}/api/ipguard")
 async def api_ipguard_get(request: Request):

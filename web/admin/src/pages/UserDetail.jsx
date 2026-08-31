@@ -53,6 +53,19 @@ export default function UserDetail({ uid, go }) {
   const saveRole = () => post("role", `/users/${uid}/admin_role`, { role });
   const saveRepBrand = () => post("repbrand", `/users/${uid}/rep_brand`, { brand: repBrand.current.value });
   const subAct = (id, kind, cm) => { if (cm && !confirm(cm)) return; post("sub" + id + kind, `/subs/profiles/${id}/${kind}`); };
+  // Live connection check, per service. This is the screen the owner is on when
+  // a customer says "it disconnected me" or when a shared link is suspected, so
+  // it asks the panels again rather than reusing any cached reading.
+  const [conns, setConns] = useState({});
+  const checkConns = async (id) => {
+    setConns((s) => ({ ...s, [id]: "loading" }));
+    try {
+      const r = await api.get(`/api/subs/${id}/connections?fresh=1`);
+      setConns((s) => ({ ...s, [id]: r }));
+    } catch (e) {
+      setConns((s) => ({ ...s, [id]: { ok: false } }));
+    }
+  };
   const cfgAct = (id, kind, cm) => { if (cm && !confirm(cm)) return; post("cfg" + id + kind, `/configs/${id}/${kind}`); };
   const copy = (url) => navigator.clipboard?.writeText(url).then(() => toast("کپی شد ✅"));
 
@@ -141,6 +154,8 @@ export default function UserDetail({ uid, go }) {
                     <div className="muted tiny">{gb(p.used_bytes)}/{p.traffic_gb || "∞"}GB ({p.used_pct}%) · {p.days_left < 0 ? "بدون انقضا" : `${p.days_left} روز`}</div>
                   </div>
                   <div className="row" style={{ gap: 5, flexWrap: "wrap" }}>
+                    <button className="btn xs" title="اتصال‌های زنده"
+                            onClick={() => checkConns(p.id)}>📶</button>
                     <button className="btn xs" onClick={() => copy(p.url)}>🔗</button>
                     <button className="btn xs" onClick={() => setEditSub(p)}>✏️</button>
                     <button className="btn xs" onClick={() => subAct(p.id, "toggle")}>{p.is_active ? "🔴" : "🟢"}</button>
@@ -150,6 +165,42 @@ export default function UserDetail({ uid, go }) {
                   </div>
                 </div>
                 <div style={{ height: 4, background: "rgba(255,255,255,.07)", borderRadius: 3, marginTop: 7, overflow: "hidden" }}><div style={{ width: `${p.used_pct}%`, height: "100%", background: p.used_pct > 85 ? "#f43f5e" : "var(--p2)" }} /></div>
+                {conns[p.id] && (
+                  <div style={{ marginTop: 8, padding: "8px 10px", borderRadius: 10,
+                                background: "rgba(124,111,255,.07)", border: "1px solid var(--line)" }}>
+                    {conns[p.id] === "loading" && <span className="muted tiny">در حال بررسی…</span>}
+                    {conns[p.id] !== "loading" && !conns[p.id].ok && (
+                      <span className="muted tiny">الان نمی‌شود خواند.</span>
+                    )}
+                    {conns[p.id] !== "loading" && conns[p.id].ok && (
+                      <>
+                        <div className="row between" style={{ gap: 8, flexWrap: "wrap" }}>
+                          <b style={{ fontSize: ".85rem" }}>
+                            {conns[p.id].count === 0 ? "هیچ اتصالی نیست"
+                              : `${conns[p.id].count} مکان متصل`}
+                            {conns[p.id].limit ? ` (سقف ${conns[p.id].limit})` : ""}
+                          </b>
+                          <span className="row" style={{ gap: 6 }}>
+                            {conns[p.id].limit && conns[p.id].count > conns[p.id].limit
+                              ? <span className="badge b-red">بیش از سقف</span> : null}
+                            <button className="btn xs" onClick={() => checkConns(p.id)}>↻</button>
+                          </span>
+                        </div>
+                        {(conns[p.id].places || []).map((pl, i) => (
+                          <div key={i} className="muted tiny mono" dir="ltr" style={{ marginTop: 3 }}>
+                            {pl.ip} · {pl.seconds_ago < 30 ? "now" : pl.seconds_ago + "s ago"}
+                            {pl.server ? " · " + pl.server : ""}
+                          </div>
+                        ))}
+                        {conns[p.id].partial && (
+                          <div className="muted tiny" style={{ marginTop: 4 }}>
+                            ⚠️ {conns[p.id].answered} از {conns[p.id].servers} سرور جواب داد — عدد کمینه است.
+                          </div>
+                        )}
+                      </>
+                    )}
+                  </div>
+                )}
               </div>
             ))}
           </div>

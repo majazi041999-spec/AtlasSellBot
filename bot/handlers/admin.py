@@ -1440,6 +1440,46 @@ async def adm_sub_edit_duration(msg: Message, state: FSMContext):
     await _render_sub_panel(sent, pid)
 
 
+@router.callback_query(F.data.startswith("adm_sub_conns:"))
+async def adm_sub_connections(cb: CallbackQuery):
+    """The owner's live check on one subscription — full addresses, no cache.
+
+    Pressed because somebody is disputing something, so it deliberately skips
+    every cached reading and asks the panels again: the previous answer is the
+    one being questioned.
+    """
+    if not is_admin(cb.from_user.id):
+        return
+    pid = int(cb.data.split(":")[1])
+    profile = await get_subscription_profile(pid)
+    if not profile:
+        await cb.answer("یافت نشد", show_alert=True)
+        return
+    try:
+        await cb.answer("در حال بررسی…")
+    except Exception:
+        pass
+    from core.ip_guard import live_connections, render_connections, forget_live, reset_snapshot
+    reset_snapshot()
+    forget_live(pid)
+    try:
+        live = await live_connections(pid, confirm=True, reveal=True)
+    except Exception as e:
+        logger.warning("admin connection check failed pid=%s: %s", pid, e)
+        live = {"ok": False}
+    limit_note = ""
+    own = int(profile.get("ip_limit") or 0)
+    if own:
+        limit_note = f"\n\n(سقف اختصاصی این ساب: {own})"
+    await cb.message.answer(
+        render_connections(live, reveal=True,
+                           name=(profile.get("name") or profile.get("email") or "")) + limit_note,
+        parse_mode=None,
+        reply_markup=adm_sub_panel_kb(pid, bool(int(profile.get("is_active") or 0)),
+                                      int(profile.get("user_id") or 0)),
+    )
+
+
 @router.callback_query(F.data.startswith("adm_sub_iplimit:"))
 async def adm_sub_iplimit_start(cb: CallbackQuery, state: FSMContext):
     """Per-subscription override for the concurrent-connection allowance.

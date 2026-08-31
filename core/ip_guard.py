@@ -529,6 +529,252 @@ async def _notify(bot, telegram_id: int, text: str) -> None:
         logger.debug("ip guard: could not message %s: %s", telegram_id, e)
 
 
+# ------------------------------------------------- the shared fleet snapshot
+
+# One reading of "who is connected where", shared by every caller: the guard's
+# own cycle, a customer tapping "my connections" in the bot or the mini-app, the
+# owner checking one config, and the reseller API.
+#
+# Without this, each of those would open its own five requests, and a page that
+# refreshes would multiply them by every viewer. With it, the fleet is read at
+# most once per _SNAPSHOT_TTL no matter how many people ask, and a customer who
+# taps the button just after a guard cycle is answered from memory for free.
+_SNAPSHOT: Dict[int, tuple] = {}          # server_id -> (fetched_at, {email: {ip: ts}}, online_count)
+_SNAPSHOT_LOCK = asyncio.Lock()
+_SNAPSHOT_TTL = 25
+
+# Per-subscription confirmed counts, so ten taps on the same service cost one
+# round of confirmation rather than ten.
+_LIVE_CACHE: Dict[int, tuple] = {}        # profile_id -> (computed_at, payload)
+_LIVE_TTL = 20
+
+
+async def fleet_snapshot(max_age: int = _SNAPSHOT_TTL,
+                         servers: Optional[List[Dict]] = None) -> tuple:
+    """(by_server_email, online_by_server, answered, total).
+
+    Refreshes only the servers whose cached reading is older than `max_age`.
+    Held under one lock, and the age is re-checked inside it, so a burst of
+    simultaneous callers produces ONE fetch, not one each.
+    """
+    servers = servers if servers is not None else await get_servers(active_only=True)
+    now = time.time()
+    stale = [s for s in servers
+             if now - float(_SNAPSHOT.get(int(s["id"]), (0,))[0] or 0) >= max(0, max_age)]
+    if stale:
+        async with _SNAPSHOT_LOCK:
+            now = time.time()
+            stale = [s for s in stale
+                     if now - float(_SNAPSHOT.get(int(s["id"]), (0,))[0] or 0) >= max(0, max_age)]
+            if stale:
+                results = await asyncio.gather(*(_fetch_server_ips(s) for s in stale),
+                                               return_exceptions=True)
+                for r in results:
+                    if isinstance(r, BaseException) or not isinstance(r, tuple):
+                        continue
+                    sid, ips, online = r
+                    if ips is None:
+                        # Keep the previous reading rather than replacing it with
+                        # nothing: one failed poll must not read as "everybody
+                        # disconnected". Its age keeps growing, so `partial`
+                        # below will start reporting it as unknown.
+                        continue
+                    _SNAPSHOT[sid] = (time.time(), ips, online)
+
+    by_server: Dict[int, Dict[str, Dict[str, int]]] = {}
+    online_by_server: Dict[int, int] = {}
+    answered = 0
+    cutoff = time.time() - max(_SNAPSHOT_TTL, max_age) * 3
+    for s in servers:
+        sid = int(s["id"])
+        entry = _SNAPSHOT.get(sid)
+        if not entry or entry[0] < cutoff:
+            continue
+        answered += 1
+        by_server[sid] = entry[1]
+        online_by_server[sid] = entry[2]
+    return by_server, online_by_server, answered, len(servers)
+
+
+def _mask_ip(ip: str) -> str:
+    """Enough to tell two places apart, not enough to be an address book.
+
+    The customer sees their own connections, which is fine, but a support
+    screenshot or a forwarded message should not carry a full address around.
+    """
+    if ":" in ip:
+        head = ip.split(":")[:3]
+        return ":".join(head) + ":···"
+    parts = ip.split(".")
+    return ".".join(parts[:3]) + ".···" if len(parts) == 4 else ip
+
+
+async def live_connections(profile_id: int, *, confirm: bool = True,
+                           reveal: bool = False, max_age: int = _LIVE_TTL) -> Dict:
+    """How many distinct places are connected to ONE subscription right now.
+
+    `confirm` re-checks the candidate addresses against the per-email endpoint,
+    which is what tells a live connection apart from one xray has not reaped yet
+    — see the module docstring. `reveal` returns full addresses (owner-facing)
+    rather than masked ones (customer-facing).
+
+    Never raises: a panel that will not answer comes back as `partial` with the
+    servers that did answer, because "we could not reach two of five servers" is
+    a useful thing to show and a crash is not.
+    """
+    pid = int(profile_id)
+    hit = _LIVE_CACHE.get(pid)
+    if hit and (time.time() - hit[0]) < max(0, max_age):
+        payload = dict(hit[1])
+        payload["cached"] = True
+        return payload
+
+    cfg = await _cfg()
+    fresh = _int(cfg, "ip_limit_fresh_seconds", 20, 1800)
+    active_seconds = _int(cfg, "ip_limit_active_seconds", 30, 1800)
+    v4 = _int(cfg, "ip_limit_ipv4_bits", 8, 32)
+    v6 = _int(cfg, "ip_limit_ipv6_bits", 16, 128)
+    default_limit = _int(cfg, "ip_limit_default", 1, 1000)
+
+    rows = {r["profile_id"]: r for r in await get_ip_guard_profile_nodes()}
+    row = rows.get(pid)
+    now = int(time.time())
+    if not row:
+        return {"ok": False, "count": 0, "places": [], "partial": True,
+                "checked_at": now, "reason": "no_active_nodes"}
+
+    servers = await get_servers(active_only=True)
+    names = {int(s["id"]): (s.get("name") or f"#{s['id']}") for s in servers}
+    by_server, _online, answered, total = await fleet_snapshot(_SNAPSHOT_TTL, servers)
+
+    # Candidates from the shared snapshot: cheap, and usually already in memory.
+    candidates: Dict[str, tuple] = {}          # ip -> (last_seen, server_id)
+    suspects: Dict[int, List[str]] = {}
+    for sid, email in row["nodes"]:
+        m = (by_server.get(sid) or {}).get(email)
+        if not m:
+            continue
+        hot = False
+        for ip, ts in m.items():
+            if int(ts or 0) < now - fresh:
+                continue
+            hot = True
+            if int(ts or 0) > candidates.get(ip, (0, 0))[0]:
+                candidates[ip] = (int(ts), sid)
+        if hot:
+            suspects.setdefault(sid, []).append(email)
+
+    servers_by_id = {int(s["id"]): s for s in servers}
+    if confirm and suspects:
+        confirmed_ips: Dict[str, tuple] = {}
+        for sid, emails in suspects.items():
+            server = servers_by_id.get(sid)
+            if not server:
+                continue
+            cli = XUIClient(server["url"], server["username"], server["password"],
+                            server.get("sub_path") or "", server.get("api_token", "") or "")
+            try:
+                for email in emails:
+                    try:
+                        m = await asyncio.wait_for(cli.get_client_ips(email), timeout=12)
+                    except Exception:
+                        m = None
+                    if not m:
+                        continue
+                    for ip, ts in m.items():
+                        if int(ts or 0) < now - active_seconds:
+                            continue
+                        if int(ts or 0) > confirmed_ips.get(ip, (0, 0))[0]:
+                            confirmed_ips[ip] = (int(ts), sid)
+            finally:
+                await cli.close()
+        if confirmed_ips:
+            candidates = confirmed_ips
+
+    groups: Dict[str, tuple] = {}
+    for ip, (ts, sid) in candidates.items():
+        key = group_key(ip, v4, v6)
+        if not key:
+            continue
+        if ts > groups.get(key, (0,))[0]:
+            groups[key] = (ts, ip, sid)
+
+    places = [
+        {"ip": ip if reveal else _mask_ip(ip),
+         "last_seen": ts,
+         "seconds_ago": max(0, now - ts),
+         "server": names.get(sid, "")}
+        for _k, (ts, ip, sid) in sorted(groups.items(), key=lambda kv: -kv[1][0])
+    ]
+    payload = {
+        "ok": True,
+        "count": len(places),
+        "places": places,
+        "limit": int(row.get("ip_limit") or 0) or default_limit,
+        "checked_at": now,
+        "partial": answered < total,
+        "answered": answered,
+        "servers": total,
+        "cached": False,
+    }
+    _LIVE_CACHE[pid] = (time.time(), payload)
+    return payload
+
+
+def render_connections(live: dict, *, reveal: bool = False, name: str = "") -> str:
+    """The connection report, in Persian, for a customer or for the owner.
+
+    Shared by the bot's two buttons and the mini-app so the wording — and more
+    importantly the CAVEATS — cannot drift apart between them. The caveats are
+    the point: a raw number here invites two wrong conclusions, that a changing
+    mobile IP means someone is stealing the account, and that a partial reading
+    means nobody is connected.
+    """
+    if not live.get("ok"):
+        return "الان نمی‌شود وضعیت اتصال را خواند. چند لحظه بعد دوباره امتحان کن."
+
+    count = int(live.get("count") or 0)
+    limit = int(live.get("limit") or 0)
+    head = f"📶 اتصال‌های همین لحظه{(' — ' + name) if name else ''}\n━━━━━━━━━━━━━━━━━━\n"
+
+    if count == 0:
+        body = "هیچ دستگاهی همین حالا متصل نیست.\n"
+    else:
+        over = limit and count > limit
+        body = (f"{'⚠️ ' if over else ''}{count} مکان متصل است"
+                + (f" (سقف مجاز: {limit})" if limit else "") + "\n\n")
+        for i, p in enumerate(live.get("places") or [], 1):
+            ago = int(p.get("seconds_ago") or 0)
+            when = "همین الان" if ago < 30 else (f"{ago} ثانیه پیش" if ago < 90 else f"{ago // 60} دقیقه پیش")
+            srv = f" · {p['server']}" if p.get("server") else ""
+            body += f"{i}. {p.get('ip', '')}{srv} — {when}\n"
+
+    tail = ""
+    if live.get("partial"):
+        tail += (f"\n⚠️ فقط {live.get('answered')} سرور از {live.get('servers')} جواب داد، "
+                 "پس این عدد کمینه است و ممکن است بیشتر باشد.\n")
+    tail += ("\nℹ️ ملاک، اتصال هم‌زمان است. اگر با اینترنت همراه هستی و آی‌پی‌ات عوض می‌شود، "
+             "باز هم یک مکان حساب می‌شوی — آی‌پی قبلی چون دیگر ترافیکی ندارد شمرده نمی‌شود.")
+    if not reveal:
+        tail += "\nبخشی از آدرس‌ها برای حفظ حریم خصوصی پنهان شده است."
+    return head + body + tail
+
+
+def forget_live(profile_id: int) -> None:
+    """Drop the cached reading — used right after we change something."""
+    _LIVE_CACHE.pop(int(profile_id), None)
+
+
+def reset_snapshot() -> None:
+    """Forget every cached reading and force the next caller to go to the panels.
+
+    For a deliberate "check right now" from the owner, and for tests, which move
+    through several scenarios faster than any real poll interval.
+    """
+    _SNAPSHOT.clear()
+    _LIVE_CACHE.clear()
+
+
 async def confirm_active(servers_by_id: Dict[int, Dict], nodes: Sequence[Tuple[int, str]],
                          suspect_emails_by_server: Dict[int, List[str]], now: int,
                          active_seconds: int, v4_bits: int, v6_bits: int,
@@ -650,22 +896,19 @@ async def run_cycle(bot=None) -> Dict:
     if not profiles or not servers:
         return {"enabled": True, "profiles": len(profiles), "servers": len(servers)}
 
-    # --- observe: one login + two requests per server, all servers at once
-    results = await asyncio.gather(*(_fetch_server_ips(s) for s in servers),
-                                   return_exceptions=True)
+    # --- observe: one login + two requests per server, all servers at once.
+    # Goes through the shared snapshot so this reading also serves every
+    # customer who taps "my connections" for the next few seconds, instead of
+    # each of them opening their own five requests. max_age is a third of the
+    # poll so the cycle always works on something it just fetched.
+    by_server_email, online_by_server, answered, _total = await fleet_snapshot(
+        max(5, _int(cfg, "ip_limit_poll_seconds", 15, 3600) // 3), servers)
     by_email: Dict[str, Dict[str, int]] = {}
-    by_server_email: Dict[int, Dict[str, Dict[str, int]]] = {}
-    answered = blind = 0
+    blind = 0
     blind_names: List[str] = []
-    for r in results:
-        if isinstance(r, BaseException) or not isinstance(r, tuple):
-            continue
-        sid, ips, online = r
-        if ips is None:
-            continue
-        answered += 1
+    for sid, ips in by_server_email.items():
+        online = int(online_by_server.get(sid) or 0)
         fresh_emails = 0
-        by_server_email[sid] = ips
         for email, m in ips.items():
             bucket = by_email.setdefault(email, {})
             for ip, ts in m.items():

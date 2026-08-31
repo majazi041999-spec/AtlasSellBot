@@ -967,6 +967,38 @@ async def sub_show(cb: CallbackQuery):
     await cb.answer()
 
 
+@router.callback_query(F.data.startswith("sub_conns:"))
+async def sub_connections(cb: CallbackQuery):
+    """"How many devices are on my service right now" — the customer's own view.
+
+    Answered from the shared fleet snapshot, so a hundred customers tapping this
+    costs the panels one reading between them rather than a hundred. Addresses
+    come back masked: it is their own connection list, but a screenshot of it
+    travels further than they expect.
+    """
+    user = await get_or_create_user(cb.from_user.id, cb.from_user.username, cb.from_user.full_name)
+    pid = int(cb.data.split(":")[1])
+    profile = await _owned_subscription_for_user(user["id"], pid)
+    if not profile:
+        await cb.answer("این ساب برای شما پیدا نشد.", show_alert=True)
+        return
+    try:
+        await cb.answer("در حال بررسی…")
+    except Exception:
+        pass
+    from core.ip_guard import live_connections, render_connections
+    try:
+        live = await live_connections(pid, confirm=True, reveal=False)
+    except Exception:
+        live = {"ok": False}
+    await cb.message.answer(
+        render_connections(live, reveal=False,
+                           name=(profile.get("name") or "").strip()),
+        parse_mode=None,
+        reply_markup=subscription_detail_kb(pid),
+    )
+
+
 @router.callback_query(F.data.startswith("sub_rename:"))
 async def sub_rename_start(cb: CallbackQuery, state: FSMContext):
     user = await get_or_create_user(cb.from_user.id, cb.from_user.username, cb.from_user.full_name)
@@ -2183,13 +2215,18 @@ async def _rep_api_screen(cb: CallbackQuery, flash: str = ""):
         "",
     ]
     if keys:
-        lines.append(f"🔑 *کلیدهای فعال تو ({len(keys)} از {rep_api_core.MAX_KEYS_PER_REP}):*")
+        live = [k for k in keys if not int(k.get("is_sandbox") or 0)]
+        lines.append(f"🔑 *کلیدهای فعال تو ({len(live)} از {rep_api_core.MAX_KEYS_PER_REP} کلید اصلی):*")
         for k in keys:
             used = int(k.get("last_used_at") or 0)
             when = _jalali_short(used) if used else "هنوز استفاده نشده"
-            lines.append(f"• `{k.get('prefix')}…` — {int(k.get('calls') or 0)} درخواست — آخرین: {when}")
+            tag = " 🧪 *تستی*" if int(k.get("is_sandbox") or 0) else ""
+            lines.append(f"• `{k.get('prefix')}…`{tag} — {int(k.get('calls') or 0)} درخواست — آخرین: {when}")
     else:
-        lines.append("🔑 هنوز کلیدی نساخته‌ای. با دکمه‌ی زیر بساز.")
+        lines.append("🔑 هنوز کلیدی نساخته‌ای. با دکمه‌های زیر بساز.")
+    lines.append("")
+    lines.append("🧪 *اول با کلید تستی شروع کن:* همه‌ی مسیرها کار می‌کنند، ولی نه پولی کم می‌شود "
+                 "و نه کانفیگی روی سرورها ساخته می‌شود. وقتی کدت آماده شد فقط کلید را عوض کن.")
     lines.append("")
     lines.append("⚠️ کلید فقط *یک بار* هنگام ساخت نمایش داده می‌شود؛ جای امنی ذخیره‌اش کن.")
     if not docs_url:
@@ -2256,6 +2293,52 @@ async def rep_api_new(cb: CallbackQuery):
         reply_markup=rep_api_key_kb(key, docs_url), parse_mode="Markdown",
     )
     await cb.answer("کلید ساخته شد ✅")
+
+
+@router.callback_query(F.data == "rep:api_new_test")
+async def rep_api_new_test(cb: CallbackQuery):
+    """Issue the free test key.
+
+    Its own button and its own message, kept deliberately far away from the
+    live-key flow: the whole value of a sandbox is that nobody can confuse the
+    two, and a shared "which kind?" prompt is exactly how that confusion starts.
+    """
+    from core import rep_api as rep_api_core
+    from core.multi_subscription import public_base_url_async
+    user = await get_or_create_user(cb.from_user.id)
+    if not user.get("is_wholesale", 0):
+        await cb.answer("فقط برای نمایندگان.", show_alert=True)
+        return
+
+    result = await rep_api_core.create_key(user["id"], name=f"sandbox:{cb.from_user.id}",
+                                           sandbox=True)
+    if not result.get("ok"):
+        if result.get("error") == "key_limit_reached":
+            await cb.answer("قبلاً یک کلید تستی داری. اول همان را لغو کن.", show_alert=True)
+        else:
+            await cb.answer("ساخت کلید تستی ناموفق بود.", show_alert=True)
+        return
+
+    key = result["key"]
+    base = (await public_base_url_async() or "").rstrip("/")
+    docs_url = await _rep_api_docs_url()
+    await cb.message.answer(
+        "🧪 *کلید تستی ساخته شد*\n\n"
+        f"`{key}`\n\n"
+        "با این کلید می‌توانی *همه‌ی* مسیرهای API را امتحان کنی:\n"
+        "• هیچ پولی از کیف پولت کم نمی‌شود\n"
+        "• هیچ کانفیگی روی سرورها ساخته نمی‌شود\n"
+        "• یک کیف پول تستی با موجودی فرضی داری تا خطای کمبود موجودی را هم تست کنی\n"
+        "• لینک‌های ساب به `sandbox.invalid` اشاره می‌کنند و عمداً کار نمی‌کنند\n\n"
+        f"🌐 همان آدرس همیشگی:\n`{base}/api/rep/v1`\n\n"
+        "امتحان کن:\n"
+        f"`curl -H \"Authorization: Bearer {key}\" {base}/api/rep/v1/sandbox`\n\n"
+        "پاک‌کردن داده‌های تستی و شارژ دوباره:\n"
+        f"`curl -X POST -H \"Authorization: Bearer {key}\" {base}/api/rep/v1/sandbox/reset`\n\n"
+        "✅ وقتی کدت آماده شد، *فقط کلید را* با کلید اصلی عوض کن — بقیه‌ی چیزها دقیقاً یکی است.",
+        reply_markup=rep_api_key_kb(key, docs_url), parse_mode="Markdown",
+    )
+    await cb.answer("کلید تستی ساخته شد 🧪")
 
 
 @router.callback_query(F.data.startswith("rep:api_del:"))

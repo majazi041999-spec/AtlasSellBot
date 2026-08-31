@@ -262,6 +262,19 @@ function Home({ data, go }) {
 }
 
 function Services({ go, balance, onBalance, isRep }) {
+  // "how many devices are on my service right now". Kept next to the service
+  // card rather than on its own screen: the question is always about ONE
+  // service, and it is asked in the same breath as "why is it slow".
+  const [conns, setConns] = useState({});      // profile_id -> payload | "loading"
+  const loadConns = async (id) => {
+    setConns((p) => ({ ...p, [id]: "loading" }));
+    try {
+      const r = await api("services/connections", { profile_id: id });
+      setConns((p) => ({ ...p, [id]: r }));
+    } catch (e) {
+      setConns((p) => ({ ...p, [id]: { ok: false } }));
+    }
+  };
   const [list, setList] = useState(null);
   const [renew, setRenew] = useState(null);   // {order_id, payment, name}
   const [planFor, setPlanFor] = useState(null); // service awaiting plan choice
@@ -393,7 +406,49 @@ function Services({ go, balance, onBalance, isRep }) {
                 <button className="btn-soft sm" onClick={() => copy(s.sub_url)}>📋 کپی لینک</button>
                 <button className="btn-soft sm" onClick={() => setEditing(s.id)}>✏️ نام</button>
                 <button className="btn-soft sm" onClick={() => { haptic("selection"); setExpanded(expanded === s.id ? null : s.id); }}>🖥 سرورها</button>
+                <button className="btn-soft sm" onClick={() => { haptic("selection"); loadConns(s.id); }}>
+                  📶 دستگاه‌های متصل
+                </button>
                 <button className="btn-primary sm" disabled={busy === s.id} onClick={() => openRenew(s)}>♻️ تمدید</button>
+              </div>
+            )}
+            {conns[s.id] && (
+              <div className="node-list">
+                {conns[s.id] === "loading" && <p className="muted tiny" style={{ margin: 0 }}>در حال بررسی…</p>}
+                {conns[s.id] !== "loading" && !conns[s.id].ok && (
+                  <p className="muted tiny" style={{ margin: 0 }}>الان نمی‌شود وضعیت اتصال را خواند.</p>
+                )}
+                {conns[s.id] !== "loading" && conns[s.id].ok && (
+                  <>
+                    <div className="node-top" style={{ marginBottom: 6 }}>
+                      <span className="node-dot" style={{ background: conns[s.id].limit && conns[s.id].count > conns[s.id].limit ? "#fb7185" : "#34d399" }} />
+                      <span className="node-lbl">
+                        {conns[s.id].count === 0
+                          ? "هیچ دستگاهی الان متصل نیست"
+                          : `${conns[s.id].count} مکان متصل است${conns[s.id].limit ? ` (سقف: ${conns[s.id].limit})` : ""}`}
+                      </span>
+                    </div>
+                    {(conns[s.id].places || []).map((pl, i) => (
+                      <div className="node-card" key={i}>
+                        <div className="node-uuid" dir="ltr">{pl.ip}</div>
+                        <div className="muted tiny">
+                          {pl.server ? pl.server + " · " : ""}
+                          {pl.seconds_ago < 30 ? "همین الان"
+                            : pl.seconds_ago < 90 ? `${pl.seconds_ago} ثانیه پیش`
+                            : `${Math.round(pl.seconds_ago / 60)} دقیقه پیش`}
+                        </div>
+                      </div>
+                    ))}
+                    {conns[s.id].partial && (
+                      <p className="muted tiny" style={{ margin: "6px 0 0" }}>
+                        ⚠️ فقط {conns[s.id].answered} سرور از {conns[s.id].servers} جواب داد؛ این عدد کمینه است.
+                      </p>
+                    )}
+                    <p className="muted tiny" style={{ margin: "6px 0 0", lineHeight: 1.9 }}>
+                      ملاک، اتصال هم‌زمان است. با اینترنت همراه، تغییر آی‌پی اتصال جدید حساب نمی‌شود.
+                    </p>
+                  </>
+                )}
               </div>
             )}
             {expanded === s.id && (

@@ -37,6 +37,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
 from core import rep_api
+from core import rep_sandbox as sandbox
 from core.client_app import client_ip
 from core.database import (
     add_user_balance,
@@ -390,6 +391,23 @@ async def _idem_done(ctx: Dict, idem_key: str, response: JSONResponse, payload: 
     return response
 
 
+# ═══════════════════════════════ sandbox ═════════════════════════════════════
+# A key whose prefix is atlas_test_ never reaches a wallet or a panel. Every
+# endpoint below diverts it to core/rep_sandbox.py, AFTER the same
+# authentication, scope and rate-limit checks a live key faces — an integrator
+# has to be able to provoke 401, 403 and 429 too, or the sandbox is only half a
+# rehearsal. See core/rep_sandbox.py for what is deliberately real.
+
+def _is_sandbox(ctx: Dict) -> bool:
+    return bool(int((ctx.get("key") or {}).get("is_sandbox") or 0))
+
+
+def _sandbox_note(payload: Dict) -> Dict:
+    payload = dict(payload)
+    payload["sandbox"] = True
+    return payload
+
+
 # ═══════════════════════════════ endpoints ═══════════════════════════════════
 @router.get("/v1/ping")
 async def rep_ping(request: Request):
@@ -421,7 +439,8 @@ async def rep_me(request: Request):
             "telegram_id": int(user.get("telegram_id") or 0),
             "brand_name": (user.get("rep_brand_name") or "").strip(),
             "brand_hidden": bool(int(user.get("hide_brand") or 0)),
-            "balance": await get_user_balance(user["id"]),
+            "balance": (await sandbox.balance(int(key["id"]))
+                        if _is_sandbox(ctx) else await get_user_balance(user["id"])),
         },
         "pricing": {
             "price_per_gb": int(pricing.get("price_per_gb") or 0),
@@ -441,7 +460,9 @@ async def rep_me(request: Request):
             "prefix": key.get("prefix") or "",
             "scopes": [s for s in str(key.get("scopes") or "").split(",") if s],
             "created_at": int(key.get("created_at") or 0),
+            "sandbox": _is_sandbox(ctx),
         },
+        "sandbox": _is_sandbox(ctx),
     }, 200, ctx)
 
 
@@ -502,6 +523,15 @@ async def rep_services(request: Request):
         return err
     q = request.query_params
     page = max(1, _as_int(q.get("page"), 1))
+    if _is_sandbox(ctx):
+        rows = await sandbox.list_services(int(ctx["key"]["id"]))
+        page_ = max(1, _as_int(q.get("page"), 1))
+        per = max(1, min(100, _as_int(q.get("per_page"), 25)))
+        window = rows[(page_ - 1) * per: page_ * per]
+        return _json({"ok": True, "sandbox": True,
+                      "services": [sandbox.payload(r) for r in window],
+                      "pagination": {"page": page_, "per_page": per, "total": len(rows),
+                                     "pages": max(1, -(-len(rows) // per))}}, 200, ctx)
     per_page = max(1, min(100, _as_int(q.get("per_page"), 25)))
     sort = q.get("sort") if q.get("sort") in SERVICE_SORTS else "newest"
     filt = q.get("filter") if q.get("filter") in SERVICE_FILTERS else "all"
@@ -537,6 +567,12 @@ async def rep_service_detail(request: Request, profile_id: int):
     ctx, err = await authorize(request, "read")
     if err:
         return err
+    if _is_sandbox(ctx):
+        row = await sandbox.get_service(int(ctx["key"]["id"]), int(profile_id))
+        if not row:
+            return _err("service_not_found", "سرویسی با این شناسه پیدا نشد.", 404, ctx)
+        return _json({"ok": True, "sandbox": True,
+                      "service": sandbox.payload(row, with_nodes=True)}, 200, ctx)
     profile, err = await _profile_or_error(profile_id, ctx)
     if err:
         return err
@@ -561,14 +597,52 @@ async def rep_create_service(request: Request):
     ctx, err = await authorize(request, "write")
     if err:
         return err
-    gate = await _topup_gate(ctx)
-    if gate:
-        return gate
+    if not _is_sandbox(ctx):
+        # The minimum-topup rule is about real money, and a sandbox that refused
+        # to let a new rep try the API until they had paid would be backwards.
+        gate = await _topup_gate(ctx)
+        if gate:
+            return gate
 
     body = await _body(request)
     idem_key, replay = await _idem_start(request, ctx, "services.create", body)
     if replay:
         return replay
+
+    if _is_sandbox(ctx):
+        # Same plan resolution and the same pricing, so an integrator can hit
+        # both `insufficient_funds` and a bad package id here rather than
+        # discovering them with real money.
+        plan = await _resolve_plan(body, ctx["user"])
+        if plan.get("error"):
+            fail = _err_body(plan["error"], plan["message"])
+            return await _idem_done(ctx, idem_key, _json(fail, 400, ctx), fail)
+        count = max(1, min(MAX_BATCH, _as_int(body.get("count"), 1)))
+        names = body.get("names") if isinstance(body.get("names"), list) else []
+        made, failed = [], []
+        for i in range(count):
+            nm = _clean_name(names[i]) if i < len(names) else _clean_name(body.get("name"))
+            r = await sandbox.create_service(
+                int(ctx["key"]["id"]), name=nm or f"sandbox {i + 1}",
+                traffic_gb=float(plan["traffic_gb"]), duration_days=int(plan["duration_days"]),
+                price=int(plan["unit_price"]), package_id=int((plan.get("package") or {}).get("id") or 0),
+                starts_on_first_use=bool(body.get("starts_on_first_use")))
+            if r.get("ok"):
+                made.append(r["service"])
+            else:
+                failed.append(r)
+                break
+        if not made and failed:
+            f = failed[0]
+            fail = _err_body(f.get("error") or "sandbox_error",
+                             "موجودی کیف پول تستی کافی نیست. با POST /v1/sandbox/reset شارژش کن.")
+            return await _idem_done(ctx, idem_key, _json(fail, 402, ctx), fail)
+        payload = {"ok": True, "sandbox": True, "services": made,
+                   "created": len(made), "requested": count,
+                   "charged": sum(int(s.get("price") or 0) for s in []) or
+                              int(plan["unit_price"]) * len(made),
+                   "balance": await sandbox.balance(int(ctx["key"]["id"]))}
+        return await _idem_done(ctx, idem_key, _json(payload, 200, ctx), payload)
 
     try:
         plan = await _resolve_plan(body, ctx["user"])
@@ -699,17 +773,37 @@ async def rep_renew_service(request: Request, profile_id: int):
     ctx, err = await authorize(request, "write")
     if err:
         return err
-    gate = await _topup_gate(ctx)
-    if gate:
-        return gate
-    profile, err = await _profile_or_error(profile_id, ctx)
-    if err:
-        return err
+    if not _is_sandbox(ctx):
+        gate = await _topup_gate(ctx)
+        if gate:
+            return gate
+        profile, err = await _profile_or_error(profile_id, ctx)
+        if err:
+            return err
 
     body = await _body(request)
     idem_key, replay = await _idem_start(request, ctx, f"services.renew.{profile_id}", body)
     if replay:
         return replay
+
+    if _is_sandbox(ctx):
+        plan = await _resolve_plan(body, ctx["user"])
+        if plan.get("error"):
+            fail = _err_body(plan["error"], plan["message"])
+            return await _idem_done(ctx, idem_key, _json(fail, 400, ctx), fail)
+        r = await sandbox.renew_service(
+            int(ctx["key"]["id"]), int(profile_id),
+            duration_days=int(plan["duration_days"]), traffic_gb=float(plan["traffic_gb"]),
+            price=int(plan["unit_price"]))
+        if not r.get("ok"):
+            code = 404 if r.get("error") == "service_not_found" else 402
+            fail = _err_body(r.get("error") or "sandbox_error",
+                             "سرویس تستی پیدا نشد." if code == 404
+                             else "موجودی کیف پول تستی کافی نیست.")
+            return await _idem_done(ctx, idem_key, _json(fail, code, ctx), fail)
+        payload = {"ok": True, "sandbox": True, "service": r["service"],
+                   "charged": r["charged"], "balance": r["balance"]}
+        return await _idem_done(ctx, idem_key, _json(payload, 200, ctx), payload)
 
     try:
         plan = await _resolve_plan(body, ctx["user"])
@@ -787,10 +881,15 @@ async def rep_rename_service(request: Request, profile_id: int):
     ctx, err = await authorize(request, "write")
     if err:
         return err
+    name = _clean_name((await _body(request)).get("name"))
+    if _is_sandbox(ctx):
+        r = await sandbox.update_service(int(ctx["key"]["id"]), int(profile_id), name=name)
+        if not r.get("ok"):
+            return _err("service_not_found", "سرویس تستی پیدا نشد.", 404, ctx)
+        return _json({"ok": True, "sandbox": True, "id": int(profile_id), "name": name}, 200, ctx)
     profile, err = await _profile_or_error(profile_id, ctx)
     if err:
         return err
-    name = _clean_name((await _body(request)).get("name"))
     await update_subscription_profile(int(profile["id"]), name=name)
     return _json({"ok": True, "id": int(profile["id"]), "name": name}, 200, ctx)
 
@@ -799,6 +898,12 @@ async def _set_active(request: Request, profile_id: int, enabled: bool):
     ctx, err = await authorize(request, "write")
     if err:
         return err
+    if _is_sandbox(ctx):
+        r = await sandbox.update_service(int(ctx["key"]["id"]), int(profile_id),
+                                         is_active=1 if enabled else 0)
+        if not r.get("ok"):
+            return _err("service_not_found", "سرویس تستی پیدا نشد.", 404, ctx)
+        return _json({"ok": True, "sandbox": True, "service": r["service"]}, 200, ctx)
     profile, err = await _profile_or_error(profile_id, ctx)
     if err:
         return err
@@ -839,6 +944,13 @@ async def rep_revoke_service(request: Request, profile_id: int):
     ctx, err = await authorize(request, "write")
     if err:
         return err
+    if _is_sandbox(ctx):
+        r = await sandbox.revoke_service(int(ctx["key"]["id"]), int(profile_id))
+        if not r.get("ok"):
+            return _err("service_not_found", "سرویس تستی پیدا نشد.", 404, ctx)
+        return _json({"ok": True, "sandbox": True,
+                      "subscription_url": r["service"]["subscription_url"],
+                      "rotated_nodes": 0, "service": r["service"]}, 200, ctx)
     profile, err = await _profile_or_error(profile_id, ctx)
     if err:
         return err
@@ -868,12 +980,18 @@ async def rep_delete_service(request: Request, profile_id: int):
     ctx, err = await authorize(request, "write")
     if err:
         return err
-    profile, err = await _profile_or_error(profile_id, ctx)
-    if err:
-        return err
     if not bool((await _body(request)).get("confirm")):
         return _err("confirmation_required",
                     "برای حذف دائمی باید در بدنه‌ی درخواست confirm=true بفرستی.", 400, ctx)
+    if _is_sandbox(ctx):
+        r = await sandbox.delete_service(int(ctx["key"]["id"]), int(profile_id))
+        if not r.get("ok"):
+            return _err("service_not_found", "سرویس تستی پیدا نشد.", 404, ctx)
+        return _json({"ok": True, "sandbox": True, "id": int(profile_id),
+                      "removed_nodes": 0, "failed_nodes": 0}, 200, ctx)
+    profile, err = await _profile_or_error(profile_id, ctx)
+    if err:
+        return err
     result = await delete_subscription_profile_remote(int(profile["id"]))
     return _json({"ok": True, "id": int(profile["id"]),
                   "removed_nodes": int(result.get("deleted") or 0),
@@ -886,6 +1004,20 @@ async def rep_create_trial(request: Request):
     ctx, err = await authorize(request, "write")
     if err:
         return err
+    if _is_sandbox(ctx):
+        # The daily allowance is a real-money guard against giving away stock.
+        # There is no stock here, so the sandbox lets them exercise the call as
+        # often as they need to get their code right.
+        try:
+            gb = float(await get_setting("test_account_traffic_gb", "1") or 1)
+            days = int(await get_setting("test_account_duration_days", "1") or 1)
+        except (TypeError, ValueError):
+            gb, days = 1.0, 1
+        r = await sandbox.create_service(int(ctx["key"]["id"]), name="sandbox trial",
+                                         traffic_gb=gb, duration_days=days, price=0,
+                                         is_trial=True)
+        return _json({"ok": True, "sandbox": True, "service": r["service"],
+                      "charged": 0}, 200, ctx)
     if str(await get_setting("test_account_enabled", "1")) != "1":
         return _err("trial_disabled", "اکانت تست در حال حاضر غیرفعال است.", 403, ctx)
     try:
@@ -925,6 +1057,98 @@ async def rep_create_trial(request: Request):
         }, 201, ctx)
 
 
+@router.get("/v1/services/{profile_id}/connections")
+async def rep_service_connections(request: Request, profile_id: int):
+    """How many distinct places are connected to this service RIGHT NOW.
+
+    Simultaneous connections, not addresses-seen-today: an address counts only
+    while it still has a live connection, and one confirmed against the panel's
+    honest last-seen times rather than its 30-minute history. A customer on
+    mobile data whose IP keeps changing is one place, not five — see
+    core/ip_guard.py for why that distinction is the whole feature.
+
+    Cheap to call: every panel is read at most once every few seconds no matter
+    how many resellers (or customers, or panel pages) ask, because they all
+    share one snapshot. Still rate-limited like any other endpoint.
+
+    Addresses come back MASKED (`5.113.20.···`). The count, the timing and the
+    server are what you need to act on a sharing complaint; handing a third
+    party a list of end-user addresses over an API is not.
+    """
+    ctx, err = await authorize(request, "read")
+    if err:
+        return err
+    if _is_sandbox(ctx):
+        return _json(sandbox.connections(int(profile_id)), 200, ctx)
+    profile, err = await _profile_or_error(profile_id, ctx)
+    if err:
+        return err
+    from core.ip_guard import live_connections
+    try:
+        live = await live_connections(int(profile["id"]), confirm=True, reveal=False)
+    except Exception as e:
+        logger.warning("rep api: connections failed for %s: %s", profile_id, e)
+        return _err("upstream_unavailable",
+                    "الان نمی‌شود وضعیت اتصال را خواند. کمی بعد دوباره امتحان کن.", 503, ctx)
+    return _json({
+        "ok": True,
+        "service_id": int(profile["id"]),
+        "connections": live.get("count", 0),
+        "limit": live.get("limit", 0),
+        "over_limit": bool(live.get("limit") and live.get("count", 0) > live["limit"]),
+        "places": live.get("places", []),
+        "checked_at": live.get("checked_at"),
+        # True when a panel did not answer, so the count is a floor rather than
+        # the whole picture. Do not present it as exact when this is set.
+        "partial": bool(live.get("partial")),
+        "servers_answered": live.get("answered"),
+        "servers_total": live.get("servers"),
+    }, 200, ctx)
+@router.post("/v1/sandbox/reset")
+async def rep_sandbox_reset(request: Request):
+    """Wipe this sandbox key's scratch data and refill its play wallet.
+
+    Only a sandbox key may call it. A live key gets 403 rather than a quiet
+    no-op, because the one thing worse than a test endpoint is a test endpoint
+    someone believes they can point at production.
+    """
+    ctx, err = await authorize(request, "write")
+    if err:
+        return err
+    if not _is_sandbox(ctx):
+        return _err("not_a_sandbox_key",
+                    "این مسیر فقط با کلید تستی (atlas_test_) کار می‌کند.", 403, ctx)
+    return _json(await sandbox.reset(int(ctx["key"]["id"])), 200, ctx)
+
+
+@router.get("/v1/sandbox")
+async def rep_sandbox_info(request: Request):
+    """What this key is, and what the sandbox does and does not do.
+
+    Answers the first question every integrator has — "am I about to spend real
+    money?" — without them having to find out empirically.
+    """
+    ctx, err = await authorize(request, "read")
+    if err:
+        return err
+    on = _is_sandbox(ctx)
+    return _json({
+        "ok": True,
+        "sandbox": on,
+        "wallet": await sandbox.balance(int(ctx["key"]["id"])) if on else None,
+        "notes": ([
+            "این کلید تستی است. هیچ پولی کم نمی‌شود و هیچ کانفیگی روی سرورها ساخته نمی‌شود.",
+            "قیمت‌ها، سهمیه‌ها و کیف پول واقعی شبیه‌سازی می‌شوند تا خطای insufficient_funds را هم بتوانی تست کنی.",
+            "لینک‌های اشتراک به دامنه‌ی sandbox.invalid اشاره می‌کنند و هرگز کار نمی‌کنند.",
+            "برای پاک‌کردن داده‌ها و شارژ دوباره: POST /v1/sandbox/reset",
+            "وقتی کدت آماده شد، فقط کلید را با کلید اصلی عوض کن — بقیه چیزها یکی است.",
+        ] if on else [
+            "این کلید اصلی است و روی داده‌ی واقعی کار می‌کند.",
+            "برای تست بدون هزینه، از بخش نمایندگان در ربات یک کلید تستی بگیر (atlas_test_).",
+        ]),
+    }, 200, ctx)
+
+
 @router.get("/v1/wallet")
 async def rep_wallet(request: Request):
     """Balance plus recent movements, so a rep's bot can show its own ledger."""
@@ -932,6 +1156,14 @@ async def rep_wallet(request: Request):
     if err:
         return err
     limit = max(1, min(100, _as_int(request.query_params.get("limit"), 20)))
+    if _is_sandbox(ctx):
+        kid = int(ctx["key"]["id"])
+        return _json({"ok": True, "sandbox": True,
+                      "balance": await sandbox.balance(kid),
+                      "transactions": [{"amount": -int(o["amount"]), "kind": o["kind"],
+                                        "note": o.get("detail") or "",
+                                        "created_at": o["created_at"]}
+                                       for o in await sandbox.orders(kid, limit)]}, 200, ctx)
     txs = await get_wallet_transactions(ctx["user"]["id"], limit)
     return _json({
         "ok": True,
@@ -949,6 +1181,12 @@ async def rep_orders(request: Request):
     if err:
         return err
     limit = max(1, min(100, _as_int(request.query_params.get("limit"), 25)))
+    if _is_sandbox(ctx):
+        return _json({"ok": True, "sandbox": True, "orders": [{
+            "id": int(o["id"]), "status": "approved", "name": o.get("detail") or o["kind"],
+            "price": int(o["amount"]), "traffic_gb": 0.0, "duration_days": 0,
+            "count": 1, "created_at": o["created_at"], "approved_at": o["created_at"],
+        } for o in await sandbox.orders(int(ctx["key"]["id"]), limit)]}, 200, ctx)
     rows = await get_user_orders_full(ctx["user"]["id"], limit)
     return _json({"ok": True, "orders": [{
         "id": int(o["id"]),

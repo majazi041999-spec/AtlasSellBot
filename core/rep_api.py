@@ -58,6 +58,10 @@ from core.config import DB_PATH
 # The prefix is cosmetic but load-bearing for humans: it makes a leaked key
 # recognisable in a log or a paste, and lets secret scanners match on it.
 KEY_PREFIX = "atlas_rep_"
+# Sandbox keys read differently on sight, in a log line as much as in a
+# config file. A reseller who pastes the wrong one finds out immediately
+# rather than after their first real charge.
+KEY_PREFIX_SANDBOX = "atlas_test_"
 _KEY_BYTES = 32                 # → 43 url-safe chars
 _DISPLAY_PREFIX_LEN = len(KEY_PREFIX) + 8
 
@@ -88,7 +92,8 @@ CREATE TABLE IF NOT EXISTS rep_api_keys (
     last_used_at  INTEGER DEFAULT 0,
     last_ip       TEXT DEFAULT '',
     calls         INTEGER DEFAULT 0,
-    revoked_at    INTEGER DEFAULT 0
+    revoked_at    INTEGER DEFAULT 0,
+    is_sandbox    INTEGER DEFAULT 0   -- 1 = talks to core/rep_sandbox.py, never to a panel or a wallet
 );
 
 CREATE INDEX IF NOT EXISTS idx_rep_api_keys_user ON rep_api_keys(user_id);
@@ -115,6 +120,16 @@ async def ensure_schema(db) -> None:
         s = stmt.strip()
         if s:
             await db.execute(s)
+    # Older installs have rep_api_keys without the sandbox flag.
+    try:
+        async with db.execute("PRAGMA table_info(rep_api_keys)") as c:
+            cols = {r[1] for r in await c.fetchall()}
+        if "is_sandbox" not in cols:
+            await db.execute("ALTER TABLE rep_api_keys ADD COLUMN is_sandbox INTEGER DEFAULT 0")
+    except Exception:
+        pass
+    from core import rep_sandbox
+    await rep_sandbox.ensure_schema(db)
 
 
 # ── Key lifecycle ─────────────────────────────────────────────────────────────
@@ -176,28 +191,38 @@ def ip_allowed(allowlist: str, ip: str) -> bool:
 
 
 async def create_key(user_id: int, name: str = "", scopes: str = "read,write",
-                     ip_allowlist: str = "", rate_per_min: int = DEFAULT_RATE_PER_MIN) -> Dict:
-    """Issue a new key. The plaintext is returned ONCE, under ``key``."""
-    token = KEY_PREFIX + secrets.token_urlsafe(_KEY_BYTES)
+                     ip_allowlist: str = "", rate_per_min: int = DEFAULT_RATE_PER_MIN,
+                     sandbox: bool = False) -> Dict:
+    """Issue a new key. The plaintext is returned ONCE, under ``key``.
+
+    A sandbox key carries its own prefix and does not count against the live-key
+    ceiling: the whole point is that trying things out costs nothing, and making
+    someone revoke a working production key to get a test one would defeat it.
+    """
+    token = (KEY_PREFIX_SANDBOX if sandbox else KEY_PREFIX) + secrets.token_urlsafe(_KEY_BYTES)
     now = int(time.time())
     rate = max(10, min(MAX_RATE_PER_MIN, int(rate_per_min or DEFAULT_RATE_PER_MIN)))
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute(
-            "SELECT COUNT(*) FROM rep_api_keys WHERE user_id=? AND is_active=1", (int(user_id),)
+            "SELECT COUNT(*) FROM rep_api_keys WHERE user_id=? AND is_active=1 AND is_sandbox=?",
+            (int(user_id), 1 if sandbox else 0)
         ) as c:
             row = await c.fetchone()
-        if int(row[0] if row else 0) >= MAX_KEYS_PER_REP:
-            return {"ok": False, "error": "key_limit_reached", "limit": MAX_KEYS_PER_REP}
+        ceiling = 1 if sandbox else MAX_KEYS_PER_REP
+        if int(row[0] if row else 0) >= ceiling:
+            return {"ok": False, "error": "key_limit_reached", "limit": ceiling}
         cur = await db.execute(
             """INSERT INTO rep_api_keys(user_id,name,prefix,key_hash,scopes,ip_allowlist,
-                                        rate_per_min,is_active,created_at)
-               VALUES(?,?,?,?,?,?,?,1,?)""",
+                                        rate_per_min,is_active,created_at,is_sandbox)
+               VALUES(?,?,?,?,?,?,?,1,?,?)""",
             (int(user_id), str(name or "")[:40], token[:_DISPLAY_PREFIX_LEN], _hash(token),
-             normalize_scopes(scopes), normalize_allowlist(ip_allowlist), rate, now),
+             normalize_scopes(scopes), normalize_allowlist(ip_allowlist), rate, now,
+             1 if sandbox else 0),
         )
         await db.commit()
         key_id = cur.lastrowid
     return {"ok": True, "id": key_id, "key": token, "prefix": token[:_DISPLAY_PREFIX_LEN],
+            "sandbox": bool(sandbox),
             "scopes": normalize_scopes(scopes), "rate_per_min": rate, "created_at": now}
 
 
@@ -258,7 +283,7 @@ async def authenticate(token: str) -> Optional[Dict]:
     remembering to also revoke the keys.
     """
     token = (token or "").strip()
-    if not token.startswith(KEY_PREFIX) or len(token) < len(KEY_PREFIX) + 20:
+    if not token.startswith((KEY_PREFIX, KEY_PREFIX_SANDBOX)) or len(token) < 28:
         return None
     digest = _hash(token)
     async with aiosqlite.connect(DB_PATH) as db:

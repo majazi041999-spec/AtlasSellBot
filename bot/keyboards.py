@@ -211,9 +211,16 @@ def rep_api_kb(keys: List[Dict], docs_url: str = "") -> InlineKeyboardMarkup:
     rep can tell two keys apart.
     """
     b = InlineKeyboardBuilder()
-    _button(b, text="🔑 ساخت کلید جدید", callback_data="rep:api_new", style="success")
+    _button(b, text="🔑 ساخت کلید اصلی", callback_data="rep:api_new", style="success")
+    # A test key is a separate button rather than an option on the same one:
+    # the difference between spending money and not spending money should never
+    # be a setting somebody can miss.
+    if not any(int(k.get("is_sandbox") or 0) for k in keys):
+        _button(b, text="🧪 ساخت کلید تستی (بدون هزینه)", callback_data="rep:api_new_test",
+                style="primary")
     for k in keys:
-        _button(b, text=f"🗑 لغو کلید {k.get('prefix') or k.get('id')}…",
+        tag = "🧪 " if int(k.get("is_sandbox") or 0) else ""
+        _button(b, text=f"🗑 لغو کلید {tag}{k.get('prefix') or k.get('id')}…",
                 callback_data=f"rep:api_del:{int(k['id'])}", style="danger")
     if docs_url:
         b.button(text="📄 مستندات API", url=docs_url)
@@ -526,6 +533,7 @@ def subscription_detail_kb(profile_id: int, sub_url: str = "", nodes: List[Dict]
             btn = _inline_button(f"{label} — نمایش لینک", callback_data=f"subnode:{int(node.get('id') or 0)}", style="success")
         b.row(btn)
 
+    _button(b, text="📶 دستگاه‌های متصل الان", callback_data=f"sub_conns:{profile_id}", style="primary")
     _button(b, text="✏️ تغییر نام سرویس", callback_data=f"sub_rename:{profile_id}", style="primary")
     _button(b, text="♻️ تمدید ساب", callback_data=f"sub_renew:{profile_id}", style="success")
     _button(b, text="🔄 تغییر لینک اشتراک", callback_data=f"sub_relink:{profile_id}", style="primary")
@@ -679,13 +687,14 @@ def adm_sub_panel_kb(pid: int, is_active: bool, owner_uid: int = 0) -> InlineKey
     _button(b, text="🔴 غیرفعال کردن" if is_active else "🟢 فعال کردن", callback_data=f"adm_sub_toggle:{pid}", style="danger" if is_active else "success")
     _button(b, text="♻️ تمدید (همان پلن)", callback_data=f"adm_sub_renew:{pid}", style="success")
     _button(b, text="✏️ ویرایش (حجم/مدت)", callback_data=f"adm_sub_edit:{pid}", style="primary")
+    _button(b, text="📶 اتصال‌های زنده", callback_data=f"adm_sub_conns:{pid}", style="primary")
     _button(b, text="🔐 سقف اتصال هم‌زمان", callback_data=f"adm_sub_iplimit:{pid}", style="primary")
     _button(b, text="📤 ارسال لینک به کاربر", callback_data=f"adm_sub_send:{pid}", style="primary")
     _button(b, text="✉️ پیام به مالک", callback_data=f"adm_sub_msg:{pid}", style="primary")
     _button(b, text="🗑️ حذف کامل ساب", callback_data=f"adm_sub_del:{pid}", style="danger")
     if owner_uid:
         _button(b, text="🔙 سرویس‌های کاربر", callback_data=f"adm_usr_svcs:{owner_uid}", style="primary")
-    b.adjust(2, 1, 1, 2, 1, 1)
+    b.adjust(2, 1, 2, 2, 1, 1)
     return b.as_markup()
 
 

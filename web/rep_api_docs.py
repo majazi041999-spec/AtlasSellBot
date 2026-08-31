@@ -121,6 +121,7 @@ _PAGE = r"""<!doctype html>
     <a href="#start">شروع</a>
     <a href="#auth">کلید</a>
     <a href="#rules">قواعد</a>
+    <a href="#sandbox">محیط تست</a>
     <a href="#idem">خرید تکراری</a>
     <a href="#endpoints">دستورها</a>
     <a href="#errors">خطاها</a>
@@ -299,6 +300,61 @@ console.log(r.data);</code></pre>
 </section>
 
 <!-- ═══════════════════════ 4 ═══════════════════════ -->
+<section id="sandbox">
+  <h2>۳.۵ محیط تست (Sandbox) — اول اینجا</h2>
+  <p>
+    برای نوشتن کد لازم نیست پول خرج کنی. از بخش نمایندگان در ربات، دکمه‌ی
+    <b>«🧪 ساخت کلید تستی»</b> را بزن. کلیدی می‌گیری که با
+    <code dir="ltr">atlas_test_</code> شروع می‌شود.
+  </p>
+  <p>با کلید تستی:</p>
+  <ul>
+    <li><b>هیچ پولی از کیف پولت کم نمی‌شود.</b></li>
+    <li><b>هیچ کانفیگی روی سرورها ساخته نمی‌شود.</b> مشتری‌های واقعی اصلاً درگیر نمی‌شوند.</li>
+    <li>یک کیف پول تستی با موجودی فرضی داری که <b>واقعاً کم می‌شود</b> — تا بتوانی خطای
+        <code dir="ltr">insufficient_funds</code> را هم تست کنی، که در محیط واقعی به‌عمد ایجادکردنش سخت است.</li>
+    <li>حجم مصرفی به‌مرور <b>بالا می‌رود</b>، پس نوار مصرف و هشدار «نزدیک اتمام» را هم می‌توانی امتحان کنی.</li>
+    <li>لینک‌های ساب به دامنه‌ی <code dir="ltr">sandbox.invalid</code> اشاره می‌کنند و
+        <b>عمداً هرگز کار نمی‌کنند</b> تا با لینک واقعی اشتباه نشوند.</li>
+  </ul>
+  <p class="ok">
+    <b>مهم‌ترین نکته:</b> پاسخ‌ها دقیقاً همان شکل محیط واقعی را دارند — همان فیلدها، همان
+    کدهای خطا، همان وضعیت‌ها. وقتی کدت کار کرد، <b>فقط کلید را عوض کن</b>؛ هیچ‌چیز دیگری
+    را دست نزن. هر پاسخ تستی یک فیلد اضافه‌ی <code dir="ltr">"sandbox": true</code> دارد تا در
+    لاگ‌هایت هم بفهمی کدام کدام است.
+  </p>
+
+  <div class="ep"><span class="m get">GET</span><span class="path">/sandbox</span></div>
+  <p>این کلید تستی است یا اصلی؟ اولین چیزی که باید بپرسی.</p>
+  <div class="snip">
+<pre data-l="php"><code>$r = atlas('GET', '/sandbox');
+if ($r['data']['sandbox']) { echo "حالت تست — پولی کم نمی‌شود\n"; }</code></pre>
+<pre data-l="python"><code>status, data = atlas("GET", "/sandbox")
+if data["sandbox"]:
+    print("حالت تست — پولی کم نمی‌شود")</code></pre>
+<pre data-l="node"><code>const r = await atlas("GET", "/sandbox");
+if (r.data.sandbox) console.log("حالت تست — پولی کم نمی‌شود");</code></pre>
+  </div>
+<pre class="res"><code>{
+  "ok": true,
+  "sandbox": true,
+  "wallet": 50000000,
+  "notes": ["این کلید تستی است. هیچ پولی کم نمی‌شود و هیچ کانفیگی روی سرورها ساخته نمی‌شود.", "..."]
+}</code></pre>
+
+  <div class="ep"><span class="m post">POST</span><span class="path">/sandbox/reset</span></div>
+  <p>
+    همه‌ی سرویس‌های تستی را پاک می‌کند و کیف پول تستی را دوباره پر می‌کند. جای خوبی است
+    برای صداکردن در ابتدای تست‌های خودکارت، تا هر بار از صفر شروع کنی.
+    با کلید اصلی کار نمی‌کند و خطای <code dir="ltr">403</code> می‌دهد.
+  </p>
+  <div class="snip">
+<pre data-l="php"><code>atlas('POST', '/sandbox/reset');</code></pre>
+<pre data-l="python"><code>atlas("POST", "/sandbox/reset")</code></pre>
+<pre data-l="node"><code>await atlas("POST", "/sandbox/reset");</code></pre>
+  </div>
+</section>
+
 <section id="idem">
   <h2>۴. جلوگیری از خرید تکراری (مهم‌ترین بخش)</h2>
   <p>هر بار که «ساخت» یا «تمدید» می‌زنی، یک <b>شناسه‌ی یکتا</b> هم بفرست — مثلاً شماره‌ی سفارش مشتری در ربات خودت:</p>
@@ -347,6 +403,49 @@ console.log(r.data.representative.balance);   // موجودی به تومان</c
   "pricing": { "price_per_gb": 3500, "unlimited_price": 180000, "discount_percent": 0 },
   "stats": { "total_services": 380, "active_services": 291, "total_spent": 62150000 },
   "limits": { "max_batch": 10, "rate_per_min": 120, "trial_daily_limit": 5, "trial_used_today": 1 }
+}</code></pre>
+
+
+  <div class="ep"><span class="m get">GET</span><span class="path">/services/{id}/connections</span></div>
+  <p>
+    <b>همین حالا چند نفر به این سرویس وصل‌اند؟</b> ملاک، اتصال <b>هم‌زمان</b> است، نه
+    تعداد آی‌پی‌هایی که در طول روز دیده شده. مشتری‌ای که با اینترنت همراه است و آی‌پی‌اش
+    مدام عوض می‌شود، <b>یک</b> مکان حساب می‌شود — چون آی‌پی قبلی‌اش دیگر ترافیک ندارد و
+    کنار گذاشته می‌شود. برای همین این عدد را می‌شود مبنای تصمیم گرفت.
+  </p>
+  <p>
+    آدرس‌ها به‌صورت <b>ناقص</b> برمی‌گردند (<code dir="ltr">5.113.20.···</code>) — تعداد،
+    زمان و سرور برای رسیدگی به شکایت اشتراک‌گذاری کافی است.
+    اگر یکی از سرورها جواب ندهد، <code dir="ltr">partial: true</code> می‌شود و آن عدد
+    <b>حداقل</b> است نه دقیق؛ در آن حالت روی آن تصمیم سخت نگیر.
+  </p>
+  <div class="snip">
+<pre data-l="php"><code>$r = atlas('GET', '/services/1234/connections');
+$d = $r['data'];
+if ($d['over_limit']) {
+    echo "بیش از حد مجاز: {$d['connections']} از {$d['limit']}\n";
+}</code></pre>
+<pre data-l="python"><code>status, data = atlas("GET", "/services/1234/connections")
+if data["over_limit"]:
+    print(f"بیش از حد مجاز: {data['connections']} از {data['limit']}")</code></pre>
+<pre data-l="node"><code>const r = await atlas("GET", "/services/1234/connections");
+if (r.data.over_limit) {
+  console.log(`بیش از حد مجاز: ${r.data.connections} از ${r.data.limit}`);
+}</code></pre>
+  </div>
+<pre class="res"><code>{
+  "ok": true,
+  "service_id": 1234,
+  "connections": 2,
+  "limit": 5,
+  "over_limit": false,
+  "places": [
+    { "ip": "5.113.20.···", "seconds_ago": 4,   "server": "سرور هلند ۱" },
+    { "ip": "91.99.4.···",  "seconds_ago": 118, "server": "سرور آلمان ۲" }
+  ],
+  "partial": false,
+  "servers_answered": 5,
+  "servers_total": 5
 }</code></pre>
 
   <div class="ep"><span class="m get">GET</span><span class="path">/packages</span></div>
