@@ -53,6 +53,16 @@ class BuyDiscount(StatesGroup):
     code = State()
 
 
+class ChannelPost(StatesGroup):
+    """Composing a post for a channel: the message, its buttons, their colours,
+    and where it goes. Kept apart from Broadcast because nothing here is ever
+    sent to a customer."""
+    message = State()
+    buttons = State()
+    color = State()
+    target = State()
+
+
 class Broadcast(StatesGroup):
     target = State()
     text = State()

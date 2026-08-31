@@ -42,6 +42,64 @@ def _copy_text_button(text: str, value: str, style: str | None = None) -> Inline
         return None
 
 
+# ── channel post composer ────────────────────────────────────────────────────
+# Telegram really does colour inline buttons: InlineKeyboardButton.style takes
+# 'success' (green), 'primary' (blue) or 'danger' (red), and omitting it leaves
+# the client's own default. Older clients ignore the field, so a coloured button
+# degrades to a normal one rather than failing to send — which is why _button()
+# has always passed it optimistically.
+POST_STYLES = (
+    ("success", "🟢 سبز"),
+    ("primary", "🔵 آبی"),
+    ("danger", "🔴 قرمز"),
+    ("", "⚪️ پیش‌فرض"),
+)
+_STYLE_LABEL = dict(POST_STYLES)
+
+
+def post_style_label(style: str) -> str:
+    return _STYLE_LABEL.get(style or "", "⚪️ پیش‌فرض")
+
+
+def post_buttons_kb(specs: list) -> InlineKeyboardMarkup | None:
+    """The keyboard as it will appear on the channel post.
+
+    `specs` is [{"text","url","style","row"}]. Buttons sharing a row number sit
+    side by side, which is how the admin typed them.
+    """
+    if not specs:
+        return None
+    rows: dict = {}
+    for s in specs:
+        rows.setdefault(int(s.get("row") or 0), []).append(
+            _inline_button(text=s["text"], url=s["url"], style=s.get("style") or None))
+    return InlineKeyboardMarkup(inline_keyboard=[rows[k] for k in sorted(rows)])
+
+
+def post_color_pick_kb(index: int, total: int) -> InlineKeyboardMarkup:
+    """Colour choice for one button, shown one button at a time."""
+    b = InlineKeyboardBuilder()
+    for style, label in POST_STYLES:
+        # The choice is previewed in its own colour, so the admin sees the real
+        # thing rather than reading the word "green".
+        _button(b, text=label, callback_data=f"post_color:{index}:{style or 'none'}",
+                style=style or None)
+    b.adjust(2, 2)
+    _button(b, text="❌ لغو", callback_data="post_cancel", style="danger")
+    return b.as_markup()
+
+
+def post_confirm_kb(target: str = "") -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    if target:
+        _button(b, text=f"✅ ارسال به {target}", callback_data="post_send", style="success")
+    _button(b, text="🎨 تغییر رنگ‌ها", callback_data="post_recolor", style="primary")
+    _button(b, text="📍 تغییر مقصد", callback_data="post_retarget", style="primary")
+    _button(b, text="❌ لغو", callback_data="post_cancel", style="danger")
+    b.adjust(1)
+    return b.as_markup()
+
+
 def admin_menu(finance_only: bool = False) -> ReplyKeyboardMarkup:
     b = ReplyKeyboardBuilder()
     if finance_only:
@@ -54,6 +112,7 @@ def admin_menu(finance_only: bool = False) -> ReplyKeyboardMarkup:
     b.row(KeyboardButton(text="🔑 مدیریت کانفیگ"), KeyboardButton(text="📦 پکیج‌ها"))
     b.row(KeyboardButton(text="👥 کاربران"), KeyboardButton(text="🔍 جستجوی کاربر"))
     b.row(KeyboardButton(text="📣 پیام همگانی"), KeyboardButton(text="✉️ پیام خصوصی"))
+    b.row(KeyboardButton(text="📮 پست کانال"))
     b.row(KeyboardButton(text="🌐 پنل مدیریت"))
     b.row(KeyboardButton(text="🔄 شروع مجدد"))
     return b.as_markup(resize_keyboard=True)
@@ -75,6 +134,47 @@ def user_menu(include_wholesale: bool = True) -> ReplyKeyboardMarkup:
     b.row(KeyboardButton(text="🏢 پنل نمایندگی"))
     b.row(KeyboardButton(text="🔗 افزودن سرویس قبلی"))
     return b.as_markup(resize_keyboard=True)
+
+
+def parse_button_specs(text: str) -> list:
+    """Admin-typed buttons -> [{"text","url","row"}], before colours are chosen.
+
+    Shares its grammar with parse_custom_buttons — one row per line, `|` to put
+    two side by side, ` - ` between label and destination — but returns the raw
+    specs so a colour can be attached to each before the keyboard is built.
+    """
+    raw = (text or "").strip()
+    if not raw:
+        return []
+    out: list = []
+    for row_index, line in enumerate(raw.splitlines()):
+        line = line.strip()
+        if not line:
+            continue
+        for cell in line.split("|"):
+            cell = cell.strip()
+            if not cell:
+                continue
+            if " - " in cell:
+                label, _, url = cell.partition(" - ")
+            elif "-" in cell:
+                label, _, url = cell.partition("-")
+            else:
+                continue
+            label, url = label.strip(), url.strip()
+            if not label or not url:
+                continue
+            low = url.lower()
+            if low.startswith(("http://", "https://", "tg://")):
+                pass
+            elif low.startswith("@"):
+                url = "https://t.me/" + url.lstrip("@")
+            elif "t.me/" in low:
+                url = "https://" + url.split("//")[-1]
+            else:
+                url = "https://" + url
+            out.append({"text": label[:64], "url": url, "row": row_index, "style": ""})
+    return out
 
 
 def parse_custom_buttons(text: str) -> InlineKeyboardMarkup | None:

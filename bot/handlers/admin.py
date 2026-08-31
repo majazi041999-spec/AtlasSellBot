@@ -58,12 +58,13 @@ from bot.keyboards import (
     admin_menu, order_review_kb, order_server_select_kb,
     admin_configs_kb, adm_config_detail_kb, confirm_kb, packages_kb, servers_kb,
     broadcast_target_kb, legacy_claim_admin_kb, flow_cancel_kb, topup_review_kb,
-    config_links_kb, parse_custom_buttons,
+    config_links_kb, parse_custom_buttons, parse_button_specs,
+    post_buttons_kb, post_color_pick_kb, post_confirm_kb, post_style_label,
     adm_user_card_kb, adm_user_services_kb, adm_sub_panel_kb,
 )
 from bot.states import (
     AddPackage, CreateConfig, BulkConfig, EditConfig, EditSubProfile, Broadcast, PrivateMessage,
-    AdminUserSearch, AdminBalance,
+    AdminUserSearch, AdminBalance, ChannelPost,
 )
 
 router = Router()
@@ -2877,3 +2878,245 @@ async def topup_reject(cb: CallbackQuery):
             pass
         await cb.message.answer("❌ درخواست افزایش اعتبار رد شد.")
     await cb.answer("رد شد")
+
+
+# ═══════════════════════ channel post composer (admin only) ══════════════════
+# Builds a post for a CHANNEL — never for customers. Nothing in this flow can
+# reach a subscriber; the only destination it accepts is a chat the admin names.
+#
+# On preserving formatting: the message is never re-rendered from text. It is
+# repeated with `copy_message`, which carries the original entities verbatim —
+# bold, italic, underline, strikethrough, spoiler, code, pre, blockquote, links,
+# mentions, custom emoji, and any media with its caption. Re-parsing through
+# HTML or Markdown is what loses custom emoji and mangles nested entities, so it
+# is not done anywhere here.
+#
+# On forwarding: a forwarded message loses its inline keyboard — Telegram strips
+# it. That is why this posts to the channel directly instead of forwarding, and
+# why the admin gets a real preview first.
+
+_POST_MAX_BUTTONS = 2
+
+
+def _post_target_label(raw: str) -> str:
+    raw = str(raw or "").strip()
+    return raw if raw.startswith("@") or raw.startswith("-") else ("@" + raw if raw else "")
+
+
+@router.message(F.text == "📮 پست کانال")
+async def post_start(msg: Message, state: FSMContext):
+    if not is_admin(msg.from_user.id):
+        return
+    await state.clear()
+    await state.set_state(ChannelPost.message)
+    await msg.answer(
+        "📮 ساخت پست کانال\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        "پیام را همان‌طور که می‌خواهی در کانال منتشر شود بفرست.\n\n"
+        "همه‌چیز حفظ می‌شود: بولد، ایتالیک، زیرخط، خط‌خورده، "
+        "اسپویلر، کد، نقل‌قول، لینک، ایموجی و ایموجی‌های پرمیوم. "
+        "عکس و ویدیو با کپشن هم قبول است.\n\n"
+        "بعد از این، یک یا دو دکمه با رنگ دلخواه اضافه می‌کنی.",
+        parse_mode=None,
+        reply_markup=flow_cancel_kb(),
+    )
+
+
+@router.message(ChannelPost.message)
+async def post_got_message(msg: Message, state: FSMContext):
+    if not is_admin(msg.from_user.id):
+        return
+    if not (msg.text or msg.caption or msg.photo or msg.video or msg.animation or msg.document):
+        await msg.answer("پیام خالی است. متن یا رسانه بفرست.", parse_mode=None)
+        return
+    # Remember WHERE it is, not what it said — copy_message repeats it exactly.
+    await state.update_data(src_chat=msg.chat.id, src_msg=msg.message_id)
+    await state.set_state(ChannelPost.buttons)
+    await msg.answer(
+        "🔘 حالا دکمه‌ها.\n\n"
+        "هر خط یک ردیف. برای دو دکمه کنار هم، با | جدا کن:\n\n"
+        "`عضویت در کانال - https://t.me/mychannel`\n"
+        "`سایت - https://example.com | پشتیبانی - @support`\n\n"
+        f"حداکثر {_POST_MAX_BUTTONS} دکمه.\n"
+        "اگر دکمه نمی‌خواهی /skip بزن.",
+        parse_mode="Markdown",
+        reply_markup=flow_cancel_kb(),
+    )
+
+
+async def _post_ask_color(msg_or_cb, state: FSMContext, index: int):
+    data = await state.get_data()
+    specs = data.get("specs") or []
+    if index >= len(specs):
+        await state.update_data(specs=specs)
+        return await _post_preview(msg_or_cb, state)
+    await state.update_data(color_index=index)
+    await state.set_state(ChannelPost.color)
+    s = specs[index]
+    target = msg_or_cb if isinstance(msg_or_cb, Message) else msg_or_cb.message
+    await target.answer(
+        f"🎨 رنگ دکمه‌ی {index + 1} از {len(specs)}:\n«{s['text']}»",
+        parse_mode=None,
+        reply_markup=post_color_pick_kb(index, len(specs)),
+    )
+
+
+@router.message(ChannelPost.buttons, F.text == "/skip")
+async def post_skip_buttons(msg: Message, state: FSMContext):
+    if not is_admin(msg.from_user.id):
+        return
+    await state.update_data(specs=[])
+    await _post_preview(msg, state)
+
+
+@router.message(ChannelPost.buttons)
+async def post_got_buttons(msg: Message, state: FSMContext):
+    if not is_admin(msg.from_user.id):
+        return
+    specs = parse_button_specs(msg.text or "")
+    if not specs:
+        await msg.answer(
+            "قالب درست نبود. مثال:\n"
+            "عضویت - https://t.me/mychannel\n\n"
+            "یا /skip برای بدون دکمه.", parse_mode=None)
+        return
+    if len(specs) > _POST_MAX_BUTTONS:
+        await msg.answer(f"حداکثر {_POST_MAX_BUTTONS} دکمه. الان {len(specs)} تا فرستادی.",
+                         parse_mode=None)
+        return
+    await state.update_data(specs=specs)
+    await _post_ask_color(msg, state, 0)
+
+
+@router.callback_query(F.data.startswith("post_color:"), ChannelPost.color)
+async def post_pick_color(cb: CallbackQuery, state: FSMContext):
+    if not is_admin(cb.from_user.id):
+        return
+    _, idx, style = cb.data.split(":")
+    idx = int(idx)
+    data = await state.get_data()
+    specs = list(data.get("specs") or [])
+    if idx < len(specs):
+        specs[idx] = {**specs[idx], "style": "" if style == "none" else style}
+        await state.update_data(specs=specs)
+    try:
+        await cb.message.edit_text(
+            f"🎨 دکمه‌ی {idx + 1}: {post_style_label('' if style == 'none' else style)}",
+            parse_mode=None)
+    except Exception:
+        pass
+    await cb.answer()
+    await _post_ask_color(cb, state, idx + 1)
+
+
+async def _post_preview(msg_or_cb, state: FSMContext):
+    """Show the post exactly as the channel will get it, then ask where it goes."""
+    data = await state.get_data()
+    specs = data.get("specs") or []
+    target = msg_or_cb if isinstance(msg_or_cb, Message) else msg_or_cb.message
+    bot = target.bot
+    markup = post_buttons_kb(specs)
+    try:
+        await bot.copy_message(chat_id=target.chat.id,
+                               from_chat_id=data["src_chat"],
+                               message_id=data["src_msg"],
+                               reply_markup=markup)
+    except Exception as e:
+        await target.answer(f"نمایش پیش‌نمایش ناموفق بود: {str(e)[:150]}", parse_mode=None)
+        return
+    saved = await get_setting("post_last_target", "")
+    await state.set_state(ChannelPost.target)
+    await target.answer(
+        "👆 دقیقاً همین در کانال منتشر می‌شود.\n\n"
+        + (f"مقصد قبلی: {saved}\n" if saved else "")
+        + "آیدی کانال را بفرست (مثل @mychannel یا -1001234567890).\n"
+          "ربات باید در آن کانال ادمین باشد.",
+        parse_mode=None,
+        reply_markup=post_confirm_kb(saved) if saved else flow_cancel_kb(),
+    )
+
+
+@router.callback_query(F.data == "post_recolor")
+async def post_recolor(cb: CallbackQuery, state: FSMContext):
+    if not is_admin(cb.from_user.id):
+        return
+    await cb.answer()
+    await _post_ask_color(cb, state, 0)
+
+
+@router.callback_query(F.data == "post_retarget")
+async def post_retarget(cb: CallbackQuery, state: FSMContext):
+    if not is_admin(cb.from_user.id):
+        return
+    await state.set_state(ChannelPost.target)
+    await cb.answer()
+    await cb.message.answer("آیدی کانال جدید را بفرست:", parse_mode=None,
+                            reply_markup=flow_cancel_kb())
+
+
+@router.callback_query(F.data == "post_cancel")
+async def post_cancel(cb: CallbackQuery, state: FSMContext):
+    if not is_admin(cb.from_user.id):
+        return
+    await state.clear()
+    await cb.answer("لغو شد")
+    await cb.message.answer("لغو شد.", parse_mode=None, reply_markup=admin_menu())
+
+
+@router.message(ChannelPost.target)
+async def post_set_target(msg: Message, state: FSMContext):
+    if not is_admin(msg.from_user.id):
+        return
+    target = _post_target_label(msg.text or "")
+    if not target:
+        await msg.answer("آیدی معتبر بفرست (@channel یا -100...).", parse_mode=None)
+        return
+    await state.update_data(target=target)
+    await _post_publish(msg, state, target)
+
+
+@router.callback_query(F.data == "post_send", ChannelPost.target)
+async def post_send_saved(cb: CallbackQuery, state: FSMContext):
+    if not is_admin(cb.from_user.id):
+        return
+    saved = await get_setting("post_last_target", "")
+    if not saved:
+        await cb.answer("مقصدی ذخیره نشده", show_alert=True)
+        return
+    await cb.answer()
+    await _post_publish(cb.message, state, saved)
+
+
+async def _post_publish(target_msg: Message, state: FSMContext, channel: str):
+    data = await state.get_data()
+    specs = data.get("specs") or []
+    markup = post_buttons_kb(specs)
+    try:
+        sent = await target_msg.bot.copy_message(
+            chat_id=channel,
+            from_chat_id=data["src_chat"],
+            message_id=data["src_msg"],
+            reply_markup=markup)
+    except Exception as e:
+        # The two everyday causes are worth naming, because the raw Telegram
+        # error ("chat not found") sends people looking in the wrong place.
+        err = str(e)
+        hint = ""
+        if "not found" in err.lower():
+            hint = "\n\nربات عضو و ادمین آن کانال هست؟ آیدی درست است؟"
+        elif "not enough rights" in err.lower() or "administrator" in err.lower():
+            hint = "\n\nربات در کانال هست ولی اجازه‌ی ارسال پیام ندارد."
+        await target_msg.answer(f"❌ ارسال ناموفق:\n{err[:200]}{hint}", parse_mode=None,
+                                reply_markup=admin_menu())
+        return
+    await set_setting("post_last_target", channel)
+    await state.clear()
+    link = ""
+    if channel.startswith("@"):
+        link = f"\nhttps://t.me/{channel.lstrip('@')}/{sent.message_id}"
+    await target_msg.answer(
+        f"✅ در {channel} منتشر شد."
+        + (f" ({len(specs)} دکمه)" if specs else "")
+        + link,
+        parse_mode=None, reply_markup=admin_menu())
+
