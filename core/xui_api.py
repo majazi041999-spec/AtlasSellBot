@@ -13,6 +13,29 @@ import base64
 logger = logging.getLogger(__name__)
 
 
+def _parse_panel_time(value) -> int:
+    """3x-ui renders client-IP times as a local datetime string with no zone.
+
+    Returns a unix timestamp read in THIS process's local time, or 0. The
+    caller corrects for a panel in a different zone by anchoring to the newest
+    reading — see get_client_ips.
+    """
+    s = str(value or "").strip()
+    if not s:
+        return 0
+    if s.isdigit():
+        n = int(s)
+        # Some builds put milliseconds here.
+        return n // 1000 if n > 10 ** 11 else n
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y/%m/%d %H:%M:%S",
+                "%Y-%m-%d %H:%M"):
+        try:
+            return int(datetime.strptime(s[:19], fmt).timestamp())
+        except ValueError:
+            continue
+    return 0
+
+
 class XUIClient:
     def __init__(self, base_url: str, username: str, password: str, sub_path: str = "", api_token: str = ""):
         self.base_url = base_url.rstrip("/")
@@ -528,12 +551,36 @@ class XUIClient:
             ip = str(entry.get("ip") or "").strip()
             if not ip:
                 continue
-            try:
-                ts = int(entry.get("timestamp") or 0)
-            except (TypeError, ValueError):
-                ts = 0
+            # The panel serves this route through GetClientIpsWithNodes, which
+            # renders the time as a LOCAL DATETIME STRING under "time" — not the
+            # unix "timestamp" the storage layer and the bulk route use. Reading
+            # only "timestamp" produced 0 for every address, every address then
+            # looked older than any freshness window, and the second-stage check
+            # returned "nobody is connected" for everyone. That silently
+            # disarmed the whole feature: a subscription would climb toward a
+            # warning and be reset to zero by the very check meant to confirm it.
+            ts = 0
+            raw_ts = entry.get("timestamp")
+            if raw_ts not in (None, ""):
+                try:
+                    ts = int(float(raw_ts))
+                except (TypeError, ValueError):
+                    ts = 0
+            if ts <= 0 and entry.get("time"):
+                ts = _parse_panel_time(entry.get("time"))
             if ts > out.get(ip, 0):
                 out[ip] = ts
+
+        # The string form carries no timezone, so a panel in a different zone
+        # from this server would put every reading hours away and they would all
+        # read as stale. Anchor to the panel's own newest sighting whenever its
+        # clock is nowhere near ours: what this check needs is which addresses
+        # are moving RELATIVE to each other, and that survives any offset.
+        if out:
+            newest = max(out.values())
+            skew = int(time.time()) - newest
+            if abs(skew) > 600:
+                out = {ip: ts + skew for ip, ts in out.items()}
         return out
 
     async def get_online_count(self) -> Optional[int]:
