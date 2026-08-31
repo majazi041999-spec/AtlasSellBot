@@ -83,6 +83,7 @@ from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 from core.database import (
     get_setting,
+    set_setting,
     get_servers,
     get_ip_guard_states,
     save_ip_guard_state,
@@ -834,6 +835,118 @@ async def confirm_active(servers_by_id: Dict[int, Dict], nodes: Sequence[Tuple[i
     return len(ordered), ordered
 
 
+async def diagnose(profile_id: int) -> Dict:
+    """Why did (or didn't) this subscription get warned or cut?
+
+    Written after the owner watched a subscription sit at nine simultaneous
+    places while nothing happened, and had no way to tell which of the six
+    possible reasons it was: the feature off, the worker not running, warn-only
+    mode, not enough consecutive readings yet, a warning already sent inside its
+    cooldown, or the count dropping below the limit once confirmed.
+
+    Guessing between those from the outside is impossible, and a log line for
+    each would be noise. So the feature answers the question itself: this runs
+    the real decision function on the real current state and reports the verdict
+    with the numbers behind it.
+    """
+    cfg = await _cfg()
+    now = int(time.time())
+    out: Dict = {"now": now, "profile_id": int(profile_id)}
+
+    enabled = cfg["ip_limit_enabled"] == "1"
+    warn_only = cfg["ip_limit_warn_only"] == "1"
+    out["enabled"] = enabled
+    out["warn_only"] = warn_only
+
+    try:
+        last_run = int(float(await get_setting("ip_limit_last_run", "0") or 0))
+    except (TypeError, ValueError):
+        last_run = 0
+    poll = _int(cfg, "ip_limit_poll_seconds", 15, 3600)
+    out["worker_last_run"] = last_run
+    out["worker_seconds_ago"] = (now - last_run) if last_run else None
+    # Two missed cycles is the point at which "it is just between polls" stops
+    # being the explanation.
+    out["worker_alive"] = bool(last_run and (now - last_run) < poll * 3)
+
+    limit_default = _int(cfg, "ip_limit_default", 1, 1000)
+    strikes_needed = _int(cfg, "ip_limit_strikes", 1, 20)
+    steps = parse_steps(cfg["ip_limit_steps"])
+    grace = _int(cfg, "ip_limit_grace_seconds", 30, 86400)
+    out["settings"] = {
+        "default_limit": limit_default, "strikes_needed": strikes_needed,
+        "steps": steps, "grace_seconds": grace,
+        "poll_seconds": poll,
+        "fresh_seconds": _int(cfg, "ip_limit_fresh_seconds", 20, 1800),
+        "active_seconds": _int(cfg, "ip_limit_active_seconds", 30, 1800),
+    }
+
+    rows = {r["profile_id"]: r for r in await get_ip_guard_profile_nodes()}
+    row = rows.get(int(profile_id))
+    if not row:
+        out["blocked_by"] = "no_active_nodes"
+        out["explain"] = ("این ساب در فهرست ساب‌های فعالِ دارای نود نیست، پس اصلاً "
+                          "بررسی نمی‌شود.")
+        return out
+
+    out["limit"] = int(row.get("ip_limit") or 0) or limit_default
+    out["limit_source"] = "per-subscription" if int(row.get("ip_limit") or 0) else "default"
+
+    live = await live_connections(int(profile_id), confirm=True, reveal=False, max_age=0)
+    out["counted_now"] = int(live.get("count") or 0)
+    out["partial"] = bool(live.get("partial"))
+
+    states = await get_ip_guard_states()
+    state = states.get(int(profile_id)) or {}
+    out["state"] = {k: int(state.get(k) or 0) for k in
+                    ("level", "strikes", "penalty_until", "last_violation_at",
+                     "last_warned_at", "last_ip_count", "restore_fails")} if state else None
+
+    d = decide(dict(state), out["counted_now"], out["limit"], now,
+               strikes_needed=strikes_needed, steps=steps,
+               decay_seconds=_int(cfg, "ip_limit_decay_hours", 1, 8760) * 3600,
+               warn_cooldown=_int(cfg, "ip_limit_warn_cooldown", 60, 86400),
+               grace_seconds=grace,
+               reassert_after=_int(cfg, "ip_limit_reassert_after", 30, 7200))
+    out["would_do_now"] = d["action"]
+    out["because"] = d.get("reason") or ""
+
+    # The single most useful line: name the ONE thing standing in the way.
+    if not enabled:
+        out["blocked_by"] = "feature_off"
+        out["explain"] = ("سیستم محدودیت اتصال در تنظیمات خاموش است، پس هیچ هشدار و "
+                          "هیچ قطعی انجام نمی‌شود. تنظیمات ← «محدودیت اتصال هم‌زمان» "
+                          "را روشن کن.")
+    elif not out["worker_alive"]:
+        out["blocked_by"] = "worker_not_running"
+        out["explain"] = ("کارگر پس‌زمینه اجرا نشده است. معمولاً یعنی ربات بعد از "
+                          "آپدیت ری‌استارت نشده. سرویس را ری‌استارت کن.")
+    elif out["counted_now"] <= out["limit"]:
+        out["blocked_by"] = "within_limit"
+        out["explain"] = (f"شمارش تأییدشده {out['counted_now']} است و سقف {out['limit']} — "
+                          "زیر سقف، پس کاری لازم نیست.")
+    elif d["action"] == ACT_NONE and int(d.get("strikes") or 0) < strikes_needed:
+        need = strikes_needed - int(d.get("strikes") or 0)
+        out["blocked_by"] = "building_strikes"
+        out["explain"] = (f"بالای سقف است، ولی هنوز {int(d.get('strikes') or 0)} بررسی از "
+                          f"{strikes_needed} ثبت شده. {need} بررسی دیگر "
+                          f"(حدود {need * poll // 60 or 1} دقیقه) تا هشدار.")
+    elif d["action"] == ACT_NONE and int(state.get("last_warned_at") or 0):
+        left = grace - (now - int(state["last_warned_at"]))
+        out["blocked_by"] = "in_grace_period"
+        out["explain"] = (f"هشدار داده شده و در مهلت است. {max(0, left)} ثانیه دیگر، "
+                          "اگر همچنان بالای سقف باشد، قطع می‌شود.")
+    elif d["action"] == ACT_CUT and warn_only:
+        out["blocked_by"] = "warn_only"
+        out["explain"] = ("الان قطع می‌شد، ولی «فقط ثبت و هشدار» روشن است. در سابقه با "
+                          "برچسب would_cut ثبت می‌شود. برای اعمال واقعی، آن گزینه را "
+                          "خاموش کن.")
+    else:
+        out["blocked_by"] = ""
+        out["explain"] = f"در بررسی بعدی: {d['action']} ({d.get('reason') or ''})"
+    return out
+
+
 async def restore_all(reason: str = "") -> int:
     """Switch every currently-cut subscription back on and forget the ladder.
 
@@ -871,6 +984,14 @@ async def run_cycle(bot=None) -> Dict:
     """
     cfg = await _cfg()
     now = int(time.time())
+    # Written on EVERY cycle including the disabled one, so the diagnostic can
+    # tell "switched off" apart from "the process was never restarted" — two
+    # very different problems that look identical from the outside.
+    try:
+        from core.database import set_setting as _ss
+        await _ss("ip_limit_last_run", str(now))
+    except Exception:
+        pass
 
     if cfg["ip_limit_enabled"] != "1":
         restored = await restore_all("feature is switched off")

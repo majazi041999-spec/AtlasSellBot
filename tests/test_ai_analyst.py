@@ -70,16 +70,25 @@ class Resp:
             raise httpx.HTTPStatusError("err", request=None, response=self)
 
 
-def client(post_status=404, get_status=200):
+def client(post_status=404, get_status=200, post_body=None):
     class C:
+        seen = []
         def __init__(self, *a, **k): pass
         async def __aenter__(self): return self
         async def __aexit__(self, *a): return False
         async def post(self, url, **k):
-            return Resp(post_status, {"error": {"message": "x"}})
+            C.seen.append(k.get("json") or {})
+            return Resp(post_status, post_body if post_body is not None
+                        else {"error": {"message": "x"}})
         async def get(self, url, **k):
             return Resp(get_status, MODELS if get_status == 200 else {})
+    C.seen = []
     return C
+
+
+def gemini_reply(parts, finish="STOP"):
+    return {"candidates": [{"content": {"parts": parts}, "finishReason": finish}],
+            "usageMetadata": {"totalTokenCount": 123}}
 
 
 async def main():
@@ -140,6 +149,49 @@ async def main():
     ai.httpx.AsyncClient = client(get_status=403)
     r = await ai.analyze(STATS)
     check("it points at the address, not the model", "/v1" in r["message"], True)
+
+    print("\n6. thinking is switched off, because it eats the answer")
+    # From Gemini 2.5 on, the model reasons before answering and those tokens
+    # come out of maxOutputTokens. Left alone it spent the budget thinking and
+    # returned truncated JSON — which arrived as "bad output", blaming the
+    # model's manners rather than our request.
+    await set_setting("ai_provider", "gemini")
+    await set_setting("ai_model", "gemini-3-flash")
+    good = '{"headline":"h","summary":"s","findings":[],"actions":[],"confidence":"high"}'
+    C = client(post_status=200, post_body=gemini_reply([{"text": good}]))
+    ai.httpx.AsyncClient = C
+    r = await ai.analyze(STATS)
+    check("the analysis succeeds", r["ok"], True)
+    sent = C.seen[0]["generationConfig"]
+    check("thinking is explicitly disabled", sent.get("thinkingConfig"), {"thinkingBudget": 0})
+    check("and the budget has real headroom", sent["maxOutputTokens"] >= 8192, True)
+
+    print("\n7. a reasoning part is not mistaken for the answer")
+    # Thought parts carry `thought: true` and are NOT the reply. Concatenating
+    # them put prose in front of the JSON.
+    ai.httpx.AsyncClient = client(post_status=200, post_body=gemini_reply(
+        [{"text": "let me think about this...", "thought": True}, {"text": good}]))
+    r = await ai.analyze(STATS)
+    check("the thought is skipped and the answer parsed", r["ok"], True)
+    check("and the headline survives", r["analysis"]["headline"], "h")
+
+    print("\n8. a truncated answer says it was truncated")
+    ai.httpx.AsyncClient = client(post_status=200, post_body=gemini_reply(
+        [{"text": '{"headline":"h","summ'}], finish="MAX_TOKENS"))
+    r = await ai.analyze(STATS)
+    check("not reported as a malformed reply", r["error"], "truncated")
+    check("it names the real cause", "فکر" in r["message"], True)
+    check("and suggests a lighter model", "flash" in r["message"], True)
+
+    print("\n9. an empty reply is its own diagnosis")
+    ai.httpx.AsyncClient = client(post_status=200, post_body=gemini_reply([]))
+    check("empty is not 'unreadable'", (await ai.analyze(STATS))["error"], "empty_output")
+
+    print("\n10. a safety block is named, not swallowed")
+    ai.httpx.AsyncClient = client(post_status=200, post_body=gemini_reply([], finish="SAFETY"))
+    r = await ai.analyze(STATS)
+    check("reported as blocked", r["error"], "blocked")
+    check("with the reason shown", "SAFETY" in r["message"], True)
 
     print("\n" + ("ALL PASSED" if not FAILED else f"{len(FAILED)} FAILED: {FAILED}"))
     return 1 if FAILED else 0

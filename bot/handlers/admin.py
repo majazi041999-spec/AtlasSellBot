@@ -1467,10 +1467,39 @@ async def adm_sub_connections(cb: CallbackQuery):
     except Exception as e:
         logger.warning("admin connection check failed pid=%s: %s", pid, e)
         live = {"ok": False}
+    # The owner pressed this because the number looked wrong and nothing had
+    # happened about it. Answering "9 places" and stopping there leaves the real
+    # question — why no warning? — unanswered, so the verdict comes with it.
     limit_note = ""
-    own = int(profile.get("ip_limit") or 0)
-    if own:
-        limit_note = f"\n\n(سقف اختصاصی این ساب: {own})"
+    try:
+        from core.ip_guard import diagnose
+        dg = await diagnose(pid)
+        src = "اختصاصی" if dg.get("limit_source") == "per-subscription" else "پیش‌فرض"
+        bits = [f"سقف: {dg.get('limit')} ({src})"]
+        if not dg.get("enabled"):
+            bits.append("سیستم: ⭕️ خاموش")
+        elif dg.get("warn_only"):
+            bits.append("سیستم: 🟡 فقط هشدار (قطع نمی‌کند)")
+        else:
+            bits.append("سیستم: ✅ فعال")
+        ago = dg.get("worker_seconds_ago")
+        if ago is None:
+            bits.append("بررسی خودکار: هرگز اجرا نشده ⚠️")
+        else:
+            bits.append(f"بررسی خودکار: {ago} ثانیه پیش"
+                        + ("" if dg.get("worker_alive") else " ⚠️ متوقف"))
+        st = dg.get("state") or {}
+        need = (dg.get("settings") or {}).get("strikes_needed")
+        if st.get("strikes"):
+            bits.append(f"بررسی پشت‌سرهم بالای سقف: {st['strikes']} از {need}")
+        limit_note = "\n\n📋 وضعیت محدودیت\n" + "\n".join("• " + b for b in bits)
+        if dg.get("explain"):
+            limit_note += f"\n\n👈 {dg['explain']}"
+    except Exception as e:
+        logger.warning("ip guard diagnose failed pid=%s: %s", pid, e)
+        own = int(profile.get("ip_limit") or 0)
+        if own:
+            limit_note = f"\n\n(سقف اختصاصی این ساب: {own})"
     await cb.message.answer(
         render_connections(live, reveal=True,
                            name=(profile.get("name") or profile.get("email") or "")) + limit_note,

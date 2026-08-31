@@ -46,7 +46,16 @@ from core.database import get_setting
 logger = logging.getLogger(__name__)
 
 TIMEOUT = 45.0
-MAX_OUTPUT_TOKENS = 2048
+# Room for the answer AND for whatever the model thinks first.
+#
+# 2048 was the original figure and it was the cause of a silent failure: from
+# Gemini 2.5 onward the model reasons before answering and those reasoning
+# tokens are charged against this same budget. The model spent the allowance
+# thinking, hit the ceiling mid-sentence, and returned truncated JSON — which
+# arrived here as "bad_output", a message that blames the model's manners
+# rather than our budget. Thinking is switched off below where the model
+# supports it, and this is the headroom for the models where it cannot be.
+MAX_OUTPUT_TOKENS = 8192
 
 # Free-tier defaults. Flash is the right tier here: this runs a few times a day
 # on a page of numbers, so the reasoning tiers would buy nothing but latency.
@@ -285,22 +294,48 @@ async def _call_gemini(cfg: Dict, prompt: str) -> str:
     model = _clean_model(cfg["ai_model"]) or "gemini-2.5-flash"
     url = (f"https://generativelanguage.googleapis.com/v1beta/models/"
            f"{model}:generateContent")
-    body = {
-        "systemInstruction": {"parts": [{"text": SYSTEM_PROMPT}]},
-        "contents": [{"role": "user", "parts": [{"text": prompt}]}],
-        "generationConfig": {
-            "temperature": 0.3,               # analysis, not creative writing
-            "maxOutputTokens": MAX_OUTPUT_TOKENS,
-            "responseMimeType": "application/json",
-        },
+    gen = {
+        "temperature": 0.3,               # analysis, not creative writing
+        "maxOutputTokens": MAX_OUTPUT_TOKENS,
+        "responseMimeType": "application/json",
     }
-    async with httpx.AsyncClient(timeout=TIMEOUT) as client:
-        r = await client.post(url, json=body,
-                              headers={"x-goog-api-key": cfg["ai_api_key"]})
-        r.raise_for_status()
-        data = r.json()
-    parts = (((data.get("candidates") or [{}])[0].get("content") or {}).get("parts") or [])
-    return "".join(p.get("text", "") for p in parts)
+
+    async def ask(with_thinking_off: bool) -> Dict:
+        body = {
+            "systemInstruction": {"parts": [{"text": SYSTEM_PROMPT}]},
+            "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+            "generationConfig": dict(gen),
+        }
+        if with_thinking_off:
+            # This job is "read twenty numbers and say what they mean". The
+            # model does not need to deliberate, and on 2.5+ deliberation eats
+            # the output budget until the answer is cut off mid-JSON.
+            body["generationConfig"]["thinkingConfig"] = {"thinkingBudget": 0}
+        async with httpx.AsyncClient(timeout=TIMEOUT) as client:
+            r = await client.post(url, json=body,
+                                  headers={"x-goog-api-key": cfg["ai_api_key"]})
+            r.raise_for_status()
+            return r.json()
+
+    try:
+        data = await ask(True)
+    except httpx.HTTPStatusError as e:
+        # Older models reject thinkingConfig outright. Retry without it rather
+        # than reporting a 400 the owner cannot act on.
+        if e.response.status_code == 400 and "thinking" in (e.response.text or "").lower():
+            data = await ask(False)
+        else:
+            raise
+
+    cand = (data.get("candidates") or [{}])[0]
+    parts = (cand.get("content") or {}).get("parts") or []
+    # A reasoning part is marked `thought` and is NOT the answer. Concatenating
+    # it produced prose in front of the JSON and, when the answer itself was
+    # truncated, nothing but prose.
+    text = "".join(p.get("text", "") for p in parts if not p.get("thought"))
+    return {"text": text,
+            "finish_reason": cand.get("finishReason") or "",
+            "usage": data.get("usageMetadata") or {}}
 
 
 async def _call_openai_compatible(cfg: Dict, prompt: str) -> str:
@@ -381,10 +416,12 @@ async def analyze(stats: Dict) -> Dict:
     payload = build_payload(stats)
     prompt = _user_prompt(payload)
     try:
+        meta = {}
         if cfg["ai_provider"] == "openai":
             raw = await _call_openai_compatible(cfg, prompt)
         else:
-            raw = await _call_gemini(cfg, prompt)
+            result = await _call_gemini(cfg, prompt)
+            raw, meta = result["text"], result
     except httpx.HTTPStatusError as e:
         code = e.response.status_code
         if code in (401, 403):
@@ -431,9 +468,30 @@ async def analyze(stats: Dict) -> Dict:
 
     parsed = _extract_json(raw)
     if not isinstance(parsed, dict):
-        logger.warning("ai analyst returned unparseable output: %s", (raw or "")[:300])
+        finish = str(meta.get("finish_reason") or "")
+        usage = meta.get("usage") or {}
+        logger.warning("ai analyst unparseable output: finish=%s usage=%s raw=%s",
+                       finish, usage, (raw or "")[:400])
+        if finish.upper() in ("MAX_TOKENS", "LENGTH"):
+            # The honest diagnosis, and one the owner can act on: the answer was
+            # cut off, not malformed. Naming the model matters because the fix
+            # is usually to pick one that does not reason before answering.
+            return {"ok": False, "error": "truncated",
+                    "message": ("پاسخ مدل نصفه ماند (سقف توکن). معمولاً یعنی مدل قبل از "
+                                "جواب‌دادن «فکر» می‌کند و بودجه تمام می‌شود. یک مدل "
+                                f"سبک‌تر مثل flash را امتحان کن (الان: {_clean_model(cfg['ai_model'])}).")}
+        if finish.upper() in ("SAFETY", "RECITATION", "PROHIBITED_CONTENT", "BLOCKLIST"):
+            return {"ok": False, "error": "blocked",
+                    "message": f"سرویس پاسخ را مسدود کرد ({finish}). مدل دیگری را امتحان کن."}
+        if not (raw or "").strip():
+            return {"ok": False, "error": "empty_output",
+                    "message": ("مدل هیچ متنی برنگرداند"
+                                + (f" ({finish})" if finish else "")
+                                + ". معمولاً با انتخاب یک مدل flash حل می‌شود.")}
         return {"ok": False, "error": "bad_output",
-                "message": "پاسخ سرویس قابل خواندن نبود. دوباره امتحان کن."}
+                "message": ("پاسخ سرویس قابل خواندن نبود"
+                            + (f" ({finish})" if finish else "")
+                            + ". اگر تکرار شد، مدل دیگری را امتحان کن.")}
 
     return {"ok": True, "analysis": _normalise(parsed),
             "provider": cfg["ai_provider"], "model": cfg["ai_model"]}
