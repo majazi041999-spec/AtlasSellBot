@@ -642,6 +642,31 @@ def main():
           ipg.is_cdn_ip("2.147.235.151", "not-a-cidr, 10.0.0.0/8"), False)
     ipg._CDN_NETS.clear()
 
+    print("\n27. the message names WHICH subscription, and links to it")
+    # A representative can hold dozens of subscriptions and an ordinary customer
+    # several. "Your subscription is over the limit" is unactionable to either:
+    # they cannot tell which one to go and fix.
+    row = {"name": "Br-Gorbah", "package_name": "نامحدود یک ماهه"}
+    w = ipg.warn_text(26, 5, row)
+    check_true("the warning names the subscription", "Br-Gorbah" in w)
+    check_true("...and the package it was sold under", "نامحدود یک ماهه" in w)
+    check_true("...and the count", "26" in w)
+    check_true("...and the allowance", "5" in w)
+    c = ipg.cut_text(600, 26, 5, row)
+    check_true("the cut notice names it too", "Br-Gorbah" in c)
+    check_true("...and says the quota is not lost", "از بین نمی‌رود" in c)
+    check_true("the restore notice names it", "Br-Gorbah" in ipg.restore_text(row))
+    # An older row, or one where the join found no package, must not crash or
+    # emit a dangling label.
+    bare = ipg.warn_text(9, 5, {"name": "", "package_name": ""})
+    check_true("a nameless subscription still produces a message", len(bare) > 80)
+    check("no empty label is left behind", "اشتراک: \n" in bare, False)
+    check_true("no row at all is survivable", len(ipg.warn_text(9, 5)) > 80)
+
+    kb = ipg._view_kb(566)
+    check("the button opens THAT subscription",
+          kb.inline_keyboard[0][0].callback_data, "sub_show:566")
+
     print("\n" + ("ALL PASSED" if not FAILED else f"{len(FAILED)} FAILED: {FAILED}"))
     return 1 if FAILED else 0
 

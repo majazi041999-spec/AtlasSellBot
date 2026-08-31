@@ -3840,10 +3840,18 @@ async def get_ip_guard_profile_nodes() -> List[Dict]:
                       sp.name          AS name,
                       sp.email         AS email,
                       sp.ip_limit      AS ip_limit,
+                      sp.traffic_gb    AS traffic_gb,
+                      sp.duration_days AS duration_days,
+                      -- The package the subscription was sold under. A customer
+                      -- (and especially a representative) can hold dozens, so a
+                      -- warning that only says "your subscription" is unusable.
+                      pk.name          AS package_name,
                       u.telegram_id    AS telegram_id,
                       GROUP_CONCAT(n.server_id || ':' || n.email, char(10)) AS nodes
                  FROM subscription_profiles sp
                  JOIN users u ON u.id = sp.user_id
+                 LEFT JOIN orders o ON o.id = sp.order_id
+                 LEFT JOIN packages pk ON pk.id = o.package_id
                  LEFT JOIN subscription_nodes n
                         ON n.profile_id = sp.id AND n.is_active = 1
                 WHERE sp.is_active = 1
@@ -3869,6 +3877,9 @@ async def get_ip_guard_profile_nodes() -> List[Dict]:
             "user_id": int(r["user_id"] or 0),
             "telegram_id": int(r["telegram_id"] or 0),
             "name": r["name"] or r["email"] or "",
+            "package_name": (r["package_name"] or "").strip(),
+            "traffic_gb": float(r["traffic_gb"] or 0),
+            "duration_days": int(r["duration_days"] or 0),
             "ip_limit": int(r["ip_limit"] or 0),
             "nodes": pairs,
         })

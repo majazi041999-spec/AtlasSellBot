@@ -482,22 +482,42 @@ def decide(state: Dict, count: int, limit: int, now: int, *,
 
 # ---------------------------------------------------------------- the messages
 
-def warn_text(count: int, limit: int, brand: str = "") -> str:
+def _which(row: Optional[Dict] = None) -> str:
+    """Name the subscription this message is about.
+
+    A representative can hold dozens of subscriptions and an ordinary customer
+    several. "Your subscription is over the limit" is unactionable to either of
+    them — they cannot tell which one to go and fix. So every message names the
+    subscription and the plan it was sold under.
+    """
+    if not row:
+        return ""
+    name = str(row.get("name") or "").strip()
+    pkg = str(row.get("package_name") or "").strip()
+    out = f"📄 اشتراک: {name}\n" if name else ""
+    if pkg:
+        out += f"📦 پکیج: {pkg}\n"
+    return out
+
+
+def warn_text(count: int, limit: int, row: Optional[Dict] = None) -> str:
     return (
         "⚠️ اتصال هم‌زمان بیش از حد مجاز\n"
         "━━━━━━━━━━━━━━━━━━\n"
-        f"روی اشتراک شما همین حالا از {count} مکان مختلف به‌طور هم‌زمان اتصال برقرار است، "
+        + _which(row) +
+        ("\n" if _which(row) else "") +
+        f"روی این اشتراک همین حالا از {count} مکان مختلف به‌طور هم‌زمان اتصال برقرار است، "
         f"در حالی که سقف مجاز {limit} اتصال هم‌زمان است.\n\n"
-        "لطفاً دستگاه‌های اضافه را قطع کنید. اگر لینک اشتراکتان را به کسی داده‌اید، "
-        "از بخش «تغییر لینک اشتراک» می‌توانید لینک را عوض کنید تا فقط در اختیار خودتان باشد.\n\n"
-        "اگر ادامه پیدا کند، اتصال شما به‌صورت موقت قطع خواهد شد "
+        "لطفاً دستگاه‌های اضافه را قطع کنید. اگر لینک اشتراک را به کسی داده‌اید، "
+        "از دکمه‌ی زیر واردش شوید و «تغییر لینک اشتراک» را بزنید تا لینک عوض شود.\n\n"
+        "اگر ادامه پیدا کند، اتصال این اشتراک به‌صورت موقت قطع خواهد شد "
         "(بار اول ۱ دقیقه، سپس ۱۰ دقیقه و ۱ ساعت).\n\n"
         "ℹ️ اگر با اینترنت همراه هستید و فقط یک دستگاه دارید، نگران نباشید — "
         "تغییر آی‌پی سیم‌کارت به‌عنوان اتصال جدید شمرده نمی‌شود."
     )
 
 
-def cut_text(seconds: int, count: int, limit: int) -> str:
+def cut_text(seconds: int, count: int, limit: int, row: Optional[Dict] = None) -> str:
     if seconds >= 3600:
         span = f"{seconds // 3600} ساعت"
     elif seconds >= 60:
@@ -505,20 +525,24 @@ def cut_text(seconds: int, count: int, limit: int) -> str:
     else:
         span = f"{seconds} ثانیه"
     return (
-        "⛔️ اتصال شما موقتاً قطع شد\n"
+        "⛔️ اتصال این اشتراک موقتاً قطع شد\n"
         "━━━━━━━━━━━━━━━━━━\n"
-        f"با وجود هشدار، هم‌زمان از {count} مکان به اشتراک شما متصل بود "
+        + _which(row) +
+        ("\n" if _which(row) else "") +
+        f"با وجود هشدار، هم‌زمان از {count} مکان به این اشتراک متصل بود "
         f"(سقف مجاز: {limit}).\n\n"
-        f"اشتراک شما به مدت {span} غیرفعال شد و پس از آن خودکار برمی‌گردد.\n"
-        "زمان و حجم اشتراکتان از بین نمی‌رود.\n\n"
+        f"این اشتراک به مدت {span} غیرفعال شد و پس از آن خودکار برمی‌گردد.\n"
+        "زمان و حجم اشتراک از بین نمی‌رود.\n\n"
         "برای اینکه دوباره تکرار نشود، دستگاه‌های اضافه را قطع کنید."
     )
 
 
-def restore_text() -> str:
+def restore_text(row: Optional[Dict] = None) -> str:
     return (
-        "✅ اشتراک شما دوباره فعال شد\n"
+        "✅ این اشتراک دوباره فعال شد\n"
         "━━━━━━━━━━━━━━━━━━\n"
+        + _which(row) +
+        ("\n" if _which(row) else "") +
         "اگر برنامه‌تان وصل نشد، یک بار قطع و دوباره وصل کنید.\n"
         "لطفاً سقف اتصال هم‌زمان را رعایت کنید تا قطعی تکرار نشود."
     )
@@ -616,12 +640,30 @@ async def _apply_enabled(servers_by_id: Dict[int, Dict], per_server: Dict[int, L
     return out
 
 
-async def _notify(bot, telegram_id: int, text: str) -> None:
+def _view_kb(profile_id: int):
+    """A one-tap way to open the subscription the message is about.
+
+    Naming it is not enough when someone holds thirty of them — they would still
+    have to go and find it. `sub_show:` is the same callback the services list
+    uses, so the button lands them exactly where they can see its connections,
+    or rotate its link if they shared it.
+    """
+    try:
+        from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+        return InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="📄 مشاهده‌ی این اشتراک",
+                                 callback_data=f"sub_show:{int(profile_id)}")]])
+    except Exception:
+        return None
+
+
+async def _notify(bot, telegram_id: int, text: str, profile_id: int = 0) -> None:
     if not bot or not telegram_id:
         return
     try:
         await bot.send_message(int(telegram_id), text, parse_mode=None,
-                               disable_web_page_preview=True)
+                               disable_web_page_preview=True,
+                               reply_markup=_view_kb(profile_id) if profile_id else None)
     except Exception as e:
         # A customer who blocked the bot must not stop the cycle for everyone else.
         logger.debug("ip guard: could not message %s: %s", telegram_id, e)
@@ -1270,7 +1312,7 @@ async def run_cycle(bot=None) -> Dict:
             # escalation clock is unaffected — we just do not say it twice.
             prev = int(state.get("last_violation_at") or 0)
             if not prev or (now - prev) >= warn_cooldown:
-                await _notify(bot, row["telegram_id"], warn_text(count, limit))
+                await _notify(bot, row["telegram_id"], warn_text(count, limit, row), pid)
             acted.append({"profile_id": pid, "action": "warned", "count": count})
             continue
 
@@ -1295,7 +1337,8 @@ async def run_cycle(bot=None) -> Dict:
             pending_events.append({"profile_id": pid, "kind": "cut", "level": d["level"],
                                    "ip_count": count, "limit_used": limit,
                                    "detail": f"{d.get('seconds')}s — " + ", ".join(groups[:8])})
-            await _notify(bot, row["telegram_id"], cut_text(int(d.get("seconds") or 0), count, limit))
+            await _notify(bot, row["telegram_id"],
+                          cut_text(int(d.get("seconds") or 0), count, limit, row), pid)
             acted.append({"profile_id": pid, "action": "cut", "count": count,
                           "seconds": d.get("seconds")})
             continue
@@ -1306,7 +1349,7 @@ async def run_cycle(bot=None) -> Dict:
             pending_state.append((pid, d))
             pending_events.append({"profile_id": pid, "kind": "restored", "level": d["level"],
                                    "ip_count": count, "limit_used": limit})
-            await _notify(bot, row["telegram_id"], restore_text())
+            await _notify(bot, row["telegram_id"], restore_text(row), pid)
             acted.append({"profile_id": pid, "action": "restored"})
             continue
 
