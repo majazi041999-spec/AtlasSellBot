@@ -3732,12 +3732,29 @@ async def _miniapp_brand() -> dict:
     return {"title": title, "logo": (await get_setting("miniapp_logo", "🌐")).strip() or "🌐"}
 
 
+# Why each mini-app rejection happened, counted since the process started.
+# Customers reported an occasional "invalid access" and there was nothing in the
+# log to say whether it was a stale session, a wrong token, or an attack — every
+# failure returned the same silent None.
+_MINIAPP_REJECTS: dict = {}
+
+
 async def _miniapp_user(request: Request):
     """Validate Telegram initData and return the matching DB user (or None)."""
-    from core.miniapp import validate_init_data
+    from core.miniapp import check_init_data
     from core.database import get_or_create_user
-    res = validate_init_data(request.headers.get("X-Telegram-Init-Data", ""))
-    if not res:
+    res = check_init_data(request.headers.get("X-Telegram-Init-Data", ""))
+    if not res.get("ok"):
+        reason = res.get("reason") or "unknown"
+        _MINIAPP_REJECTS[reason] = _MINIAPP_REJECTS.get(reason, 0) + 1
+        # An expired session is the customer's client holding an old webview,
+        # which is normal and self-correcting; a bad hash is not, and should be
+        # loud.
+        (logger.info if reason in ("expired", "no_data") else logger.warning)(
+            "miniapp rejected: %s%s (seen %s times)", reason,
+            f" age={res.get('age')}s limit={res.get('limit')}s" if reason == "expired" else "",
+            _MINIAPP_REJECTS[reason])
+        request.state.miniapp_reject = reason
         return None
     tg = res["user"]
     name = (str(tg.get("first_name", "")) + " " + str(tg.get("last_name", ""))).strip()
@@ -3760,7 +3777,9 @@ async def miniapp_bootstrap(request: Request):
         return JSONResponse({"enabled": False, "brand": brand})
     user = await _miniapp_user(request)
     if not user:
-        return JSONResponse({"error": "invalid_init_data"}, status_code=401)
+        return JSONResponse({"error": "invalid_init_data",
+                             "reason": getattr(request.state, "miniapp_reject", "")},
+                            status_code=401)
     bal = await get_user_balance(user["id"])
     profiles = await get_user_subscription_profiles(user["id"])
     active = sum(1 for p in profiles if int(p.get("is_active") or 0))

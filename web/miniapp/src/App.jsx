@@ -5,12 +5,17 @@ import {
 } from "./jalali";
 
 const tg = window.Telegram?.WebApp;
-const INIT = tg?.initData || "";
+// Read initData at CALL time, not once at module load. Telegram hands a webview
+// its initData when the app opens, and a client that restores a cached webview
+// can hold an old one — reading it fresh each time is free and picks up a newer
+// value whenever the client does provide one.
+const initData = () => tg?.initData || "";
+const INIT = initData();
 
 async function api(path, body) {
   const r = await fetch(`/app/api/${path}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", "X-Telegram-Init-Data": INIT },
+    headers: { "Content-Type": "application/json", "X-Telegram-Init-Data": initData() },
     body: JSON.stringify(body || {}),
   });
   const data = await r.json().catch(() => ({}));
@@ -24,7 +29,7 @@ async function uploadReceipt(file, kind, id, amount) {
   fd.append("kind", kind);
   fd.append("id", id || 0);
   fd.append("amount", amount || 0);
-  const r = await fetch("/app/api/receipt", { method: "POST", headers: { "X-Telegram-Init-Data": INIT }, body: fd });
+  const r = await fetch("/app/api/receipt", { method: "POST", headers: { "X-Telegram-Init-Data": initData() }, body: fd });
   const d = await r.json().catch(() => ({}));
   if (!r.ok || d.error) throw new Error(d.error || "upload_failed");
   return d;
@@ -917,7 +922,14 @@ export default function App() {
   const [tab, setTab] = useState("home");
   const [boot, setBoot] = useState(null);
   const [err, setErr] = useState("");
-  const load = useCallback(() => { api("bootstrap").then(setBoot).catch((e) => setErr(String(e.message || e))); }, []);
+  const [reason, setReason] = useState("");
+  const load = useCallback(() => {
+    setErr(""); setReason("");
+    api("bootstrap").then(setBoot).catch((e) => {
+      setReason(e?.data?.reason || "");
+      setErr(String(e.message || e));
+    });
+  }, []);
   useEffect(() => { load(); }, [load]);
   const balance = boot?.user?.balance ?? 0;
   const setBalance = useCallback((newBal) => {
@@ -925,13 +937,35 @@ export default function App() {
     setBoot((b) => (b ? { ...b, user: { ...b.user, balance: newBal } } : b));
   }, []);
 
-  if (err) return (
-    <div className="fullscreen center">
-      <div className="empty-emoji">🔒</div>
-      <p>دسترسی نامعتبر است. لطفاً از داخل ربات تلگرام باز کنید.</p>
-      <small className="muted">{err}</small>
-    </div>
-  );
+  if (err) {
+    // An expired session is by far the common case and it is not the customer
+    // doing anything wrong — their client kept the app open, or restored it
+    // from cache, so Telegram never issued a fresh signature. Telling them
+    // "invalid access" for that reads as an accusation and leaves them stuck.
+    const expired = reason === "expired" || reason === "no_data";
+    return (
+      <div className="fullscreen center">
+        <div className="empty-emoji">{expired ? "🔄" : "🔒"}</div>
+        {expired ? (
+          <>
+            <p>این صفحه قدیمی شده است.</p>
+            <small className="muted" style={{ lineHeight: 2 }}>
+              یک بار ببندش و دوباره از داخل ربات باز کن — درست می‌شود.
+            </small>
+          </>
+        ) : (
+          <>
+            <p>دسترسی نامعتبر است. لطفاً از داخل ربات تلگرام باز کنید.</p>
+            <small className="muted">{err}</small>
+          </>
+        )}
+        <button className="btn-primary sm" style={{ marginTop: 14 }}
+                onClick={() => { try { tg?.close?.(); } catch (e) { location.reload(); } }}>
+          {expired ? "بستن و باز کردن دوباره" : "تلاش دوباره"}
+        </button>
+      </div>
+    );
+  }
   if (!boot) return <div className="fullscreen center"><Spinner /></div>;
   if (boot.enabled === false) return (
     <div className="fullscreen center"><div className="empty-emoji">🛠</div><p>{boot.brand?.title || "Atlas"} موقتاً در دسترس نیست.</p></div>
