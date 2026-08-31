@@ -2938,6 +2938,7 @@ async def post_got_message(msg: Message, state: FSMContext):
         "`عضویت در کانال - https://t.me/mychannel`\n"
         "`سایت - https://example.com | پشتیبانی - @support`\n\n"
         f"حداکثر {_POST_MAX_BUTTONS} دکمه.\n"
+        "🚀 برای دکمه‌ی آماده‌ی «شروع ربات» بزن /startbtn\n"
         "اگر دکمه نمی‌خواهی /skip بزن.",
         parse_mode="Markdown",
         reply_markup=flow_cancel_kb(),
@@ -2959,6 +2960,29 @@ async def _post_ask_color(msg_or_cb, state: FSMContext, index: int):
         parse_mode=None,
         reply_markup=post_color_pick_kb(index, len(specs)),
     )
+
+
+@router.message(ChannelPost.buttons, F.text == "/startbtn")
+async def post_start_button(msg: Message, state: FSMContext):
+    """The one button a channel post almost always wants.
+
+    A t.me link to the bot is handled by Telegram itself — it opens the bot and
+    starts it, rather than opening a browser. Typing that URL by hand is where
+    people get it wrong, so it is offered ready-made.
+    """
+    if not is_admin(msg.from_user.id):
+        return
+    try:
+        username = (await msg.bot.get_me()).username
+    except Exception:
+        username = None
+    if not username:
+        await msg.answer("نام کاربری ربات در دسترس نیست. لینک را دستی بفرست.", parse_mode=None)
+        return
+    specs = [{"text": "🚀 شروع ربات", "url": f"https://t.me/{username}?start",
+              "row": 0, "style": "success"}]
+    await state.update_data(specs=specs)
+    await _post_ask_color(msg, state, 0)
 
 
 @router.message(ChannelPost.buttons, F.text == "/skip")
