@@ -33,6 +33,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import core.ip_guard as ipg  # noqa: E402
 from core.ip_guard import (  # noqa: E402
     ACT_CUT, ACT_NONE, ACT_REASSERT, ACT_RESTORE, ACT_WARN, DEFAULTS,
     count_concurrent, decide, group_key, parse_steps,
@@ -598,6 +599,48 @@ def main():
 
     cycle_tests()
     parser_tests()
+
+    print("\n25. A CDN EDGE IS NOT A CUSTOMER — the real one that nearly fired")
+    # Taken verbatim from the owner's own report. One subscription showed 76
+    # "places" and was one cycle from a sharing warning. Every address on the
+    # CDN-fronted server belonged to Cloudflare: a customer's connections land
+    # on dozens of edge machines, so one honest phone looked like a reseller.
+    #
+    # Counting these does not merely inflate a number, it inverts the feature —
+    # the customers punished hardest would be the ones on the server that works
+    # best in Iran.
+    real = ["193.39.9.214", "2.147.235.151", "2.147.58.13",
+            "5.211.152.139", "158.58.61.165"]
+    cf = ["162.158.182.152", "172.71.144.49", "172.71.135.38", "172.70.248.181",
+          "141.101.69.92", "104.23.239.129", "104.22.123.27", "172.69.223.146",
+          "162.158.95.10", "172.71.247.85", "141.101.96.74", "172.64.0.1",
+          "108.162.192.5", "173.245.48.9", "103.21.244.7", "188.114.96.3"]
+    for ip in cf:
+        check_true(f"{ip} is recognised as a CDN edge", ipg.is_cdn_ip(ip))
+    for ip in real:
+        check(f"{ip} is a real customer", ipg.is_cdn_ip(ip), False)
+
+    m = {ip: NOW for ip in real + cf}
+    n, groups = ipg.count_concurrent([m], NOW, 90)
+    check("only the real customers are counted", n, len(real))
+    check("and no CDN address survives into the list",
+          any(ipg.is_cdn_ip(g.split("/")[0]) for g in groups), False)
+    check("the hidden ones are counted up for the report",
+          ipg.count_cdn([m], NOW, 90), len(cf))
+
+    # 76 places vs the 5 that are actually people.
+    check("76 places becomes 5", ipg.count_concurrent(
+        [{ip: NOW for ip in real + cf * 4}], NOW, 90)[0], 5)
+
+    print("\n26. other CDNs can be added without a deploy")
+    # Iranian sellers also front configs with ArvanCloud and Derak. Rather than
+    # guess at their ranges, the owner pastes what their own log shows.
+    check("an unknown CDN is counted by default", ipg.is_cdn_ip("185.143.232.9"), False)
+    check("...and excluded once declared",
+          ipg.is_cdn_ip("185.143.232.9", "185.143.232.0/22"), True)
+    check("a malformed entry does not break the list",
+          ipg.is_cdn_ip("2.147.235.151", "not-a-cidr, 10.0.0.0/8"), False)
+    ipg._CDN_NETS.clear()
 
     print("\n" + ("ALL PASSED" if not FAILED else f"{len(FAILED)} FAILED: {FAILED}"))
     return 1 if FAILED else 0

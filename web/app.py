@@ -6027,12 +6027,19 @@ async def api_ipguard_get(request: Request):
         settings[key] = await get_setting(key, default)
     events = await get_ip_guard_events(200)
     cut = await get_cut_profiles()
+    try:
+        from core.ip_guard import coverage as ipg_coverage
+        cover = await ipg_coverage()
+    except Exception as e:
+        logger.warning("ip guard coverage failed: %s", e)
+        cover = {}
     now = int(time.time())
     return JSONResponse({
         "settings": settings,
         "defaults": IPG_DEFAULTS,
         "cut_now": [{**c, "seconds_left": max(0, int(c["penalty_until"]) - now)} for c in cut],
         "events": events,
+        "coverage": cover,
         "now": now,
     })
 

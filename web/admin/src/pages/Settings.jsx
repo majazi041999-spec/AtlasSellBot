@@ -158,6 +158,24 @@ function IpGuardCard() {
       <div className="grid" style={{ gap: 10 }}>
         <Toggle s={s} set={set} k="ip_limit_enabled" label="این سیستم فعال باشد" />
 
+        {(d.coverage?.blind_servers || []).length > 0 && (
+          <div style={{ background: "rgba(56,189,248,.09)", border: "1px solid rgba(56,189,248,.35)",
+                        borderRadius: 12, padding: 12 }}>
+            <b>🌐 این سرورها پشت CDN هستند و قابل کنترل نیستند</b>
+            <p className="muted tiny" style={{ margin: "6px 0 0", lineHeight: 2 }}>
+              {d.coverage.blind_servers.join("، ")} — روی این سرورها، آی‌پی‌ای که به
+              xray می‌رسد <b>آدرس خود کلادفلر است، نه مشتری</b>. یک مشتری روی ده‌ها
+              سرور لبه‌ی کلادفلر پخش می‌شود، پس شمارش اتصال آنجا بی‌معناست و
+              <b> عمداً انجام نمی‌شود</b> (وگرنه هر مشتری سالمی قطع می‌شد).
+              <br />
+              یعنی این محدودیت فقط روی <b>{d.coverage.policeable} سرور از {d.coverage.seen_servers}</b> اعمال می‌شود.
+              برای پوشش کامل باید روی آن سرورها آی‌پی واقعی مشتری به xray برسد
+              (nginx با <span className="mono" dir="ltr">CF-Connecting-IP</span> +
+              <span className="mono" dir="ltr"> PROXY protocol</span>).
+            </p>
+          </div>
+        )}
+
         {on && (
           <div style={{ background: dry ? "rgba(251,191,36,.09)" : "rgba(251,113,133,.09)",
                         border: `1px solid ${dry ? "rgba(251,191,36,.3)" : "rgba(251,113,133,.3)"}`,
@@ -187,6 +205,8 @@ function IpGuardCard() {
               <Text s={s} set={set} k="ip_limit_strikes" label="چند بررسی پشت‌سرهم تا اقدام" ltr />
               <Text s={s} set={set} k="ip_limit_poll_seconds" label="فاصله‌ی بررسی (ثانیه)" ltr />
             </div>
+            <Text s={s} set={set} k="ip_limit_cdn_extra"
+                  label="رنج CDN های دیگر (اختیاری، با کاما) — کلادفلر از قبل هست" ltr />
 
             {cut.length > 0 && (
               <div>

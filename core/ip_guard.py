@@ -78,6 +78,7 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 import logging
+import re
 import time
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
@@ -157,6 +158,10 @@ DEFAULTS: Dict[str, str] = {
     # How long the warning stands before the first cut. They asked to be told
     # first and only cut if it continues, so this is that grace.
     "ip_limit_grace_seconds": "300",
+    # Extra CDN ranges, comma or newline separated. Cloudflare is built in.
+    # Iranian sellers also front configs with ArvanCloud, Derak and others, and
+    # every one of them makes a single customer look like dozens.
+    "ip_limit_cdn_extra": "",
     # Keep the audit log bounded.
     "ip_limit_event_keep_days": "30",
 }
@@ -203,7 +208,77 @@ def parse_steps(raw: str) -> List[int]:
     return out or [60, 600, 3600]
 
 
-def group_key(ip: str, v4_bits: int = 32, v6_bits: int = 64) -> Optional[str]:
+# ─────────────────────────────────────────────────────── CDN edge addresses
+
+# Cloudflare's published ranges (cloudflare.com/ips-v4 and /ips-v6). They change
+# rarely — roughly once a year — and `ip_limit_cdn_extra` lets the owner add
+# more without waiting for a deploy.
+#
+# WHY THIS LIST EXISTS, and it is not an optimisation. A config served through a
+# CDN reaches xray from the CDN's edge, never from the customer. Cloudflare has
+# thousands of edge machines and a single customer's connections land on dozens
+# of them, so one honest customer on one phone appeared here as SEVENTY-SIX
+# separate places. On the owner's own fleet that is exactly what happened: every
+# address on the CDN-fronted server was Cloudflare, and the subscription was one
+# cycle away from being warned for sharing it had not done.
+#
+# Counting a CDN edge as a place does not merely inflate a number, it inverts
+# the feature: the customers who would be punished hardest are the ones using
+# the server that works best in Iran. So these are never counted. What we lose
+# is the ability to see sharing THROUGH that server — a real loss, reported
+# honestly rather than papered over, because the alternative is punishing the
+# innocent to catch the guilty.
+_CDN_CIDRS = (
+    # Cloudflare IPv4
+    "173.245.48.0/20", "103.21.244.0/22", "103.22.200.0/22", "103.31.4.0/22",
+    "141.101.64.0/18", "108.162.192.0/18", "190.93.240.0/20", "188.114.96.0/20",
+    "197.234.240.0/22", "198.41.128.0/17", "162.158.0.0/15", "104.16.0.0/13",
+    "104.24.0.0/14", "172.64.0.0/13", "131.0.72.0/22",
+    # Cloudflare IPv6
+    "2400:cb00::/32", "2606:4700::/32", "2803:f800::/32", "2405:b500::/32",
+    "2405:8100::/32", "2a06:98c0::/29", "2c0f:f248::/32",
+)
+
+_CDN_NETS: List = []
+_CDN_EXTRA_RAW = ""
+
+
+def _cdn_nets(extra: str = "") -> List:
+    """Parsed CDN networks, rebuilt only when the owner's extra list changes."""
+    global _CDN_NETS, _CDN_EXTRA_RAW
+    if _CDN_NETS and extra == _CDN_EXTRA_RAW:
+        return _CDN_NETS
+    nets = []
+    for cidr in _CDN_CIDRS:
+        try:
+            nets.append(ipaddress.ip_network(cidr))
+        except ValueError:
+            continue
+    # Iranian sellers also front configs with ArvanCloud, Derak and others, and
+    # every one of them produces the same failure. Rather than guess at their
+    # ranges, the owner pastes whatever their own log shows.
+    for part in re.split(r"[\s,;]+", str(extra or "")):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            nets.append(ipaddress.ip_network(part, strict=False))
+        except ValueError:
+            continue
+    _CDN_NETS, _CDN_EXTRA_RAW = nets, extra
+    return nets
+
+
+def is_cdn_ip(ip: str, extra: str = "") -> bool:
+    try:
+        addr = ipaddress.ip_address(str(ip or "").strip())
+    except ValueError:
+        return False
+    return any(addr in n for n in _cdn_nets(extra))
+
+
+def group_key(ip: str, v4_bits: int = 32, v6_bits: int = 64,
+              cdn_extra: str = "") -> Optional[str]:
     """The network an address belongs to, or None if it is not one we count.
 
     IPv6 defaults to /64 because that is genuinely one host: a phone cycles
@@ -233,6 +308,10 @@ def group_key(ip: str, v4_bits: int = 32, v6_bits: int = 64) -> Optional[str]:
     # local probe. They are not a customer and must never fill the allowance.
     if addr.is_loopback or addr.is_private or addr.is_link_local or addr.is_unspecified:
         return None
+    # Neither is a CDN edge. See _CDN_CIDRS for why this is the difference
+    # between a working feature and one that punishes the wrong people.
+    if any(addr in n for n in _cdn_nets(cdn_extra)):
+        return None
     if addr.version == 4:
         bits = max(8, min(32, int(v4_bits)))
     else:
@@ -244,7 +323,8 @@ def group_key(ip: str, v4_bits: int = 32, v6_bits: int = 64) -> Optional[str]:
 
 
 def count_concurrent(ip_maps: Iterable[Dict[str, int]], now: int, fresh_seconds: int,
-                     v4_bits: int = 32, v6_bits: int = 64) -> Tuple[int, List[str]]:
+                     v4_bits: int = 32, v6_bits: int = 64,
+                     cdn_extra: str = "") -> Tuple[int, List[str]]:
     """How many distinct places are connected to this subscription right now.
 
     `ip_maps` is one {ip: last_seen_epoch_s} per node of the subscription. They
@@ -257,11 +337,28 @@ def count_concurrent(ip_maps: Iterable[Dict[str, int]], now: int, fresh_seconds:
         for ip, ts in (m or {}).items():
             if int(ts or 0) < cutoff:
                 continue
-            key = group_key(ip, v4_bits, v6_bits)
+            key = group_key(ip, v4_bits, v6_bits, cdn_extra)
             if key and int(ts or 0) > groups.get(key, 0):
                 groups[key] = int(ts or 0)
     ordered = sorted(groups, key=lambda k: -groups[k])
     return len(ordered), ordered
+
+
+def count_cdn(ip_maps: Iterable[Dict[str, int]], now: int, fresh_seconds: int,
+              cdn_extra: str = "") -> int:
+    """How many fresh addresses were hidden because they were CDN edges.
+
+    Reported rather than silently dropped: "we can see nothing through this
+    server" is something the owner needs to know, and it is the one number that
+    explains why a busy customer shows as idle.
+    """
+    cutoff = now - max(10, int(fresh_seconds))
+    seen = set()
+    for m in ip_maps:
+        for ip, ts in (m or {}).items():
+            if int(ts or 0) >= cutoff and is_cdn_ip(ip, cdn_extra):
+                seen.add(ip)
+    return len(seen)
 
 
 # ---------------------------------------------------------------- the decision
@@ -636,6 +733,7 @@ async def live_connections(profile_id: int, *, confirm: bool = True,
     v4 = _int(cfg, "ip_limit_ipv4_bits", 8, 32)
     v6 = _int(cfg, "ip_limit_ipv6_bits", 16, 128)
     default_limit = _int(cfg, "ip_limit_default", 1, 1000)
+    cdn_extra = cfg.get("ip_limit_cdn_extra") or ""
 
     rows = {r["profile_id"]: r for r in await get_ip_guard_profile_nodes()}
     row = rows.get(pid)
@@ -651,6 +749,7 @@ async def live_connections(profile_id: int, *, confirm: bool = True,
     # Candidates from the shared snapshot: cheap, and usually already in memory.
     candidates: Dict[str, tuple] = {}          # ip -> (last_seen, server_id)
     suspects: Dict[int, List[str]] = {}
+    cdn_hidden: Dict[int, int] = {}            # server_id -> addresses we cannot attribute
     for sid, email in row["nodes"]:
         m = (by_server.get(sid) or {}).get(email)
         if not m:
@@ -658,6 +757,12 @@ async def live_connections(profile_id: int, *, confirm: bool = True,
         hot = False
         for ip, ts in m.items():
             if int(ts or 0) < now - fresh:
+                continue
+            if is_cdn_ip(ip, cdn_extra):
+                # A CDN edge, not a customer. Not counted, but counted UP, so
+                # the report can say why this customer looks quieter than they
+                # are instead of leaving the owner to wonder.
+                cdn_hidden[sid] = cdn_hidden.get(sid, 0) + 1
                 continue
             hot = True
             if int(ts or 0) > candidates.get(ip, (0, 0))[0]:
@@ -685,6 +790,8 @@ async def live_connections(profile_id: int, *, confirm: bool = True,
                     for ip, ts in m.items():
                         if int(ts or 0) < now - active_seconds:
                             continue
+                        if is_cdn_ip(ip, cdn_extra):
+                            continue
                         if int(ts or 0) > confirmed_ips.get(ip, (0, 0))[0]:
                             confirmed_ips[ip] = (int(ts), sid)
             finally:
@@ -694,7 +801,7 @@ async def live_connections(profile_id: int, *, confirm: bool = True,
 
     groups: Dict[str, tuple] = {}
     for ip, (ts, sid) in candidates.items():
-        key = group_key(ip, v4, v6)
+        key = group_key(ip, v4, v6, cdn_extra)
         if not key:
             continue
         if ts > groups.get(key, (0,))[0]:
@@ -713,9 +820,14 @@ async def live_connections(profile_id: int, *, confirm: bool = True,
         "places": places,
         "limit": int(row.get("ip_limit") or 0) or default_limit,
         "checked_at": now,
-        "partial": answered < total,
+        # A CDN-fronted server hides its traffic completely, so a reading that
+        # includes one is a floor, not a total — exactly like an unreachable
+        # panel, and reported the same way.
+        "partial": answered < total or bool(cdn_hidden),
         "answered": answered,
         "servers": total,
+        "cdn_hidden": sum(cdn_hidden.values()),
+        "cdn_servers": sorted({names.get(sid, str(sid)) for sid in cdn_hidden}),
         "cached": False,
     }
     _LIVE_CACHE[pid] = (time.time(), payload)
@@ -751,7 +863,13 @@ def render_connections(live: dict, *, reveal: bool = False, name: str = "") -> s
             body += f"{i}. {p.get('ip', '')}{srv} — {when}\n"
 
     tail = ""
-    if live.get("partial"):
+    if live.get("cdn_hidden"):
+        srv = "، ".join(live.get("cdn_servers") or [])
+        tail += (f"\n🌐 {live['cdn_hidden']} آدرس روی {srv} از خودِ CDN (کلادفلر) بود و شمرده "
+                 "نشد — آن آدرس‌ها مال کلادفلر است، نه مشتری، و یک مشتری روی ده‌ها سرور "
+                 "لبه‌ی کلادفلر پخش می‌شود. اتصال‌هایی که از این سرور می‌آیند اصلاً قابل "
+                 "شمارش نیستند.\n")
+    if int(live.get("answered") or 0) < int(live.get("servers") or 0):
         tail += (f"\n⚠️ فقط {live.get('answered')} سرور از {live.get('servers')} جواب داد، "
                  "پس این عدد کمینه است و ممکن است بیشتر باشد.\n")
     tail += ("\nℹ️ ملاک، اتصال هم‌زمان است. اگر با اینترنت همراه هستی و آی‌پی‌ات عوض می‌شود، "
@@ -779,7 +897,7 @@ def reset_snapshot() -> None:
 async def confirm_active(servers_by_id: Dict[int, Dict], nodes: Sequence[Tuple[int, str]],
                          suspect_emails_by_server: Dict[int, List[str]], now: int,
                          active_seconds: int, v4_bits: int, v6_bits: int,
-                         timeout: float = 15.0) -> Tuple[int, List[str]]:
+                         timeout: float = 15.0, cdn_extra: str = "") -> Tuple[int, List[str]]:
     """Second look at ONE subscription, using the honest timestamps.
 
     The bulk endpoint re-stamps every address with the time of the scan, so it
@@ -819,7 +937,7 @@ async def confirm_active(servers_by_id: Dict[int, Dict], nodes: Sequence[Tuple[i
                 for ip, ts in m.items():
                     if int(ts or 0) < now - max(30, int(active_seconds)):
                         continue
-                    key = group_key(ip, v4_bits, v6_bits)
+                    key = group_key(ip, v4_bits, v6_bits, cdn_extra)
                     if key and int(ts or 0) > groups.get(key, 0):
                         groups[key] = int(ts or 0)
         finally:
@@ -947,6 +1065,39 @@ async def diagnose(profile_id: int) -> Dict:
     return out
 
 
+async def coverage() -> Dict:
+    """Which servers can actually be policed, and which are blind.
+
+    A CDN-fronted inbound reports the CDN's edge, never the customer, so a
+    connection limit cannot see anything through it. That is not a detail to
+    bury: on the owner's own fleet three of five servers are fronted, which
+    means the limit applies to a minority of their traffic. Saying so is the
+    difference between a feature and a false sense of one.
+
+    Reads the SHARED snapshot without forcing a refresh, so opening the settings
+    page costs nothing.
+    """
+    cfg = await _cfg()
+    extra = cfg.get("ip_limit_cdn_extra") or ""
+    servers = await get_servers(active_only=True)
+    names = {int(s["id"]): (s.get("name") or f"#{s['id']}") for s in servers}
+    by_server, _online, answered, total = await fleet_snapshot(10 ** 9, servers)
+    out = []
+    for sid, ips in by_server.items():
+        seen = {ip for m in ips.values() for ip in m}
+        if not seen:
+            continue
+        cdn = sum(1 for ip in seen if is_cdn_ip(ip, extra))
+        pct = round(cdn / len(seen) * 100)
+        out.append({"server": names.get(sid, str(sid)), "addresses": len(seen),
+                    "cdn": cdn, "cdn_percent": pct, "blind": pct > 80})
+    out.sort(key=lambda r: -r["cdn_percent"])
+    blind = [r["server"] for r in out if r["blind"]]
+    return {"servers": out, "blind_servers": blind,
+            "policeable": len(out) - len(blind), "seen_servers": len(out),
+            "stale": answered == 0 or not out}
+
+
 async def restore_all(reason: str = "") -> int:
     """Switch every currently-cut subscription back on and forget the ladder.
 
@@ -1003,6 +1154,7 @@ async def run_cycle(bot=None) -> Dict:
     strikes_needed = _int(cfg, "ip_limit_strikes", 1, 20)
     v4_bits = _int(cfg, "ip_limit_ipv4_bits", 8, 32)
     v6_bits = _int(cfg, "ip_limit_ipv6_bits", 16, 128)
+    cdn_extra = cfg.get("ip_limit_cdn_extra") or ""
     steps = parse_steps(cfg["ip_limit_steps"])
     decay = _int(cfg, "ip_limit_decay_hours", 1, 8760) * 3600
     warn_cooldown = _int(cfg, "ip_limit_warn_cooldown", 60, 86400)
@@ -1066,7 +1218,7 @@ async def run_cycle(bot=None) -> Dict:
         pid = row["profile_id"]
         limit = int(row.get("ip_limit") or 0) or default_limit
         maps = [by_email.get(email, {}) for _, email in row["nodes"]]
-        count, groups = count_concurrent(maps, now, fresh, v4_bits, v6_bits)
+        count, groups = count_concurrent(maps, now, fresh, v4_bits, v6_bits, cdn_extra)
         state = states.get(pid) or {}
 
         # Stage two. The scan above can only say "these addresses are in the
@@ -1084,7 +1236,7 @@ async def run_cycle(bot=None) -> Dict:
             if suspects:
                 confirmed, confirmed_groups = await confirm_active(
                     servers_by_id, row["nodes"], suspects, now,
-                    active_seconds, v4_bits, v6_bits)
+                    active_seconds, v4_bits, v6_bits, cdn_extra=cdn_extra)
                 if confirmed < 0:
                     # Could not confirm. Leave the state exactly as it was and
                     # try again next cycle rather than guessing in either

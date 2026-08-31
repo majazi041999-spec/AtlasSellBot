@@ -120,6 +120,20 @@ async def main():
                 if ok and emails and fresh == 0:
                     print("       ⚠️  clients online but no addresses — xray behind a proxy "
                           "without PROXY protocol, or statsUserOnline off")
+                # The failure that actually bit: a CDN-fronted inbound reports the
+                # CDN's edge, never the customer, and one customer lands on dozens
+                # of edges. Counting those as people would punish the customers on
+                # the server that works best.
+                from core.ip_guard import is_cdn_ip
+                seen = {ip for m in ips.values() for ip in m}
+                cdn = {ip for ip in seen if is_cdn_ip(ip)}
+                if cdn:
+                    pct = round(len(cdn) / max(1, len(seen)) * 100)
+                    print(f"       🌐 {len(cdn)} of {len(seen)} addresses are CDN edges ({pct}%)"
+                          " — traffic through this server CANNOT be attributed to a customer.")
+                    if pct > 80:
+                        print("          this inbound is served through a CDN. connection limits "
+                              "cannot police it, and are not applied to it.")
         except Exception as e:
             row(s["name"], "UNREACHABLE", str(e)[:60])
         finally:
