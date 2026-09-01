@@ -35,6 +35,11 @@ export default function UserDetail({ uid, go }) {
   const [editSub, setEditSub] = useState(null);
   const disc = useRef(); const ppg = useRef(); const unl = useRef(); const balAmt = useRef(); const balNote = useRef(); const repBrand = useRef();
   const [role, setRole] = useState("none");
+  // Declared here with the other hooks, NOT after the early returns below —
+  // React requires every hook to run in the same order on every render, and an
+  // early `return <Loading/>` before this useState was skipping it on the first
+  // paint and adding it on the second, which crashed the whole page (React #310).
+  const [conns, setConns] = useState({});
 
   const load = () => api.get(`/api/users/${uid}`).then((r) => { setD(r); setRole(r.user.admin_role || "none"); }).catch(() => setD({ error: true }));
   useEffect(() => { load(); }, [uid]);
@@ -56,7 +61,6 @@ export default function UserDetail({ uid, go }) {
   // Live connection check, per service. This is the screen the owner is on when
   // a customer says "it disconnected me" or when a shared link is suspected, so
   // it asks the panels again rather than reusing any cached reading.
-  const [conns, setConns] = useState({});
   const checkConns = async (id) => {
     setConns((s) => ({ ...s, [id]: "loading" }));
     try {
