@@ -1871,6 +1871,12 @@ async def get_rep_purchases(user_id: int, since: Optional[str] = None,
 
     The per-row price of a bulk order is divided by its service count, so the
     rows sum to what was actually charged instead of counting the order N times.
+
+    Reseller prices are floored to the nearest 1000: every package price and
+    every reseller custom price is a multiple of 1000, and the card-matching
+    jitter is always <1000, so this recovers the exact clean amount the
+    wallet actually charged and keeps reseller accounting round. (The jitter
+    is pointless for reps — they pay from the wallet, not card-to-card.)
     """
     where = ["sp.user_id=?"]
     args: List = [int(user_id)]
@@ -1900,7 +1906,7 @@ async def get_rep_purchases(user_id: int, since: Optional[str] = None,
                        o.approved_at AS order_approved_at,
                        o.custom_config_name AS order_name,
                        MAX(COALESCE(NULLIF(o.bulk_count,0),1), 1) AS bulk_count,
-                       COALESCE(NULLIF(o.custom_price,0), p.price, 0) AS order_price,
+                       (COALESCE(NULLIF(o.custom_price,0), p.price, 0) / 1000 * 1000) AS order_price,
                        COALESCE(p.name,'') AS package_name,
                        COALESCE(p.is_unlimited,0) AS pkg_unlimited
                 FROM subscription_profiles sp
@@ -1915,7 +1921,7 @@ async def get_rep_purchases(user_id: int, since: Optional[str] = None,
 
         async with db.execute(
             f"""SELECT o.id AS order_id, o.created_at, o.approved_at AS order_approved_at,
-                       COALESCE(NULLIF(o.custom_price,0), p.price, 0) AS order_price,
+                       (COALESCE(NULLIF(o.custom_price,0), p.price, 0) / 1000 * 1000) AS order_price,
                        COALESCE(NULLIF(o.custom_traffic_gb,0), p.traffic_gb, 0) AS traffic_gb,
                        COALESCE(NULLIF(o.custom_duration_days,0), p.duration_days, 0) AS duration_days,
                        COALESCE(p.is_unlimited,0) AS pkg_unlimited,
@@ -1937,7 +1943,7 @@ async def get_rep_purchases(user_id: int, since: Optional[str] = None,
         # bulk order would be counted once per service it produced.
         async with db.execute(
             f"""SELECT COUNT(*) AS n,
-                       COALESCE(SUM(COALESCE(NULLIF(o.custom_price,0), p.price, 0)),0) AS total
+                       COALESCE(SUM(COALESCE(NULLIF(o.custom_price,0), p.price, 0) / 1000 * 1000),0) AS total
                 FROM orders o LEFT JOIN packages p ON p.id=o.package_id
                 WHERE {' AND '.join(order_where)}""",
             tuple(order_args),
