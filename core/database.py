@@ -361,7 +361,35 @@ CREATE TABLE IF NOT EXISTS ip_guard_events (
     created_at INTEGER DEFAULT 0
 );
 
+CREATE TABLE IF NOT EXISTS ip_guard_sightings (
+    -- Which subscriptions each address has been seen serving. This is the raw
+    -- evidence for gateway detection and nothing else reads it. It is pruned to
+    -- a rolling window so it stays a few thousand rows, not a history.
+    ip TEXT NOT NULL,
+    profile_id INTEGER NOT NULL,
+    last_seen INTEGER DEFAULT 0,
+    PRIMARY KEY (ip, profile_id)
+);
+
+CREATE TABLE IF NOT EXISTS ip_guard_gateways (
+    -- A network that is known to put MANY customers behind ONE address: a
+    -- carrier NAT, a corporate egress, a home router with two subscriptions on
+    -- it. Every address inside one of these counts as a single place, because
+    -- that is what it is.
+    block TEXT PRIMARY KEY,
+    source TEXT DEFAULT 'auto',           -- seed | auto | manual
+    enabled INTEGER DEFAULT 1,
+    profiles INTEGER DEFAULT 0,           -- distinct subscriptions seen behind it
+    shared_ips INTEGER DEFAULT 0,         -- addresses caught serving two of them
+    evidence TEXT DEFAULT '',             -- the address that proved it, for the panel
+    note TEXT DEFAULT '',
+    first_seen INTEGER DEFAULT 0,
+    last_seen INTEGER DEFAULT 0
+);
+
 CREATE INDEX IF NOT EXISTS idx_ipguard_events_profile ON ip_guard_events(profile_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_ipguard_sight_seen ON ip_guard_sightings(last_seen);
+CREATE INDEX IF NOT EXISTS idx_ipguard_sight_ip ON ip_guard_sightings(ip);
 CREATE INDEX IF NOT EXISTS idx_ipguard_events_created ON ip_guard_events(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_ipguard_penalty ON ip_guard_state(penalty_until);
 CREATE INDEX IF NOT EXISTS idx_subnodes_profile_active ON subscription_nodes(profile_id, is_active);
@@ -4086,4 +4114,121 @@ async def set_profile_ip_limit(profile_id: int, value: int) -> None:
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("UPDATE subscription_profiles SET ip_limit=? WHERE id=?",
                          (max(0, min(1000, int(value))), int(profile_id)))
+        await db.commit()
+
+
+# ─────────────────────── shared-gateway detection ────────────────────────────
+# A carrier NAT does not announce itself. But it leaves one signature that
+# nothing else produces: the SAME public address serving TWO different
+# subscriptions. A device cannot do that. A gateway does it constantly.
+#
+# These three functions are the whole evidence trail — record what each address
+# was seen serving, ask which addresses served more than one customer, and keep
+# the resulting list of networks.
+
+async def record_ip_sightings_bulk(rows: List[tuple]) -> int:
+    """`rows` is [(ip, profile_id, seen_at)]. One statement, one commit.
+
+    Called once per guard cycle with every fresh address on the fleet — a few
+    hundred — so it must never become a write per address.
+    """
+    if not rows:
+        return 0
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.executemany(
+            """INSERT INTO ip_guard_sightings (ip, profile_id, last_seen)
+               VALUES (?, ?, ?)
+               ON CONFLICT(ip, profile_id) DO UPDATE SET last_seen=excluded.last_seen""",
+            [(str(ip), int(pid), int(ts)) for ip, pid, ts in rows])
+        await db.commit()
+        return len(rows)
+
+
+async def prune_ip_sightings(window_hours: int = 24) -> int:
+    cutoff = int(time.time()) - max(1, int(window_hours)) * 3600
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute("DELETE FROM ip_guard_sightings WHERE last_seen < ?", (cutoff,))
+        await db.commit()
+        return cur.rowcount or 0
+
+
+async def find_shared_addresses(window_hours: int = 24, min_users: int = 2) -> List[Dict]:
+    """Addresses that served at least `min_users` DIFFERENT CUSTOMERS.
+
+    This is the proof, and the distinction between customers and subscriptions
+    is the whole reason it holds. One person who owns two subscriptions and uses
+    them from the same home router shares an address legitimately, and counting
+    that as a gateway would widen their neighbourhood's whole /24 for no reason.
+    Two different customers on one address cannot be explained that way: no
+    device belongs to two people, so something is translating between them.
+    """
+    cutoff = int(time.time()) - max(1, int(window_hours)) * 3600
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            """SELECT s.ip                          AS ip,
+                      COUNT(DISTINCT sp.user_id)    AS users,
+                      COUNT(DISTINCT s.profile_id)  AS profiles,
+                      MAX(s.last_seen)              AS last_seen
+                 FROM ip_guard_sightings s
+                 JOIN subscription_profiles sp ON sp.id = s.profile_id
+                WHERE s.last_seen >= ?
+                GROUP BY s.ip
+               HAVING users >= ?""",
+            (cutoff, max(2, int(min_users)))
+        ) as c:
+            return [dict(r) for r in await c.fetchall()]
+
+
+async def get_gateways(enabled_only: bool = False) -> List[Dict]:
+    sql = "SELECT * FROM ip_guard_gateways"
+    if enabled_only:
+        sql += " WHERE enabled=1"
+    sql += " ORDER BY profiles DESC, block"
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(sql) as c:
+            return [dict(r) for r in await c.fetchall()]
+
+
+async def upsert_gateway(block: str, *, source: str = "auto", profiles: int = 0,
+                         shared_ips: int = 0, evidence: str = "", note: str = "",
+                         enabled: Optional[bool] = None) -> None:
+    """Record or refresh one gateway network.
+
+    `enabled` is left alone on an update unless given, so re-detecting a block
+    the owner switched off does not switch it back on behind their back.
+    """
+    now = int(time.time())
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """INSERT INTO ip_guard_gateways
+                   (block, source, enabled, profiles, shared_ips, evidence, note,
+                    first_seen, last_seen)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(block) DO UPDATE SET
+                   profiles   = MAX(ip_guard_gateways.profiles, excluded.profiles),
+                   shared_ips = MAX(ip_guard_gateways.shared_ips, excluded.shared_ips),
+                   evidence   = CASE WHEN excluded.evidence != '' THEN excluded.evidence
+                                     ELSE ip_guard_gateways.evidence END,
+                   note       = CASE WHEN excluded.note != '' THEN excluded.note
+                                     ELSE ip_guard_gateways.note END,
+                   enabled    = COALESCE(?, ip_guard_gateways.enabled),
+                   last_seen  = excluded.last_seen""",
+            (str(block), str(source), 1 if enabled is None else int(bool(enabled)),
+             int(profiles), int(shared_ips), str(evidence), str(note), now, now,
+             None if enabled is None else int(bool(enabled))))
+        await db.commit()
+
+
+async def set_gateway_enabled(block: str, enabled: bool) -> None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE ip_guard_gateways SET enabled=? WHERE block=?",
+                         (1 if enabled else 0, str(block)))
+        await db.commit()
+
+
+async def delete_gateway(block: str) -> None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("DELETE FROM ip_guard_gateways WHERE block=?", (str(block),))
         await db.commit()

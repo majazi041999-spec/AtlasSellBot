@@ -120,6 +120,108 @@ function AiModelPicker({ s, set }) {
   );
 }
 
+// ── shared gateways ─────────────────────────────────────────────────────────
+// A carrier NAT gives one subscriber a different public address per connection,
+// so one customer on a phone can look like twenty simultaneous places. This
+// panel shows the networks known to do that, the evidence for each, and lets
+// the owner overrule one that was learned wrongly.
+function GatewayList({ gateways, s, set, reload }) {
+  const [open, setOpen] = useState(false);
+  const [block, setBlock] = useState("");
+  const [busy, setBusy] = useState(false);
+  const learn = String(s.ip_limit_gateways_enabled ?? "1") === "1";
+
+  const act = async (fn, ok) => {
+    setBusy(true);
+    try { await fn(); toast(ok); await reload(); }
+    catch (e) { toast(e.message || "خطا", "err"); }
+    finally { setBusy(false); }
+  };
+  const add = () => act(
+    () => api.post("/api/ipguard/gateways", { block: block.trim() }),
+    "اضافه شد").then(() => setBlock(""));
+  const toggle = (g) => act(
+    () => api.post("/api/ipguard/gateways/toggle",
+                   { block: g.block, enabled: g.enabled ? "0" : "1" }),
+    g.enabled ? "غیرفعال شد" : "فعال شد");
+  const del = (g) => act(
+    () => api.post("/api/ipguard/gateways/delete", { block: g.block }), "حذف شد");
+  const scan = () => act(async () => {
+    const r = await api.post("/api/ipguard/gateways/scan", {});
+    toast(`${(r.found || []).length} شبکه‌ی مشترک شناسایی شد`);
+  }, "بررسی انجام شد");
+
+  const live = gateways.filter((g) => g.enabled).length;
+
+  return (
+    <div style={{ background: "rgba(129,140,248,.07)", border: "1px solid rgba(129,140,248,.3)",
+                  borderRadius: 12, padding: 12 }}>
+      <Toggle s={s} set={set} k="ip_limit_gateways_enabled"
+              label="شبکه‌های مشترک (NAT اپراتور) خودکار شناسایی شوند" />
+      <p className="muted tiny" style={{ margin: "6px 0 0", lineHeight: 2 }}>
+        اپراتورهای موبایل و بعضی ISPها برای <b>هر اتصال</b> یک آی‌پی متفاوت از استخر
+        خودشان می‌دهند. بدون این قابلیت، یک مشتری روی گوشی می‌تواند <b>۱۵ تا ۲۰ مکان</b>
+        شمرده شود و بی‌گناه قطع شود. یک آدرس که برای <b>دو مشتری متفاوت</b> دیده شود
+        قطعاً یک گیت‌وی مشترک است — هیچ دستگاهی مال دو نفر نیست — و شبکه‌ی آن آدرس
+        از آن به بعد روی هم <b>یک مکان</b> حساب می‌شود.
+      </p>
+
+      <div className="row between" style={{ marginTop: 10, gap: 8, flexWrap: "wrap" }}>
+        <span className="muted tiny">
+          {gateways.length ? `${live} شبکه‌ی فعال از ${gateways.length}` : "هنوز شبکه‌ای ثبت نشده"}
+        </span>
+        <span className="row" style={{ gap: 6 }}>
+          <button className="btn xs" disabled={busy || !learn} onClick={scan}>🔍 بررسی الان</button>
+          <button className="btn xs" onClick={() => setOpen((v) => !v)}>
+            {open ? "بستن" : "مدیریت"}
+          </button>
+        </span>
+      </div>
+
+      {open && (
+        <div className="grid" style={{ gap: 8, marginTop: 10 }}>
+          {gateways.map((g) => (
+            <div key={g.block} className="row between"
+                 style={{ background: "var(--bg2)", border: "1px solid var(--line)",
+                          borderRadius: 10, padding: "8px 10px", gap: 8, flexWrap: "wrap" }}>
+              <span className="grid" style={{ gap: 2 }}>
+                <span className="mono" dir="ltr" style={{ fontSize: ".85rem" }}>{g.block}</span>
+                <span className="muted tiny" dir="ltr">
+                  {g.evidence || g.note || "—"}
+                </span>
+              </span>
+              <span className="row" style={{ gap: 6 }}>
+                <span className={`badge ${g.source === "manual" ? "b-blue" : g.source === "seed" ? "b-gray" : "b-green"}`}>
+                  {g.source === "manual" ? "دستی" : g.source === "seed" ? "پیش‌فرض" : "خودکار"}
+                </span>
+                {!g.enabled && <span className="badge b-gray">غیرفعال</span>}
+                <button className="btn xs" disabled={busy} onClick={() => toggle(g)}>
+                  {g.enabled ? "غیرفعال کن" : "فعال کن"}
+                </button>
+                <button className="btn xs danger" disabled={busy} onClick={() => del(g)}>حذف</button>
+              </span>
+            </div>
+          ))}
+
+          <div className="row" style={{ gap: 6 }}>
+            <input className="inp" dir="ltr" placeholder="31.171.96.0/21" value={block}
+                   onChange={(e) => setBlock(e.target.value)} />
+            <button className="btn sm" disabled={busy || !block.trim()} onClick={add}>افزودن</button>
+          </div>
+
+          <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: 10 }}>
+            <Text s={s} set={set} k="ip_limit_gateway_min_users" label="حداقل مشتری متفاوت روی یک آی‌پی" ltr />
+            <Text s={s} set={set} k="ip_limit_gateway_bits" label="پهنای بلوک (مثلاً ۲۴ = /24)" ltr />
+            <Text s={s} set={set} k="ip_limit_gateway_window_hours" label="بازه‌ی شواهد (ساعت)" ltr />
+            <Text s={s} set={set} k="ip_limit_gateway_scan_minutes" label="فاصله‌ی بررسی (دقیقه)" ltr />
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+
 function IpGuardCard() {
   const [d, setD] = useState(null);
   const [s, setS] = useState({});
@@ -207,6 +309,7 @@ function IpGuardCard() {
             </div>
             <Text s={s} set={set} k="ip_limit_cdn_extra"
                   label="رنج CDN های دیگر (اختیاری، با کاما) — کلادفلر از قبل هست" ltr />
+            <GatewayList gateways={d.gateways || []} s={s} set={set} reload={load} />
 
             {cut.length > 0 && (
               <div>

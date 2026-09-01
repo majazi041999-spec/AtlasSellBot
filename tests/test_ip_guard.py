@@ -418,6 +418,95 @@ def cycle_tests():
         os.chdir(cwd)
 
 
+
+
+def gateway_detection_tests():
+    """Detection against a real database, not a mock.
+
+    The rule being proved is the one the whole feature rests on: an address seen
+    under two subscriptions belonging to the SAME customer proves nothing, and
+    the same address under two DIFFERENT customers proves a gateway.
+    """
+    print("\n34. detection promotes a block only on cross-customer evidence")
+
+    async def run():
+        import tempfile
+        work = os.path.join(tempfile.mkdtemp(prefix="atlas_gw_"), "t.db")
+        import core.database as db
+        db.DB_PATH = work
+        await db.init_db()
+
+        # Three subscriptions: 10 and 11 belong to ONE customer, 12 to another.
+        # That split is the whole point of the section.
+        import aiosqlite
+        async with aiosqlite.connect(work) as con:
+            await con.execute("INSERT INTO users (telegram_id, full_name) "
+                              "VALUES (111,'one'), (222,'two')")
+            for pid, tg in ((10, 111), (11, 111), (12, 222)):
+                await con.execute(
+                    """INSERT INTO subscription_profiles
+                           (id, user_id, token, email, name, traffic_gb, duration_days,
+                            expire_timestamp, is_active)
+                       VALUES (?, (SELECT id FROM users WHERE telegram_id=?), ?, ?, ?,
+                               50, 30, ?, 1)""",
+                    (pid, tg, f"tok{pid}", f"sub{pid}", f"sub {pid}",
+                     int(time.time() + 86400) * 1000))
+            await con.commit()
+
+        now = int(time.time())
+        # One customer, two of their own subscriptions, one home address.
+        await db.record_ip_sightings_bulk([("77.1.2.3", 10, now), ("77.1.2.3", 11, now)])
+        found = await ipg.detect_gateways(24, 2, 24)
+        check("one customer's two subscriptions prove nothing", len(found), 0)
+        check("...and no network was promoted", len(await db.get_gateways()), 0)
+
+        # Now a second CUSTOMER appears on that same address.
+        await db.record_ip_sightings_bulk([("77.1.2.3", 12, now)])
+        found = await ipg.detect_gateways(24, 2, 24)
+        check("two different customers on one address is proof", len(found), 1)
+        check("the promoted block is the /24", found[0]["block"], "77.1.2.0/24")
+        rows = await db.get_gateways(enabled_only=True)
+        check("it is live immediately", len(rows), 1)
+        check_true("and it records the address that proved it",
+                   "77.1.2.3" in (rows[0]["evidence"] or ""))
+
+        # The owner overrules it. A later pass must not undo that.
+        await db.set_gateway_enabled("77.1.2.0/24", False)
+        await ipg.detect_gateways(24, 2, 24)
+        check("an overruled block stays overruled",
+              len(await db.get_gateways(enabled_only=True)), 0)
+        check("...but is still listed, so it can be turned back on",
+              len(await db.get_gateways()), 1)
+
+        # Evidence ages out of the window.
+        await db.record_ip_sightings_bulk([("88.9.9.9", 10, now - 40 * 3600),
+                                           ("88.9.9.9", 12, now - 40 * 3600)])
+        def _ips(rows):
+            return {r["ip"] for r in rows}
+        check("old evidence is outside a 24h window",
+              "88.9.9.9" in _ips(await db.find_shared_addresses(24, 2)), False)
+        check("...but visible in a wider one",
+              "88.9.9.9" in _ips(await db.find_shared_addresses(72, 2)), True)
+        pruned = await db.prune_ip_sightings(24)
+        check_true("pruning removes it", pruned >= 2)
+
+        # The loader must serve exactly the enabled set.
+        ipg.reset_gateways()
+        await db.set_gateway_enabled("77.1.2.0/24", True)
+        ipg.reset_gateways()
+        nets = await ipg.gateway_nets(0)
+        check("the loader returns the enabled block", len(nets), 1)
+        check("and counting uses it",
+              count_concurrent([{"77.1.2.9": now, "77.1.2.44": now, "77.1.2.7": now}],
+                               now, 90, gateways=nets)[0], 1)
+
+        try:
+            os.unlink(work)
+        except OSError:
+            pass
+
+    asyncio.run(run())
+
 def main():
     print("1. addresses are grouped the way the mechanism requires")
     check("a plain v4 address is itself", group_key("5.113.20.7"), "5.113.20.7/32")
@@ -666,6 +755,115 @@ def main():
     kb = ipg._view_kb(566)
     check("the button opens THAT subscription",
           kb.inline_keyboard[0][0].callback_data, "sub_show:566")
+
+
+    print("\n28. a shared gateway counts as ONE place, however many addresses")
+    # This is the section that matters most in the whole file. Before it existed,
+    # 160 of 164 enforcement events on the live fleet came from a single
+    # Azerbaijani carrier pool: one customer on a phone was counted as twenty and
+    # cut. The pool is real and so are these addresses.
+    import ipaddress
+    pool = [ipaddress.ip_network("31.171.96.0/21")]
+    baku = {
+        "31.171.101.149": NOW, "31.171.101.27": NOW, "31.171.101.100": NOW,
+        "31.171.100.187": NOW, "31.171.101.117": NOW, "31.171.100.116": NOW,
+        "31.171.101.182": NOW, "31.171.101.246": NOW, "31.171.101.126": NOW,
+        "31.171.100.9": NOW, "31.171.101.145": NOW, "31.171.101.23": NOW,
+        "31.171.100.193": NOW, "31.171.101.32": NOW, "31.171.101.67": NOW,
+    }
+    n, _ = count_concurrent([baku], NOW, 90)
+    check("without the gateway list, one customer looks like fifteen", n, 15)
+    n, keys = count_concurrent([baku], NOW, 90, gateways=pool)
+    check("with it, they are one place", n, 1)
+    check_true("and the key names the network that explains it",
+               keys[0] == "gw:31.171.96.0/21")
+
+    # The collapse must not swallow anything OUTSIDE the pool, or a genuine
+    # sharer would only have to keep one foot in a carrier NAT to disappear.
+    mixed = dict(baku)
+    mixed.update({"2.147.55.10": NOW, "5.113.36.44": NOW, "89.40.242.7": NOW})
+    n, _ = count_concurrent([mixed], NOW, 90, gateways=pool)
+    check("addresses outside the gateway still count separately", n, 4)
+
+    # Two different gateways are two different places: a customer at home and a
+    # customer at work are genuinely in two locations.
+    two = [ipaddress.ip_network("31.171.96.0/21"), ipaddress.ip_network("46.34.168.0/24")]
+    n, _ = count_concurrent([{**baku, "46.34.168.95": NOW, "46.34.168.3": NOW}],
+                            NOW, 90, gateways=two)
+    check("two gateways are two places", n, 2)
+
+    print("\n29. the gateway rule respects everything that came before it")
+    # Freshness still wins: a stale address inside a gateway is not a live place,
+    # and a gateway with nothing fresh in it must not conjure a place from
+    # nowhere.
+    stale = {ip: NOW - 3600 for ip in baku}
+    n, _ = count_concurrent([stale], NOW, 90, gateways=pool)
+    check("stale addresses in a gateway count for nothing", n, 0)
+    # CDN exclusion is checked BEFORE the gateway, so declaring a CDN range as a
+    # gateway cannot resurrect addresses that must never be counted.
+    check("a CDN address is still not a place",
+          group_key("172.67.10.4", gateways=[ipaddress.ip_network("172.64.0.0/13")]), None)
+    check("a private address is still not a place",
+          group_key("10.0.0.5", gateways=[ipaddress.ip_network("10.0.0.0/8")]), None)
+    # The gateway width wins over ip_limit_ipv4_bits — otherwise a /32 setting
+    # would re-split the pool it was meant to fold.
+    n, _ = count_concurrent([baku], NOW, 90, v4_bits=32, gateways=pool)
+    check("a /32 setting does not re-split a gateway", n, 1)
+
+    print("\n30. detection: the proof is two CUSTOMERS on one address")
+    # A device cannot belong to two people. That single fact is the whole basis
+    # for promoting a network, so it is worth stating as a test: the query the
+    # detector runs must count distinct USERS, never distinct subscriptions.
+    #
+    # One person owning two subscriptions and using both from the same home
+    # router shares an address perfectly legitimately. Treating that as proof
+    # would widen their neighbours' whole /24 for no reason at all.
+    from core.database import find_shared_addresses
+    import inspect
+    src = inspect.getsource(find_shared_addresses)
+    check_true("the detector groups by distinct user, not profile",
+               "COUNT(DISTINCT sp.user_id)" in src)
+    check_true("...and filters on that count", "HAVING users >= ?" in src)
+
+    print("\n31. a wrongly-learned gateway can be overruled, and stays overruled")
+    # Detection is automatic, so the owner needs a real veto. Disabling a block
+    # must survive the next detection pass finding it again — otherwise the veto
+    # lasts ten minutes and the owner cannot tell.
+    up = inspect.getsource(__import__("core.database", fromlist=["upsert_gateway"]).upsert_gateway)
+    check_true("re-detecting a block does not re-enable it",
+               "COALESCE(?, ip_guard_gateways.enabled)" in up)
+
+    print("\n32. the report explains a collapsed place instead of looking wrong")
+    # "15 addresses in the panel, 1 place here" reads as a bug unless the report
+    # says why. The owner asked exactly this question about a real subscription.
+    live = {
+        "ok": True, "count": 1, "limit": 5, "answered": 5, "servers": 5,
+        "gateway_places": 1, "gateway_addresses": 15, "cdn_hidden": 0,
+        "places": [{"ip": "31.171.101.149", "seconds_ago": 3, "server": "هلند ۱",
+                    "gateway": True, "gateway_block": "31.171.96.0/21", "addresses": 15}],
+    }
+    text = ipg.render_connections(live, reveal=True, name="AH-KHal")
+    check_true("the collapsed place says how many addresses it stands for",
+               "15" in text)
+    check_true("...and the report explains carrier NAT", "NAT" in text)
+    # A normal single-address place must not acquire the note.
+    plain = ipg.render_connections(
+        {"ok": True, "count": 1, "limit": 5, "answered": 5, "servers": 5,
+         "gateway_places": 0, "gateway_addresses": 0, "cdn_hidden": 0,
+         "places": [{"ip": "2.147.55.10", "seconds_ago": 3, "server": "هلند ۱",
+                     "gateway": False, "gateway_block": "", "addresses": 1}]},
+        reveal=True)
+    check("an ordinary place gets no gateway note", "NAT" in plain, False)
+
+    print("\n33. losing the gateway list must not re-inflate everyone's count")
+    # A failed read returning [] would silently restore the exact behaviour this
+    # feature exists to end — and it would do it quietly, at the worst moment,
+    # while the panel was already unhealthy.
+    src = inspect.getsource(ipg.gateway_nets)
+    check_true("a failed load keeps the cached list", "return nets" in src)
+    check_true("...and says so", "logger.warning" in src)
+
+    gateway_detection_tests()
 
     print("\n" + ("ALL PASSED" if not FAILED else f"{len(FAILED)} FAILED: {FAILED}"))
     return 1 if FAILED else 0

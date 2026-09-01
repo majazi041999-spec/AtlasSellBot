@@ -6052,6 +6052,12 @@ async def api_ipguard_get(request: Request):
     except Exception as e:
         logger.warning("ip guard coverage failed: %s", e)
         cover = {}
+    try:
+        from core.database import get_gateways
+        gateways = await get_gateways()
+    except Exception as e:
+        logger.warning("ip guard gateways failed: %s", e)
+        gateways = []
     now = int(time.time())
     return JSONResponse({
         "settings": settings,
@@ -6059,6 +6065,7 @@ async def api_ipguard_get(request: Request):
         "cut_now": [{**c, "seconds_left": max(0, int(c["penalty_until"]) - now)} for c in cut],
         "events": events,
         "coverage": cover,
+        "gateways": gateways,
         "now": now,
     })
 
@@ -6073,7 +6080,7 @@ async def api_ipguard_save(request: Request):
     from core.ip_guard import DEFAULTS as IPG_DEFAULTS, parse_steps
 
     d = await _node_form_body(request)
-    flags = ("ip_limit_enabled", "ip_limit_warn_only")
+    flags = ("ip_limit_enabled", "ip_limit_warn_only", "ip_limit_gateways_enabled")
     bounds = {
         "ip_limit_default": (1, 1000),
         "ip_limit_poll_seconds": (15, 3600),
@@ -6087,6 +6094,10 @@ async def api_ipguard_save(request: Request):
         "ip_limit_grace_seconds": (30, 86400),
         "ip_limit_reassert_after": (30, 7200),
         "ip_limit_event_keep_days": (1, 3650),
+        "ip_limit_gateway_bits": (8, 32),
+        "ip_limit_gateway_min_users": (2, 50),
+        "ip_limit_gateway_window_hours": (1, 8760),
+        "ip_limit_gateway_scan_minutes": (1, 1440),
     }
     was_on = await get_setting("ip_limit_enabled", "0") == "1"
 
@@ -6155,6 +6166,85 @@ async def api_ipguard_set_limit(request: Request, profile_id: int):
         return JSONResponse({"success": False, "error": "bad value"}, status_code=400)
     await set_profile_ip_limit(int(profile_id), max(0, min(1000, value)))
     return JSONResponse({"success": True, "ip_limit": max(0, min(1000, value))})
+
+
+# ── shared gateways ──────────────────────────────────────────────────────────
+# The list of networks that put many customers behind one address. Detection
+# fills it in on its own; these exist so the owner can see the evidence, add a
+# network they know about, and overrule one that was learned wrongly.
+
+@app.post(f"/{S}/api/ipguard/gateways")
+async def api_ipguard_gateway_add(request: Request):
+    """Add a network by hand. Validated here so an unparseable block can never
+    reach the loader, where it would be skipped silently every cycle."""
+    if not _auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    import ipaddress
+    from core.database import upsert_gateway
+    from core.ip_guard import reset_gateways
+    d = await _node_form_body(request)
+    raw = str(d.get("block") or "").strip()
+    try:
+        net = ipaddress.ip_network(raw, strict=False)
+    except ValueError:
+        return JSONResponse({"success": False, "error": "شبکه معتبر نیست. مثال: 31.171.96.0/21"},
+                            status_code=400)
+    # A very wide block would quietly excuse a whole country. /16 for v4 is
+    # already generous for a carrier NAT; anything wider is a mistake.
+    if net.version == 4 and net.prefixlen < 16:
+        return JSONResponse({"success": False, "error": "بلوک بیش از حد بزرگ است (حداقل /16)"},
+                            status_code=400)
+    if net.version == 6 and net.prefixlen < 32:
+        return JSONResponse({"success": False, "error": "بلوک بیش از حد بزرگ است (حداقل /32)"},
+                            status_code=400)
+    await upsert_gateway(str(net), source="manual", note=str(d.get("note") or "").strip()[:200])
+    reset_gateways()
+    return JSONResponse({"success": True, "block": str(net)})
+
+
+@app.post(f"/{S}/api/ipguard/gateways/toggle")
+async def api_ipguard_gateway_toggle(request: Request):
+    """Switch one network on or off. The block goes in the BODY, not the path —
+    it contains a slash."""
+    if not _auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    from core.database import set_gateway_enabled
+    from core.ip_guard import reset_gateways
+    d = await _node_form_body(request)
+    block = str(d.get("block") or "").strip()
+    if not block:
+        return JSONResponse({"success": False, "error": "no block"}, status_code=400)
+    await set_gateway_enabled(block, _as_flag(d.get("enabled")))
+    reset_gateways()
+    return JSONResponse({"success": True})
+
+
+@app.post(f"/{S}/api/ipguard/gateways/delete")
+async def api_ipguard_gateway_delete(request: Request):
+    if not _auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    from core.database import delete_gateway
+    from core.ip_guard import reset_gateways
+    d = await _node_form_body(request)
+    block = str(d.get("block") or "").strip()
+    if not block:
+        return JSONResponse({"success": False, "error": "no block"}, status_code=400)
+    await delete_gateway(block)
+    reset_gateways()
+    return JSONResponse({"success": True})
+
+
+@app.post(f"/{S}/api/ipguard/gateways/scan")
+async def api_ipguard_gateway_scan(request: Request):
+    """Run detection right now instead of waiting for the next scheduled pass."""
+    if not _auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    from core.ip_guard import detect_gateways
+    found = await detect_gateways(
+        int(await get_setting("ip_limit_gateway_window_hours", "24") or 24),
+        int(await get_setting("ip_limit_gateway_min_users", "2") or 2),
+        int(await get_setting("ip_limit_gateway_bits", "24") or 24))
+    return JSONResponse({"success": True, "found": found})
 
 
 # ── SPA catch-all — MUST stay the last route in this file ─────────────────────

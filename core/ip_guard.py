@@ -57,9 +57,15 @@ their link. Iranian mobile carriers hand out changing addresses, a phone moving
 between Wi-Fi and 4G is briefly visible on both, and one VPN client opens
 several parallel connections. Three things guard against that, and they are all
 deliberately conservative:
-  * Addresses are counted by NETWORK, not by address — /24 for IPv4 and /64 for
-    IPv6 by default — so a device rotating inside one pool, or an IPv6 host
-    cycling privacy addresses inside its own /64, stays one place.
+  * IPv6 is counted by /64, not by address, so a host cycling privacy addresses
+    inside its own /64 stays one place. IPv4 is counted exactly, because a
+    blanket /24 blunts real detection without helping (see `group_key`).
+  * Addresses inside a known SHARED GATEWAY — a carrier NAT, a corporate
+    egress — collapse to ONE place however many of them there are. Those
+    networks are learned, not guessed: see `detect_gateways`. This matters more
+    than everything else here combined. On this fleet, before it existed, 160
+    of 164 enforcement events came from one Azerbaijani carrier pool that made
+    single customers look like twenty.
   * An address only counts while it is FRESH. The panel keeps an address for 30
     minutes, which is far too coarse for "at the same time", but it re-stamps
     the timestamp on every 10-second scan for as long as the connection is live.
@@ -85,6 +91,11 @@ from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 from core.database import (
     get_setting,
     set_setting,
+    get_gateways,
+    upsert_gateway,
+    record_ip_sightings_bulk,
+    prune_ip_sightings,
+    find_shared_addresses,
     get_servers,
     get_ip_guard_states,
     save_ip_guard_state,
@@ -110,6 +121,19 @@ DEFAULTS: Dict[str, str] = {
     # thing the owner sees is a week of evidence rather than angry customers.
     "ip_limit_warn_only": "1",
     "ip_limit_default": "5",
+    # --- shared-gateway detection. See detect_gateways() for the reasoning.
+    # Learning is on because the alternative — counting a carrier NAT as one
+    # place per address — is not a stricter policy, it is a broken one.
+    "ip_limit_gateways_enabled": "1",
+    # The prefix a proven gateway address widens to. /24 is deliberately narrow:
+    # the evidence is about one address, and inferring a whole /20 from it would
+    # excuse far more than was shown.
+    "ip_limit_gateway_bits": "24",
+    # How many DIFFERENT CUSTOMERS must share one address before it counts as
+    # proof. Two is enough — no device is two customers.
+    "ip_limit_gateway_min_users": "2",
+    "ip_limit_gateway_window_hours": "24",
+    "ip_limit_gateway_scan_minutes": "10",
     # How often we look. The panel refreshes its own view every 10s, so there is
     # nothing to gain below ~30s and it only costs requests.
     "ip_limit_poll_seconds": "60",
@@ -277,8 +301,27 @@ def is_cdn_ip(ip: str, extra: str = "") -> bool:
     return any(addr in n for n in _cdn_nets(extra))
 
 
+GATEWAY_PREFIX = "gw:"
+
+
+def gateway_of(addr, gateways) -> Optional[str]:
+    """The gateway network containing `addr`, or None.
+
+    A linear scan, because the list is a handful of entries and is consulted a
+    few hundred times a cycle. Anything cleverer would cost more to maintain
+    than it saves.
+    """
+    for net in gateways or ():
+        try:
+            if addr.version == net.version and addr in net:
+                return str(net)
+        except TypeError:
+            continue
+    return None
+
+
 def group_key(ip: str, v4_bits: int = 32, v6_bits: int = 64,
-              cdn_extra: str = "") -> Optional[str]:
+              cdn_extra: str = "", gateways=None) -> Optional[str]:
     """The network an address belongs to, or None if it is not one we count.
 
     IPv6 defaults to /64 because that is genuinely one host: a phone cycles
@@ -312,6 +355,14 @@ def group_key(ip: str, v4_bits: int = 32, v6_bits: int = 64,
     # between a working feature and one that punishes the wrong people.
     if any(addr in n for n in _cdn_nets(cdn_extra)):
         return None
+    # A known shared gateway collapses to ONE key however many addresses come
+    # out of it, because that is one place: a carrier NAT hands a single
+    # customer a different source address per connection, and counting those
+    # separately turns one person into twenty. Deliberately BEFORE the prefix
+    # maths, so the gateway's own width wins over ip_limit_ipv4_bits.
+    gw = gateway_of(addr, gateways)
+    if gw:
+        return GATEWAY_PREFIX + gw
     if addr.version == 4:
         bits = max(8, min(32, int(v4_bits)))
     else:
@@ -324,7 +375,7 @@ def group_key(ip: str, v4_bits: int = 32, v6_bits: int = 64,
 
 def count_concurrent(ip_maps: Iterable[Dict[str, int]], now: int, fresh_seconds: int,
                      v4_bits: int = 32, v6_bits: int = 64,
-                     cdn_extra: str = "") -> Tuple[int, List[str]]:
+                     cdn_extra: str = "", gateways=None) -> Tuple[int, List[str]]:
     """How many distinct places are connected to this subscription right now.
 
     `ip_maps` is one {ip: last_seen_epoch_s} per node of the subscription. They
@@ -337,7 +388,7 @@ def count_concurrent(ip_maps: Iterable[Dict[str, int]], now: int, fresh_seconds:
         for ip, ts in (m or {}).items():
             if int(ts or 0) < cutoff:
                 continue
-            key = group_key(ip, v4_bits, v6_bits, cdn_extra)
+            key = group_key(ip, v4_bits, v6_bits, cdn_extra, gateways)
             if key and int(ts or 0) > groups.get(key, 0):
                 groups[key] = int(ts or 0)
     ordered = sorted(groups, key=lambda k: -groups[k])
@@ -359,6 +410,150 @@ def count_cdn(ip_maps: Iterable[Dict[str, int]], now: int, fresh_seconds: int,
             if int(ts or 0) >= cutoff and is_cdn_ip(ip, cdn_extra):
                 seen.add(ip)
     return len(seen)
+
+
+# ------------------------------------------------------- shared gateways
+# THE PROBLEM. A carrier-grade NAT gives one subscriber a different public
+# address for every connection they open. Watched from the outside, one person
+# on a phone becomes fifteen or twenty simultaneous "places" — and the numbers
+# do not merely brush the allowance, they bury it. The addresses churn: over one
+# 150-second observation of a single subscription behind such a pool there were
+# 30 distinct addresses, only 7 of them present throughout.
+#
+# Nothing already in this module catches that. The freshness check does not: the
+# connections really are simultaneous. Stage-two confirmation does not: the
+# traffic is real. Widening the IPv4 prefix does not, because the pool spans a
+# /23 and the same reasoning that rejects a blanket /24 still applies elsewhere.
+#
+# THE SIGNATURE. A gateway leaves exactly one trace nothing else produces: the
+# same public address serving TWO DIFFERENT CUSTOMERS. A device cannot do that.
+# We already observe every address under every subscription once a minute, so
+# the evidence is free — it only had to be written down and asked for.
+#
+# WHAT IT COSTS. One batched upsert per cycle, and one GROUP BY over a table
+# pruned to a 24-hour window every ten minutes. Nothing per address, nothing per
+# customer, and not one extra request to any panel.
+#
+# WHY IT IS NARROW. A proven address widens only to its /24, and only addresses
+# proven this way promote anything. Erring the other way — inferring a carrier's
+# whole /20 from one address — would excuse far more than was actually shown.
+
+# The pool that prompted all of this. Seeded once, at first run, so the fix is
+# not waiting on 24 hours of fresh evidence before it helps anyone; after that
+# it lives or dies by the same rules as any other entry, and if the owner
+# deletes it, it stays deleted.
+_SEED_GATEWAYS: List[Tuple[str, str]] = [
+    ("31.171.96.0/21",
+     "Delta Telecom AZ (AS29049), leased block, no PTR — carrier NAT. Proven by "
+     "one address serving two unrelated customers minutes apart."),
+]
+
+# What a collapsed place is called in the report. Kept as constants because
+# these two sentences are the difference between a number that looks wrong and
+# one that explains itself.
+GW_PLACE_NOTE = " (پشت یک شبکه‌ی مشترک، {n} آدرس)"
+
+GW_CAVEAT = (
+    "\n🔗 {n} آدرس از یک شبکه‌ی مشترک (NAT اپراتور) می‌آمد و روی هم یک مکان حساب شد. "
+    "اپراتورهای موبایل برای هر اتصال یک آی‌پی متفاوت از استخر خودشان می‌دهند، "
+    "پس آن آدرس‌ها یک نفرند، نه چند نفر.\n"
+)
+
+_GW_CACHE: Tuple[float, List] = (0.0, [])
+_GW_TTL = 60
+
+
+def reset_gateways() -> None:
+    """Force the next reader to reload the list. For tests and for the panel."""
+    global _GW_CACHE
+    _GW_CACHE = (0.0, [])
+
+
+async def gateway_nets(max_age: int = _GW_TTL) -> List:
+    """The enabled gateway networks, cached for a minute.
+
+    Read once per cycle and once per live lookup, so it must not become a query
+    per subscription. A failed read returns the previous list rather than an
+    empty one: losing the gateways for a cycle would re-inflate every count
+    behind them and start warning innocent customers again.
+    """
+    global _GW_CACHE
+    ts, nets = _GW_CACHE
+    if nets and (time.time() - ts) < max(0, max_age):
+        return nets
+    try:
+        rows = await get_gateways(enabled_only=True)
+    except Exception as e:
+        logger.warning("ip guard: could not load gateways (%s), keeping %d cached", e, len(nets))
+        return nets
+    out = []
+    for r in rows:
+        try:
+            out.append(ipaddress.ip_network(str(r.get("block") or "").strip(), strict=False))
+        except ValueError:
+            logger.warning("ip guard: ignoring unparseable gateway %r", r.get("block"))
+    _GW_CACHE = (time.time(), out)
+    return out
+
+
+async def seed_gateways() -> int:
+    """Install the known-gateway seeds once, and never again."""
+    if await get_setting("ip_limit_gateway_seeded", "0") == "1":
+        return 0
+    n = 0
+    for block, note in _SEED_GATEWAYS:
+        try:
+            await upsert_gateway(block, source="seed", note=note)
+            n += 1
+        except Exception as e:
+            logger.warning("ip guard: seeding %s failed: %s", block, e)
+    await set_setting("ip_limit_gateway_seeded", "1")
+    if n:
+        logger.info("ip guard: seeded %d known gateway network(s)", n)
+        reset_gateways()
+    return n
+
+
+async def detect_gateways(window_hours: int = 24, min_users: int = 2,
+                          prefix_bits: int = 24) -> List[Dict]:
+    """Promote the networks the evidence proves are shared gateways.
+
+    Returns what it found, so the caller can log it and the panel can show the
+    address that proved each one. Newly found blocks arrive ENABLED: leaving
+    them off by default would mean the guard keeps punishing people behind them
+    until somebody notices, which is the failure this exists to end.
+    """
+    shared = await find_shared_addresses(window_hours, min_users)
+    if not shared:
+        return []
+    blocks: Dict[str, Dict] = {}
+    for row in shared:
+        try:
+            addr = ipaddress.ip_address(str(row.get("ip") or "").strip())
+        except ValueError:
+            continue
+        # v6 gateways widen to /48 — the smallest block a site is assigned —
+        # rather than the v4 prefix, which would be meaningless there.
+        bits = max(8, min(32, int(prefix_bits))) if addr.version == 4 else 48
+        try:
+            net = ipaddress.ip_network(f"{addr}/{bits}", strict=False)
+        except ValueError:
+            continue
+        b = blocks.setdefault(str(net), {"block": str(net), "shared_ips": 0,
+                                         "users": 0, "evidence": ""})
+        b["shared_ips"] += 1
+        users = int(row.get("users") or 0)
+        if users > b["users"]:
+            b["users"] = users
+            b["evidence"] = f"{row.get('ip')} served {users} different customers"
+    for b in blocks.values():
+        try:
+            await upsert_gateway(b["block"], source="auto", profiles=b["users"],
+                                 shared_ips=b["shared_ips"], evidence=b["evidence"])
+        except Exception as e:
+            logger.warning("ip guard: could not record gateway %s: %s", b["block"], e)
+    reset_gateways()
+    return list(blocks.values())
 
 
 # ---------------------------------------------------------------- the decision
@@ -776,6 +971,7 @@ async def live_connections(profile_id: int, *, confirm: bool = True,
     v6 = _int(cfg, "ip_limit_ipv6_bits", 16, 128)
     default_limit = _int(cfg, "ip_limit_default", 1, 1000)
     cdn_extra = cfg.get("ip_limit_cdn_extra") or ""
+    gateways = await gateway_nets() if cfg.get("ip_limit_gateways_enabled", "1") == "1" else []
 
     rows = {r["profile_id"]: r for r in await get_ip_guard_profile_nodes()}
     row = rows.get(pid)
@@ -842,10 +1038,12 @@ async def live_connections(profile_id: int, *, confirm: bool = True,
             candidates = confirmed_ips
 
     groups: Dict[str, tuple] = {}
+    behind: Dict[str, int] = {}          # key -> raw addresses folded into it
     for ip, (ts, sid) in candidates.items():
-        key = group_key(ip, v4, v6, cdn_extra)
+        key = group_key(ip, v4, v6, cdn_extra, gateways)
         if not key:
             continue
+        behind[key] = behind.get(key, 0) + 1
         if ts > groups.get(key, (0,))[0]:
             groups[key] = (ts, ip, sid)
 
@@ -853,9 +1051,17 @@ async def live_connections(profile_id: int, *, confirm: bool = True,
         {"ip": ip if reveal else _mask_ip(ip),
          "last_seen": ts,
          "seconds_ago": max(0, now - ts),
-         "server": names.get(sid, "")}
-        for _k, (ts, ip, sid) in sorted(groups.items(), key=lambda kv: -kv[1][0])
+         "server": names.get(sid, ""),
+         # A place standing for several addresses is the most confusing thing in
+         # this report if left unexplained: the owner counts eleven addresses in
+         # the panel and reads "1 place" here.
+         "gateway": k.startswith(GATEWAY_PREFIX),
+         "gateway_block": k[len(GATEWAY_PREFIX):] if k.startswith(GATEWAY_PREFIX) else "",
+         "addresses": behind.get(k, 1)}
+        for k, (ts, ip, sid) in sorted(groups.items(), key=lambda kv: -kv[1][0])
     ]
+    gw_folded = sum(p["addresses"] for p in places if p["gateway"])
+    gw_places = sum(1 for p in places if p["gateway"])
     payload = {
         "ok": True,
         "count": len(places),
@@ -870,6 +1076,10 @@ async def live_connections(profile_id: int, *, confirm: bool = True,
         "servers": total,
         "cdn_hidden": sum(cdn_hidden.values()),
         "cdn_servers": sorted({names.get(sid, str(sid)) for sid in cdn_hidden}),
+        # How much of the count is one shared gateway standing in for many
+        # addresses, so the report can explain itself rather than look wrong.
+        "gateway_places": gw_places,
+        "gateway_addresses": gw_folded,
         "cached": False,
     }
     _LIVE_CACHE[pid] = (time.time(), payload)
@@ -902,7 +1112,10 @@ def render_connections(live: dict, *, reveal: bool = False, name: str = "") -> s
             ago = int(p.get("seconds_ago") or 0)
             when = "همین الان" if ago < 30 else (f"{ago} ثانیه پیش" if ago < 90 else f"{ago // 60} دقیقه پیش")
             srv = f" · {p['server']}" if p.get("server") else ""
-            body += f"{i}. {p.get('ip', '')}{srv} — {when}\n"
+            extra = ""
+            if p.get("gateway") and int(p.get("addresses") or 1) > 1:
+                extra = GW_PLACE_NOTE.format(n=p["addresses"])
+            body += f"{i}. {p.get('ip', '')}{srv}{extra} — {when}\n"
 
     tail = ""
     if live.get("cdn_hidden"):
@@ -916,6 +1129,8 @@ def render_connections(live: dict, *, reveal: bool = False, name: str = "") -> s
                  "پس این عدد کمینه است و ممکن است بیشتر باشد.\n")
     tail += ("\nℹ️ ملاک، اتصال هم‌زمان است. اگر با اینترنت همراه هستی و آی‌پی‌ات عوض می‌شود، "
              "باز هم یک مکان حساب می‌شوی — آی‌پی قبلی چون دیگر ترافیکی ندارد شمرده نمی‌شود.")
+    if int(live.get("gateway_places") or 0):
+        tail += GW_CAVEAT.format(n=live.get("gateway_addresses"))
     if not reveal:
         tail += "\nبخشی از آدرس‌ها برای حفظ حریم خصوصی پنهان شده است."
     return head + body + tail
@@ -939,7 +1154,8 @@ def reset_snapshot() -> None:
 async def confirm_active(servers_by_id: Dict[int, Dict], nodes: Sequence[Tuple[int, str]],
                          suspect_emails_by_server: Dict[int, List[str]], now: int,
                          active_seconds: int, v4_bits: int, v6_bits: int,
-                         timeout: float = 15.0, cdn_extra: str = "") -> Tuple[int, List[str]]:
+                         timeout: float = 15.0, cdn_extra: str = "",
+                         gateways=None) -> Tuple[int, List[str]]:
     """Second look at ONE subscription, using the honest timestamps.
 
     The bulk endpoint re-stamps every address with the time of the scan, so it
@@ -979,7 +1195,7 @@ async def confirm_active(servers_by_id: Dict[int, Dict], nodes: Sequence[Tuple[i
                 for ip, ts in m.items():
                     if int(ts or 0) < now - max(30, int(active_seconds)):
                         continue
-                    key = group_key(ip, v4_bits, v6_bits, cdn_extra)
+                    key = group_key(ip, v4_bits, v6_bits, cdn_extra, gateways)
                     if key and int(ts or 0) > groups.get(key, 0):
                         groups[key] = int(ts or 0)
         finally:
@@ -1203,6 +1419,17 @@ async def run_cycle(bot=None) -> Dict:
     grace = _int(cfg, "ip_limit_grace_seconds", 30, 86400)
     active_seconds = _int(cfg, "ip_limit_active_seconds", 30, 1800)
     reassert_after = _int(cfg, "ip_limit_reassert_after", 30, 7200)
+    gw_learn = cfg.get("ip_limit_gateways_enabled", "1") == "1"
+    gw_bits = _int(cfg, "ip_limit_gateway_bits", 8, 32)
+    gw_min_users = _int(cfg, "ip_limit_gateway_min_users", 2, 50)
+    gw_window = _int(cfg, "ip_limit_gateway_window_hours", 1, 8760)
+    gw_scan = _int(cfg, "ip_limit_gateway_scan_minutes", 1, 1440)
+
+    # Loaded ONCE for the whole pass. Every count below — first look and
+    # confirmation both — must use the same list, or a subscription could be
+    # counted one way and acted on another.
+    await seed_gateways()
+    gateways = await gateway_nets() if gw_learn else []
 
     profiles = await get_ip_guard_profile_nodes()
     states = await get_ip_guard_states()
@@ -1255,13 +1482,32 @@ async def run_cycle(bot=None) -> Dict:
     # away from the bot too.
     pending_state: List[tuple] = []
     pending_events: List[Dict] = []
+    # (ip, profile_id, seen_at) for gateway learning. Deduplicated per
+    # subscription, since one address commonly shows up on several of its nodes.
+    sightings: List[tuple] = []
 
     for row in profiles:
         pid = row["profile_id"]
         limit = int(row.get("ip_limit") or 0) or default_limit
         maps = [by_email.get(email, {}) for _, email in row["nodes"]]
-        count, groups = count_concurrent(maps, now, fresh, v4_bits, v6_bits, cdn_extra)
+        count, groups = count_concurrent(maps, now, fresh, v4_bits, v6_bits, cdn_extra,
+                                         gateways)
         state = states.get(pid) or {}
+
+        if gw_learn:
+            # Note who was seen where. This is the raw material for detection
+            # and the only reason it can find a gateway nobody told it about.
+            fresh_ips: Dict[str, int] = {}
+            for m in maps:
+                for ip, ts in (m or {}).items():
+                    ts = int(ts or 0)
+                    if ts >= now - fresh and ts > fresh_ips.get(ip, 0):
+                        fresh_ips[ip] = ts
+            for ip, ts in fresh_ips.items():
+                # Private and CDN addresses prove nothing about anybody.
+                if group_key(ip, 32, 64, cdn_extra) is None:
+                    continue
+                sightings.append((ip, pid, ts))
 
         # Stage two. The scan above can only say "these addresses are in the
         # online map"; it cannot tell a busy address from a half-open one,
@@ -1278,7 +1524,8 @@ async def run_cycle(bot=None) -> Dict:
             if suspects:
                 confirmed, confirmed_groups = await confirm_active(
                     servers_by_id, row["nodes"], suspects, now,
-                    active_seconds, v4_bits, v6_bits, cdn_extra=cdn_extra)
+                    active_seconds, v4_bits, v6_bits, cdn_extra=cdn_extra,
+                    gateways=gateways)
                 if confirmed < 0:
                     # Could not confirm. Leave the state exactly as it was and
                     # try again next cycle rather than guessing in either
@@ -1381,6 +1628,26 @@ async def run_cycle(bot=None) -> Dict:
     if restore_now:
         await _apply_enabled(servers_by_id, restore_now, True)
 
+    # --- learn. After the acting, never before it: detection must not be able
+    # to delay a cut, and a slow query here must not hold the panel writes.
+    found: List[Dict] = []
+    if gw_learn:
+        try:
+            if sightings:
+                await record_ip_sightings_bulk(sightings)
+            last_scan = int(float(await get_setting("ip_limit_gateway_last_scan", "0") or 0))
+            if now - last_scan >= gw_scan * 60:
+                await set_setting("ip_limit_gateway_last_scan", str(now))
+                await prune_ip_sightings(gw_window)
+                found = await detect_gateways(gw_window, gw_min_users, gw_bits)
+                for b in found:
+                    logger.info("ip guard: %s is a shared gateway — %s",
+                                b["block"], b.get("evidence") or "")
+        except Exception as e:
+            # Learning is an improvement to the counting, not a precondition for
+            # it. If it breaks, the guard keeps working on what it already knows.
+            logger.warning("ip guard: gateway learning failed: %s", e)
+
     if blind:
         logger.warning("ip guard: %s server(s) report clients online but no addresses "
                        "(%s) — xray may be behind a proxy without PROXY protocol, or "
@@ -1394,4 +1661,5 @@ async def run_cycle(bot=None) -> Dict:
         "enabled": True, "warn_only": warn_only, "profiles": len(profiles),
         "answered": answered, "blind": blind, "blind_servers": blind_names,
         "acted": acted, "watched_emails": len(by_email),
+        "gateways": len(gateways), "gateways_found": [b["block"] for b in found],
     }
