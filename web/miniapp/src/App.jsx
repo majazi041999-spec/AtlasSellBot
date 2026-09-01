@@ -444,6 +444,14 @@ function Services({ go, balance, onBalance, isRep }) {
                         </div>
                       </div>
                     ))}
+                    {conns[s.id].floor && (
+                      <p className="muted tiny" style={{ margin: "6px 0 0", lineHeight: 1.9 }}>
+                        🔗 {conns[s.id].gateway_addresses} آدرس از یک شبکه‌ی مشترک
+                        (NAT اپراتور) می‌آمد و روی هم یک مکان شمرده شد — اپراتورهای
+                        موبایل برای هر اتصال یک آی‌پی متفاوت می‌دهند. پس این عدد
+                        «حداقل» است.
+                      </p>
+                    )}
                     {conns[s.id].partial && (
                       <p className="muted tiny" style={{ margin: "6px 0 0" }}>
                         ⚠️ فقط {conns[s.id].answered} سرور از {conns[s.id].servers} جواب داد؛ این عدد کمینه است.

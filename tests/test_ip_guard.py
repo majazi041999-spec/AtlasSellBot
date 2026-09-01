@@ -899,6 +899,57 @@ def main():
     check("mixed families do not confuse containment",
           len(ipg.supersede([seed21, ipaddress.ip_network("2a01:4f8::/32")])), 2)
 
+
+    print("\n36. a count that hides a gateway is a FLOOR, and says so")
+    # Collapsing a carrier NAT to one place stops the false positives, but it
+    # buys that with a real blind spot: ten people behind one NAT are one
+    # address. So a reading UNDER the allowance no longer PROVES the customer is
+    # under it, and the report must not present it as if it did. This is the
+    # mirror of the CDN mistake — over-counting punished the innocent, and
+    # silently under-counting would tell the owner a sharer is clean.
+    def payload(count, gw_places, gw_addrs, limit=5):
+        return {
+            "ok": True, "count": count, "limit": limit, "answered": 5, "servers": 5,
+            "cdn_hidden": 0, "gateway_places": gw_places, "gateway_addresses": gw_addrs,
+            "floor": bool(gw_places),
+            "places": [{"ip": "31.171.100.54", "seconds_ago": 3, "server": "هلند ۱",
+                        "gateway": True, "gateway_block": "31.171.96.0/21",
+                        "addresses": gw_addrs}] if gw_places else
+                      [{"ip": "2.147.55.10", "seconds_ago": 3, "server": "هلند ۱",
+                        "gateway": False, "gateway_block": "", "addresses": 1}],
+        }
+
+    text = ipg.render_connections(payload(1, 1, 8), reveal=True, name="BAHRAM")
+    check_true("a collapsed reading is labelled a minimum", "حداقل" in text)
+    check_true("...and says why they cannot be told apart", "تفکیک" in text)
+    plain = ipg.render_connections(payload(2, 0, 0), reveal=True)
+    check("an ordinary reading is not labelled a minimum", "حداقل" in plain, False)
+
+    # `floor` and `partial` are different failures and must not be conflated:
+    # partial = we could not see everything; floor = we saw it and cannot
+    # resolve it. Reporting one as the other would send the owner looking in
+    # the wrong place.
+    check("floor is set when a gateway is involved", payload(1, 1, 8)["floor"], True)
+    check("floor is not set otherwise", payload(2, 0, 0)["floor"], False)
+    p = payload(1, 1, 8)
+    check("floor does not imply partial", p.get("partial", False), False)
+
+    print("\n37. the diagnosis stops calling a floor 'safely under the limit'")
+    # The owner reads this to decide whether someone is sharing. "Confirmed
+    # count is 1, allowance 5, nothing to do" is a different statement from
+    # "as far as we can tell it is 1" — and only the second one is true here.
+    import inspect
+    src = inspect.getsource(ipg.diagnose)
+    check_true("the floor is carried onto the diagnosis", 'out["floor"]' in src)
+    check_true("...and qualifies the within-limit verdict",
+               '"within_limit", "building_strikes"' in src)
+    # It must NOT soften a verdict where the customer is already over: a floor
+    # can only mean the true number is HIGHER, never lower.
+    check("a warned or cut customer is not given the benefit of the doubt",
+          'out["blocked_by"] in ("within_limit", "building_strikes")' in src, True)
+    check_true("the suffix names how many places are gateways",
+               "{n}" in ipg.DIAG_FLOOR_SUFFIX)
+
     gateway_detection_tests()
 
     print("\n" + ("ALL PASSED" if not FAILED else f"{len(FAILED)} FAILED: {FAILED}"))

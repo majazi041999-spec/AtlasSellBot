@@ -482,6 +482,27 @@ GW_CAVEAT = (
     "پس آن آدرس‌ها یک نفرند، نه چند نفر.\n"
 )
 
+# When part of the count sits behind a shared gateway, the number stops being a
+# total and becomes a MINIMUM. Several people behind one carrier NAT are one
+# address and cannot be told apart from one person — so a reading UNDER the
+# allowance no longer proves the customer is under it. Saying the number without
+# saying that would be the same mistake as the CDN one, in the other direction.
+# The diagnostic exists to name the ONE thing standing in the way. "Under the
+# allowance" stops being that when part of the count is a shared gateway — the
+# honest answer is then "under the allowance as far as we can tell", and the
+# difference matters to whoever is reading it to decide whether someone is
+# sharing their link.
+DIAG_FLOOR_SUFFIX = (
+    " ⚠️ ولی این شمارش «حداقل» است: {n} مکان از پشت یک شبکه‌ی مشترک می‌آید و "
+    "چند دستگاه پشت آن از هم قابل تفکیک نیستند. پس «زیر سقف» اینجا قطعی نیست."
+)
+
+GW_FLOOR_NOTE = (
+    "\n📉 این عدد «حداقل» است، نه شمارش دقیق. چون بخشی از اتصال‌ها از پشت یک "
+    "شبکه‌ی مشترک می‌آید، چند دستگاه پشت آن از هم قابل تفکیک نیستند و همه با هم "
+    "یک مکان شمرده می‌شوند. یعنی ممکن است واقعاً بیشتر باشد، ولی کمتر نیست.\n"
+)
+
 _GW_CACHE: Tuple[float, List] = (0.0, [])
 _GW_TTL = 60
 
@@ -1109,6 +1130,12 @@ async def live_connections(profile_id: int, *, confirm: bool = True,
         # addresses, so the report can explain itself rather than look wrong.
         "gateway_places": gw_places,
         "gateway_addresses": gw_folded,
+        # `partial` means we could not SEE everything. `floor` means we saw
+        # everything and still cannot resolve it: people behind one shared
+        # gateway are one address. Different failures, so different flags — and
+        # `floor` is the one that makes a reading UNDER the allowance
+        # inconclusive rather than reassuring.
+        "floor": bool(gw_places),
         "cached": False,
     }
     _LIVE_CACHE[pid] = (time.time(), payload)
@@ -1160,6 +1187,7 @@ def render_connections(live: dict, *, reveal: bool = False, name: str = "") -> s
              "باز هم یک مکان حساب می‌شوی — آی‌پی قبلی چون دیگر ترافیکی ندارد شمرده نمی‌شود.")
     if int(live.get("gateway_places") or 0):
         tail += GW_CAVEAT.format(n=live.get("gateway_addresses"))
+        tail += GW_FLOOR_NOTE
     if not reveal:
         tail += "\nبخشی از آدرس‌ها برای حفظ حریم خصوصی پنهان شده است."
     return head + body + tail
@@ -1300,6 +1328,9 @@ async def diagnose(profile_id: int) -> Dict:
     live = await live_connections(int(profile_id), confirm=True, reveal=False, max_age=0)
     out["counted_now"] = int(live.get("count") or 0)
     out["partial"] = bool(live.get("partial"))
+    out["floor"] = bool(live.get("floor"))
+    out["gateway_places"] = int(live.get("gateway_places") or 0)
+    out["gateway_addresses"] = int(live.get("gateway_addresses") or 0)
 
     states = await get_ip_guard_states()
     state = states.get(int(profile_id)) or {}
@@ -1349,6 +1380,11 @@ async def diagnose(profile_id: int) -> Dict:
     else:
         out["blocked_by"] = ""
         out["explain"] = f"در بررسی بعدی: {d['action']} ({d.get('reason') or ''})"
+    # Only where it changes the answer: a customer already being warned or cut
+    # is over the line regardless, and a floor cannot lower a count.
+    if out.get("floor") and out["blocked_by"] in ("within_limit", "building_strikes"):
+        out["explain"] += DIAG_FLOOR_SUFFIX.format(n=out["gateway_places"])
+
     return out
 
 
