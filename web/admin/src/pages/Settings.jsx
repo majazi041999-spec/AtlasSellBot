@@ -195,6 +195,9 @@ function GatewayList({ gateways, s, set, reload }) {
                   {g.source === "manual" ? "دستی" : g.source === "seed" ? "پیش‌فرض" : "خودکار"}
                 </span>
                 {!g.enabled && <span className="badge b-gray">غیرفعال</span>}
+                {g.enabled && g.covered_by && (
+                  <span className="badge b-gray" title={`داخل ${g.covered_by} است`}>زیرمجموعه</span>
+                )}
                 <button className="btn xs" disabled={busy} onClick={() => toggle(g)}>
                   {g.enabled ? "غیرفعال کن" : "فعال کن"}
                 </button>

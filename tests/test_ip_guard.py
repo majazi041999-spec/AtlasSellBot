@@ -863,6 +863,42 @@ def main():
     check_true("a failed load keeps the cached list", "return nets" in src)
     check_true("...and says so", "logger.warning" in src)
 
+
+    print("\n35. overlapping gateways merge, they never fragment a place")
+    # Found on the live fleet: the seeded /21 and two learned /24s inside it
+    # were all enabled at once, and the narrower ones matched first. One carrier
+    # pool became TWO places — a customer at 2 places instead of 1, which is
+    # exactly the failure this whole feature exists to prevent, just smaller.
+    seed21 = ipaddress.ip_network("31.171.96.0/21")
+    auto_a = ipaddress.ip_network("31.171.100.0/24")
+    auto_b = ipaddress.ip_network("31.171.101.0/24")
+    real = {"31.171.100.54": NOW, "31.171.101.44": NOW, "31.171.100.84": NOW}
+
+    # Order must not matter: narrow-first is how the panel actually returned it.
+    for order in ([auto_a, auto_b, seed21], [seed21, auto_a, auto_b]):
+        n, keys = count_concurrent([real], NOW, 90, gateways=ipg.supersede(order))
+        check(f"one pool is one place ({len(order)} entries, widest={order[0].prefixlen})", n, 1)
+        check("...and it is named by the widest block", keys[0], "gw:31.171.96.0/21")
+
+    check("supersede drops the covered blocks",
+          [str(x) for x in ipg.supersede([auto_a, seed21, auto_b])], ["31.171.96.0/21"])
+    check("...and keeps genuinely separate ones",
+          len(ipg.supersede([auto_a, ipaddress.ip_network("93.118.96.0/24")])), 2)
+    check("an exact duplicate is dropped once",
+          len(ipg.supersede([seed21, ipaddress.ip_network("31.171.96.0/21")])), 1)
+
+    # Belt and braces: even handed an unfiltered overlapping list, the lookup
+    # itself must pick the widest rather than whichever came first.
+    check("the lookup prefers the widest match",
+          ipg.gateway_of(ipaddress.ip_address("31.171.100.54"), [auto_a, seed21]),
+          "31.171.96.0/21")
+    check("...whichever order it is given",
+          ipg.gateway_of(ipaddress.ip_address("31.171.100.54"), [seed21, auto_a]),
+          "31.171.96.0/21")
+    # v4 and v6 must not be compared to each other.
+    check("mixed families do not confuse containment",
+          len(ipg.supersede([seed21, ipaddress.ip_network("2a01:4f8::/32")])), 2)
+
     gateway_detection_tests()
 
     print("\n" + ("ALL PASSED" if not FAILED else f"{len(FAILED)} FAILED: {FAILED}"))

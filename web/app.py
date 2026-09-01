@@ -6053,8 +6053,23 @@ async def api_ipguard_get(request: Request):
         logger.warning("ip guard coverage failed: %s", e)
         cover = {}
     try:
+        import ipaddress as _ipa
         from core.database import get_gateways
         gateways = await get_gateways()
+        # Mark the entries a wider one already covers. They are inert rather
+        # than wrong — the counting collapses overlaps — but a list showing a
+        # /21 next to two /24s inside it reads as three separate networks.
+        nets = []
+        for g in gateways:
+            try:
+                nets.append((g, _ipa.ip_network(str(g["block"]).strip(), strict=False)))
+            except ValueError:
+                g["covered_by"] = ""
+        for g, n in nets:
+            g["covered_by"] = next(
+                (str(w) for h, w in nets
+                 if h["block"] != g["block"] and h.get("enabled")
+                 and w.version == n.version and n.subnet_of(w)), "")
     except Exception as e:
         logger.warning("ip guard gateways failed: %s", e)
         gateways = []

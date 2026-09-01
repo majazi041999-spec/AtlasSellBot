@@ -307,17 +307,40 @@ GATEWAY_PREFIX = "gw:"
 def gateway_of(addr, gateways) -> Optional[str]:
     """The gateway network containing `addr`, or None.
 
+    The WIDEST enclosing network wins. That matters whenever entries overlap —
+    a seeded /21 and a learned /24 inside it — because picking the narrower one
+    would give two addresses from a single carrier pool two different keys, and
+    split one place into two. Overlap must merge, never fragment.
+
     A linear scan, because the list is a handful of entries and is consulted a
     few hundred times a cycle. Anything cleverer would cost more to maintain
     than it saves.
     """
+    best = None
     for net in gateways or ():
         try:
             if addr.version == net.version and addr in net:
-                return str(net)
+                if best is None or net.prefixlen < best.prefixlen:
+                    best = net
         except TypeError:
             continue
-    return None
+    return str(best) if best is not None else None
+
+
+def supersede(nets: List) -> List:
+    """Drop every network that sits inside another one in the list.
+
+    Detection promotes a /24 per proven address, so a carrier announcing a /21
+    accumulates several of them. Left alone they are redundant at best and, if
+    anything ever consulted them in the wrong order, actively wrong. Collapsing
+    at load time means the rest of the module only ever sees disjoint networks.
+    """
+    out: List = []
+    for n in sorted(nets, key=lambda x: (x.version, x.prefixlen)):
+        if any(n.version == w.version and n.subnet_of(w) for w in out):
+            continue
+        out.append(n)
+    return out
 
 
 def group_key(ip: str, v4_bits: int = 32, v6_bits: int = 64,
@@ -492,6 +515,7 @@ async def gateway_nets(max_age: int = _GW_TTL) -> List:
             out.append(ipaddress.ip_network(str(r.get("block") or "").strip(), strict=False))
         except ValueError:
             logger.warning("ip guard: ignoring unparseable gateway %r", r.get("block"))
+    out = supersede(out)
     _GW_CACHE = (time.time(), out)
     return out
 
@@ -526,6 +550,9 @@ async def detect_gateways(window_hours: int = 24, min_users: int = 2,
     shared = await find_shared_addresses(window_hours, min_users)
     if not shared:
         return []
+    # Already-covered blocks are not promoted: a /24 inside a known /21 adds no
+    # information and only clutters the list the owner has to read.
+    known = await gateway_nets(0)
     blocks: Dict[str, Dict] = {}
     for row in shared:
         try:
@@ -538,6 +565,8 @@ async def detect_gateways(window_hours: int = 24, min_users: int = 2,
         try:
             net = ipaddress.ip_network(f"{addr}/{bits}", strict=False)
         except ValueError:
+            continue
+        if any(net.version == w.version and net != w and net.subnet_of(w) for w in known):
             continue
         b = blocks.setdefault(str(net), {"block": str(net), "shared_ips": 0,
                                          "users": 0, "evidence": ""})
