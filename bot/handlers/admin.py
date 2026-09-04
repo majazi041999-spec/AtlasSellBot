@@ -2887,9 +2887,18 @@ async def topup_reject(cb: CallbackQuery):
 # On preserving formatting: the message is never re-rendered from text. It is
 # repeated with `copy_message`, which carries the original entities verbatim —
 # bold, italic, underline, strikethrough, spoiler, code, pre, blockquote, links,
-# mentions, custom emoji, and any media with its caption. Re-parsing through
-# HTML or Markdown is what loses custom emoji and mangles nested entities, so it
-# is not done anywhere here.
+# mentions, and any media with its caption. Re-parsing through HTML or Markdown
+# would mangle nested entities, so it is not done anywhere here.
+#
+# PREMIUM (custom) EMOJI ARE THE ONE EXCEPTION, and not because of this code.
+# Telegram's own rule: a bot may send custom_emoji entities only if it bought a
+# collectible username on Fragment, OR — when the bot owner has Premium — only
+# into private, group and supergroup chats. CHANNELS ARE EXCLUDED from that
+# second case. So a premium emoji survives the preview the admin gets in DM and
+# is downgraded to its fallback character in the channel post. `copy_message` is
+# not losing it; Telegram is stripping it on the way into the channel. The only
+# fixes are to buy the bot a Fragment username, or to post the message from a
+# Premium user account and have the bot attach the buttons afterwards.
 #
 # On forwarding: a forwarded message loses its inline keyboard — Telegram strips
 # it. That is why this posts to the channel directly instead of forwarding, and
