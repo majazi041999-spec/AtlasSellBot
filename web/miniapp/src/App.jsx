@@ -1,4 +1,5 @@
 import React, { useEffect, useState, useCallback, useRef } from "react";
+import Icon from "./Icon";
 import {
   MONTHS, WEEKDAYS, monthDays, firstWeekdayOfMonth, addMonths,
   format as jFormat, formatLong as jLong, parse as jParse, today as jToday,
@@ -113,7 +114,15 @@ function copy(text) {
   haptic("success");
 }
 
-function Spinner() { return <div className="spinner" />; }
+function Spinner() { return <div className="spinner" role="status" aria-label="در حال بارگذاری" />; }
+
+function PlanSpec({ plan, className = "pkg-spec" }) {
+  return <div className={className}>
+    <bdi>{plan.traffic_gb > 0 ? `${plan.traffic_gb} GB` : "نامحدود"}</bdi>
+    <span aria-hidden="true">·</span>
+    <span>{plan.duration_days > 0 ? `${plan.duration_days} روز` : "نامحدود"}</span>
+  </div>;
+}
 
 const DISCOUNT_ERR = {
   not_found: "کد نامعتبر است", inactive: "کد غیرفعال است", expired: "کد منقضی شده",
@@ -157,7 +166,7 @@ function PayCard({ title, payment, kind, id, amount, onDone, walletBalance, onWa
 
   if (stage === "done") return (
     <div className="card pay done">
-      <div className="done-emoji">✅</div>
+      <div className="done-emoji"><Icon name="check" /></div>
       {doneKind === "wallet" ? (
         <>
           <b>پرداخت از کیف پول انجام شد</b>
@@ -179,7 +188,7 @@ function PayCard({ title, payment, kind, id, amount, onDone, walletBalance, onWa
       {canWallet && (
         <div className="wallet-pay-box">
           <button className="btn-primary" disabled={stage === "sending" || !enoughBalance} onClick={payFromWallet}>
-            {stage === "sending" ? "در حال پرداخت…" : `💳 پرداخت از کیف پول (موجودی: ${fmt(walletBalance)})`}
+            {stage === "sending" ? "در حال پرداخت…" : <><Icon name="wallet" />پرداخت از کیف پول (موجودی: {fmt(walletBalance)})</>}
           </button>
           {!enoughBalance && <p className="muted tiny">موجودی کیف پول برای این خرید کافی نیست — می‌توانید کارت‌به‌کارت پرداخت کنید.</p>}
           <div className="pay-or">یا پرداخت کارت‌به‌کارت</div>
@@ -193,25 +202,26 @@ function PayCard({ title, payment, kind, id, amount, onDone, walletBalance, onWa
       <div className="pay-row"><span>بانک</span><b>{payment.bank || "-"}</b></div>
       <input ref={fileRef} type="file" accept="image/*" hidden onChange={onFile} />
       <button className="btn-primary" disabled={stage === "sending"} onClick={pick}>
-        {stage === "sending" ? "در حال ارسال…" : "📎 آپلود رسید پرداخت"}
+        {stage === "sending" ? "در حال ارسال…" : <><Icon name="upload" />آپلود رسید پرداخت</>}
       </button>
       <button className="btn-ghost" onClick={onDone}>بعداً</button>
     </div>
   );
 }
 
-function Header({ brand, user, isRep }) {
+function Header({ brand, user, isRep, go, compact }) {
   return (
-    <div className={"hero" + (isRep ? " hero-rep" : "")}>
+    <header className={"hero" + (isRep ? " hero-rep" : "") + (compact ? " hero-compact" : "")}>
       <div className="hero-top">
-        <div className="brand"><span className="brand-logo">{brand?.logo || "🌐"}</span><span className="brand-name">{brand?.title || "Atlas"}</span></div>
-        {isRep ? <div className="rep-badge">👑 نماینده</div> : <div className="hello">سلام {user?.name || ""} 👋</div>}
+        <div className="brand"><span className="brand-logo">{brand?.logo || <Icon name="globe" />}</span><div><span className="brand-name">{brand?.title || "Atlas"}</span><span className="brand-caption">دنیای تو، بدون مرز</span></div></div>
+        <div className="account-mark">{isRep ? <span className="rep-badge">پنل نماینده</span> : <><span className="account-dot" />حساب کاربری</>}</div>
       </div>
+      <div className="hero-greeting"><span className="hello">سلام {user?.name || "دوست عزیز"}</span><h1>{isRep ? "کسب‌وکارت، در یک نگاه" : "به دنیای اطلس خوش اومدی"}</h1></div>
       <div className="wallet-pill">
-        <span>موجودی کیف پول</span>
-        <b>{fmt(user?.balance)} <small>تومان</small></b>
+        <div className="wallet-summary"><span className="wallet-label"><Icon name="wallet" />موجودی کیف پول</span><b><span dir="ltr">{fmt(user?.balance)}</span> <small>تومان</small></b></div>
+        <button className="wallet-add" onClick={() => { haptic(); go("wallet"); }} aria-label="شارژ کیف پول"><Icon name="plus" /><span>شارژ</span></button>
       </div>
-    </div>
+    </header>
   );
 }
 
@@ -219,22 +229,22 @@ function Home({ data, go }) {
   const isRep = data.is_rep;
   const f = data.rep?.financials || {};
   const tiles = isRep ? [
-    { k: "buy", icon: "🛒", label: "ساخت سرویس", grad: "linear-gradient(135deg,#7c6fff,#a78bfa)" },
-    { k: "services", icon: "👥", label: "مشتریان من", grad: "linear-gradient(135deg,#10b981,#34d399)" },
-    { k: "rep", icon: "📈", label: "گزارش فروش", grad: "linear-gradient(135deg,#f59e0b,#fbbf24)" },
-    { k: "wallet", icon: "💳", label: "کیف پول", grad: "linear-gradient(135deg,#0891b2,#22d3ee)" },
+    { k: "buy", label: "ساخت سرویس" },
+    { k: "services", label: "مشتریان من" },
+    { k: "rep", label: "گزارش فروش" },
+    { k: "wallet", label: "کیف پول" },
   ] : [
-    { k: "buy", icon: "🛒", label: "خرید سرویس", grad: "linear-gradient(135deg,#7c6fff,#a78bfa)" },
-    { k: "services", icon: "📡", label: "سرویس‌های من", grad: "linear-gradient(135deg,#10b981,#34d399)" },
-    { k: "wallet", icon: "💳", label: "کیف پول", grad: "linear-gradient(135deg,#0891b2,#22d3ee)" },
-    { k: "referral", icon: "🎁", label: "دعوت دوستان", grad: "linear-gradient(135deg,#f43f5e,#fb7185)" },
+    { k: "buy", label: "خرید سرویس" },
+    { k: "services", label: "سرویس‌های من" },
+    { k: "wallet", label: "کیف پول" },
+    { k: "referral", label: "دعوت دوستان" },
   ];
   return (
-    <div className="screen">
+    <div className="screen home-screen">
       {isRep && (
         <div className="rep-hero">
-          <div className="rep-hero-crown">👑</div>
-          <div className="rep-hero-title">سلام {data.user?.name || "نماینده عزیز"} 👋</div>
+          <div className="rep-hero-crown"><Icon name="chart" /></div>
+          <div className="rep-hero-title">نمای کلی کسب‌وکار</div>
           <div className="rep-hero-sub">به پنل نمایندگی <b>{data.rep?.brand_name || data.brand?.title}</b> خوش اومدی</div>
           <div className="rep-hero-stats">
             <div><b>{f.active_services || 0}</b><span>سرویس فعال</span></div>
@@ -245,21 +255,26 @@ function Home({ data, go }) {
       )}
       {!isRep && (
         <div className="stat-row">
-          <div className="mini-stat"><div className="mini-val">{data.stats?.active_services ?? 0}</div><div className="mini-lbl">سرویس فعال</div></div>
-          <div className="mini-stat"><div className="mini-val">{fmt(data.user?.balance)}</div><div className="mini-lbl">موجودی (تومان)</div></div>
+          <div className="mini-stat"><span className="stat-icon mint"><Icon name="services" /></span><div><div className="mini-val">{data.stats?.active_services ?? 0}<span className="status-dot" /></div><div className="mini-lbl">سرویس فعال</div></div></div>
+          <div className="mini-stat"><span className="stat-icon blue"><Icon name="wallet" /></span><div><div className="mini-val">{fmt(data.user?.balance)}</div><div className="mini-lbl">اعتبار شما · تومان</div></div></div>
         </div>
       )}
+      <button className="discover-card" onClick={() => { haptic(); go("buy"); }}>
+        <div className="discover-copy"><span className="eyebrow">{isRep ? "یک قدم تا سرویس جدید" : "وقت یک اتصال تازه‌ست"}</span><h2>{isRep ? "سرویس بعدی مشتری‌ات" : "دنیای بزرگ‌تر،\nفقط با یک اتصال."}</h2><span className="discover-cta">مشاهده سرویس‌ها <Icon name="arrow" /></span></div>
+        <div className="orbit-art" aria-hidden="true"><div className="orbit orbit-one" /><div className="orbit orbit-two" /><div className="planet"><Icon name="globe" /></div><span className="satellite satellite-one" /><span className="satellite satellite-two" /><span className="orbit-spark">+</span></div>
+      </button>
+      <div className="section-heading"><h2>دسترسی سریع</h2><span>همه‌چیز، همین‌جاست</span></div>
       <div className="tiles">
         {tiles.map((t) => (
-          <button key={t.k} className="tile" onClick={() => { haptic(); go(t.k); }}>
-            <span className="tile-icon" style={{ background: t.grad }}>{t.icon}</span>
-            <span className="tile-label">{t.label}</span>
+          <button key={t.k} className={`tile tile-${t.k}`} onClick={() => { haptic(); go(t.k); }}>
+            <span className="tile-icon"><Icon name={t.k} /></span>
+            <span className="tile-label">{t.label}</span><span className="tile-desc">{{ buy: "انتخاب پلن دلخواه", services: isRep ? "مدیریت سرویس مشتریان" : "مدیریت و تمدید", wallet: "موجودی و تراکنش‌ها", referral: "با هم، با پاداش", rep: "آمار و جزئیات خرید" }[t.k]}</span><Icon name="arrow" className="tile-arrow" />
           </button>
         ))}
       </div>
       {data.support && (
         <a className="support-card" href={`https://t.me/${data.support}`} target="_blank" rel="noreferrer">
-          <span>☎️ پشتیبانی{isRep ? " نمایندگان" : ""}</span><span className="chev">›</span>
+          <span className="support-icon"><Icon name="support" /></span><span className="support-copy"><b>کنارت هستیم</b><small>گفت‌وگو با پشتیبانی{isRep ? " نمایندگان" : ""}</small></span><Icon name="arrow" className="chev" />
         </a>
       )}
     </div>
@@ -331,7 +346,7 @@ function Services({ go, balance, onBalance, isRep }) {
           {pkgs.map((p) => (
             <button className="card pkg" key={p.id} disabled={busy === p.id} onClick={() => pickPlan(p)}>
               <div className="pkg-name">{p.name}</div>
-              <div className="pkg-spec">{p.traffic_gb > 0 ? `${p.traffic_gb} GB` : "نامحدود"} · {p.duration_days > 0 ? `${p.duration_days} روز` : "نامحدود"}</div>
+              <PlanSpec plan={p} />
               <div className="pkg-price">{fmt(p.price)} <small>تومان</small></div>
               <span className="pkg-cta">{busy === p.id ? "…" : "تمدید"}</span>
             </button>
@@ -345,8 +360,8 @@ function Services({ go, balance, onBalance, isRep }) {
   if (list === null) return <div className="screen center"><Spinner /></div>;
   if (!list.length) return (
     <div className="screen center empty">
-      <div className="empty-emoji">📭</div><p>هنوز سرویسی نداری</p>
-      <button className="btn-primary" onClick={() => go("buy")}>🛒 خرید سرویس</button>
+      <div className="empty-emoji"><Icon name="services" /></div><p>هنوز سرویسی نداری</p>
+      <button className="btn-primary" onClick={() => go("buy")}><Icon name="buy" />خرید سرویس</button>
     </div>
   );
   const needle = q.trim().toLowerCase();
@@ -358,14 +373,14 @@ function Services({ go, balance, onBalance, isRep }) {
   const filtered = sortServices(searched.filter((s) => matchFilter(s, filt)), sort);
   return (
     <div className="screen">
-      <h2 className="screen-title">{isRep ? "👥 مشتریان من" : "سرویس‌های من"}</h2>
+      <h2 className="screen-title">{isRep ? "مشتریان من" : "سرویس‌های من"}</h2>
       <div className="search-box">
-        <span className="search-ico">🔎</span>
-        <input className="inp search-inp" value={q} onChange={(e) => setQ(e.target.value)} placeholder="جستجو: نام، UUID، لینک کامل یا سرور…" />
-        {q && <button className="search-clear" onClick={() => setQ("")}>✕</button>}
+        <span className="search-ico"><Icon name="search" /></span>
+        <input aria-label="جستجوی سرویس‌ها" className="inp search-inp" value={q} onChange={(e) => setQ(e.target.value)} placeholder="جستجو: نام، UUID، لینک کامل یا سرور…" />
+        {q && <button aria-label="پاک کردن جستجو" className="search-clear" onClick={() => setQ("")}>✕</button>}
       </div>
       <div className="sortbar">
-        <select className="inp sort-sel" value={sort} onChange={(e) => { haptic("selection"); setSort(e.target.value); }}>
+        <select aria-label="مرتب‌سازی سرویس‌ها" className="inp sort-sel" value={sort} onChange={(e) => { haptic("selection"); setSort(e.target.value); }}>
           {SVC_SORTS.map((o) => <option key={o.k} value={o.k}>{o.label}</option>)}
         </select>
       </div>
@@ -392,29 +407,29 @@ function Services({ go, balance, onBalance, isRep }) {
         return (
           <div className="card svc" key={s.id}>
             <div className="svc-head">
-              <b>{s.name || "سرویس"}</b>
+              <b className="service-name"><span className="service-icon"><Icon name="services" /></span>{s.name || "سرویس"}</b>
               <span className={"badge " + (s.is_active ? "ok" : "off")}>{s.is_active ? "فعال" : "غیرفعال"}</span>
             </div>
             <div className="svc-meta">
-              <span>📊 {r.volTxt}</span><span>📅 {r.dayTxt}</span>
-              <span>🖥 {(s.nodes || []).filter((n) => n.is_active).length} سرور</span>
+              <span><Icon name="chart" /> <bdi>{r.volTxt}</bdi></span><span><Icon name="clock" /> {r.dayTxt}</span>
+              <span><Icon name="services" /> {(s.nodes || []).filter((n) => n.is_active).length} سرور</span>
             </div>
             {r.total > 0 && <div className="bar"><div className="bar-fill" style={{ width: r.pct + "%", background: r.pct > 85 ? "#fb7185" : "#34d399" }} /></div>}
             {editing === s.id ? (
               <div className="rename-row">
-                <input id={`rn-${s.id}`} className="inp" defaultValue={s.name || ""} placeholder="نام دلخواه" maxLength={40} />
+                <input id={`rn-${s.id}`} aria-label="نام سرویس" className="inp" defaultValue={s.name || ""} placeholder="نام دلخواه" maxLength={40} />
                 <button className="btn-primary sm" disabled={busy === s.id} onClick={() => doRename(s)}>ذخیره</button>
                 <button className="btn-ghost sm" onClick={() => setEditing(null)}>لغو</button>
               </div>
             ) : (
               <div className="svc-actions">
-                <button className="btn-soft sm" onClick={() => copy(s.sub_url)}>📋 کپی لینک</button>
-                <button className="btn-soft sm" onClick={() => setEditing(s.id)}>✏️ نام</button>
-                <button className="btn-soft sm" onClick={() => { haptic("selection"); setExpanded(expanded === s.id ? null : s.id); }}>🖥 سرورها</button>
+                <button className="btn-soft sm" onClick={() => copy(s.sub_url)}><Icon name="copy" />کپی لینک</button>
+                <button className="btn-soft sm" onClick={() => setEditing(s.id)}><Icon name="edit" />نام</button>
+                <button className="btn-soft sm" onClick={() => { haptic("selection"); setExpanded(expanded === s.id ? null : s.id); }}><Icon name="services" />سرورها</button>
                 <button className="btn-soft sm" onClick={() => { haptic("selection"); loadConns(s.id); }}>
-                  📶 دستگاه‌های متصل
+                  <Icon name="devices" />دستگاه‌های متصل
                 </button>
-                <button className="btn-primary sm" disabled={busy === s.id} onClick={() => openRenew(s)}>♻️ تمدید</button>
+                <button className="btn-primary sm" disabled={busy === s.id} onClick={() => openRenew(s)}><Icon name="refresh" />تمدید</button>
               </div>
             )}
             {conns[s.id] && (
@@ -471,8 +486,8 @@ function Services({ go, balance, onBalance, isRep }) {
                     <div className="node-top"><span className="node-dot" /><span className="node-lbl">{n.label}</span></div>
                     {n.uuid && <div className="node-uuid" onClick={() => copy(n.uuid)} title="کپی UUID">UUID: <span dir="ltr">{n.uuid}</span></div>}
                     <div className="node-btns">
-                      <button className="btn-soft xs" onClick={() => copy(n.link)}>📋 کپی کانفیگ</button>
-                      {n.uuid && <button className="btn-soft xs" onClick={() => copy(n.uuid)}>🔑 کپی UUID</button>}
+                      <button className="btn-soft xs" onClick={() => copy(n.link)}><Icon name="copy" />کپی کانفیگ</button>
+                      {n.uuid && <button className="btn-soft xs" onClick={() => copy(n.uuid)}><Icon name="copy" />کپی UUID</button>}
                     </div>
                   </div>
                 ))}
@@ -506,7 +521,7 @@ function Buy({ balance, onBalance }) {
 
   if (order) return (
     <div className="screen">
-      <h2 className="screen-title">پرداخت سفارش #{order.order_id}</h2>
+      <h2 className="screen-title">پرداخت سفارش <bdi>#{order.order_id}</bdi></h2>
       <PayCard payment={order.payment} kind="order" id={order.order_id}
                walletBalance={balance} onWalletPaid={onBalance}
                onDone={() => { setOrder(null); setSel(null); setCode(""); }} />
@@ -517,12 +532,12 @@ function Buy({ balance, onBalance }) {
       <h2 className="screen-title">تأیید سفارش</h2>
       <div className="card confirm">
         <div className="confirm-name">{sel.name}</div>
-        <div className="confirm-spec">{sel.traffic_gb > 0 ? `${sel.traffic_gb} GB` : "نامحدود"} · {sel.duration_days > 0 ? `${sel.duration_days} روز` : "نامحدود"}</div>
+        <PlanSpec plan={sel} className="confirm-spec" />
         <div className="confirm-price">
           {sel.base > 0 && <s className="price-base">{fmt(sel.base)}</s>} {fmt(sel.price)} <small>تومان</small>
         </div>
         <div className="code-row">
-          <input className="inp" value={code} onChange={(e) => { setCode(e.target.value); setCodeErr(""); }} placeholder="کد تخفیف (اختیاری)" dir="ltr" />
+          <input aria-label="کد تخفیف (اختیاری)" className="inp" value={code} onChange={(e) => { setCode(e.target.value); setCodeErr(""); }} placeholder="کد تخفیف (اختیاری)" dir="ltr" />
         </div>
         {codeErr && <div className="code-err">❌ {codeErr}</div>}
         <button className="btn-primary" disabled={busy} onClick={confirm}>{busy ? "…" : "ادامه به پرداخت"}</button>
@@ -534,13 +549,15 @@ function Buy({ balance, onBalance }) {
   return (
     <div className="screen">
       <h2 className="screen-title">خرید سرویس</h2>
+      <p className="screen-description">پلنی که با دنیای تو هماهنگه، انتخاب کن.</p>
       <div className="pkg-grid">
         {pkgs.map((p) => (
           <button className="card pkg" key={p.id} onClick={() => { haptic(); setSel(p); }}>
+            <span className="package-icon"><Icon name="buy" /></span>
             <div className="pkg-name">{p.name}</div>
-            <div className="pkg-spec">{p.traffic_gb > 0 ? `${p.traffic_gb} GB` : "نامحدود"} · {p.duration_days > 0 ? `${p.duration_days} روز` : "نامحدود"}</div>
+            <PlanSpec plan={p} />
             <div className="pkg-price">{p.base > 0 && <s className="price-base">{fmt(p.base)}</s>} {fmt(p.price)} <small>تومان</small></div>
-            <span className="pkg-cta">انتخاب</span>
+            <span className="pkg-cta">انتخاب سرویس <Icon name="arrow" /></span>
           </button>
         ))}
         {!pkgs.length && <p className="muted">فعلاً پکیجی موجود نیست.</p>}
@@ -575,7 +592,9 @@ function Wallet() {
   return (
     <div className="screen">
       <h2 className="screen-title">کیف پول</h2>
+      <p className="screen-description">اعتبار و تراکنش‌ها، شفاف و یک‌جا.</p>
       <div className="card balance-card">
+        <span className="balance-icon"><Icon name="wallet" /></span>
         <div className="balance-lbl">موجودی</div>
         <div className="balance-val">{fmt(w.balance)} <small>تومان</small></div>
       </div>
@@ -584,8 +603,8 @@ function Wallet() {
         <div className="preset-row">
           {presets.map((p) => <button key={p} className={"chip-amt " + (String(p) === amount ? "on" : "")} onClick={() => setAmount(String(p))}>{fmt(p)}</button>)}
         </div>
-        <input className="inp" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="مبلغ دلخواه (تومان)" inputMode="numeric" dir="ltr" />
-        <button className="btn-primary" disabled={busy} onClick={start}>{busy ? "…" : "💳 شارژ"}</button>
+        <input aria-label="مبلغ شارژ به تومان" className="inp" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="مبلغ دلخواه (تومان)" inputMode="numeric" dir="ltr" />
+        <button className="btn-primary" disabled={busy} onClick={start}>{busy ? "…" : <><Icon name="plus" />شارژ کیف پول</>}</button>
       </div>
       <div className="card">
         <div className="list-title">تراکنش‌های اخیر</div>
@@ -609,7 +628,9 @@ function Referral() {
   return (
     <div className="screen">
       <h2 className="screen-title">دعوت دوستان</h2>
+      <p className="screen-description">تجربه‌ات رو به اشتراک بذار، پاداش بگیر.</p>
       <div className="card earn-card">
+        <span className="reward-icon"><Icon name="referral" /></span>
         <div className="earn-val">{fmt(d.earned)} <small>تومان</small></div>
         <div className="earn-lbl">جایزهٔ دریافتی شما</div>
         <div className="earn-sub">👥 {d.invited || 0} دعوت · 🛒 {d.converted || 0} خرید</div>
@@ -618,7 +639,7 @@ function Referral() {
         <div className="muted">لینک اختصاصی (لمس=کپی)</div>
         <div className="link-text" dir="ltr">{d.link}</div>
       </div>
-      <button className="btn-primary" onClick={share}>📤 ارسال برای دوستان</button>
+      <button className="btn-primary" onClick={share}><Icon name="upload" />ارسال برای دوستان</button>
       {(d.tiers || []).length > 0 && (
         <div className="card">
           <div className="list-title">پله‌های جایزه</div>
@@ -752,13 +773,13 @@ function RepReport() {
   return (
     <div className="rep-report">
       <div className="card rp-filter">
-        <div className="list-title">📅 گزارش خرید بر اساس تاریخ</div>
+        <div className="list-title"><Icon name="clock" /> گزارش خرید بر اساس تاریخ</div>
         <div className="filter-chips">
           {presets.map((p) => (
             <button key={p.key} className={"fchip" + (!custom && preset === p.key ? " on" : "")}
                     onClick={() => choosePreset(p.key)}>{p.label}</button>
           ))}
-          <button className={"fchip" + (custom ? " on" : "")} onClick={openCustom}>🗓 بازه دلخواه</button>
+          <button className={"fchip" + (custom ? " on" : "")} onClick={openCustom}>بازه دلخواه</button>
         </div>
 
         {custom && (
@@ -802,27 +823,27 @@ function RepReport() {
 
           <div className="rep-stat-grid">
             <div className="card rep-stat">
-              <div className="rep-stat-ico" style={{ background: "linear-gradient(135deg,#7c6fff,#a78bfa)" }}>🆕</div>
+              <div className="rep-stat-ico mint"><Icon name="buy" /></div>
               <div className="rep-stat-val">{fmt(s.services)}</div><div className="rep-stat-lbl">سرویس جدید</div>
             </div>
             <div className="card rep-stat">
-              <div className="rep-stat-ico" style={{ background: "linear-gradient(135deg,#0891b2,#22d3ee)" }}>♻️</div>
+              <div className="rep-stat-ico blue"><Icon name="refresh" /></div>
               <div className="rep-stat-val">{fmt(s.renewals)}</div><div className="rep-stat-lbl">تمدید</div>
             </div>
             <div className="card rep-stat">
-              <div className="rep-stat-ico" style={{ background: "linear-gradient(135deg,#10b981,#34d399)" }}>💾</div>
+              <div className="rep-stat-ico mint"><Icon name="chart" /></div>
               {/* An unlimited plan has no GB to add up — it's counted separately, never as 0. */}
               <div className="rep-stat-val">{fmt(s.total_gb)} <small>GB</small></div>
               <div className="rep-stat-lbl">مجموع حجم{s.unlimited_count > 0 ? ` +${fmt(s.unlimited_count)} نامحدود` : ""}</div>
             </div>
             <div className="card rep-stat">
-              <div className="rep-stat-ico" style={{ background: "linear-gradient(135deg,#f59e0b,#fbbf24)" }}>🧾</div>
+              <div className="rep-stat-ico amber"><Icon name="chart" /></div>
               <div className="rep-stat-val">{fmt(s.orders)}</div><div className="rep-stat-lbl">سفارش</div>
             </div>
           </div>
 
           <button className="btn-primary" disabled={sending} onClick={getExcel}>
-            {sending ? "در حال ارسال به چت…" : "📥 دریافت فایل اکسل"}
+            {sending ? "در حال ارسال به چت…" : <><Icon name="upload" />دریافت فایل اکسل</>}
           </button>
           {note && <div className={"rp-note " + (note.ok ? "ok" : "err")}>{note.text}</div>}
           {!note && <p className="muted tiny" style={{ margin: 0 }}>فایل اکسل به‌صورت سند در چت شما با ربات ارسال می‌شود.</p>}
@@ -835,7 +856,7 @@ function RepReport() {
 
           {!rows.length ? (
             <div className="card center empty" style={{ padding: 26 }}>
-              <div className="empty-emoji">🗂</div>
+              <div className="empty-emoji"><Icon name="chart" /></div>
               <p>در این بازه خریدی ثبت نشده</p>
             </div>
           ) : (
@@ -881,10 +902,10 @@ function RepPanel({ data, support }) {
   const avg = f.orders ? Math.round((f.total_spent || 0) / f.orders) : 0;
   return (
     <div className="screen">
-      <h2 className="screen-title">🏢 پنل نمایندگی</h2>
+      <h2 className="screen-title">پنل نمایندگی</h2>
       <div className="card rep-brandcard">
         <div className="rep-brand-row">
-          <div className="rep-brand-logo">{rep.has_logo ? "🖼" : "🏷️"}</div>
+          <div className="rep-brand-logo"><Icon name="rep" /></div>
           <div>
             <div className="rep-brand-name">{rep.brand_name || "— برند تنظیم نشده —"}</div>
             <div className="muted tiny">{rep.has_logo ? "لوگو تنظیم شده ✅" : "لوگو تنظیم نشده"}</div>
@@ -894,17 +915,17 @@ function RepPanel({ data, support }) {
       </div>
 
       <div className="rep-stat-grid">
-        <div className="card rep-stat"><div className="rep-stat-ico" style={{ background: "linear-gradient(135deg,#7c6fff,#a78bfa)" }}>💸</div><div className="rep-stat-val">{fmt(f.total_spent)}</div><div className="rep-stat-lbl">کل خرید (ت)</div></div>
-        <div className="card rep-stat"><div className="rep-stat-ico" style={{ background: "linear-gradient(135deg,#10b981,#34d399)" }}>📅</div><div className="rep-stat-val">{fmt(f.month_spent)}</div><div className="rep-stat-lbl">خرید این ماه</div></div>
-        <div className="card rep-stat"><div className="rep-stat-ico" style={{ background: "linear-gradient(135deg,#0891b2,#22d3ee)" }}>🔑</div><div className="rep-stat-val">{f.active_services || 0}/{f.total_services || 0}</div><div className="rep-stat-lbl">سرویس فعال/کل</div></div>
-        <div className="card rep-stat"><div className="rep-stat-ico" style={{ background: "linear-gradient(135deg,#f59e0b,#fbbf24)" }}>🧾</div><div className="rep-stat-val">{fmt(f.orders)}</div><div className="rep-stat-lbl">سفارش‌ها</div></div>
+        <div className="card rep-stat"><div className="rep-stat-ico mint"><Icon name="buy" /></div><div className="rep-stat-val">{fmt(f.total_spent)}</div><div className="rep-stat-lbl">کل خرید (ت)</div></div>
+        <div className="card rep-stat"><div className="rep-stat-ico mint"><Icon name="clock" /></div><div className="rep-stat-val">{fmt(f.month_spent)}</div><div className="rep-stat-lbl">خرید این ماه</div></div>
+        <div className="card rep-stat"><div className="rep-stat-ico blue"><Icon name="services" /></div><div className="rep-stat-val">{f.active_services || 0}/{f.total_services || 0}</div><div className="rep-stat-lbl">سرویس فعال/کل</div></div>
+        <div className="card rep-stat"><div className="rep-stat-ico amber"><Icon name="chart" /></div><div className="rep-stat-val">{fmt(f.orders)}</div><div className="rep-stat-lbl">سفارش‌ها</div></div>
       </div>
 
       {/* Same gate as the tab itself — the endpoint 403s for non-reps anyway. */}
       {data.is_rep && <RepReport />}
 
       <div className="card">
-        <div className="list-title">💡 راهنما</div>
+        <div className="list-title">راهنما</div>
         <p className="muted tiny" style={{ lineHeight: 2, margin: 0 }}>
           • «سرویس‌ها» = مشتریان تو. هر سرویس را با اسم مشتری نام‌گذاری کن و لینکش را بده.<br />
           • میانگین هزینه‌ی هر سرویس: <b>{fmt(avg)}</b> تومان — قیمت فروش به مشتری منهای این = سود تو.<br />
@@ -912,19 +933,19 @@ function RepPanel({ data, support }) {
         </p>
       </div>
 
-      {support && <a className="support-card" href={`https://t.me/${support}`} target="_blank" rel="noreferrer"><span>☎️ پشتیبانی نمایندگان</span><span className="chev">›</span></a>}
+      {support && <a className="support-card" href={`https://t.me/${support}`} target="_blank" rel="noreferrer"><span className="support-icon"><Icon name="support" /></span><span className="support-copy"><b>پشتیبانی نمایندگان</b><small>برای پاسخ به سوال‌هایت کنارت هستیم</small></span><Icon name="arrow" className="chev" /></a>}
     </div>
   );
 }
 
 const TABS = [
-  { k: "home", icon: "🏠", label: "خانه" },
-  { k: "services", icon: "📡", label: "سرویس‌ها" },
-  { k: "buy", icon: "🛒", label: "خرید" },
-  { k: "wallet", icon: "💳", label: "کیف پول" },
-  { k: "referral", icon: "🎁", label: "دعوت" },
+  { k: "home", label: "خانه" },
+  { k: "services", label: "سرویس‌ها" },
+  { k: "buy", label: "خرید" },
+  { k: "wallet", label: "کیف پول" },
+  { k: "referral", label: "دعوت" },
 ];
-const REP_TAB = { k: "rep", icon: "🏢", label: "نمایندگی" };
+const REP_TAB = { k: "rep", label: "نمایندگی" };
 
 export default function App() {
   const [tab, setTab] = useState("home");
@@ -953,7 +974,7 @@ export default function App() {
     const expired = reason === "expired" || reason === "no_data";
     return (
       <div className="fullscreen center">
-        <div className="empty-emoji">{expired ? "🔄" : "🔒"}</div>
+        <div className="empty-emoji"><Icon name={expired ? "refresh" : "lock"} /></div>
         {expired ? (
           <>
             <p>این صفحه قدیمی شده است.</p>
@@ -976,14 +997,14 @@ export default function App() {
   }
   if (!boot) return <div className="fullscreen center"><Spinner /></div>;
   if (boot.enabled === false) return (
-    <div className="fullscreen center"><div className="empty-emoji">🛠</div><p>{boot.brand?.title || "Atlas"} موقتاً در دسترس نیست.</p></div>
+    <div className="fullscreen center"><div className="empty-emoji"><Icon name="services" /></div><p>{boot.brand?.title || "Atlas"} موقتاً در دسترس نیست.</p></div>
   );
 
   const tabs = boot.is_rep ? [TABS[0], TABS[1], TABS[2], REP_TAB, TABS[3]] : TABS;
 
   return (
     <div className="app">
-      <Header brand={boot.brand} user={boot.user} isRep={boot.is_rep} />
+      <Header brand={boot.brand} user={boot.user} isRep={boot.is_rep} go={setTab} compact={tab !== "home"} />
       <main className="body">
         {tab === "home" && <Home data={boot} go={setTab} />}
         {tab === "services" && <Services go={setTab} balance={balance} onBalance={setBalance} isRep={boot.is_rep} />}
@@ -992,10 +1013,10 @@ export default function App() {
         {tab === "wallet" && <Wallet />}
         {tab === "referral" && <Referral />}
       </main>
-      <nav className="tabbar">
+      <nav className="tabbar" aria-label="ناوبری اصلی">
         {tabs.map((t) => (
-          <button key={t.k} className={"tab " + (tab === t.k ? "active" : "")} onClick={() => { haptic("selection"); setTab(t.k); }}>
-            <span className="tab-icon">{t.icon}</span><span className="tab-label">{t.label}</span>
+          <button key={t.k} aria-current={tab === t.k ? "page" : undefined} className={"tab " + (tab === t.k ? "active" : "")} onClick={() => { haptic("selection"); setTab(t.k); }}>
+            <span className="tab-icon"><Icon name={t.k} /></span><span className="tab-label">{t.label}</span>
           </button>
         ))}
       </nav>
