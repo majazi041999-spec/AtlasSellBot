@@ -106,6 +106,45 @@ def _note_failure(exc: Exception) -> None:
         log.warning("rich message send failed, fell back to plain text: %s", exc)
 
 
+def date_time_entities(text: str, anchor: str, value: str, unix_time: int,
+                       fmt: str = "r") -> list:
+    """One `date_time` entity over `value`, where it follows `anchor` in `text`.
+
+    Telegram renders such an entity in the READER's timezone and language, and a
+    relative one ("in 12 days") keeps counting down without us resending
+    anything — which is the whole point here, since a day count baked into the
+    text is stale the moment it is sent.
+
+    Attached as an entity rather than by switching the message to HTML on
+    purpose: the status card carries a raw subscription URL, an admin-written
+    guide and a customer's own service name, none of it escaped. Escaping all
+    three to gain one date would be a poor trade.
+
+    `anchor` is the text immediately before the value — the label — because the
+    value alone ("۱۲ روز") is not unique in a card that also counts gigabytes.
+    """
+    if not value or not text or int(unix_time or 0) <= 0:
+        return []
+    at = text.find(anchor + value)
+    if at < 0:
+        return []
+    head = text[: at + len(anchor)]
+    # Telegram counts offsets in UTF-16 code units. Persian text is one unit per
+    # character but a single emoji is two, so len() is not the same number.
+    offset = len(head.encode("utf-16-le")) // 2
+    length = len(value.encode("utf-16-le")) // 2
+    # Documented cap once any format flag is set.
+    if length > 31:
+        return []
+    try:
+        from aiogram.types import MessageEntity
+        return [MessageEntity(type="date_time", offset=offset, length=length,
+                              unix_time=int(unix_time), date_time_format=fmt)]
+    except Exception as exc:  # pragma: no cover - older aiogram
+        log.warning("date_time entity unavailable, showing plain text: %s", exc)
+        return []
+
+
 def esc(value: object) -> str:
     """Escape a value for use as rich-message HTML text.
 

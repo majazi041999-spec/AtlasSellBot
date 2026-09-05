@@ -66,7 +66,7 @@ from core.database import (
 )
 from core.xui_api import XUIClient, fmt_bytes, days_left, expiry_ms_from_days
 from core.pricing import package_price_for_user, is_unlimited_package
-from core.database import best_selling_package_id
+from core.database import best_selling_package_id, claim_order_for_wallet_payment
 from core.texts import get_text
 from core.qr import build_qr_image
 from core.multi_subscription import (
@@ -80,11 +80,12 @@ from core.multi_subscription import (
 )
 from bot.middlewares.channel_required import ChannelRequiredMiddleware
 
-from bot.rich_message import answer_rich, edit_rich, emoji as tg_emoji
+from bot.rich_message import answer_rich, edit_rich, emoji as tg_emoji, date_time_entities
 from bot.keyboards import (
     user_menu,
     packages_kb,
     packages_table_html,
+    order_paid_kb,
     payment_kb,
     config_detail_kb,
     config_to_sub_confirm_kb,
@@ -253,8 +254,17 @@ async def _send_subscription_status(target, profile: dict, send_qr: bool = True)
         text = text[:3900] + "\n…"
 
     kb = subscription_detail_kb(int(profile["id"]), sub_url, active_nodes)
+    # Let the client render the remaining time: it counts down on its own, shows
+    # in the customer's timezone and language, and taps through to "add to
+    # calendar". Only for a real future expiry — "نامحدود" and a plan that has
+    # not started yet have no date to point at.
+    ents = []
+    if not not_started and dl > 0:
+        ents = date_time_entities(
+            text, "زمان سرویس\nباقی‌مانده: ", dl_text,
+            int(profile.get("expire_timestamp") or 0) // 1000, "r")
     if isinstance(target, Message):
-        await target.answer(text, parse_mode=None, reply_markup=kb)
+        await target.answer(text, parse_mode=None, entities=ents or None, reply_markup=kb)
         if send_qr:
             try:
                 qr_label = profile.get("name") or profile.get("email") or "Subscription"
@@ -262,7 +272,7 @@ async def _send_subscription_status(target, profile: dict, send_qr: bool = True)
             except Exception:
                 pass
     else:
-        await target.message.edit_text(text, parse_mode=None, reply_markup=kb)
+        await target.message.edit_text(text, parse_mode=None, entities=ents or None, reply_markup=kb)
 
 
 async def _is_channel_member(msg_or_cb) -> bool:
@@ -1774,9 +1784,21 @@ async def pay_with_wallet(cb: CallbackQuery):
         await cb.answer(f"موجودی کافی نیست. موجودی: {_fmt_toman(balance)} تومان", show_alert=True)
         return
 
+    # Claim BEFORE taking the money. Two taps used to pass the status check
+    # above together and debit the wallet twice for one service; now exactly one
+    # of them wins this UPDATE and the loser is told the payment already went
+    # through.
+    if not await claim_order_for_wallet_payment(oid):
+        await cb.answer("این سفارش قبلاً پرداخت شده است.", show_alert=True)
+        return
     await add_user_balance(user["id"], -price, kind="purchase", note=f"order:{oid}", actor_telegram_id=cb.from_user.id)
-    await update_order(oid, status="receipt_submitted", notes=((order.get("notes") or "") + "\nwallet_payment=1").strip())
+    await update_order(oid, notes=((order.get("notes") or "") + "\nwallet_payment=1").strip())
     await cb.answer("✅ پرداخت از کیف پول انجام شد. سفارش در حال پردازش است...", show_alert=True)
+    # Grey the pay button out so the customer can SEE it landed and stops tapping.
+    try:
+        await cb.message.edit_reply_markup(reply_markup=order_paid_kb())
+    except Exception:
+        pass
     await _notify_admins_plain(
         cb.bot,
         "💳 خرید با کیف پول\n\n"

@@ -17,7 +17,7 @@ except Exception:
 
 
 def _button(builder: InlineKeyboardBuilder, text: str, style: str | None = None,
-            icon_custom_emoji_id: str | None = None, **kwargs):
+            icon_custom_emoji_id: str | None = None, disabled: bool = False, **kwargs):
     """Add a button, degrading instead of failing on an older aiogram.
 
     `style` (the colour) and `icon_custom_emoji_id` (a premium emoji drawn
@@ -25,13 +25,20 @@ def _button(builder: InlineKeyboardBuilder, text: str, style: str | None = None,
     button must still appear: a price list nobody can press is far worse than a
     plain-looking one. Each extra is dropped in turn until one call sticks.
     """
+    if disabled:
+        # Bot API takes an object here, not a flag; aiogram validates it strictly.
+        try:
+            from aiogram.types import DisabledButton
+            disabled = DisabledButton()
+        except Exception:
+            disabled = None
     attempts = (
-        {"style": style, "icon_custom_emoji_id": icon_custom_emoji_id},
+        {"style": style, "icon_custom_emoji_id": icon_custom_emoji_id, "disabled": disabled},
         {"style": style},
         {},
     )
     for extra in attempts:
-        opts = {k: v for k, v in extra.items() if v}
+        opts = {k: v for k, v in extra.items() if v is not None and v != ""}
         try:
             builder.button(text=text, **opts, **kwargs)
             return
@@ -689,6 +696,25 @@ def custom_name_kb() -> InlineKeyboardMarkup:
     _button(b, text="✅ ادامه با نام پیش‌فرض", callback_data="buy_name_default", style="success")
     _button(b, text="⬅️ برگشت", callback_data="flow_back", style="primary")
     _button(b, text="❌ کنسل", callback_data="cancel", style="danger")
+    b.adjust(1)
+    # This is the one step of the purchase that expects TYPING, and a customer
+    # staring at three buttons has no reason to guess that. force_reply opens
+    # the keyboard for them; on an older aiogram it is simply absent.
+    try:
+        return b.as_markup(force_reply=True)
+    except Exception:
+        return b.as_markup()
+
+
+def order_paid_kb() -> InlineKeyboardMarkup:
+    """The spent-order keyboard: one button, greyed out and unpressable.
+
+    Replaces the pay button the moment the money moves. The order is already
+    protected against a double charge in the database; this is so the customer
+    can SEE that it went through and stops tapping.
+    """
+    b = InlineKeyboardBuilder()
+    _button(b, text="✅ پرداخت شد", callback_data="noop", style="success", disabled=True)
     b.adjust(1)
     return b.as_markup()
 

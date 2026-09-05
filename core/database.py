@@ -2926,6 +2926,25 @@ async def claim_order_for_approval(oid: int) -> bool:
         return (c.rowcount or 0) > 0
 
 
+async def claim_order_for_wallet_payment(oid: int) -> bool:
+    """Move an order to paid, and say whether THIS caller is the one that did it.
+
+    Wallet payment used to read the status, await the debit, then write the new
+    status. Two taps on the button land in that gap together, both see a payable
+    order, and the customer is charged twice for one service. The transition is
+    now a single conditional UPDATE, so exactly one caller sees rowcount 1 and
+    only that one takes the money.
+    """
+    async with aiosqlite.connect(DB_PATH) as db:
+        c = await db.execute(
+            "UPDATE orders SET status='receipt_submitted' "
+            "WHERE id=? AND status IN ('pending_payment','pending_receipt')",
+            (oid,),
+        )
+        await db.commit()
+        return (c.rowcount or 0) > 0
+
+
 async def release_order_processing(oid: int):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
