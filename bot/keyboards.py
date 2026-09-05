@@ -699,11 +699,16 @@ def custom_name_kb() -> InlineKeyboardMarkup:
     b.adjust(1)
     # This is the one step of the purchase that expects TYPING, and a customer
     # staring at three buttons has no reason to guess that. force_reply opens
-    # the keyboard for them; on an older aiogram it is simply absent.
-    try:
-        return b.as_markup(force_reply=True)
-    except Exception:
-        return b.as_markup()
+    # the keyboard for them.
+    #
+    # Rebuilt rather than passed to as_markup(): the builder takes **kwargs and
+    # then silently DROPS them, so as_markup(force_reply=True) looks right and
+    # sets nothing. On an older aiogram the field is unknown and we keep the
+    # plain markup.
+    markup = b.as_markup()
+    if "force_reply" in type(markup).model_fields:
+        return InlineKeyboardMarkup(inline_keyboard=markup.inline_keyboard, force_reply=True)
+    return markup
 
 
 def order_paid_kb() -> InlineKeyboardMarkup:
