@@ -30,6 +30,7 @@ customers actually ask, add a topic rather than teaching the model in a prompt.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
@@ -43,7 +44,7 @@ from core.database import get_setting
 log = logging.getLogger(__name__)
 
 TIMEOUT = 60.0
-MAX_OUTPUT_TOKENS = 800          # a support answer, not an essay
+MAX_OUTPUT_TOKENS = 1200         # a support answer with numbered steps, not an essay
 HISTORY_TURNS = 6                # enough to follow up, short enough to stay cheap
 
 # ─────────────────────────────── the playbook ────────────────────────────────
@@ -262,34 +263,74 @@ async def build_facts(user: Dict, profiles: List[Dict], packages: List[Dict],
 
 
 # ───────────────────────────────── streaming ─────────────────────────────────
+# Google returns these while it is busy, not because the request is wrong.
+_RETRY_STATUS = (429, 500, 502, 503, 504)
+
+
 async def _stream_gemini(cfg: Dict, system: str, history: List[Dict]) -> AsyncIterator[str]:
     model = _clean_model(cfg["ai_model"]) or "gemini-2.5-flash"
     url = (f"https://generativelanguage.googleapis.com/v1beta/models/"
            f"{model}:streamGenerateContent?alt=sse")
-    body = {
-        "systemInstruction": {"parts": [{"text": system}]},
-        "contents": [{"role": h["role"], "parts": [{"text": h["text"]}]} for h in history],
-        "generationConfig": {"temperature": 0.4, "maxOutputTokens": MAX_OUTPUT_TOKENS},
-    }
-    async with httpx.AsyncClient(timeout=TIMEOUT) as client:
-        async with client.stream("POST", url, json=body,
-                                 headers={"x-goog-api-key": cfg["ai_api_key"]}) as r:
-            r.raise_for_status()
-            async for line in r.aiter_lines():
-                if not line.startswith("data:"):
-                    continue
-                chunk = line[5:].strip()
-                if not chunk or chunk == "[DONE]":
-                    continue
-                try:
-                    data = json.loads(chunk)
-                except ValueError:
-                    continue
-                for cand in data.get("candidates") or []:
-                    for part in (cand.get("content") or {}).get("parts") or []:
-                        # A reasoning part is marked `thought` and is not the answer.
-                        if not part.get("thought") and part.get("text"):
-                            yield part["text"]
+
+    def build(thinking_off: bool) -> Dict:
+        gen = {"temperature": 0.4, "maxOutputTokens": MAX_OUTPUT_TOKENS}
+        if thinking_off:
+            # From Gemini 2.5 on, the model reasons before answering and those
+            # tokens come out of maxOutputTokens. Left on, a support answer gets
+            # cut off mid-sentence — the first live test stopped at "۱. حالت
+            # پرواز". This job needs no deliberation: the playbook is in the
+            # prompt already.
+            gen["thinkingConfig"] = {"thinkingBudget": 0}
+        return {
+            "systemInstruction": {"parts": [{"text": system}]},
+            "contents": [{"role": h["role"], "parts": [{"text": h["text"]}]} for h in history],
+            "generationConfig": gen,
+        }
+
+    thinking_off = True
+    delay = 1.0
+    for attempt in range(4):
+        produced = False
+        try:
+            async with httpx.AsyncClient(timeout=TIMEOUT) as client:
+                async with client.stream("POST", url, json=build(thinking_off),
+                                         headers={"x-goog-api-key": cfg["ai_api_key"]}) as r:
+                    if r.status_code >= 400:
+                        detail = (await r.aread()).decode("utf-8", "ignore")
+                        # Older models reject thinkingConfig outright; drop it
+                        # rather than reporting a 400 nobody can act on.
+                        if r.status_code == 400 and "thinking" in detail.lower() and thinking_off:
+                            thinking_off = False
+                            continue
+                        if r.status_code in _RETRY_STATUS:
+                            raise httpx.HTTPStatusError(detail[:200], request=r.request, response=r)
+                        r.raise_for_status()
+                    async for line in r.aiter_lines():
+                        if not line.startswith("data:"):
+                            continue
+                        chunk = line[5:].strip()
+                        if not chunk or chunk == "[DONE]":
+                            continue
+                        try:
+                            data = json.loads(chunk)
+                        except ValueError:
+                            continue
+                        for cand in data.get("candidates") or []:
+                            for part in (cand.get("content") or {}).get("parts") or []:
+                                # A reasoning part is marked `thought`, not the answer.
+                                if not part.get("thought") and part.get("text"):
+                                    produced = True
+                                    yield part["text"]
+            return
+        except Exception as exc:  # noqa: BLE001
+            # Once text has reached the customer the answer cannot be restarted
+            # without repeating itself, so only a failure BEFORE the first token
+            # is retried.
+            if produced or attempt == 3:
+                raise
+            log.warning("gemini stream retry %d after %s", attempt + 1, exc)
+            await asyncio.sleep(delay)
+            delay *= 2
 
 
 async def _stream_openai(cfg: Dict, system: str, history: List[Dict]) -> AsyncIterator[str]:
