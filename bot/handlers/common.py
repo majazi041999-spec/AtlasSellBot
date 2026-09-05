@@ -70,6 +70,13 @@ async def cmd_start(msg: Message, state: FSMContext):
     kb = admin_menu(finance_only=(role == 'finance')) if role != 'none' else user_menu(include_wholesale=bool(user.get("is_wholesale", 0)))
     await msg.answer(text, reply_markup=kb, parse_mode="Markdown")
 
+    # The reply keyboard above is invisible until someone thinks to open it, and
+    # newcomers who press Start and see only text simply stop. The same actions
+    # go into the chat as coloured buttons, where they cannot be missed.
+    if role == "none":
+        from bot.home import home_kb
+        await msg.answer("👇 از این‌جا شروع کن:", reply_markup=home_kb())
+
 
 
 

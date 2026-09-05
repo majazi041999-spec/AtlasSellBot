@@ -147,15 +147,17 @@ def user_menu(include_wholesale: bool = True) -> ReplyKeyboardMarkup:
     # (biggest tap target) so newcomers try before they weigh buying.
     b.row(KeyboardButton(text="🧪 تست رایگان"))
     b.row(KeyboardButton(text="📡 وضعیت سرویس"), KeyboardButton(text="🛒 خرید سرویس"))
-    b.row(KeyboardButton(text="🔄 انتقال سرور"), KeyboardButton(text="📋 سفارش‌های من"))
-    b.row(KeyboardButton(text="🔄 شروع مجدد"))
+    b.row(KeyboardButton(text="📋 سفارش‌های من"), KeyboardButton(text="🔄 شروع مجدد"))
     b.row(KeyboardButton(text="💳 کیف پول"), KeyboardButton(text="🎁 دعوت دوستان"))
     b.row(KeyboardButton(text="📞 پشتیبانی"), KeyboardButton(text="🕊️ پیام ناشناس"))
     # Always show the representative entry: reps get their panel, everyone else
     # gets the "apply to become a representative" flow. (Previously hidden from
     # non-reps, so people who saw the ad couldn't find the button.)
     b.row(KeyboardButton(text="🏢 پنل نمایندگی"))
-    b.row(KeyboardButton(text="🔗 افزودن سرویس قبلی"))
+    # "انتقال سرور" and "افزودن سرویس قبلی" were dropped from the menu: both are
+    # rare, one-off jobs that confused far more people than they served. Their
+    # handlers are untouched, so any button or link already pointing at them
+    # still works.
     return b.as_markup(resize_keyboard=True)
 
 
