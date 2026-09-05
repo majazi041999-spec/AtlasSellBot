@@ -71,9 +71,48 @@ def duration_text(pkg: Dict) -> str:
 
 
 def price_of(pkg: Dict) -> int:
-    """The price THIS buyer pays. Callers stamp `display_price`; without one the
-    package's own price is the honest fallback."""
+    """What the table PRINTS.
+
+    `sell_price` wins when present — that is a reseller's own retail price, and
+    a table meant for their customers must never show what they paid us.
+    `display_price` is the buyer's cost, used where the reader IS the buyer.
+    """
+    if pkg.get("sell_price") is not None:
+        return int(pkg.get("sell_price") or 0)
     return int(pkg.get("display_price", pkg.get("price") or 0) or 0)
+
+
+def apply_markup(pkgs: Sequence[Dict], percent: float = 0.0, amount: int = 0,
+                 overrides: Optional[Dict[int, int]] = None,
+                 round_to: int = 0) -> None:
+    """Stamp each package with the price its SELLER wants shown.
+
+    A reseller buys from us at their tariff and sells at whatever they like —
+    that margin is the entire reason they are a reseller. Without this the only
+    number we could render was their cost, which is both useless to show a
+    customer and a thing they would rather that customer never saw.
+
+    Order: an explicit per-package price wins outright; otherwise cost is
+    multiplied by the percentage, then the flat amount is added, then the result
+    is rounded UP to `round_to`. Rounded up, never down, because rounding a
+    price down quietly eats the margin this exists to protect.
+
+    A seller may price below their own cost — a loss leader is a real tactic and
+    refusing it would be us overruling their business. `below_cost` is set so
+    they can see it, not so we can stop it.
+    """
+    overrides = overrides or {}
+    for p in pkgs:
+        cost = int(p.get("display_price", p.get("price") or 0) or 0)
+        pid = int(p.get("id") or 0)
+        if pid in overrides:
+            sell = int(overrides[pid])
+        else:
+            sell = int(round(cost * (1.0 + (percent or 0) / 100.0))) + int(amount or 0)
+            if round_to and round_to > 0 and sell % round_to:
+                sell += round_to - (sell % round_to)
+        p["sell_price"] = max(0, sell)
+        p["below_cost"] = p["sell_price"] < cost
 
 
 def _mark(role: str, glyph: str, premium: bool) -> str:

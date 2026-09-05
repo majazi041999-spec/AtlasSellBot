@@ -273,6 +273,10 @@ for (const p of r.data.packages) console.log(p.id, p.name, p.price);
 | `note` | — | یک خط، پایین جدول |
 | `columns` | `📦 پکیج\|⏱ مدت\|💰 قیمت` | سه سرستون، با `\|` جدا شده |
 | `caption` | قیمت‌ها به تومان | زیرنویس جدول |
+| `markup_percent` | `0` | درصد سود روی قیمت خرید تو. مثلاً `30` |
+| `markup_amount` | `0` | مبلغ ثابتی که به قیمت اضافه می‌شود |
+| `prices` | — | قیمت دستی برای هر پکیج: `1:120000,5:299000` |
+| `round_to` | `1000` | رند کردن رو به بالا |
 
 | فیلد خروجی | چطور بفرستی |
 |---|---|
@@ -281,6 +285,28 @@ for (const p of r.data.packages) console.log(p.id, p.name, p.price);
 | `html` | هرکدام که با `premium` انتخاب کردی |
 | `markdown` | `sendRichMessage` — جدول واقعی، بدون نیاز به پرمیوم |
 | `packages` | داده‌ی خام، اگر خودت می‌خواهی بچینی |
+
+> 💰 **سود تو**
+>
+> جدول قیمتِ **فروشِ تو** را نشان می‌دهد، نه قیمتی که از ما می‌خری. اگر
+> `markup_percent` یا `markup_amount` ندهی، همان قیمت خرید چاپ می‌شود — یعنی
+> بدون سود، و مشتری‌ات قیمت خرید تو را می‌بیند. پس حتماً یکی را بده.
+>
+> در `packages`: `price` = چیزی که از کیف پول تو کم می‌شود · `sell_price` =
+> چیزی که در جدول چاپ شده. اگر `sell_price` کمتر از `price` باشد،
+> `below_cost` روشن می‌شود — جلویت را نمی‌گیریم، فقط خبرت می‌کنیم.
+
+```python
+# ۳۰٪ سود، رند به هزار تومان
+status, data = atlas("GET", "/packages/table", params={
+    "markup_percent": 30, "round_to": 1000, "premium": 0,
+    "title": "🛒 لیست قیمت من",
+})
+await bot.send_message(chat_id, data["html_plain"], parse_mode="HTML")
+
+# یا قیمت دستی برای هر پکیج
+atlas("GET", "/packages/table", params={"prices": "1:120000,5:299000"})
+```
 
 ```python
 status, data = atlas("GET", "/packages/table", params={

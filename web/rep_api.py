@@ -511,6 +511,33 @@ async def rep_packages_table(request: Request):
     for p in pkgs:
         p["display_price"] = int(compute_package_price(pricing, p)["final"])
 
+    # THE MARGIN. Without this the table could only print what the reseller pays
+    # us — useless to show a customer, and a number they would rather that
+    # customer never saw. `prices` is an outright override per package id; the
+    # percentage and the flat amount build on their cost instead.
+    def num(name: str, default: float = 0.0) -> float:
+        try:
+            return float(q.get(name) or default)
+        except (TypeError, ValueError):
+            return default
+
+    overrides = {}
+    for part in (q.get("prices") or "").split(","):
+        if ":" in part:
+            pid, _, val = part.partition(":")
+            try:
+                overrides[int(pid.strip())] = max(0, int(float(val.strip())))
+            except (TypeError, ValueError):
+                continue
+
+    pv.apply_markup(
+        pkgs,
+        percent=max(-100.0, min(1000.0, num("markup_percent"))),
+        amount=max(-10_000_000, min(100_000_000, int(num("markup_amount")))),
+        overrides=overrides,
+        round_to=max(0, min(1_000_000, int(num("round_to", 1000)))),
+    )
+
     def txt(name: str, default: str, limit: int = 120) -> str:
         return (q.get(name) or default)[:limit]
 
@@ -538,8 +565,15 @@ async def rep_packages_table(request: Request):
         "html_plain": render(False),
         "markdown": pv.table_markdown(pkgs, headers=headers, caption=caption),
         # The rows behind the rendering, for anyone who would rather lay it out
-        # themselves than accept ours.
-        "packages": [_package_payload(p, compute_package_price(pricing, p)) for p in pkgs],
+        # themselves than accept ours. `price` is what WE charge them, and
+        # `sell_price` is what the table prints — the two are different numbers
+        # on purpose and confusing them is how a reseller sells at cost.
+        "packages": [
+            dict(_package_payload(p, compute_package_price(pricing, p)),
+                 sell_price=int(p.get("sell_price") or 0),
+                 below_cost=bool(p.get("below_cost")))
+            for p in pkgs
+        ],
     }, 200, ctx)
 
 

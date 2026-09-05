@@ -498,6 +498,14 @@ for (const p of r.data.packages) {
     <tr><td class="ltr">columns</td><td>📦 پکیج|⏱ مدت|💰 قیمت</td>
         <td>سه سرستون، با <code>|</code> جدا شده</td></tr>
     <tr><td class="ltr">caption</td><td>قیمت‌ها به تومان</td><td>زیرنویس جدول</td></tr>
+    <tr><td class="ltr">markup_percent</td><td class="ltr">0</td>
+        <td><b>سود تو.</b> مثلاً <code>30</code> یعنی ۳۰٪ روی قیمت خریدت</td></tr>
+    <tr><td class="ltr">markup_amount</td><td class="ltr">0</td>
+        <td>مبلغ ثابتی که به قیمت اضافه می‌شود</td></tr>
+    <tr><td class="ltr">prices</td><td>—</td>
+        <td>قیمت دستی هر پکیج: <code>1:120000,5:299000</code></td></tr>
+    <tr><td class="ltr">round_to</td><td class="ltr">1000</td>
+        <td>رند کردن رو به بالا</td></tr>
   </table>
 
   <table>
@@ -530,7 +538,22 @@ await bot.sendMessage(chatId, r.data.html_plain, { parse_mode: "HTML" });</code>
   "markdown": "| 📦 پکیج | ⏱ مدت | 💰 قیمت |\n|:---|:---:|---:|\n…",
   "packages": [ … ]
 }</code></pre>
-  <p class="muted">قیمت‌های داخل جدول <b>خودکار</b> با تعرفه‌ی نمایندگی تو حساب می‌شوند.</p>
+  <div class="warn">
+    <b>💰 سود تو</b><br>
+    جدول <b>قیمت فروش تو</b> را چاپ می‌کند، نه قیمتی که از ما می‌خری. اگر
+    <code>markup_percent</code> یا <code>markup_amount</code> ندهی، همان قیمت
+    خرید چاپ می‌شود — یعنی بدون سود، و مشتری‌ات قیمت خرید تو را می‌بیند.
+    <b>پس حتماً یکی را بده.</b><br><br>
+    در <code>packages</code>: <code>price</code> = چیزی که از کیف پول تو کم
+    می‌شود · <code>sell_price</code> = چیزی که در جدول چاپ شده. اگر فروش کمتر
+    از خرید باشد <code>below_cost</code> روشن می‌شود — جلویت را نمی‌گیریم، فقط
+    خبرت می‌کنیم.
+  </div>
+<pre data-l="python"><code># ۳۰٪ سود، رند به هزار تومان
+status, data = atlas("GET", "/packages/table", params={
+    "markup_percent": 30, "round_to": 1000, "premium": 0,
+})
+await bot.send_message(chat_id, data["html_plain"], parse_mode="HTML")</code></pre>
 
 
   <div class="ep"><span class="m post">POST</span><span class="path">/services</span></div>
