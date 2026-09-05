@@ -53,11 +53,23 @@ _UNSUPPORTED_HINTS = ("method not found", "unknown method", "not found: method")
 # Ids come from the /emojiid admin command. Set one to "" to drop back to the
 # plain emoji without touching any of the call sites.
 PREMIUM_EMOJI = {
+    # buy-screen chrome
     "cart": "5258024802010026053",
     "speed": "5422609593765241366",
     "link": "5990332467033150285",
-    "price": "5427107837568360763",
-    "duration": "5981043230160981261",
+    "col_package": "5895699833397710656",
+    "col_duration": "5834822129425584578",
+    "col_price": "5427107837568360763",
+    "infinity": "5212980778442435830",
+    "bestseller": "5976567925778158529",
+    # One per package tier. The table row and its BUTTON share these on purpose:
+    # matching icons are what let a customer find the button that buys the row
+    # they were just reading, without re-reading either.
+    "tier_sm": "5983151543707242938",         # under 15 GB
+    "tier_md": "5981116424993640232",         # 15-19 GB
+    "tier_lg": "5981305412144599367",         # 20-24 GB
+    "tier_xl": "5168180717607191003",         # 25 GB and up
+    "tier_unlimited": "5168355222128427844",
 }
 
 
@@ -69,8 +81,19 @@ def emoji(role: str, fallback: str) -> str:
     the sentence reads correctly either way. It is OUR glyph, not the sticker's
     own: the point is the slot it fills in the copy.
     """
-    eid = (PREMIUM_EMOJI.get(role) or "").strip()
+    eid = emoji_id(role)
     return f'<tg-emoji emoji-id="{eid}">{fallback}</tg-emoji>' if eid else fallback
+
+
+def emoji_id(role: str) -> str:
+    """The bare custom-emoji id for a role.
+
+    For fields that take an id instead of markup — an inline button's
+    `icon_custom_emoji_id`, where there is no HTML to put a <tg-emoji> in.
+    Returns "" when the role has no emoji, which every caller treats as
+    "just use the plain glyph".
+    """
+    return (PREMIUM_EMOJI.get(role) or "").strip()
 
 
 def _note_failure(exc: Exception) -> None:

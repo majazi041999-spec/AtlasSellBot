@@ -8,7 +8,7 @@ import time
 
 from core.sorting import fa_sort_key
 from core.pricing import is_unlimited_package
-from bot.rich_message import emoji as tg_emoji, esc as rich_esc, table as rich_table
+from bot.rich_message import emoji as tg_emoji, emoji_id as tg_emoji_id, esc as rich_esc, table as rich_table
 
 try:
     from aiogram.types import CopyTextButton
@@ -16,13 +16,27 @@ except Exception:
     CopyTextButton = None
 
 
-def _button(builder: InlineKeyboardBuilder, text: str, style: str | None = None, **kwargs):
-    if style:
+def _button(builder: InlineKeyboardBuilder, text: str, style: str | None = None,
+            icon_custom_emoji_id: str | None = None, **kwargs):
+    """Add a button, degrading instead of failing on an older aiogram.
+
+    `style` (the colour) and `icon_custom_emoji_id` (a premium emoji drawn
+    before the label) both arrived with Bot API 10.x. Where they are unknown the
+    button must still appear: a price list nobody can press is far worse than a
+    plain-looking one. Each extra is dropped in turn until one call sticks.
+    """
+    attempts = (
+        {"style": style, "icon_custom_emoji_id": icon_custom_emoji_id},
+        {"style": style},
+        {},
+    )
+    for extra in attempts:
+        opts = {k: v for k, v in extra.items() if v}
         try:
-            builder.button(text=text, style=style, **kwargs)
+            builder.button(text=text, **opts, **kwargs)
             return
         except Exception:
-            pass
+            continue
     builder.button(text=text, **kwargs)
 
 
@@ -874,11 +888,16 @@ def _pkg_flair(pkg: Dict, biggest_gb: float) -> tuple:
     The emoji follows the same ladder so the two never disagree.
     """
     if is_unlimited_package(pkg):
-        return "♾️", "danger"
+        return "♾️", "danger", "tier_unlimited"
     gb = float(pkg.get("traffic_gb") or 0)
     style = "success" if biggest_gb > 0 and gb >= biggest_gb else "primary"
-    emoji = "💎" if gb >= 25 else "🚀" if gb >= 20 else "⚡" if gb >= 15 else "🌱"
-    return emoji, style
+    if gb >= 25:
+        return "💎", style, "tier_xl"
+    if gb >= 20:
+        return "🚀", style, "tier_lg"
+    if gb >= 15:
+        return "⚡", style, "tier_md"
+    return "🌱", style, "tier_sm"
 
 
 def packages_kb(pkgs: List[Dict], bestseller_id: int = 0) -> InlineKeyboardMarkup:
@@ -896,15 +915,21 @@ def packages_kb(pkgs: List[Dict], bestseller_id: int = 0) -> InlineKeyboardMarku
     biggest = max((float(p.get("traffic_gb") or 0)
                    for p in pkgs if not is_unlimited_package(p)), default=0.0)
     for p in pkgs:
-        emoji, style = _pkg_flair(p, biggest)
+        glyph, style, role = _pkg_flair(p, biggest)
+        icon = tg_emoji_id(role)
         # One badge, on one button. Two would cancel each other out, and the
         # claim itself is measured — see best_selling_package_id().
         badge = " 🔥" if bestseller_id and int(p.get("id") or 0) == int(bestseller_id) else ""
+        # The premium icon sits in its own field, so repeating the plain glyph
+        # in the label would show the same idea twice. Without an icon the glyph
+        # is the only marker left and has to stay.
+        lead = "" if icon else f"{glyph} "
         _button(
             b,
-            text=f"{emoji} خرید {_pkg_traffic(p)} · {_pkg_duration(p)} — {_fa_num(_pkg_price(p))} تومان{badge}",
+            text=f"{lead}خرید {_pkg_traffic(p)} · {_pkg_duration(p)} — {_fa_num(_pkg_price(p))} تومان{badge}",
             callback_data=f"buy:{p['id']}",
             style=style,
+            icon_custom_emoji_id=icon or None,
         )
     b.adjust(1)
     return b.as_markup()
@@ -925,9 +950,9 @@ def packages_table_html(pkgs: List[Dict]) -> str:
                    for p in pkgs if not is_unlimited_package(p)), default=0.0)
     rows = []
     for p in pkgs:
-        emoji, _ = _pkg_flair(p, biggest)
+        glyph, _, role = _pkg_flair(p, biggest)
         star = is_unlimited_package(p)
-        name = f"{emoji} {rich_esc(_pkg_traffic(p))}"
+        name = f"{tg_emoji(role, glyph)} {rich_esc(_pkg_traffic(p))}"
         price = rich_esc(_fa_num(_pkg_price(p)))
         rows.append([
             # The flagship row is highlighted rather than merely listed: <mark>
@@ -938,9 +963,9 @@ def packages_table_html(pkgs: List[Dict]) -> str:
             f"<mark><b>{price}</b></mark>" if star else f"<b>{price}</b>",
         ])
     return rich_table(
-        ["📦 پکیج",
-         f'{tg_emoji("duration", "⏱")} مدت',
-         f'{tg_emoji("price", "💰")} قیمت'],
+        [f'{tg_emoji("col_package", "📦")} پکیج',
+         f'{tg_emoji("col_duration", "⏱")} مدت',
+         f'{tg_emoji("col_price", "💰")} قیمت'],
         rows,
         align=["left", "center", "right"],
         caption="قیمت‌ها به تومان · ۵ کاربر هم‌زمان روی همه‌ی پکیج‌ها",

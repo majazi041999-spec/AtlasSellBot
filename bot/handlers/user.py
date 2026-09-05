@@ -346,9 +346,9 @@ def _unlimited_callout(pkgs: list[dict], bestseller_id: int = 0) -> str:
         bestseller_id and int(unlimited.get("id") or 0) == int(bestseller_id)
     ) else "بیشترین حجم، بدون نگرانی"
     return (
-        f"<aside>♾️ <b>نامحدود</b> — با فقط <b>{gap:,} تومان</b> بیشتر از "
-        f"{gb} گیگ، دیگر حواست به حجم نباشد."
-        f"<cite>🔥 {popular}</cite></aside>"
+        f'<aside>{tg_emoji("infinity", "♾️")} <b>نامحدود</b> — با فقط '
+        f"<b>{gap:,} تومان</b> بیشتر از {gb} گیگ، دیگر حواست به حجم نباشد."
+        f'<cite>{tg_emoji("bestseller", "🔥")} {popular}</cite></aside>'
     ).replace(",", "،")
 
 
