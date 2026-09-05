@@ -652,6 +652,12 @@ def _node_remark(node: Dict, index: int) -> str:
     ).strip()[:48]
 
 
+# One switch for the per-server link buttons on a subscription. Off: the
+# subscription link already contains every server, so the extra rows were noise
+# on the screen customers open most.
+SHOW_PER_NODE_LINKS = False
+
+
 def subscription_detail_kb(profile_id: int, sub_url: str = "", nodes: List[Dict] | None = None) -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
     rows = []
@@ -660,25 +666,34 @@ def subscription_detail_kb(profile_id: int, sub_url: str = "", nodes: List[Dict]
         b.row(copy_btn)
         rows.append(1)
 
-    # Per-node connection links shown as buttons — EVERY active server gets a
-    # button. Telegram caps copy_text at 256 chars, so for shorter links we use
-    # a one-tap copy button; for longer links (e.g. reality) we fall back to a
-    # callback that sends the link as a copyable message.
-    idx = 0
-    for node in (nodes or []):
-        if not int(node.get("is_active") or 0):
-            continue
-        link = (node.get("link") or "").strip()
-        if not link:
-            continue
-        idx += 1
-        label = f"📍 {_node_remark(node, idx)}"
-        btn = None
-        if len(link) <= 256:
-            btn = _copy_text_button(label, link, style="success")
-        if btn is None:
-            btn = _inline_button(f"{label} — نمایش لینک", callback_data=f"subnode:{int(node.get('id') or 0)}", style="success")
-        b.row(btn)
+    # PER-NODE LINK BUTTONS ARE OFF. They gave every active server its own row,
+    # so a five-server subscription opened with five buttons nobody presses: the
+    # subscription link carries all of them and works on its own. They existed
+    # as a fallback for a customer whose sub link would not load, and that has
+    # not been the problem.
+    #
+    # The code stays because the day a panel or a client breaks sub links, this
+    # is the escape hatch — and the `subnode:` handler behind it is untouched, so
+    # switching this back on is one line.
+    if SHOW_PER_NODE_LINKS:
+        # Telegram caps copy_text at 256 chars, so shorter links get a one-tap
+        # copy button and longer ones (reality) fall back to a callback that
+        # sends the link as a copyable message.
+        idx = 0
+        for node in (nodes or []):
+            if not int(node.get("is_active") or 0):
+                continue
+            link = (node.get("link") or "").strip()
+            if not link:
+                continue
+            idx += 1
+            label = f"📍 {_node_remark(node, idx)}"
+            btn = None
+            if len(link) <= 256:
+                btn = _copy_text_button(label, link, style="success")
+            if btn is None:
+                btn = _inline_button(f"{label} — نمایش لینک", callback_data=f"subnode:{int(node.get('id') or 0)}", style="success")
+            b.row(btn)
 
     _button(b, text="📶 دستگاه‌های متصل الان", callback_data=f"sub_conns:{profile_id}", style="primary")
     _button(b, text="✏️ تغییر نام سرویس", callback_data=f"sub_rename:{profile_id}", style="primary")
