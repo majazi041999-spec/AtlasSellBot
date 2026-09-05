@@ -477,6 +477,65 @@ async def rep_packages(request: Request):
     return _json({"ok": True, "packages": packages}, 200, ctx)
 
 
+@router.get("/v1/packages/table")
+async def rep_packages_table(request: Request):
+    """The buy screen, rendered — with THIS representative's prices.
+
+    The same table our own bot shows, so a reseller does not have to rebuild it
+    to look as good. Three renderings come back and the caller picks:
+
+      html        send with parse_mode="HTML"      (custom emoji when premium=1)
+      html_plain  send with parse_mode="HTML"      (identical, plain glyphs)
+      markdown    send with sendRichMessage        (real table, no custom emoji)
+
+    ABOUT `premium`. Telegram only lets a bot use custom emoji if it bought a
+    Fragment username, or if the bot's OWNER has Telegram Premium. That is a
+    property of the SENDING bot, not of the emoji — a reseller whose owner has
+    no Premium cannot use them however valid the ids are. So `premium=0` (the
+    default here, because we cannot know about someone else's bot) renders the
+    identical table with plain glyphs. Pass `premium=1` only if that bot is
+    allowed to; if it is not, Telegram drops the emoji and the layout survives
+    regardless.
+
+    Everything a reseller sells under their own name is theirs to set: `title`,
+    `intro`, `note`, the three `columns`, and `caption`.
+    """
+    ctx, err = await authorize(request, "read")
+    if err:
+        return err
+    from core import package_view as pv
+
+    q = request.query_params
+    pricing = await get_user_pricing(ctx["user"]["id"])
+    pkgs = await get_packages(active_only=True)
+    for p in pkgs:
+        p["display_price"] = int(compute_package_price(pricing, p)["final"])
+
+    def txt(name: str, default: str, limit: int = 120) -> str:
+        return (q.get(name) or default)[:limit]
+
+    cols = [c for c in (q.get("columns") or "").split("|") if c.strip()][:3]
+    headers = cols if len(cols) == 3 else None
+    caption = txt("caption", pv.DEFAULT_CAPTION)
+    title = txt("title", "🛒 پکیج‌ها و قیمت‌ها", 80)
+    intro = txt("intro", "", 300)
+    note = txt("note", "", 300)
+    premium = (q.get("premium") or "0").strip() in ("1", "true", "yes")
+
+    return _json({
+        "ok": True,
+        "premium_emoji": premium,
+        "html": pv.screen_html(pkgs, premium=premium, title=title, intro=intro,
+                               note=note, headers=headers, caption=caption),
+        "html_plain": pv.screen_html(pkgs, premium=False, title=title, intro=intro,
+                                     note=note, headers=headers, caption=caption),
+        "markdown": pv.table_markdown(pkgs, headers=headers, caption=caption),
+        # The rows behind the rendering, for anyone who would rather lay it out
+        # themselves than accept ours.
+        "packages": [_package_payload(p, compute_package_price(pricing, p)) for p in pkgs],
+    }, 200, ctx)
+
+
 def _sort_filter(rows: List[Dict], sort: str, filt: str, now_ms: int) -> List[Dict]:
     if filt == "active":
         rows = [r for r in rows if int(r.get("is_active") or 0)]

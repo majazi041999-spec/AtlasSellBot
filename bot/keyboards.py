@@ -1110,27 +1110,10 @@ def packages_table_html(pkgs: List[Dict]) -> str:
     The row's emoji is the same one its button carries, which is what lets a
     customer match a row to the button that buys it without reading either.
     """
-    biggest = max((float(p.get("traffic_gb") or 0)
-                   for p in pkgs if not is_unlimited_package(p)), default=0.0)
-    rows = []
-    for p in pkgs:
-        glyph, _, role = _pkg_flair(p, biggest)
-        star = is_unlimited_package(p)
-        name = f"{tg_emoji(role, glyph)} {rich_esc(_pkg_traffic(p))}"
-        price = rich_esc(_fa_num(_pkg_price(p)))
-        rows.append([
-            # The flagship row is highlighted rather than merely listed: <mark>
-            # is Telegram's own emphasis, so it tracks the reader's theme instead
-            # of us guessing at a colour.
-            f"<mark><b>{name}</b></mark>" if star else name,
-            rich_esc(_pkg_duration(p)),
-            f"<mark><b>{price}</b></mark>" if star else f"<b>{price}</b>",
-        ])
-    return rich_table(
-        [f'{tg_emoji("col_package", "📦")} پکیج',
-         f'{tg_emoji("col_duration", "⏱")} مدت',
-         f'{tg_emoji("col_price", "💰")} قیمت'],
-        rows,
-        align=["left", "center", "right"],
-        caption="قیمت‌ها به تومان · ۵ کاربر هم‌زمان روی همه‌ی پکیج‌ها",
-    )
+    # Delegates to core.package_view, which the reseller API also calls. One
+    # implementation on purpose: a second copy would drift the first time
+    # somebody changed a column in one and not the other, and the thing that
+    # drifts is a price list.
+    from core.package_view import table_html
+    return table_html(pkgs, premium=True,
+                      caption="قیمت‌ها به تومان · ۵ کاربر هم‌زمان روی همه‌ی پکیج‌ها")
