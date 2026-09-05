@@ -937,30 +937,33 @@ async def _send_config_status(target, config_id: int):
         pct = min(100, int(used / total * 100))
         bar_filled = int(pct / 10)
         bar = "█" * bar_filled + "░" * (10 - bar_filled)
-        pct_icon = "" if pct < 50 else ("" if pct < 80 else "")
         traffic_text = (
-            f" مصرف: `{fmt_bytes(used)}` از `{fmt_bytes(total)}`\n"
-            f" باقی‌مانده: `{fmt_bytes(remaining)}`\n"
-            f"{pct_icon} `[{bar}]` {pct}%"
+            f"مصرف‌شده: {_esc(fmt_bytes(used))} از {_esc(fmt_bytes(total))}\n"
+            f"باقی‌مانده: <b>{_esc(fmt_bytes(remaining))}</b>\n"
+            f"{bar} {pct}%"
         )
     else:
-        traffic_text = " حجم: نامحدود ♾️"
+        traffic_text = "حجم: <b>نامحدود ♾️</b>"
 
-    status = " فعال" if enabled else " غیرفعال"
+    status = "🟢 فعال" if enabled else "🔴 غیرفعال"
+    # The countdown is a live <tg-time> when there is a real future date, the
+    # same as the subscription card. Unlimited and expired have none.
+    days_html = (f'<tg-time unix="{int(expire_ms) // 1000}" format="r">{_esc(dl_text)}</tg-time>'
+                 if dl > 0 else f"<b>{_esc(dl_text)}</b>")
     text = (
-        f" *{cfg['email']}*\n"
+        f"🔑 <b>{_esc(cfg['email'])}</b>\n"
         f"━━━━━━━━━━━━━━\n"
-        f"{traffic_text}\n"
-        f" روز باقی‌مانده: `{dl_text}`\n"
-        f"️ سرور: `{cfg['server_name']}`\n"
-        f" وضعیت: {status}"
+        f"📊 <b>مصرف</b>\n{traffic_text}\n\n"
+        f"⏱ روز باقی‌مانده: {days_html}\n"
+        f"🖥 سرور: <code>{_esc(cfg['server_name'])}</code>\n"
+        f"وضعیت: {status}"
     )
     kb = config_detail_kb(config_id)
 
     if isinstance(target, Message):
-        await target.answer(text, reply_markup=kb, parse_mode="Markdown")
+        await target.answer(premiumize(text), reply_markup=kb, parse_mode="HTML")
     else:
-        await target.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
+        await target.message.edit_text(premiumize(text), reply_markup=kb, parse_mode="HTML")
 
 
 @router.callback_query(F.data.startswith("cfg_del:"))
@@ -974,11 +977,12 @@ async def cfg_delete_confirm(cb: CallbackQuery):
         await cb.answer("این سرویس برای شما پیدا نشد.", show_alert=True)
         return
     await cb.message.edit_text(
-        "🗑️ *حذف سرویس*\n\n"
-        f"کانفیگ: `{cfg['email']}`\n\n"
-        "با تایید، سرویس از سرور و از حساب شما حذف می‌شود. این کار قابل برگشت نیست.",
+        premiumize("🗑️ <b>حذف سرویس</b>\n\n"
+                   f"کانفیگ: <code>{_esc(cfg['email'])}</code>\n\n"
+                   "با تایید، سرویس از سرور و از حساب شما حذف می‌شود. "
+                   "این کار قابل برگشت نیست."),
         reply_markup=config_delete_confirm_kb(cid),
-        parse_mode="Markdown",
+        parse_mode="HTML",
     )
     await cb.answer()
 
@@ -1334,9 +1338,9 @@ async def sub_renew_same(cb: CallbackQuery):
         return
     packages = await _priced_packages(user["id"], packages)
     await cb.message.answer(
-        "♻️ *تمدید سابسکریپشن*\n\nبا کدام پلن می‌خواهید تمدید کنید؟",
+        premiumize("♻️ <b>تمدید اشتراک</b>\n\nبا کدام پلن می‌خواهی تمدید کنی؟"),
         reply_markup=renew_packages_kb("sub", pid, packages, f"sub_show:{pid}"),
-        parse_mode="Markdown",
+        parse_mode="HTML",
     )
     await cb.answer()
 
@@ -1358,11 +1362,11 @@ async def renew_config_start(cb: CallbackQuery):
     packages = await _priced_packages(user["id"], packages)
 
     await cb.message.answer(
-        "♻️ *تمدید سرویس*\n\n"
-        f"کانفیگ: `{cfg['email']}`\n\n"
-        "تمدید بر اساس پلن‌های ماست. با کدام پلن می‌خواهید تمدید کنید؟",
+        premiumize("♻️ <b>تمدید سرویس</b>\n\n"
+                   f"کانفیگ: <code>{_esc(cfg['email'])}</code>\n\n"
+                   "تمدید بر اساس پلن‌های ماست. با کدام پلن می‌خواهی تمدید کنی؟"),
         reply_markup=renew_packages_kb("cfg", cid, packages, f"cfg:{cid}"),
-        parse_mode="Markdown",
+        parse_mode="HTML",
     )
     await cb.answer()
 
