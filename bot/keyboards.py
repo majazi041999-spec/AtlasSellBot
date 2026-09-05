@@ -565,12 +565,10 @@ def config_delete_confirm_kb(cid: int) -> InlineKeyboardMarkup:
 
 
 def _renew_pkg_label(pkg: Dict) -> str:
-    gb = float(pkg.get("traffic_gb") or 0)
-    days = int(pkg.get("duration_days") or 0)
-    gb_txt = "نامحدود" if gb <= 0 else f"{gb:g}GB"
-    days_txt = "نامحدود" if days <= 0 else f"{days} روز"
-    price = int(pkg.get("display_price", pkg.get("price") or 0) or 0)
-    return f"{pkg.get('name') or 'پکیج'} — {gb_txt}/{days_txt} · {price:,} ت"
+    # Reads like the buy button on purpose — same shape, same helpers, so an
+    # unlimited plan can never print its fair-use threshold ("100GB") in one
+    # screen and "نامحدود" in the other.
+    return f"🔄 تمدید {_pkg_traffic(pkg)} · {_pkg_duration(pkg)} — {_fa_num(_pkg_price(pkg))} تومان"
 
 
 def renew_packages_kb(target_type: str, target_id: int, packages: List[Dict], back_cb: str) -> InlineKeyboardMarkup:
@@ -859,13 +857,21 @@ def _fa_num(value: int) -> str:
 
 
 def packages_kb(pkgs: List[Dict]) -> InlineKeyboardMarkup:
+    """One button per package, kept SHORT and unmistakable.
+
+    The table above carries the detail, so the button only has to answer "what
+    do I get and what does it cost" — plus the verb, because a first-time
+    customer has to be able to tell that pressing it IS the purchase.
+
+    The package name is deliberately left out: it already spells out the volume
+    and the duration that sit right next to it, and the doubling was what made
+    the old button too long to read on a phone.
+    """
     b = InlineKeyboardBuilder()
     for p in pkgs:
-        pnum = _pkg_price(p)
-        tier = "🥉" if pnum < 100000 else "🥈" if pnum < 200000 else "🥇"
         _button(
             b,
-            text=f"{tier} {p['name']} | {_pkg_traffic(p)} | {_pkg_duration(p)} | {_fa_num(pnum)} تومان",
+            text=f"🛒 خرید {_pkg_traffic(p)} · {_pkg_duration(p)} — {_fa_num(_pkg_price(p))} تومان",
             callback_data=f"buy:{p['id']}",
             style="primary",
         )

@@ -326,8 +326,12 @@ def _packages_screen_md(pkgs: list[dict]) -> str:
     """
     return (
         "## 🛒 پکیج‌ها و قیمت‌ها\n\n"
+        # The 5-device allowance is the same on every plan (it comes from the
+        # guard's ip_limit_default), so it belongs here once and NOT inside one
+        # package's name, where it would read as that package's perk alone.
+        "✅ همه‌ی پکیج‌ها: **۵ کاربر هم‌زمان** · پرسرعت · بدون قطعی\n\n"
         + packages_table_md(pkgs)
-        + "\n\nروی دکمه‌ی پکیج مورد نظرت بزن تا خرید شروع شود. 👇"
+        + "\n\n👇 روی دکمه‌ی پکیج مورد نظرت بزن تا خرید شروع شود."
     )
 
 
