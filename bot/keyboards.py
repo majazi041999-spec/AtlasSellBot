@@ -38,7 +38,11 @@ def _button(builder: InlineKeyboardBuilder, text: str, style: str | None = None,
         {},
     )
     for extra in attempts:
-        opts = {k: v for k, v in extra.items() if v is not None and v != ""}
+        # `if v` and not `is not None`: `disabled` is False by default, and
+        # False survived the old test, so InlineKeyboardButton(disabled=False)
+        # failed validation and took the ICON down with it in the same attempt.
+        # Every button silently lost its premium emoji that way.
+        opts = {k: v for k, v in extra.items() if v}
         try:
             builder.button(text=text, **opts, **kwargs)
             return
