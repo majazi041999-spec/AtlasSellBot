@@ -3166,7 +3166,25 @@ def _custom_emoji_entities(msg: Message) -> list:
             if e.type == "custom_emoji" and e.custom_emoji_id]
 
 
-def _emoji_ids_reply(msg: Message) -> str:
+async def _emoji_packs(bot, ids: list) -> dict:
+    """Map each custom-emoji id to the PACK it came from.
+
+    The pack matters more than the emoji: one id hands us the whole set, so the
+    owner never has to enumerate emoji by hand. They send one from each pack and
+    we harvest the rest.
+    """
+    if not ids:
+        return {}
+    try:
+        from aiogram.methods import GetCustomEmojiStickers
+        got = await bot(GetCustomEmojiStickers(custom_emoji_ids=ids[:200]))
+        return {s.custom_emoji_id: (s.set_name or "") for s in got}
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("could not resolve emoji packs: %s", exc)
+        return {}
+
+
+async def _emoji_ids_reply(msg: Message) -> str:
     """Render the ids found in `msg`, or say plainly that there were none."""
     body = msg.text or msg.caption or ""
     found = _custom_emoji_entities(msg)
@@ -3180,21 +3198,36 @@ def _emoji_ids_reply(msg: Message) -> str:
     # Offsets are UTF-16 code units, not Python characters — extract_from() is
     # what knows the difference. Slicing the string by hand puts the wrong
     # character next to the id as soon as the text contains any emoji before it.
-    lines = [f"✅ <b>{len(found)}</b> اموجی پرمیوم پیدا شد:\n"]
+    ids = []
     seen = set()
     for ent in found:
         eid = str(ent.custom_emoji_id)
-        if eid in seen:
+        if eid not in seen:
+            seen.add(eid)
+            ids.append(eid)
+    packs = await _emoji_packs(msg.bot, ids)
+
+    lines = [f"✅ <b>{len(ids)}</b> اموجی پرمیوم پیدا شد:\n"]
+    for ent in found:
+        eid = str(ent.custom_emoji_id)
+        if eid not in ids:
             continue
-        seen.add(eid)
+        ids.remove(eid)
         try:
             glyph = ent.extract_from(body)
         except Exception:
             glyph = "?"
+        pack = packs.get(eid) or ""
         # The preview is the emoji rendered by its id, so the owner can confirm
         # the id maps to the emoji they meant before we put it on a button.
         lines.append(f'<tg-emoji emoji-id="{eid}">{glyph}</tg-emoji>  <code>{eid}</code>')
-    lines.append("\n\n💡 روی هر آیدی بزن تا کپی شود. بعد بگو کدام را روی کدام دکمه بگذارم.")
+        if pack:
+            # The pack link is the useful half: sending ONE emoji from a pack is
+            # enough for us to take every glyph in it.
+            lines.append(f'      📦 پک: <a href="https://t.me/addemoji/{pack}">{pack}</a>')
+    lines.append("\n💡 روی هر آیدی بزن تا کپی شود.\n"
+                 "برای اضافه‌کردن یک پک کامل، کافی است <b>یک</b> اموجی از آن پک را "
+                 "همین‌جا بفرستی — بقیه‌اش با من.")
     return "\n".join(lines)
 
 
@@ -3205,7 +3238,7 @@ async def emojiid_start(msg: Message, state: FSMContext):
     # Used as a reply, answer straight away — no reason to ask for the message
     # we are already looking at.
     if msg.reply_to_message:
-        await msg.answer(_emoji_ids_reply(msg.reply_to_message), parse_mode="HTML")
+        await msg.answer(await _emoji_ids_reply(msg.reply_to_message), parse_mode="HTML")
         return
     await state.set_state(EmojiIds.collecting)
     await msg.answer(
@@ -3226,4 +3259,4 @@ async def emojiid_collect(msg: Message, state: FSMContext):
         await state.clear()
         await msg.answer("✅ از حالت آیدی اموجی خارج شدی.")
         return
-    await msg.answer(_emoji_ids_reply(msg), parse_mode="HTML")
+    await msg.answer(await _emoji_ids_reply(msg), parse_mode="HTML")
