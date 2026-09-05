@@ -53,6 +53,15 @@ _UNSUPPORTED_HINTS = ("method not found", "unknown method", "not found: method")
 # Ids come from the /emojiid admin command. Set one to "" to drop back to the
 # plain emoji without touching any of the call sites.
 PREMIUM_EMOJI = {
+    # brand and menu
+    "brand": "5895520960894733929",       # beside "اطلس اکانت", wherever it appears
+    "bank": "5789532541102855208",        # beside the card number on a payment screen
+    "trial": "5406756500108501710",       # base glyph 🆓 — chosen for the free trial
+    "services": "5271604874419647061",
+    "assistant": "5352899869369446268",
+    "orders": "5980808493018387732",
+    "support": "5985546378816786759",
+    "invite": "5274074880046802038",
     # buy-screen chrome
     "cart": "5258024802010026053",
     "speed": "5422609593765241366",

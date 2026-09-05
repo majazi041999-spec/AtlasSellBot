@@ -481,24 +481,42 @@ async def _price_mismatch_note(order: dict) -> str:
         return ""
 
 
+def _esc(value) -> str:
+    """HTML-escape a value bound for a message we send with parse_mode="HTML"."""
+    import html as _h
+    return _h.escape(str(value or ""), quote=False)
+
+
 async def _payment_text(oid: int, title: str, traffic_gb, duration_days, price: int, spec: str = "") -> str:
+    """The card-to-card payment screen. HTML, and it must stay HTML.
+
+    A custom emoji has no Markdown syntax, so the bank icon beside the card
+    number forces this mode. Every value that came from a settings field or a
+    package name is escaped: the card holder's name is owner-typed and an
+    unlucky `&` would otherwise break the whole message — the ONE message a
+    customer must be able to read to pay us.
+    """
+    import html as _h
+    from bot.rich_message import emoji as tg_emoji
     card_bank, card_number, card_holder = await _get_card_info()
     spec_line = spec or f"{traffic_gb} GB | {duration_days} روز"
+    e = lambda v: _h.escape(str(v or ""), quote=False)
     return (
-        f" *سفارش شما — #{oid}*\n"
+        f"<b>سفارش شما — #{oid}</b>\n"
         f"━━━━━━━━━━━━━━\n"
-        f" {title}\n"
-        f" {spec_line}\n"
-        f" مبلغ قابل پرداخت: *{_fmt_toman(price)} تومان*\n\n"
+        f"{e(title)}\n"
+        f"{e(spec_line)}\n"
+        f"مبلغ قابل پرداخت: <b>{_fmt_toman(price)} تومان</b>\n\n"
         f"━━━━━━━━━━━━━━\n"
-        f" *پرداخت کارت به کارت:*\n\n"
-        f" {card_bank}\n"
-        f" `{card_number}`\n"
-        f" به نام: {card_holder}\n\n"
-        f"‼️ *مهم — لطفاً دقیق بخوان:*\n"
-        f"▪️ حتماً و دقیقاً مبلغ *{_fmt_toman(price)} تومان* را واریز کن (کم یا زیاد نه)؛ در غیر این صورت تأیید سفارش به تأخیر می‌افتد.\n"
-        f"▪️ در قسمت «توضیحات/بابت» کارت‌به‌کارت *هیچ چیزی ننویس* — مخصوصاً کلماتی مثل «vpn»، «فیلترشکن» یا نام سرویس را ننویس.\n\n"
-        f" *مراحل:*\n"
+        f"<b>پرداخت کارت به کارت:</b>\n\n"
+        f'{tg_emoji("bank", "🏦")} {e(card_bank)}\n'
+        # <code> keeps the tap-to-copy behaviour the backticks used to give.
+        f"<code>{e(card_number)}</code>\n"
+        f"به نام: {e(card_holder)}\n\n"
+        f"‼️ <b>مهم — لطفاً دقیق بخوان:</b>\n"
+        f"▪️ حتماً و دقیقاً مبلغ <b>{_fmt_toman(price)} تومان</b> را واریز کن (کم یا زیاد نه)؛ در غیر این صورت تأیید سفارش به تأخیر می‌افتد.\n"
+        f"▪️ در قسمت «توضیحات/بابت» کارت‌به‌کارت <b>هیچ چیزی ننویس</b> — مخصوصاً کلماتی مثل «vpn»، «فیلترشکن» یا نام سرویس را ننویس.\n\n"
+        f"<b>مراحل:</b>\n"
         f"1. دقیقاً همین مبلغ را به کارت بالا واریز کن\n"
         f"2. روی «ارسال فیش» بزن و عکس فیش را بفرست\n"
         f"3. پس از تأیید، سرویس فعال/تمدید می‌شود\n\n"
@@ -540,13 +558,15 @@ async def wallet_topup_amount(msg: Message, state: FSMContext):
     await state.update_data(topup_amount=amount)
     await state.set_state(WalletTopup.waiting_receipt)
     card_bank, card_number, card_holder = await _get_card_info()
+    from bot.rich_message import emoji as tg_emoji
     await msg.answer(
-        f"✅ مبلغ دقیق پرداخت: *{_fmt_toman(amount)} تومان*\n"
-        f"‼️ لطفاً *دقیقاً همین مبلغ* را واریز کنید (کم یا زیاد نه) تا پرداختتان سریع شناسایی شود.\n"
+        f"✅ مبلغ دقیق پرداخت: <b>{_fmt_toman(amount)} تومان</b>\n"
+        f"‼️ لطفاً <b>دقیقاً همین مبلغ</b> را واریز کنید (کم یا زیاد نه) تا پرداختتان سریع شناسایی شود.\n"
         f"‼️ در قسمت «توضیحات» کارت‌به‌کارت هیچ چیزی ننویسید (مخصوصاً «vpn» یا نام سرویس).\n\n"
         f"لطفاً واریز را انجام دهید و تصویر فیش را ارسال کنید.\n\n"
-        f"🏦 {card_bank}\n`{card_number}`\n👤 {card_holder}",
-        parse_mode="Markdown",
+        f'{tg_emoji("bank", "🏦")} {_esc(card_bank)}\n'
+        f"<code>{_esc(card_number)}</code>\n👤 {_esc(card_holder)}",
+        parse_mode="HTML",
         reply_markup=flow_cancel_kb(),
     )
 
@@ -1349,7 +1369,7 @@ async def renew_with_package(cb: CallbackQuery):
 
     text = await _payment_text(oid, f"{title} — {pkg.get('name') or 'پلن'}", 0, 0, price, spec=f"{gb_txt} | {days_txt}")
     text += tail
-    await cb.message.answer(text, reply_markup=payment_kb(oid), parse_mode="Markdown")
+    await cb.message.answer(text, reply_markup=payment_kb(oid), parse_mode="HTML")
     await cb.answer()
 
 
@@ -1642,17 +1662,20 @@ async def _finalize_buy_payment(from_user, state: FSMContext):
         await update_order(oid, discount_code=code, discount_amount=code_amount)
 
     text = await _payment_text(oid, pkg["name"], pkg["traffic_gb"], pkg["duration_days"], net_price)
+    # HTML to match _payment_text: <code> keeps the tap-to-copy the backticks
+    # gave, and the code and the customer's own service name are escaped because
+    # they are the two values here that a person typed.
     if price_per_gb > 0 or discount > 0 or code_amount > 0:
-        text += f"\n\nقیمت پایه: `{_fmt_toman(base_price)}` تومان"
+        text += f"\n\nقیمت پایه: <code>{_fmt_toman(base_price)}</code> تومان"
         if price_per_gb > 0:
-            text += f"\nقیمت اختصاصی هر GB: `{_fmt_toman(price_per_gb)}` تومان"
+            text += f"\nقیمت اختصاصی هر GB: <code>{_fmt_toman(price_per_gb)}</code> تومان"
         if discount > 0:
-            text += f"\nتخفیف شما: `{discount:g}%`"
+            text += f"\nتخفیف شما: <code>{discount:g}%</code>"
         if code_amount > 0:
-            text += f"\n🎟️ کد تخفیف `{code}`: `{_fmt_toman(code_amount)}-` تومان"
-            text += f"\n💳 مبلغ نهایی: *{_fmt_toman(net_price)}* تومان"
+            text += f"\n🎟️ کد تخفیف <code>{_esc(code)}</code>: <code>{_fmt_toman(code_amount)}-</code> تومان"
+            text += f"\n💳 مبلغ نهایی: <b>{_fmt_toman(net_price)}</b> تومان"
     if custom_name:
-        text += f"\n\nنام دلخواه انتهای کانفیگ: `{custom_name}`"
+        text += f"\n\nنام دلخواه انتهای کانفیگ: <code>{_esc(custom_name)}</code>"
     await state.clear()
     return (oid, text), None
 
@@ -1753,7 +1776,7 @@ async def _emit_buy_payment(send, from_user, state: FSMContext):
         await send(error)
         return
     oid, text = result
-    await send(text, reply_markup=payment_kb(oid), parse_mode="Markdown")
+    await send(text, reply_markup=payment_kb(oid), parse_mode="HTML")
 
 
 @router.callback_query(F.data.startswith("pay_wallet:"))

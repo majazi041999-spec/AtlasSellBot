@@ -11,6 +11,29 @@ from bot.middlewares.channel_required import ChannelRequiredMiddleware
 router = Router()
 
 
+BRAND = "اطلس اکانت"
+# What owner-written text may call us. Every spelling gets the same treatment so
+# the brand looks identical wherever it appears, without anyone having to
+# remember to type the emoji into a settings field.
+_BRAND_ALIASES = (BRAND, "Atlas Account", "AtlasAccount", "اطلس‌اکانت")
+
+
+def _brandify(escaped_html: str) -> str:
+    """Put the brand emoji and bold on the brand name inside ALREADY-ESCAPED html.
+
+    Runs after escaping on purpose: it inserts markup, so anything it added would
+    be escaped away if the order were reversed.
+    """
+    from bot.rich_message import emoji as tg_emoji
+    mark = f'{tg_emoji("brand", "🌐")} <b>{BRAND}</b>'
+    out = escaped_html
+    for alias in _BRAND_ALIASES:
+        if alias in out:
+            out = out.replace(alias, mark)
+            break          # one spelling per text; replacing them all double-marks
+    return out
+
+
 async def _admin_role(uid: int, user: dict) -> str:
     owner_id = int(await get_setting("owner_admin_id", "0") or 0)
     if uid in ADMIN_IDS or (owner_id and uid == owner_id):
@@ -64,11 +87,32 @@ async def cmd_start(msg: Message, state: FSMContext):
         await msg.answer(await get_text("maintenance_message"))
         return
 
-    welcome = await get_text("welcome_message")
-    text = f"{'🔐 *پنل مدیریت*' if role != 'none' else '🌐 *Atlas Account*'}\n\n{welcome}"
+    await send_home(msg, user, role)
 
-    kb = admin_menu(finance_only=(role == 'finance')) if role != 'none' else user_menu(include_wholesale=bool(user.get("is_wholesale", 0)))
-    await msg.answer(text, reply_markup=kb, parse_mode="Markdown")
+
+async def send_home(msg: Message, user: dict, role: str):
+    """The welcome message and the menus, in one place.
+
+    /start, the restart button and the fallback for an unrecognised message all
+    land here, so a customer sees the same screen however they got back to it.
+    """
+    import html as _html
+    from bot.keyboards import admin_menu, user_menu
+    from bot.rich_message import emoji as tg_emoji
+
+    welcome = await get_text("welcome_message")
+    if role != "none":
+        head = "🔐 <b>پنل مدیریت</b>"
+    else:
+        head = f'{tg_emoji("brand", "🌐")} <b>{BRAND}</b>'
+    # HTML, not Markdown: a custom emoji has no Markdown syntax. Escaped with
+    # html.escape rather than rich_message.esc, because that one collapses
+    # whitespace and the welcome text is written across two lines.
+    text = f"{head}\n\n{_brandify(_html.escape(welcome, quote=False))}"
+
+    kb = (admin_menu(finance_only=(role == "finance")) if role != "none"
+          else user_menu(include_wholesale=bool(user.get("is_wholesale", 0))))
+    await msg.answer(text, reply_markup=kb, parse_mode="HTML")
 
     # The reply keyboard above is invisible until someone thinks to open it, and
     # newcomers who press Start and see only text simply stop. The same actions
@@ -142,12 +186,11 @@ async def back_menu_cb(cb: CallbackQuery, state: FSMContext):
 
 @router.message(F.text == "🔄 شروع مجدد")
 async def restart_menu(msg: Message, state: FSMContext):
+    # Identical to /start, deliberately: this button is the way back for someone
+    # who is lost, and a "menu reloaded" line without the menu itself was not it.
     await state.clear()
-    from bot.keyboards import admin_menu, user_menu
     user = await get_or_create_user(msg.from_user.id, msg.from_user.username, msg.from_user.full_name)
-    role = await _admin_role(msg.from_user.id, user)
-    kb = admin_menu(finance_only=(role == "finance")) if role != "none" else user_menu(include_wholesale=bool(user.get("is_wholesale", 0)))
-    await msg.answer("✅ ربات برای شما بروزرسانی شد و منو دوباره بارگذاری شد.", reply_markup=kb)
+    await send_home(msg, user, await _admin_role(msg.from_user.id, user))
 
 @router.message(F.text == "🌐 پنل مدیریت")
 async def panel_url(msg: Message):
@@ -184,3 +227,25 @@ async def check_channel_join(cb: CallbackQuery):
         await cb.answer("❌ هنوز عضو کانال نشده‌اید.", show_alert=True)
         return
     await ChannelRequiredMiddleware._render_join_success(cb, user)
+
+
+# ─────────────────────────── the last-resort fallback ────────────────────────
+# Registered at the very end of the LAST router, so it only ever sees a message
+# no other handler wanted.
+@router.message(F.text)
+async def unrecognised_text(msg: Message, state: FSMContext):
+    """Someone typed something the bot has no answer for — show them the menu.
+
+    People genuinely write "سلام" or "کمک" or a stray word at a bot and then get
+    silence, which reads as broken. Sending them home costs nothing and is what
+    they were looking for.
+
+    THE GUARD MATTERS MORE THAN THE FEATURE: if the person is mid-flow — typing
+    an amount, naming a service, waiting to send a receipt — their message is
+    part of that step, and answering with a welcome screen would throw the step
+    away. So this only fires when there is NO active state.
+    """
+    if await state.get_state() is not None:
+        return
+    user = await get_or_create_user(msg.from_user.id, msg.from_user.username, msg.from_user.full_name)
+    await send_home(msg, user, await _admin_role(msg.from_user.id, user))

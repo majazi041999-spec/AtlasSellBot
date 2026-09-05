@@ -34,20 +34,24 @@ router = Router()
 # Colour carries meaning rather than decoration, because Telegram only gives
 # three: green starts something free, red is the one that costs money and should
 # stand out, blue is everything else.
-ACTIONS: List[Tuple[str, str, str, str]] = [
-    # A newline inside the label makes the button TALLER as well as wide, which
-    # is the only size control Telegram gives: height follows the line count and
-    # width follows how many buttons share the row. The two that matter most get
-    # both — a second line and a row to themselves.
-    ("trial", "🧪 تست رایگان بگیر\nیک اکانت آزمایشی، همین حالا", "success", "test_account"),
-    ("buy", "🛒 خرید سرویس\nدیدن پکیج‌ها و قیمت‌ها", "danger", "buy_service"),
-    ("status", "📡 سرویس‌های من", "primary", "user_status"),
-    ("ai", "🤖 دستیار هوشمند\nسوالت را بپرس، همین‌جا جواب بگیر", "success", ""),
-    ("support", "📞 پشتیبانی", "primary", "support"),
-    ("wallet", "💳 کیف پول", "primary", "wallet_home"),
-    ("orders", "📋 سفارش‌های من", "primary", "my_orders"),
-    ("invite", "🎁 دعوت دوستان", "primary", "referral_menu"),
-    ("rep", "🏢 پنل نمایندگی", "primary", "representative_start"),
+# key, label, colour, handler shared with the reply keyboard, premium-emoji role.
+#
+# A newline inside the label makes the button TALLER as well as wide, which is
+# the only size control Telegram gives: height follows the line count and width
+# follows how many buttons share the row. The ones that matter most get both.
+#
+# The plain emoji is left OUT of any label that has a premium icon — the icon
+# already fills that slot, and printing both shows the same idea twice.
+ACTIONS: List[Tuple[str, str, str, str, str]] = [
+    ("trial", "تست رایگان بگیر\nیک اکانت آزمایشی، همین حالا", "success", "test_account", "trial"),
+    ("buy", "خرید سرویس\nدیدن پکیج‌ها و قیمت‌ها", "danger", "buy_service", "cart"),
+    ("status", "سرویس‌های من", "primary", "user_status", "services"),
+    ("ai", "دستیار هوشمند\nسوالت را بپرس، همین‌جا جواب بگیر", "success", "", "assistant"),
+    ("support", "پشتیبانی", "primary", "support", "support"),
+    ("wallet", "💳 کیف پول", "primary", "wallet_home", ""),
+    ("orders", "سفارش‌های من", "primary", "my_orders", "orders"),
+    ("invite", "دعوت دوستان", "primary", "referral_menu", "invite"),
+    ("rep", "🏢 پنل نمایندگی", "primary", "representative_start", ""),
 ]
 
 # Everything a newcomer actually needs gets the full width. Only the last three —
@@ -58,9 +62,11 @@ _LAYOUT = [1, 1, 1, 1, 2, 2, 1]
 
 def home_kb() -> InlineKeyboardMarkup:
     from bot.keyboards import _button
+    from bot.rich_message import emoji_id
     b = InlineKeyboardBuilder()
-    for key, label, style, _fn in ACTIONS:
-        _button(b, text=label, callback_data=f"home:{key}", style=style)
+    for key, label, style, _fn, role in ACTIONS:
+        _button(b, text=label, callback_data=f"home:{key}", style=style,
+                icon_custom_emoji_id=emoji_id(role) if role else None)
     b.adjust(*_LAYOUT)
     return b.as_markup()
 
@@ -74,6 +80,25 @@ def _as_user(cb: CallbackQuery, bot: Bot) -> Message:
     account. The copy leaves the original untouched.
     """
     return cb.message.model_copy(update={"from_user": cb.from_user}).as_(bot)
+
+
+@router.callback_query(F.data == "home:restart")
+async def home_restart(cb: CallbackQuery, state: FSMContext, bot: Bot):
+    """A button that genuinely restarts the bot for the person who taps it.
+
+    A t.me/<bot>?start=… link does NOT do this. Telegram shows a real Start
+    button only to somebody who has never opened the chat; for everyone else the
+    link just brings the chat forward and nothing runs — which is why the button
+    attached to past broadcasts looked dead. A callback button does run, because
+    the message carrying it came from this bot.
+    """
+    from bot.handlers.common import send_home, _admin_role
+    from core.database import get_or_create_user
+    await state.clear()
+    await cb.answer("منو دوباره بارگذاری شد")
+    user = await get_or_create_user(cb.from_user.id, cb.from_user.username,
+                                    cb.from_user.full_name)
+    await send_home(_as_user(cb, bot), user, await _admin_role(cb.from_user.id, user))
 
 
 @router.callback_query(F.data.startswith("home:"))
@@ -93,7 +118,7 @@ async def home_action(cb: CallbackQuery, state: FSMContext, bot: Bot):
         return
 
     from bot.handlers import user as user_handlers
-    fn = getattr(user_handlers, entry[3], None)
+    fn = getattr(user_handlers, entry[3], None) if entry[3] else None
     if not fn:
         log.warning("home action %r has no handler %r", key, entry[3])
         return
