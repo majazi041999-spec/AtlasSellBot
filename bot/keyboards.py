@@ -8,7 +8,7 @@ import time
 
 from core.sorting import fa_sort_key
 from core.pricing import is_unlimited_package
-from bot.rich_message import table as rich_table
+from bot.rich_message import esc as rich_esc, table as rich_table
 
 try:
     from aiogram.types import CopyTextButton
@@ -856,7 +856,32 @@ def _fa_num(value: int) -> str:
     return f"{int(value):,}".replace(",", "،")
 
 
-def packages_kb(pkgs: List[Dict]) -> InlineKeyboardMarkup:
+def _pkg_flair(pkg: Dict, biggest_gb: float) -> tuple:
+    """The emoji and Telegram button style for one package.
+
+    Telegram offers exactly three styles — "primary" (blue), "success" (green)
+    and "danger" (red) — so colour has to MEAN something rather than decorate.
+    Here it is a size ladder, not a value claim: at our per-GB tariff the volume
+    plans all cost the same per gigabyte, so calling one of them "best value"
+    would be a lie the customer can check with a calculator.
+
+      blue   — the ordinary volume plans
+      green  — the largest volume plan on offer, whatever it happens to be
+      red    — the unlimited flagship. Nothing on this screen is destructive, so
+               red cannot be misread as a warning; among blue buy buttons it is
+               simply the one that stands out.
+
+    The emoji follows the same ladder so the two never disagree.
+    """
+    if is_unlimited_package(pkg):
+        return "♾️", "danger"
+    gb = float(pkg.get("traffic_gb") or 0)
+    style = "success" if biggest_gb > 0 and gb >= biggest_gb else "primary"
+    emoji = "💎" if gb >= 25 else "🚀" if gb >= 20 else "⚡" if gb >= 15 else "🌱"
+    return emoji, style
+
+
+def packages_kb(pkgs: List[Dict], bestseller_id: int = 0) -> InlineKeyboardMarkup:
     """One button per package, kept SHORT and unmistakable.
 
     The table above carries the detail, so the button only has to answer "what
@@ -868,28 +893,53 @@ def packages_kb(pkgs: List[Dict]) -> InlineKeyboardMarkup:
     the old button too long to read on a phone.
     """
     b = InlineKeyboardBuilder()
+    biggest = max((float(p.get("traffic_gb") or 0)
+                   for p in pkgs if not is_unlimited_package(p)), default=0.0)
     for p in pkgs:
+        emoji, style = _pkg_flair(p, biggest)
+        # One badge, on one button. Two would cancel each other out, and the
+        # claim itself is measured — see best_selling_package_id().
+        badge = " 🔥" if bestseller_id and int(p.get("id") or 0) == int(bestseller_id) else ""
         _button(
             b,
-            text=f"🛒 خرید {_pkg_traffic(p)} · {_pkg_duration(p)} — {_fa_num(_pkg_price(p))} تومان",
+            text=f"{emoji} خرید {_pkg_traffic(p)} · {_pkg_duration(p)} — {_fa_num(_pkg_price(p))} تومان{badge}",
             callback_data=f"buy:{p['id']}",
-            style="primary",
+            style=style,
         )
     b.adjust(1)
     return b.as_markup()
 
 
-def packages_table_md(pkgs: List[Dict]) -> str:
+def packages_table_html(pkgs: List[Dict]) -> str:
     """The package list as a rich-message table (Bot API 10.1+).
 
     This MUST show the same numbers as `packages_kb` — the table is what the
     customer reads and the buttons are what they press, so any drift between the
     two is a price dispute waiting to happen. Both read them through the
     `_pkg_*` helpers above for exactly that reason; keep it that way.
+
+    The row's emoji is the same one its button carries, which is what lets a
+    customer match a row to the button that buys it without reading either.
     """
+    biggest = max((float(p.get("traffic_gb") or 0)
+                   for p in pkgs if not is_unlimited_package(p)), default=0.0)
+    rows = []
+    for p in pkgs:
+        emoji, _ = _pkg_flair(p, biggest)
+        star = is_unlimited_package(p)
+        name = f"{emoji} {rich_esc(_pkg_traffic(p))}"
+        price = rich_esc(_fa_num(_pkg_price(p)))
+        rows.append([
+            # The flagship row is highlighted rather than merely listed: <mark>
+            # is Telegram's own emphasis, so it tracks the reader's theme instead
+            # of us guessing at a colour.
+            f"<mark><b>{name}</b></mark>" if star else name,
+            rich_esc(_pkg_duration(p)),
+            f"<mark><b>{price}</b></mark>" if star else f"<b>{price}</b>",
+        ])
     return rich_table(
-        ["پکیج", "حجم", "مدت", "قیمت (تومان)"],
-        [[p.get("name"), _pkg_traffic(p), _pkg_duration(p), f"**{_fa_num(_pkg_price(p))}**"]
-         for p in pkgs],
-        align=["left", "center", "center", "right"],
+        ["📦 پکیج", "⏱ مدت", "💰 قیمت"],
+        rows,
+        align=["left", "center", "right"],
+        caption="قیمت‌ها به تومان · ۵ کاربر هم‌زمان روی همه‌ی پکیج‌ها",
     )

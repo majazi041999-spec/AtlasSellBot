@@ -2740,6 +2740,44 @@ async def get_packages(active_only=True) -> List[Dict]:
         async with db.execute(q) as c:
             return [dict(r) for r in await c.fetchall()]
 
+_BESTSELLER: tuple = (0.0, 0)   # (computed_at, package_id)
+_BESTSELLER_TTL = 3600
+
+
+async def best_selling_package_id(min_share: float = 0.30) -> int:
+    """The package with the most orders, or 0 if none stands out.
+
+    The buy screen badges this package as "پرفروش‌ترین". A hard-coded id would
+    quietly become a lie the moment the sales mix shifted — the same way the old
+    package names kept advertising prices that had already changed — so the
+    claim is recomputed from the orders table instead of written down.
+
+    `min_share` is what stops a meaningless winner: with sales spread evenly, no
+    package is "the popular one" and the badge is better left off. Cached for an
+    hour because this runs on a screen a customer opens, not on a report.
+    """
+    import time as _time
+    now = _time.time()
+    if now - _BESTSELLER[0] < _BESTSELLER_TTL:
+        return _BESTSELLER[1]
+    winner = 0
+    try:
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute(
+                "SELECT package_id, COUNT(*) n FROM orders "
+                "WHERE package_id IS NOT NULL AND package_id > 0 "
+                "GROUP BY package_id ORDER BY n DESC"
+            ) as c:
+                rows = await c.fetchall()
+        total = sum(int(r[1]) for r in rows)
+        if rows and total and int(rows[0][1]) / total >= min_share:
+            winner = int(rows[0][0])
+    except Exception:
+        winner = 0
+    globals()["_BESTSELLER"] = (now, winner)
+    return winner
+
+
 async def get_package(pid: int) -> Optional[Dict]:
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row

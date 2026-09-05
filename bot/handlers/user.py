@@ -65,7 +65,8 @@ from core.database import (
     validate_discount_code,
 )
 from core.xui_api import XUIClient, fmt_bytes, days_left, expiry_ms_from_days
-from core.pricing import package_price_for_user
+from core.pricing import package_price_for_user, is_unlimited_package
+from core.database import best_selling_package_id
 from core.texts import get_text
 from core.qr import build_qr_image
 from core.multi_subscription import (
@@ -83,7 +84,7 @@ from bot.rich_message import answer_rich, edit_rich
 from bot.keyboards import (
     user_menu,
     packages_kb,
-    packages_table_md,
+    packages_table_html,
     payment_kb,
     config_detail_kb,
     config_to_sub_confirm_kb,
@@ -316,7 +317,42 @@ async def _calc_package_price_for_user(user_id: int, pkg: dict) -> tuple[int, in
     return p["final"], p["base"], p["discount"], p["price_per_gb"]
 
 
-def _packages_screen_md(pkgs: list[dict]) -> str:
+def _unlimited_callout(pkgs: list[dict], bestseller_id: int = 0) -> str:
+    """An upsell line, or nothing — and it is computed, never written.
+
+    Our unlimited plan usually costs only a little more than the largest volume
+    plan, which is the single most persuasive fact on this screen. Deriving the
+    gap from the same prices the table shows means the line can never overstate
+    it, and it simply disappears when the gap stops being flattering (a rep with
+    an unusual tariff, or a repriced plan).
+    """
+    unlimited = next((p for p in pkgs if is_unlimited_package(p)), None)
+    volume = [p for p in pkgs if not is_unlimited_package(p)]
+    if not unlimited or not volume:
+        return ""
+    top = max(volume, key=lambda p: float(p.get("traffic_gb") or 0))
+    gap = int(unlimited.get("display_price", unlimited.get("price") or 0) or 0) \
+        - int(top.get("display_price", top.get("price") or 0) or 0)
+    top_price = int(top.get("display_price", top.get("price") or 0) or 0)
+    # Only worth saying while the step up is small. Above a third of the biggest
+    # plan's price it stops being a nudge and starts being an objection.
+    if gap <= 0 or not top_price or gap > top_price / 3:
+        return ""
+    gb = f"{float(top.get('traffic_gb') or 0):g}"
+    # A pull quote, not another paragraph: <aside> renders as a set-apart block,
+    # which is what makes the flagship LOOK different from the list it sits
+    # under instead of merely being mentioned again.
+    popular = "پرفروش‌ترین انتخاب مشتری‌ها" if (
+        bestseller_id and int(unlimited.get("id") or 0) == int(bestseller_id)
+    ) else "بیشترین حجم، بدون نگرانی"
+    return (
+        f"<aside>♾️ <b>نامحدود</b> — با فقط <b>{gap:,} تومان</b> بیشتر از "
+        f"{gb} گیگ، دیگر حواست به حجم نباشد."
+        f"<cite>🔥 {popular}</cite></aside>"
+    ).replace(",", "،")
+
+
+def _packages_screen_html(pkgs: list[dict], bestseller_id: int = 0) -> str:
     """The buy screen as rich Markdown: a heading, the price table, then a nudge
     toward the buttons that actually start the purchase.
 
@@ -325,13 +361,16 @@ def _packages_screen_md(pkgs: list[dict]) -> str:
     the one `pkgs` list for that reason.
     """
     return (
-        "## 🛒 پکیج‌ها و قیمت‌ها\n\n"
-        # The 5-device allowance is the same on every plan (it comes from the
-        # guard's ip_limit_default), so it belongs here once and NOT inside one
-        # package's name, where it would read as that package's perk alone.
-        "✅ همه‌ی پکیج‌ها: **۵ کاربر هم‌زمان** · پرسرعت · بدون قطعی\n\n"
-        + packages_table_md(pkgs)
-        + "\n\n👇 روی دکمه‌ی پکیج مورد نظرت بزن تا خرید شروع شود."
+        "<h2>🛒 پکیج خودت رو انتخاب کن</h2>"
+        # Every claim on this line is one we can point at: the 5 devices come
+        # from the guard's ip_limit_default, provisioning is automated, and the
+        # customer really does only paste one link. Uptime promises were left
+        # out on purpose — the first outage would be quoted back at us.
+        "<p>⚡ <b>تحویل آنی و خودکار</b> · 👥 <b>۵ کاربر هم‌زمان</b> "
+        "· 🔗 فقط یک لینک، بدون تنظیمات پیچیده</p>"
+        + packages_table_html(pkgs)
+        + _unlimited_callout(pkgs, bestseller_id)
+        + "<p>👇 روی دکمه‌ی پکیج مورد نظرت بزن — بقیه‌اش با ماست.</p>"
     )
 
 
@@ -583,11 +622,12 @@ def _register_user_back_steps():
         await state.clear()
         u = await get_or_create_user(cb.from_user.id)
         pkgs = await _priced_packages(u["id"], await get_packages(active_only=True))
+        bestseller = await best_selling_package_id()
         await edit_rich(
             cb.message,
-            _packages_screen_md(pkgs),
+            _packages_screen_html(pkgs, bestseller),
             fallback="🛒 *پکیج مورد نظر را انتخاب کنید:*",
-            reply_markup=packages_kb(pkgs),
+            reply_markup=packages_kb(pkgs, bestseller),
         )
     nav.register(BuyService.custom_name, _buy_name_back)
 
@@ -1510,13 +1550,14 @@ async def buy_service(msg: Message):
 
     user = await get_or_create_user(msg.from_user.id, msg.from_user.username, msg.from_user.full_name)
     pkgs = await _priced_packages(user["id"], pkgs)
+    bestseller = await best_selling_package_id()
     await answer_rich(
         msg,
-        _packages_screen_md(pkgs),
+        _packages_screen_html(pkgs, bestseller),
         # The same screen minus the table, for any client or Bot API server that
         # cannot render a rich message. The buttons carry the same prices.
         fallback="🛒 *پکیج مورد نظر را انتخاب کنید:*\n\nروی هر بخش از کارت پکیج بزنید تا همان پکیج انتخاب شود.",
-        reply_markup=packages_kb(pkgs),
+        reply_markup=packages_kb(pkgs, bestseller),
     )
 
 
