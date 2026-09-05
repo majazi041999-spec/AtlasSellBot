@@ -293,6 +293,12 @@ async def _send_subscription_status(target, profile: dict, send_qr: bool = True)
         text = text[: cut + 1 if cut > 3000 else 3900] + "\n…"
 
     kb = subscription_detail_kb(int(profile["id"]), sub_url, active_nodes)
+    # The app offer rides on the QR send, which only happens right after a
+    # service is created — the moment someone is actually about to set it up.
+    # Putting it on the card itself would repeat it every time they check their
+    # usage, which is most of the times this screen is opened.
+    if send_qr:
+        kb = with_app_button(kb, await get_setting("clientapp_file_id", ""))
     if isinstance(target, Message):
         await target.answer(text, parse_mode="HTML", reply_markup=kb)
         if send_qr:
@@ -517,6 +523,46 @@ def _esc(value) -> str:
     return _h.escape(str(value or ""), quote=False)
 
 
+async def _suggested_apps_html() -> str:
+    """The app list a customer sees right after buying.
+
+    OUR Android app leads it. It is the one client whose settings are already
+    correct, so a customer who takes it never hits the "which option do I pick"
+    step that produces most connection tickets — and every other app on this
+    list is somebody else's, with its own updates and its own ways to break.
+
+    The rest stay: iOS and desktop customers need them, and an Android customer
+    who already has a favourite should not be told they are wrong.
+    """
+    lines = ["<b>📲 برنامه‌های پیشنهادی</b>", ""]
+    if (await get_setting("clientapp_file_id", "") or "").strip():
+        lines.append("🟢 <b>اپ اطلس (اندروید)</b> — پیشنهاد ما. تنظیماتش آماده است، "
+                     "فقط لینک را وارد کن. دکمه‌ی پایین را بزن تا برایت بفرستم.")
+        lines.append("")
+    lines.append(
+        '<a href="https://github.com/2dust/v2rayNG/releases/latest">📱 V2rayNG (اندروید)</a> · '
+        '<a href="https://apps.apple.com/us/app/streisand/id6450534064">🍎 Streisand (iOS)</a> · '
+        '<a href="https://github.com/2dust/v2rayN/releases/latest">🪟 v2rayN (ویندوز)</a>'
+    )
+    return "\n".join(lines)
+
+
+def with_app_button(markup, file_id: str):
+    """Add "get our Android app" to a keyboard, when there is an app to send.
+
+    Silently returns the keyboard unchanged when no APK has been uploaded, so
+    the button can never advertise a file that does not exist.
+    """
+    if not (file_id or "").strip():
+        return markup
+    from bot.keyboards import _inline_button
+    from aiogram.types import InlineKeyboardMarkup
+    rows = list(markup.inline_keyboard) if markup else []
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        _inline_button(text="📲 دریافت اپ اندروید ما", callback_data="agent:getapp",
+                       style="success")]] + rows)
+
+
 def _md_to_html(text: str) -> str:
     """Translate the small Markdown these messages actually use into HTML.
 
@@ -533,7 +579,11 @@ def _md_to_html(text: str) -> str:
     """
     import re as _re
     out = _esc(text)
+    # **bold** BEFORE *bold*, or the single-asterisk rule matches the inner pair
+    # and leaves the outer asterisks stranded around the tags it just made.
+    out = _re.sub(r"\*\*([^*\n]+)\*\*", r"<b>\1</b>", out)
     out = _re.sub(r"\*([^*\n]+)\*", r"<b>\1</b>", out)
+    out = _re.sub(r"\[([^\]\n]+)\]\((https?://[^)\s]+)\)", r'<a href="\2">\1</a>', out)
     out = _re.sub(r"(?<![\w_])_([^_\n]+)_(?![\w_])", r"<i>\1</i>", out)
     out = _re.sub(r"`([^`\n]+)`", r"<code>\1</code>", out)
     return out
@@ -1462,15 +1512,12 @@ async def send_config_link(cb: CallbackQuery):
         body = f"🔗 <b>لینک اتصال شما</b>\n\n<code>{_esc(link)}</code>\n"
         if sub:
             body += f"\n📡 <b>لینک اشتراک</b>\n<code>{_esc(sub)}</code>\n"
-        body += (
-            "\n👆 لینک را کپی کن و در برنامه وارد کن.\n\n"
-            "<b>برنامه‌های پیشنهادی:</b>\n"
-            '<a href="https://github.com/2dust/v2rayNG/releases/latest">📱 V2rayNG (اندروید)</a> · '
-            '<a href="https://apps.apple.com/us/app/streisand/id6450534064">🍎 Streisand (iOS)</a> · '
-            '<a href="https://github.com/2dust/v2rayN/releases/latest">🪟 v2rayN (ویندوز)</a>'
-        )
+        body += "\n👆 لینک را کپی کن و در برنامه وارد کن.\n\n"
+        body += await _suggested_apps_html()
         await cb.message.answer(premiumize(body), parse_mode="HTML",
-                                reply_markup=config_links_kb(link, sub or ""))
+                                reply_markup=with_app_button(
+                                    config_links_kb(link, sub or ""),
+                                    await get_setting("clientapp_file_id", "")))
         try:
             ch = await get_setting("channel_username", "AtlasChannel")
             await cb.message.answer_photo(_qr_input_file(link, ch), caption="QR Code کانفیگ شما", parse_mode=None)

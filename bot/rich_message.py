@@ -244,7 +244,12 @@ def split_leading_emoji(text: str) -> tuple:
     """
     stripped = text.lstrip()
     if stripped and stripped[0] in GLYPH_PREMIUM:
-        return stripped[0], stripped[1:].lstrip()
+        rest = stripped[1:]
+        # A glyph written as "🗑️" leaves its variation selector
+        # behind when only the first character moves to the icon field, and the
+        # label then starts with an invisible mark and a space.
+        rest = rest.lstrip("️‍")
+        return stripped[0], rest.lstrip()
     return "", text
 
 
