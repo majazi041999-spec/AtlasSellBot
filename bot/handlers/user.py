@@ -370,7 +370,7 @@ def _packages_screen_html(pkgs: list[dict], bestseller_id: int = 0) -> str:
         "· 🔗 فقط یک لینک، بدون تنظیمات پیچیده</p>"
         + packages_table_html(pkgs)
         + _unlimited_callout(pkgs, bestseller_id)
-        + "<p>👇 روی دکمه‌ی پکیج مورد نظرت بزن — بقیه‌اش با ماست.</p>"
+        + "<p>👇 روی دکمه‌ی پکیج مورد نظرت بزن.</p>"
     )
 
 
