@@ -522,13 +522,20 @@ async def rep_packages_table(request: Request):
     note = txt("note", "", 300)
     premium = (q.get("premium") or "0").strip() in ("1", "true", "yes")
 
+    def render(with_emoji: bool) -> str:
+        return pv.screen_html(pkgs, premium=with_emoji, title=title, intro=intro,
+                              note=note, headers=headers, caption=caption)
+
+    # BOTH renderings come back every time, not just the one `premium` selected.
+    # Whether a bot may use custom emoji is a question about that bot, and the
+    # only way to answer it is to try — so the caller can send one, see what
+    # arrives, and switch to the other without changing their request.
     return _json({
         "ok": True,
         "premium_emoji": premium,
-        "html": pv.screen_html(pkgs, premium=premium, title=title, intro=intro,
-                               note=note, headers=headers, caption=caption),
-        "html_plain": pv.screen_html(pkgs, premium=False, title=title, intro=intro,
-                                     note=note, headers=headers, caption=caption),
+        "html": render(premium),
+        "html_premium": render(True),
+        "html_plain": render(False),
         "markdown": pv.table_markdown(pkgs, headers=headers, caption=caption),
         # The rows behind the rendering, for anyone who would rather lay it out
         # themselves than accept ours.

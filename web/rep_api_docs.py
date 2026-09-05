@@ -472,6 +472,67 @@ for (const p of r.data.packages) {
 }</code></pre>
   <p class="muted"><code>price</code> = قیمت اختصاصی تو؛ همان مبلغی که از کیف پولت کم می‌شود.</p>
 
+  <div class="ep"><span class="m get">GET</span><span class="path">/packages/table</span></div>
+  <p>همان جدول تمیزی که ربات خودمان نشان می‌دهد — با <b>قیمت‌های خودت</b> و
+     <b>متن‌های خودت</b>. آماده‌ی ارسال، لازم نیست چیزی بسازی.</p>
+
+  <div class="warn">
+    <b>⚠️ درباره‌ی اموجی پرمیوم — مهم</b><br>
+    تلگرام اجازه‌ی استفاده از اموجی پرمیوم را فقط به رباتی می‌دهد که
+    <b>روی Fragment یوزرنیم خریده</b> باشد، یا <b>مالکِ رباتش اشتراک Telegram
+    Premium داشته باشد</b>. این محدودیت روی <b>رباتِ فرستنده</b> است، نه روی
+    خودِ اموجی — پس اگر مالکِ ربات تو پرمیوم نیست، هرچقدر هم آیدی‌ها درست
+    باشند، تلگرام آن‌ها را حذف می‌کند.<br><br>
+    برای همین هر دو نسخه همیشه برمی‌گردد: یکی بار بفرست، ببین کدام درست
+    نمایش داده می‌شود، و همان را استفاده کن. <b>جدول در هر دو حالت دقیقاً
+    یکی است</b> — فقط اموجی‌ها فرق می‌کنند.
+  </div>
+
+  <table>
+    <tr><th>پارامتر</th><th>پیش‌فرض</th><th>توضیح</th></tr>
+    <tr><td class="ltr">premium</td><td class="ltr">0</td>
+        <td><code>1</code> = فیلد <code>html</code> با اموجی پرمیوم ساخته شود</td></tr>
+    <tr><td class="ltr">title</td><td>🛒 پکیج‌ها و قیمت‌ها</td><td>تیتر بالای جدول</td></tr>
+    <tr><td class="ltr">intro</td><td>—</td><td>یک خط توضیح، بالای جدول</td></tr>
+    <tr><td class="ltr">note</td><td>—</td><td>یک خط، پایین جدول (مثلاً «برای خرید پیام بده»)</td></tr>
+    <tr><td class="ltr">columns</td><td>📦 پکیج|⏱ مدت|💰 قیمت</td>
+        <td>سه سرستون، با <code>|</code> جدا شده</td></tr>
+    <tr><td class="ltr">caption</td><td>قیمت‌ها به تومان</td><td>زیرنویس جدول</td></tr>
+  </table>
+
+  <table>
+    <tr><th>فیلد خروجی</th><th>چطور بفرستی</th></tr>
+    <tr><td class="ltr">html_premium</td><td><code>parse_mode="HTML"</code> — با اموجی پرمیوم</td></tr>
+    <tr><td class="ltr">html_plain</td><td><code>parse_mode="HTML"</code> — با اموجی عادی</td></tr>
+    <tr><td class="ltr">html</td><td>هرکدام که با <code>premium</code> انتخاب کردی</td></tr>
+    <tr><td class="ltr">markdown</td><td><code>sendRichMessage</code> — جدول واقعی، بدون نیاز به پرمیوم</td></tr>
+    <tr><td class="ltr">packages</td><td>داده‌ی خام، اگر خودت می‌خواهی بچینی</td></tr>
+  </table>
+
+  <div class="tabs" data-tabs>
+<pre data-l="curl"><code>curl -s -H "X-API-Key: $KEY" \
+  "$BASE/packages/table?premium=0&amp;title=🛒 لیست قیمت من&amp;note=برای خرید پیام بده"</code></pre>
+<pre data-l="python"><code>status, data = atlas("GET", "/packages/table", params={
+    "premium": 0,
+    "title": "🛒 لیست قیمت من",
+    "columns": "📦 حجم|⏱ مدت|💰 قیمت",
+})
+await bot.send_message(chat_id, data["html_plain"], parse_mode="HTML")</code></pre>
+<pre data-l="node"><code>const r = await atlas("GET", "/packages/table?premium=0");
+await bot.sendMessage(chatId, r.data.html_plain, { parse_mode: "HTML" });</code></pre>
+  </div>
+<pre class="res"><code>{
+  "ok": true,
+  "premium_emoji": false,
+  "html": "&lt;h2&gt;🛒 پکیج‌ها…&lt;/h2&gt;&lt;table bordered striped compact&gt;…",
+  "html_premium": "… &lt;tg-emoji emoji-id=\"5983…\"&gt;🌱&lt;/tg-emoji&gt; …",
+  "html_plain":   "… 🌱 10 گیگ …",
+  "markdown": "| 📦 پکیج | ⏱ مدت | 💰 قیمت |\n|:---|:---:|---:|\n…",
+  "packages": [ … ]
+}</code></pre>
+  <p class="muted">قیمت‌های داخل جدول <b>خودکار</b> با تعرفه‌ی نمایندگی تو حساب می‌شوند.</p>
+
+
   <div class="ep"><span class="m post">POST</span><span class="path">/services</span></div>
   <p>ساخت سرویس برای مشتری. پول همان لحظه از کیف پولت کم می‌شود.</p>
   <table>
