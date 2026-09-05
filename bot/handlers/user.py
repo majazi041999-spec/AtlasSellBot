@@ -80,7 +80,8 @@ from core.multi_subscription import (
 )
 from bot.middlewares.channel_required import ChannelRequiredMiddleware
 
-from bot.rich_message import answer_rich, edit_rich, emoji as tg_emoji, date_time_entities
+from bot.rich_message import (answer_rich, edit_rich, emoji as tg_emoji,
+                              date_time_entities, premiumize)
 from bot.keyboards import (
     user_menu,
     packages_kb,
@@ -496,6 +497,28 @@ def _esc(value) -> str:
     return _h.escape(str(value or ""), quote=False)
 
 
+def _md_to_html(text: str) -> str:
+    """Translate the small Markdown these messages actually use into HTML.
+
+    Owner-written texts in the settings table were authored for Markdown, so a
+    screen moving to HTML cannot simply escape them: their *bold* would start
+    showing to customers as literal asterisks. This converts the three forms
+    that appear in practice — *bold*, _italic_ and `code` — and escapes
+    everything else, so a stray `<` in someone's support hours still cannot
+    break the message.
+
+    Deliberately small. It is not a Markdown parser and does not try to be; the
+    alternative is a dependency and a new class of bug in the one place the
+    owner edits text by hand.
+    """
+    import re as _re
+    out = _esc(text)
+    out = _re.sub(r"\*([^*\n]+)\*", r"<b>\1</b>", out)
+    out = _re.sub(r"(?<![\w_])_([^_\n]+)_(?![\w_])", r"<i>\1</i>", out)
+    out = _re.sub(r"`([^`\n]+)`", r"<code>\1</code>", out)
+    return out
+
+
 async def _payment_text(oid: int, title: str, traffic_gb, duration_days, price: int, spec: str = "") -> str:
     """The card-to-card payment screen. HTML, and it must stay HTML.
 
@@ -544,9 +567,9 @@ async def wallet_home(msg: Message):
     user = await get_or_create_user(msg.from_user.id)
     bal = await get_user_balance(user["id"])
     await msg.answer(
-        f"💳 *کیف پول شما*\n\nموجودی فعلی: *{_fmt_toman(bal)} تومان*",
+        premiumize(f"💳 <b>کیف پول شما</b>\n\nموجودی فعلی: <b>{_fmt_toman(bal)} تومان</b>"),
         reply_markup=wallet_kb(),
-        parse_mode="Markdown",
+        parse_mode="HTML",
     )
 
 
@@ -2977,19 +3000,21 @@ async def my_orders(msg: Message):
     STATUS = {
         "pending_payment": "⏳ انتظار پرداخت",
         "pending_receipt": "⏳ انتظار فیش",
-        "receipt_submitted": " در انتظار تأیید",
+        "receipt_submitted": "🕒 در انتظار تأیید",
         "approved": "✅ فعال شده",
         "rejected": "❌ رد شده",
-        "cancelled": " لغو شده",
+        "cancelled": "⛔ لغو شده",
     }
 
-    text = " *سفارش‌های اخیر شما:*\n\n"
+    text = "📋 <b>سفارش‌های اخیر شما</b>\n\n"
     for o in orders:
         st = STATUS.get(o["status"], o["status"])
-        text += f" {o['pkg_name']} — {st}\n"
-        text += f" {o['price']:,} تومن | {o['created_at'][:10]}\n\n"
+        # The package name is owner-typed, so it is escaped; the status is ours.
+        text += f"▪️ {_esc(o['pkg_name'])} — {st}\n"
+        text += f"    {_fmt_toman(o['price'])} تومان · {_esc(o['created_at'][:10])}\n\n"
 
-    await msg.answer(text.strip(), parse_mode="Markdown", reply_markup=home_only_kb())
+    await msg.answer(premiumize(text.strip()), parse_mode="HTML",
+                     reply_markup=home_only_kb())
 
 
 @router.message(F.text == "🕊️ پیام ناشناس")
@@ -3248,26 +3273,32 @@ async def referral_menu(msg: Message):
         tier_lines.append(f"{mark} {need} دعوت → {referral_tier_reward_text(t)}")
 
     info = (
-        "🎁 *دعوت از دوستان و دریافت جایزه*\n"
+        "🎁 <b>دعوت از دوستان و دریافت جایزه</b>\n"
         "━━━━━━━━━━━━━━\n"
-        f"💰 جایزهٔ دریافتی شما: *{_fmt_toman(earned)} تومان* (در کیف پول)\n"
-        f"👥 دعوت‌شده‌ها: `{stats['invited']}` | 🛒 خریدار: `{stats['converted']}`\n"
+        f"💰 جایزهٔ دریافتی شما: <b>{_fmt_toman(earned)} تومان</b> (در کیف پول)\n"
+        f"👥 دعوت‌شده‌ها: <code>{stats['invited']}</code> | "
+        f"🛒 خریدار: <code>{stats['converted']}</code>\n"
     )
 
     # Full transparency: who the user invited + who has bought.
     invitees = await get_referral_invitees(user["id"], 12)
     if invitees:
-        info += "\n👤 *دوستان دعوت‌شدهٔ شما:*\n"
+        info += "\n👤 <b>دوستان دعوت‌شدهٔ شما:</b>\n"
         for inv in invitees:
             nm = (inv.get("full_name") or "").strip() or (("@" + inv["username"]) if inv.get("username") else "کاربر")
             nm = nm[:18]
-            info += f"{'✅ خرید کرد' if inv.get('bought') else '⏳ هنوز خرید نکرده'} — {nm}\n"
+            # A friend's Telegram name is the one value on this screen that
+            # somebody else chose. Unescaped it can break the message — and
+            # under Markdown it silently could, which nobody would have noticed
+            # until a customer with an underscore in their name complained.
+            info += f"{'✅ خرید کرد' if inv.get('bought') else '⏳ هنوز خرید نکرده'} — {_esc(nm)}\n"
 
     if tier_lines:
-        info += "\n🏆 *پله‌های جایزه:*\n" + "\n".join(tier_lines) + "\n"
-        info += "_جایزه پس از رسیدن به هر پله و تأیید پشتیبانی، به کیف پولت اضافه می‌شود._\n"
+        info += "\n🏆 <b>پله‌های جایزه:</b>\n" + _esc("\n".join(tier_lines)) + "\n"
+        info += "<i>جایزه پس از رسیدن به هر پله و تأیید پشتیبانی، به کیف پولت اضافه می‌شود.</i>\n"
 
-    info += f"\n🔗 *لینک اختصاصی شما:*\n`{ref_link}`\n\n👇 با یک کلیک برای دوستانت بفرست:"
+    info += (f"\n🔗 <b>لینک اختصاصی شما:</b>\n<code>{_esc(ref_link)}</code>"
+             "\n\n👇 با یک کلیک برای دوستانت بفرست:")
 
     caption_tpl = await get_setting(
         "referral_caption",
@@ -3285,7 +3316,7 @@ async def referral_menu(msg: Message):
         InlineKeyboardButton(text="📤 ارسال در تلگرام", url=f"https://t.me/share/url?url={quote(ref_link, safe='')}&text={quote(caption_no_link, safe='')}"),
         InlineKeyboardButton(text="🟢 ارسال در واتساپ", url=f"https://wa.me/?text={quote(share_text, safe='')}"),
     ]])
-    await msg.answer(info, parse_mode="Markdown", reply_markup=with_home(share_kb))
+    await msg.answer(premiumize(info), parse_mode="HTML", reply_markup=with_home(share_kb))
 
     # The forwardable banner + caption carries a catchy start-bot CTA button that
     # travels WITH the message when the user forwards it to friends.
@@ -3310,9 +3341,12 @@ async def support(msg: Message):
     sup = await get_setting("support_username", "")
     brand = await get_setting("ui.brand_name", "Atlas Account")
 
-    text = (await get_text("support_header", brand=brand)) + "\n\n"
+    # These two are owner-written and were authored as Markdown, so their *bold*
+    # is translated rather than escaped away — otherwise the owner's formatting
+    # would start showing as literal asterisks the day this switched to HTML.
+    text = _md_to_html(await get_text("support_header", brand=brand)) + "\n\n"
     if sup:
-        text += f" تماس مستقیم: @{sup}\n"
-    text += await get_text("support_body")
+        text += f"💬 تماس مستقیم: @{_esc(sup)}\n"
+    text += _md_to_html(await get_text("support_body"))
 
-    await msg.answer(text, parse_mode="Markdown", reply_markup=home_only_kb())
+    await msg.answer(premiumize(text), parse_mode="HTML", reply_markup=home_only_kb())
