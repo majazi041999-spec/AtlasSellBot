@@ -249,7 +249,7 @@ const r = await atlas("GET", "/packages");
 for (const p of r.data.packages) console.log(p.id, p.name, p.price);
 ```
 
-`price` = چیزی که از تو کم می‌شود · `list_price` = قیمت عمومی سایت.
+`price` = قیمت اختصاصی تو؛ همان مبلغی که از کیف پولت کم می‌شود.
 
 ### `POST /services` — ساخت سرویس
 

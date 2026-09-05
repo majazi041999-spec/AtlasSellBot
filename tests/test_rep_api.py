@@ -122,7 +122,9 @@ async def main():
         check("one package", len(pkgs), 1)
         # 10 GB × 3000 = 30,000 — the rep price, not the 200,000 list price.
         check("priced at the rep tariff", pkgs[0]["price"], 30_000)
-        check("list price is still shown", pkgs[0]["list_price"], 200_000)
+        # Our retail price is deliberately NOT exposed: a rep sets their own
+        # prices, and their customers must never see ours next to theirs.
+        check("our retail price is not exposed", "list_price" in pkgs[0], False)
 
         print("\n5. authorisation is re-read from the user row on every call")
         await update_user(rep["id"], is_wholesale=0)

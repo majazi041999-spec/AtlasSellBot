@@ -79,9 +79,11 @@ from core.multi_subscription import (
 )
 from bot.middlewares.channel_required import ChannelRequiredMiddleware
 
+from bot.rich_message import answer_rich, edit_rich
 from bot.keyboards import (
     user_menu,
     packages_kb,
+    packages_table_md,
     payment_kb,
     config_detail_kb,
     config_to_sub_confirm_kb,
@@ -312,6 +314,21 @@ def _safe_user_config_name(value: str) -> str:
 async def _calc_package_price_for_user(user_id: int, pkg: dict) -> tuple[int, int, float, int]:
     p = await package_price_for_user(user_id, pkg)
     return p["final"], p["base"], p["discount"], p["price_per_gb"]
+
+
+def _packages_screen_md(pkgs: list[dict]) -> str:
+    """The buy screen as rich Markdown: a heading, the price table, then a nudge
+    toward the buttons that actually start the purchase.
+
+    The table is read-only — every package is bought by pressing its button, so
+    the two must list the same packages in the same order. Both are built from
+    the one `pkgs` list for that reason.
+    """
+    return (
+        "## 🛒 پکیج‌ها و قیمت‌ها\n\n"
+        + packages_table_md(pkgs)
+        + "\n\nروی دکمه‌ی پکیج مورد نظرت بزن تا خرید شروع شود. 👇"
+    )
 
 
 async def _priced_packages(user_id: int, pkgs: list[dict]) -> list[dict]:
@@ -562,10 +579,11 @@ def _register_user_back_steps():
         await state.clear()
         u = await get_or_create_user(cb.from_user.id)
         pkgs = await _priced_packages(u["id"], await get_packages(active_only=True))
-        await cb.message.edit_text(
-            "🛒 *پکیج مورد نظر را انتخاب کنید:*",
+        await edit_rich(
+            cb.message,
+            _packages_screen_md(pkgs),
+            fallback="🛒 *پکیج مورد نظر را انتخاب کنید:*",
             reply_markup=packages_kb(pkgs),
-            parse_mode="Markdown",
         )
     nav.register(BuyService.custom_name, _buy_name_back)
 
@@ -1488,10 +1506,13 @@ async def buy_service(msg: Message):
 
     user = await get_or_create_user(msg.from_user.id, msg.from_user.username, msg.from_user.full_name)
     pkgs = await _priced_packages(user["id"], pkgs)
-    await msg.answer(
-        "🛒 *پکیج مورد نظر را انتخاب کنید:*\n\nروی هر بخش از کارت پکیج بزنید تا همان پکیج انتخاب شود.",
+    await answer_rich(
+        msg,
+        _packages_screen_md(pkgs),
+        # The same screen minus the table, for any client or Bot API server that
+        # cannot render a rich message. The buttons carry the same prices.
+        fallback="🛒 *پکیج مورد نظر را انتخاب کنید:*\n\nروی هر بخش از کارت پکیج بزنید تا همان پکیج انتخاب شود.",
         reply_markup=packages_kb(pkgs),
-        parse_mode="Markdown",
     )
 
 

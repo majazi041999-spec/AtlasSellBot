@@ -259,7 +259,6 @@ def _package_payload(pkg: Dict, priced: Dict) -> Dict:
         "duration_days": int(pkg.get("duration_days") or 0),
         "unlimited": is_unlimited_package(pkg),
         "price": int(priced["final"]),
-        "list_price": int(pkg.get("price") or 0),
         "description": pkg.get("description") or "",
     }
 

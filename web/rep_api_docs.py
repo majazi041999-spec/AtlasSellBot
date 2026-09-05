@@ -467,10 +467,10 @@ for (const p of r.data.packages) {
   "ok": true,
   "packages": [
     { "id": 3, "name": "۳۰ گیگ یک‌ماهه", "traffic_gb": 30, "duration_days": 30,
-      "unlimited": false, "price": 105000, "list_price": 180000 }
+      "unlimited": false, "price": 105000 }
   ]
 }</code></pre>
-  <p class="muted"><code>price</code> = چیزی که از تو کم می‌شود · <code>list_price</code> = قیمت عمومی سایت.</p>
+  <p class="muted"><code>price</code> = قیمت اختصاصی تو؛ همان مبلغی که از کیف پولت کم می‌شود.</p>
 
   <div class="ep"><span class="m post">POST</span><span class="path">/services</span></div>
   <p>ساخت سرویس برای مشتری. پول همان لحظه از کیف پولت کم می‌شود.</p>

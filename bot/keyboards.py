@@ -7,6 +7,8 @@ from typing import List, Dict
 import time
 
 from core.sorting import fa_sort_key
+from core.pricing import is_unlimited_package
+from bot.rich_message import table as rich_table
 
 try:
     from aiogram.types import CopyTextButton
@@ -346,17 +348,6 @@ def rep_api_key_kb(key: str, docs_url: str = "") -> InlineKeyboardMarkup:
 def rep_back_kb() -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
     _button(b, text="⬅️ بازگشت به پنل نمایندگی", callback_data="rep:home")
-    b.adjust(1)
-    return b.as_markup()
-
-
-def packages_kb(pkgs: List[Dict]) -> InlineKeyboardMarkup:
-    b = InlineKeyboardBuilder()
-    for p in pkgs:
-        gb = int(p['traffic_gb']) if p['traffic_gb'] == int(p['traffic_gb']) else p['traffic_gb']
-        price = f"{p['price']:,}".replace(",", "،")
-        tier = '🥉' if p['price'] < 100000 else '🥈' if p['price'] < 200000 else '🥇'
-        _button(b, text=f"{tier} {p['name']} | {gb}GB | {p['duration_days']}روز | {price}تومان", callback_data=f"buy:{p['id']}", style="primary")
     b.adjust(1)
     return b.as_markup()
 
@@ -842,20 +833,57 @@ def config_links_kb(link: str = "", sub: str = "") -> InlineKeyboardMarkup | Non
     return InlineKeyboardMarkup(inline_keyboard=rows) if rows else None
 
 
+def _pkg_traffic(pkg: Dict) -> str:
+    """An unlimited plan is stored with a non-zero traffic_gb as a FAIR-USE
+    threshold (ours sits at 100), so the raw number must never be printed for
+    one — the customer would read "unlimited ... 100GB" and open a ticket."""
+    if is_unlimited_package(pkg):
+        return "نامحدود"
+    gb = float(pkg.get("traffic_gb") or 0)
+    return f"{gb:g} گیگ"
+
+
+def _pkg_duration(pkg: Dict) -> str:
+    days = int(pkg.get("duration_days") or 0)
+    return "نامحدود" if days <= 0 else f"{days} روز"
+
+
+def _pkg_price(pkg: Dict) -> int:
+    """The price THIS user actually pays (rep/custom price), not the package
+    default. Callers enrich pkgs with `display_price`."""
+    return int(pkg.get("display_price", pkg.get("price") or 0) or 0)
+
+
+def _fa_num(value: int) -> str:
+    return f"{int(value):,}".replace(",", "،")
+
+
 def packages_kb(pkgs: List[Dict]) -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
     for p in pkgs:
-        gb = int(p["traffic_gb"]) if p["traffic_gb"] == int(p["traffic_gb"]) else p["traffic_gb"]
-        # Show the price THIS user actually pays (rep/custom price), not the
-        # package default. Callers enrich pkgs with `display_price`.
-        pnum = int(p.get("display_price", p["price"]) or 0)
-        price = f"{pnum:,}".replace(",", "،")
+        pnum = _pkg_price(p)
         tier = "🥉" if pnum < 100000 else "🥈" if pnum < 200000 else "🥇"
         _button(
             b,
-            text=f"{tier} {p['name']} | {gb}GB | {p['duration_days']} روز | {price} تومان",
+            text=f"{tier} {p['name']} | {_pkg_traffic(p)} | {_pkg_duration(p)} | {_fa_num(pnum)} تومان",
             callback_data=f"buy:{p['id']}",
             style="primary",
         )
     b.adjust(1)
     return b.as_markup()
+
+
+def packages_table_md(pkgs: List[Dict]) -> str:
+    """The package list as a rich-message table (Bot API 10.1+).
+
+    This MUST show the same numbers as `packages_kb` — the table is what the
+    customer reads and the buttons are what they press, so any drift between the
+    two is a price dispute waiting to happen. Both read them through the
+    `_pkg_*` helpers above for exactly that reason; keep it that way.
+    """
+    return rich_table(
+        ["پکیج", "حجم", "مدت", "قیمت (تومان)"],
+        [[p.get("name"), _pkg_traffic(p), _pkg_duration(p), f"**{_fa_num(_pkg_price(p))}**"]
+         for p in pkgs],
+        align=["left", "center", "center", "right"],
+    )
