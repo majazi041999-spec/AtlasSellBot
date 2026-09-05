@@ -204,7 +204,14 @@ async def _send_subscription_status(target, profile: dict, send_qr: bool = True)
     if not profile:
         return
     # Live usage sync is best-effort and time-boxed: a slow/down X-UI server
-    # must never block showing the user their cached subscription link.
+    # must never block showing the user their cached subscription link. It can
+    # still take several seconds, so say so rather than leaving a dead chat.
+    try:
+        from bot import progress
+        await progress.typing(target.bot, target.chat.id if hasattr(target, "chat")
+                              else target.message.chat.id)
+    except Exception:
+        pass
     try:
         await asyncio.wait_for(sync_profile_usage(profile), timeout=12)
         profile = await get_subscription_profile_by_token(profile["token"]) or profile
@@ -1534,7 +1541,15 @@ async def test_account(msg: Message):
             )
             return
 
-    result = await create_test_subscription(user, settings["traffic_gb"], settings["duration_days"])
+    # Building a trial means talking to a panel, which is the slowest thing this
+    # bot does. Without a visible sign of work a customer assumes it is broken
+    # and taps again — and a second tap here means a second account.
+    from bot import progress
+    waiting = await progress.hold(msg.bot, msg.chat.id, "دارم اکانت تستت را می‌سازم…")
+    try:
+        result = await create_test_subscription(user, settings["traffic_gb"], settings["duration_days"])
+    finally:
+        await progress.clear(waiting)
     if not result.get("ok"):
         err = subscription_error_message(result.get("error", ""))
         await msg.answer(

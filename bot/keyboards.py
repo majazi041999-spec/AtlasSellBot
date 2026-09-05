@@ -564,6 +564,9 @@ def user_services_kb(configs: List[Dict], profiles: List[Dict], page: int = 0, p
         nav.append(_inline_button(text="بعدی ▶️", callback_data=f"svc:{page+1}:{sort}:{filt}", style="primary"))
     if nav:
         b.row(*nav)
+    # Same reason as wallet_kb: this list is a screen the home menu opens, so it
+    # owns the way back out of itself.
+    b.row(_inline_button(text="🏠 منوی اصلی", callback_data="back_to_menu", style="primary"))
     return b.as_markup()
 
 
@@ -927,6 +930,10 @@ def legacy_claim_admin_kb(claim_id: int) -> InlineKeyboardMarkup:
 def wallet_kb() -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
     _button(b, text="➕ افزایش اعتبار", callback_data="wallet_topup", style="success")
+    # Every screen the home menu opens has to offer the way back, or the
+    # customer's only exit is /start — which is how they end up with a chat full
+    # of half-finished screens.
+    _button(b, text="🏠 منوی اصلی", callback_data="back_to_menu", style="primary")
     b.adjust(1)
     return b.as_markup()
 

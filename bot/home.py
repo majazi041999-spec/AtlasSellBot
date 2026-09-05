@@ -91,6 +91,47 @@ def _as_user(cb: CallbackQuery, bot: Bot, edit: bool = False) -> Message:
     return cb.message.model_copy(update={"from_user": cb.from_user}).as_(bot)
 
 
+async def _open_screen(cb: CallbackQuery, key: str) -> None:
+    """Render a single-screen destination INTO the message the customer tapped.
+
+    Both of these already knew how to edit — `_send_services_list` has taken a
+    CallbackQuery since long before this menu existed — so this is wiring, not a
+    new rendering path.
+    """
+    from bot.handlers.user import _send_services_list, _user_service_lists, _fmt_toman
+    from bot.keyboards import wallet_kb
+    from core.database import get_or_create_user, get_user_balance
+
+    user = await get_or_create_user(cb.from_user.id, cb.from_user.username,
+                                    cb.from_user.full_name)
+    if key == "wallet":
+        bal = await get_user_balance(user["id"])
+        text = f"💳 <b>کیف پول شما</b>\n\nموجودی فعلی: <b>{_fmt_toman(bal)} تومان</b>"
+        try:
+            await cb.message.edit_text(text, reply_markup=wallet_kb(), parse_mode="HTML")
+        except Exception:
+            await cb.message.answer(text, reply_markup=wallet_kb(), parse_mode="HTML")
+        return
+
+    configs, profiles = await _user_service_lists(user["id"])
+    if not configs and not profiles:
+        from core.texts import get_text
+        text = await get_text("no_active_service")
+        kb = InlineKeyboardBuilder()
+        from bot.keyboards import _button
+        _button(kb, text="🏠 منوی اصلی", callback_data="back_to_menu", style="primary")
+        try:
+            await cb.message.edit_text(text, reply_markup=kb.as_markup(), parse_mode=None)
+        except Exception:
+            await cb.message.answer(text, reply_markup=kb.as_markup(), parse_mode=None)
+        return
+    # Always the LIST, even for one service. Opening the single service straight
+    # away saved a tap but landed the customer on a detail card with no list to
+    # go back to; from the list, every service is one tap either way.
+    await _send_services_list(cb, user["id"], page=0,
+                              is_rep=bool(user.get("is_wholesale", 0)))
+
+
 @router.callback_query(F.data == "home:restart")
 async def home_restart(cb: CallbackQuery, state: FSMContext, bot: Bot):
     """A button that genuinely restarts the bot for the person who taps it.
@@ -124,6 +165,15 @@ async def home_action(cb: CallbackQuery, state: FSMContext, bot: Bot):
     if key == "ai":
         from bot.handlers.agent import agent_start
         await agent_start(msg, state)
+        return
+
+    # ── the two destinations that ARE single screens ────────────────────────
+    # These render in place, replacing the menu, and each carries "🏠 منوی اصلی"
+    # so the customer can come back. Nothing else opts in: a flow that sends a
+    # preamble, a QR or a sequence of steps is not a screen, and pretending
+    # otherwise is what broke navigation the first time this was tried.
+    if key in ("status", "wallet"):
+        await _open_screen(cb, key)
         return
 
     from bot.handlers import user as user_handlers
