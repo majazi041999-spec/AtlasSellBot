@@ -60,7 +60,7 @@ PREMIUM_EMOJI = {
     "services": "5271604874419647061",
     "assistant": "5352899869369446268",
     "orders": "5980808493018387732",
-    "support": "5985546378816786759",
+    "support": "6010260496811299512",   # owner picked this one by eye
     "invite": "5274074880046802038",
     # buy-screen chrome
     "cart": "5258024802010026053",
