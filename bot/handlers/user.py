@@ -342,7 +342,10 @@ def _unlimited_callout(pkgs: list[dict], bestseller_id: int = 0) -> str:
     # A pull quote, not another paragraph: <aside> renders as a set-apart block,
     # which is what makes the flagship LOOK different from the list it sits
     # under instead of merely being mentioned again.
-    popular = "پرفروش‌ترین انتخاب مشتری‌ها" if (
+    # "پرفروش‌ترین انتخاب" is the wrong collocation — a choice is not sold, a
+    # product is. This says the same measured fact (rank 1 by orders) with the
+    # adjective on a noun that can carry it.
+    popular = "انتخاب اولِ مشتری‌ها" if (
         bestseller_id and int(unlimited.get("id") or 0) == int(bestseller_id)
     ) else "بیشترین حجم، بدون نگرانی"
     return (
