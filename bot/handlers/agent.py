@@ -80,10 +80,12 @@ async def _facts_for(uid: int) -> str:
         user, slim, pkgs, await get_user_balance(user["id"]))
 
 
-async def _reply_kb():
-    from bot.keyboards import agent_reply_kb
-    return agent_reply_kb(bool((await get_setting(APK_SETTING, "") or "").strip()),
-                          (await get_setting("support_username", "") or "").strip())
+async def _kb(questions: bool = False, urgent_human: bool = False):
+    from bot.keyboards import agent_kb
+    return agent_kb(
+        bool((await get_setting(APK_SETTING, "") or "").strip()),
+        (await get_setting("support_username", "") or "").strip(),
+        questions=questions, urgent_human=urgent_human)
 
 
 @router.message(Command("ai"))
@@ -95,10 +97,11 @@ async def agent_start(msg: Message, state: FSMContext):
         return
     await state.set_state(AgentChat.talking)
     await msg.answer(
-        "🤖 <b>دستیار پشتیبانی</b>\n\n"
-        "سؤالت را بپرس — مثل «چرا کنده؟» یا «چطور وصل شم؟».\n"
-        "برای خروج: /exit",
+        "🤖 <b>دستیار اطلس</b>\n\n"
+        "یکی از دکمه‌های زیر را بزن، یا سؤالت را همین‌جا بنویس.\n"
+        "<i>برای کارهایی مثل پیگیری پرداخت، «پشتیبانی انسانی» را بزن.</i>",
         parse_mode="HTML",
+        reply_markup=await _kb(questions=True),
     )
 
 
@@ -113,12 +116,23 @@ async def agent_ask(msg: Message, state: FSMContext, bot: Bot):
     if not await _agent_allowed(msg.from_user.id):
         await state.clear()
         return
-    question = (msg.text or "").strip()
+    await _answer(bot, msg.chat.id, msg.from_user.id, (msg.text or "").strip(), state)
+
+
+async def _answer(bot: Bot, chat_id: int, uid: int, question: str, state: FSMContext):
+    """Ask the model and deliver the answer.
+
+    Shared by typed questions and the quick-question buttons so the two cannot
+    drift apart — a button that behaves differently from typing the same words
+    is exactly the kind of thing a confused customer notices and we do not.
+    """
     if not question:
         return
-    if not ai_agent.take_slot(msg.from_user.id):
-        await msg.answer("امروز سؤال‌های زیادی پرسیدی. کمی بعد دوباره امتحان کن "
-                         "یا با پشتیبانی حرف بزن.")
+    if not ai_agent.take_slot(uid):
+        await bot.send_message(chat_id,
+                               "سؤال‌های زیادی پرسیدی. کمی بعد دوباره امتحان کن "
+                               "یا با پشتیبانی حرف بزن.",
+                               reply_markup=await _kb(urgent_human=True))
         return
 
     data = await state.get_data()
@@ -134,14 +148,14 @@ async def agent_ask(msg: Message, state: FSMContext, bot: Bot):
         """Update the live draft, never letting a draft failure kill the answer."""
         try:
             from aiogram.methods import SendMessageDraft
-            await bot(SendMessageDraft(chat_id=msg.chat.id, draft_id=draft_id,
+            await bot(SendMessageDraft(chat_id=chat_id, draft_id=draft_id,
                                        text=text[:4000], can_stop=True, keep_on_stop=True))
         except Exception as exc:  # noqa: BLE001
             log.debug("draft update skipped: %s", exc)
 
     await push("")  # empty text renders Telegram's own "Thinking…" placeholder
     try:
-        facts = await _facts_for(msg.from_user.id)
+        facts = await _facts_for(uid)
         async for piece in ai_agent.stream_answer(facts, history, brand):
             answer += piece
             now = time.monotonic()
@@ -150,21 +164,65 @@ async def agent_ask(msg: Message, state: FSMContext, bot: Bot):
                 await push(answer)
     except Exception as exc:  # noqa: BLE001
         log.warning("agent stream failed: %s", exc)
-        support = (await get_setting("support_username", "") or "").strip()
-        await msg.answer(
-            "الان نتوانستم جواب بدهم. لطفاً دوباره امتحان کن"
-            + (f" یا به @{support} پیام بده." if support else "."))
+        await bot.send_message(
+            chat_id, "الان نتوانستم جواب بدهم. لطفاً دوباره امتحان کن.",
+            reply_markup=await _kb(urgent_human=True))
         return
 
-    answer = answer.strip()
+    # The model marks an answer that needs a real person. The marker is stripped
+    # here because a customer must never see our plumbing.
+    answer, needs_human = ai_agent.split_handoff(answer)
     if not answer:
-        await msg.answer("جوابی پیدا نکردم. سؤالت را کمی واضح‌تر بپرس.")
+        await bot.send_message(chat_id, "جوابی پیدا نکردم. سؤالت را کمی واضح‌تر بپرس.",
+                               reply_markup=await _kb())
         return
 
     # The draft is temporary; this is the message that stays in the chat.
-    await msg.answer(answer[:4000], reply_markup=await _reply_kb())
+    await bot.send_message(chat_id, answer[:4000],
+                           reply_markup=await _kb(urgent_human=needs_human))
     history.append({"role": "model", "text": answer})
     await state.update_data(history=history[-ai_agent.HISTORY_TURNS * 2:])
+
+
+@router.callback_query(F.data.startswith("agent:q:"))
+async def agent_quick(cb, state: FSMContext, bot: Bot):
+    if not await _agent_allowed(cb.from_user.id):
+        await cb.answer()
+        return
+    question = ai_agent.quick_question(cb.data.split(":")[-1])
+    if not question:
+        await cb.answer()
+        return
+    await cb.answer()
+    # Echo the question as if they had typed it: the person needs to see what
+    # was asked on their behalf before they can follow up in their own words.
+    await bot.send_message(cb.message.chat.id, f"❓ {question}")
+    await state.set_state(AgentChat.talking)
+    await _answer(bot, cb.message.chat.id, cb.from_user.id, question, state)
+
+
+@router.callback_query(F.data == "agent:menu")
+async def agent_menu(cb, state: FSMContext):
+    if not await _agent_allowed(cb.from_user.id):
+        await cb.answer()
+        return
+    await cb.answer()
+    await state.set_state(AgentChat.talking)
+    await cb.message.answer("یکی را انتخاب کن، یا سؤالت را بنویس:",
+                            reply_markup=await _kb(questions=True))
+
+
+@router.callback_query(F.data == "agent:exit")
+async def agent_exit_btn(cb, state: FSMContext):
+    # No permission check: leaving must always work, even for someone the agent
+    # would no longer answer.
+    await state.clear()
+    await cb.answer("از گفتگو خارج شدی")
+    try:
+        await cb.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+    await cb.message.answer("✅ از دستیار خارج شدی. هر وقت خواستی /ai را بزن.")
 
 
 @router.callback_query(F.data == "agent:getapp")

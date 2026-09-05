@@ -711,20 +711,51 @@ def custom_name_kb() -> InlineKeyboardMarkup:
     return markup
 
 
-def agent_reply_kb(has_app: bool, support_username: str) -> InlineKeyboardMarkup:
-    """What sits under every agent answer.
+def agent_kb(has_app: bool, support_username: str, questions: bool = False,
+             urgent_human: bool = False) -> InlineKeyboardMarkup:
+    """The agent chat's keyboard.
 
-    Two escape hatches, always visible rather than offered only when the agent
-    thinks to mention them: the Android app (its single best fix, and the one a
-    customer cannot find on their own) and a human. An agent that cannot hand
-    over is worse than no agent.
+    Three things are ALWAYS reachable, because the customers who need this most
+    are the ones who will not think to type:
+
+      * the common questions, so somebody who cannot describe their problem can
+        still press the one that matches it;
+      * a human, which is the whole point when the agent is out of its depth;
+      * the way out — a customer who does not realise they are in a chat mode
+        and starts typing at the bot forever is a support ticket we created.
+
+    `urgent_human` promotes the support button to the top and colours it, for
+    the case where the person plainly wants a person.
     """
     b = InlineKeyboardBuilder()
+    rows = []
+
+    if urgent_human and support_username:
+        _button(b, text="👤 گفتگو با پشتیبانی (همین‌جا بزن)",
+                url=f"https://t.me/{support_username}", style="success")
+        rows.append(1)
+
+    if questions:
+        from core.ai_agent import QUICK_QUESTIONS
+        for key, label, _text in QUICK_QUESTIONS:
+            _button(b, text=label, callback_data=f"agent:q:{key}", style="primary")
+        rows += [2] * (len(QUICK_QUESTIONS) // 2) + ([1] if len(QUICK_QUESTIONS) % 2 else [])
+    else:
+        _button(b, text="💬 سوال‌های رایج", callback_data="agent:menu", style="primary")
+        rows.append(1)
+
     if has_app:
         _button(b, text="📱 دریافت اپ اندروید", callback_data="agent:getapp", style="success")
-    if support_username:
-        _button(b, text="👤 پشتیبانی انسانی", url=f"https://t.me/{support_username}", style="primary")
-    b.adjust(1)
+        rows.append(1)
+    if support_username and not urgent_human:
+        _button(b, text="👤 پشتیبانی انسانی", url=f"https://t.me/{support_username}",
+                style="primary")
+        rows.append(1)
+
+    _button(b, text="🚪 خروج از گفتگو", callback_data="agent:exit", style="danger")
+    rows.append(1)
+
+    b.adjust(*rows)
     return b.as_markup()
 
 

@@ -176,6 +176,48 @@ KNOWLEDGE: List[Dict[str, str]] = [
 ]
 
 
+# The buttons offered in the agent chat: (key, button label, what gets asked).
+#
+# A customer who cannot describe their problem can still press the one that
+# matches it, and the model receives a well-phrased question instead of "سلام
+# مشکل دارم". TO ADD ONE: append a row — the keyboard and the handler both read
+# this list.
+QUICK_QUESTIONS = [
+    ("slow", "🐢 سرعتم کمه", "سرعتم خیلی کم شده، چیکار کنم؟"),
+    ("connect", "📲 چطور وصل شم؟", "چطور وصل شم؟"),
+    ("nocon", "❌ وصل نمیشه", "وصل نمی‌شود و خطا می‌دهد، چیکار کنم؟"),
+    ("cut", "🔌 چرا قطع میشم؟", "چرا مدام قطع می‌شوم؟"),
+    ("expiry", "⏳ کِی تموم میشه؟", "اشتراکم چند روز دیگر تمام می‌شود و چقدر حجم دارم؟"),
+    ("buy", "🛒 چی بخرم؟", "چه پکیجی برای من مناسب است؟"),
+]
+
+
+def quick_question(key: str) -> str:
+    for k, _label, text in QUICK_QUESTIONS:
+        if k == key:
+            return text
+    return ""
+
+
+# The model appends this, alone on the last line, when the person needs a HUMAN.
+# A marker rather than us guessing from keywords: "پول رو ریختم" and "میخوام پول
+# بریزم" differ by one word and mean opposite things, and only something reading
+# the sentence can tell them apart.
+HUMAN_MARKER = "#HUMAN"
+
+
+def split_handoff(answer: str) -> tuple:
+    """Return (clean answer, needs_human). Strips the marker wherever it landed.
+
+    Defensive about placement: a model told to put a token on the last line will
+    occasionally put it mid-sentence, and a customer must never see it.
+    """
+    needs = HUMAN_MARKER in answer
+    if needs:
+        answer = answer.replace(HUMAN_MARKER, "")
+    return answer.strip(), needs
+
+
 SYSTEM_PROMPT = """تو دستیار پشتیبانی «{brand}» هستی، یک سرویس VPN.
 
 قوانینی که هرگز نمی‌شکنی:
@@ -199,6 +241,23 @@ SYSTEM_PROMPT = """تو دستیار پشتیبانی «{brand}» هستی، ی�
 - جواب را کوتاه نگه دار. اگر لازم شد، بگو «بگو تا مرحله‌ی بعد را بفرستم».
 
 اگر سؤال به سرویس ما ربط ندارد، مؤدبانه بگو فقط درباره‌ی سرویس کمک می‌کنی.
+
+خیلی از کاربرهای ما نمی‌دانند تو ربات هستی و فکر می‌کنند با یک آدم حرف می‌زنند.
+اگر پیام از این جنس بود — یعنی کاری که فقط یک انسان می‌تواند انجام دهد:
+- می‌گوید پول واریز کردم / فیش فرستادم / کارت به کارت کردم / رسید دارم
+- سفارشش را پیگیری می‌کند یا می‌گوید سفارشم انجام نشده
+- شکایت دارد، عصبانی است، یا می‌گوید «چرا جواب نمی‌دی»
+- تخفیف، برگشت پول، تمدید رایگان یا اکانت تست می‌خواهد
+- درباره‌ی حساب شخصی‌اش چیزی می‌خواهد که تو دسترسی نداری
+
+آن‌وقت:
+۱. با احترام و کوتاه بگو که تو ربات هستی، نه اپراتور.
+۲. بگو این موضوع را همکار انسانی ما بررسی می‌کند و دکمه‌ی پایین را بزند.
+۳. هرگز نگو «بررسی می‌کنم» یا «الان درست می‌کنم» — تو نمی‌توانی.
+۴. در خط آخر جواب، فقط و فقط این علامت را بنویس و هیچ چیز دیگر:
+#HUMAN
+
+آن علامت را در هیچ حالت دیگری ننویس.
 
 اگر مطمئن نیستی، این جمله را بگو: «این را باید پشتیبانی بررسی کند.» و آیدی
 پشتیبانی را بده: {support}
