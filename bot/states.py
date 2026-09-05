@@ -115,3 +115,7 @@ class AdminBalance(StatesGroup):
 
 class EmojiIds(StatesGroup):
     collecting = State()
+
+
+class AgentChat(StatesGroup):
+    talking = State()

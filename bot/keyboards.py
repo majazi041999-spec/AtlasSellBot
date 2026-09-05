@@ -711,6 +711,23 @@ def custom_name_kb() -> InlineKeyboardMarkup:
     return markup
 
 
+def agent_reply_kb(has_app: bool, support_username: str) -> InlineKeyboardMarkup:
+    """What sits under every agent answer.
+
+    Two escape hatches, always visible rather than offered only when the agent
+    thinks to mention them: the Android app (its single best fix, and the one a
+    customer cannot find on their own) and a human. An agent that cannot hand
+    over is worse than no agent.
+    """
+    b = InlineKeyboardBuilder()
+    if has_app:
+        _button(b, text="📱 دریافت اپ اندروید", callback_data="agent:getapp", style="success")
+    if support_username:
+        _button(b, text="👤 پشتیبانی انسانی", url=f"https://t.me/{support_username}", style="primary")
+    b.adjust(1)
+    return b.as_markup()
+
+
 def order_paid_kb() -> InlineKeyboardMarkup:
     """The spent-order keyboard: one button, greyed out and unpressable.
 

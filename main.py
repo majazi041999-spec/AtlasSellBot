@@ -565,7 +565,7 @@ async def run_bot():
 
     from core.config import BOT_TOKEN, ADMIN_IDS
     from core.database import init_db
-    from bot.handlers import common, admin, user
+    from bot.handlers import common, admin, user, agent
     from bot import nav
     from bot.middlewares import ChannelRequiredMiddleware
 
@@ -593,6 +593,7 @@ async def run_bot():
     # nav اول ثبت می‌شود تا تنها هندلر «برگشت» یکپارچه باشد
     dp.include_router(nav.router)
     dp.include_router(admin.router)
+    dp.include_router(agent.router)
     dp.include_router(user.router)
     dp.include_router(common.router)
 
