@@ -20,11 +20,17 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import os
 import sqlite3
 import sys
 import time
 
 sys.stdout.reconfigure(encoding="utf-8")
+# Run from anywhere: the project root has to be importable, and the database
+# path below is relative to it.
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, _ROOT)
+os.chdir(_ROOT)
 
 from aiogram import Bot
 from aiogram.exceptions import (TelegramBadRequest, TelegramForbiddenError,
