@@ -32,6 +32,21 @@ def _button(builder: InlineKeyboardBuilder, text: str, style: str | None = None,
             disabled = DisabledButton()
         except Exception:
             disabled = None
+    # Premium-ify the button automatically. A label like "🛒 خرید سرویس" has its
+    # leading glyph moved into icon_custom_emoji_id, where Telegram draws the
+    # owner's own artwork instead. Doing it HERE reaches every keyboard in the
+    # bot at once — there is no per-button edit to forget, and a button whose
+    # glyph has no premium counterpart simply keeps it.
+    #
+    # An explicit icon from the caller always wins; the label is left alone then.
+    plain = text          # the label WITH its glyph, for the last-resort path
+    if not icon_custom_emoji_id:
+        from bot.rich_message import GLYPH_PREMIUM, split_leading_emoji
+        glyph, rest = split_leading_emoji(text)
+        if glyph and rest:
+            icon_custom_emoji_id = GLYPH_PREMIUM[glyph]
+            text = rest
+
     attempts = (
         {"style": style, "icon_custom_emoji_id": icon_custom_emoji_id, "disabled": disabled},
         {"style": style},
@@ -48,16 +63,31 @@ def _button(builder: InlineKeyboardBuilder, text: str, style: str | None = None,
             return
         except Exception:
             continue
-    builder.button(text=text, **kwargs)
+    # Nothing stuck, so the glyph goes back into the label rather than vanishing.
+    builder.button(text=plain, **kwargs)
 
 
 def _inline_button(text: str, style: str | None = None, **kwargs) -> InlineKeyboardButton:
-    if style:
+    # Same automatic premium icon as _button — see the comment there. Kept in
+    # both because these two are the only places the bot builds inline buttons,
+    # and a keyboard built through the wrong one should not look different.
+    plain = text          # the label WITH its glyph, for the last-resort path
+    if "icon_custom_emoji_id" not in kwargs:
+        from bot.rich_message import GLYPH_PREMIUM, split_leading_emoji
+        glyph, rest = split_leading_emoji(text)
+        if glyph and rest:
+            kwargs["icon_custom_emoji_id"] = GLYPH_PREMIUM[glyph]
+            text = rest
+    for extra in ({"style": style}, {}):
+        opts = {k: v for k, v in extra.items() if v}
         try:
-            return InlineKeyboardButton(text=text, style=style, **kwargs)
+            return InlineKeyboardButton(text=text, **opts, **kwargs)
         except Exception:
-            pass
-    return InlineKeyboardButton(text=text, **kwargs)
+            continue
+    # No icon support here, so the glyph has to go back into the label — losing
+    # it entirely would leave a bare word where every other button has a mark.
+    kwargs.pop("icon_custom_emoji_id", None)
+    return InlineKeyboardButton(text=plain, **kwargs)
 
 
 def _copy_text_button(text: str, value: str, style: str | None = None) -> InlineKeyboardButton | None:

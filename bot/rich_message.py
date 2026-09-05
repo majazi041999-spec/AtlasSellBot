@@ -105,6 +105,135 @@ def emoji_id(role: str) -> str:
     return (PREMIUM_EMOJI.get(role) or "").strip()
 
 
+# ─────────────── every plain emoji that HAS a premium counterpart ────────────
+# Built by reading the sticker sets the owner's own emoji come from, then
+# matching each set entry's base glyph against the emoji already in this
+# codebase. 89 of the 131 distinct glyphs we use are covered; the rest have no
+# counterpart in those sets and stay plain.
+#
+# Used two ways: `_button` swaps a button's leading glyph for the real thing
+# automatically, and `premiumize()` does the same inside an HTML message body.
+#
+# To change one, edit the id here — every button and message follows.
+GLYPH_PREMIUM = {
+    "❌": "5895714560840568825",   # x138
+    "✅": "5249213633652597172",   # x113
+    "📊": "5282734530547951466",   # x23
+    "💰": "5332600543963522398",   # x21
+    "💳": "5213403875670765022",   # x20
+    "🟢": "5267229058659264159",   # x19
+    "🎁": "5274074880046802038",   # x19
+    "🔴": "5269560272418250579",   # x18
+    "🌐": "5249288301659041068",   # x17
+    "🛒": "6003375647055945783",   # x16
+    "⛔": "5852487725051023314",   # x16
+    "📦": "5987792582288086421",   # x15
+    "🗑": "5987881011369742250",   # x15
+    "🚀": "5895497153891011900",   # x13
+    "🔑": "5978854270013804830",   # x12
+    "🔗": "5990023031819341856",   # x12
+    "👤": "5985500761969135884",   # x12
+    "➕": "5251725592520303259",   # x11
+    "🔄": "5987538341698998883",   # x10
+    "👥": "5985335113670464151",   # x10
+    "🔎": "5895564043711680203",   # x10
+    "🖥": "5215186239853964761",   # x9
+    "📱": "5866022060353918430",   # x9
+    "👋": "5229003072335782160",   # x8
+    "🧬": "5215621964286142449",   # x7
+    "🎉": "5215628200578655810",   # x7
+    "🆔": "5818885490065017876",   # x7
+    "📣": "5988015508270615551",   # x6
+    "⚡": "5895638385300606573",   # x6
+    "📍": "5988062671306493814",   # x5
+    "🕊": "5895661346195771163",   # x5
+    "♾": "5895324105363689572",   # x5
+    "🎨": "5274090977584234781",   # x4
+    "📈": "5282950412784117735",   # x4
+    "🔍": "5231012545799666522",   # x4
+    "📝": "5987736485720231709",   # x4
+    "👁": "5897782359960325470",   # x4
+    "🙈": "5294363352070367389",   # x4
+    "📄": "5987635334945444280",   # x4
+    "📤": "5992519984071315160",   # x4
+    "🔥": "5981305412144599367",   # x4
+    "💵": "5215239948420003628",   # x4
+    "🔘": "5215506824802870945",   # x4
+    "🌟": "5269721741713745479",   # x4
+    "📞": "5895730568183681309",   # x3
+    "🛍": "5213348870024605308",   # x3
+    "📶": "6050886193032207644",   # x3
+    "🔐": "5895685239098838464",   # x3
+    "🏠": "5897974332113554932",   # x3
+    "📧": "5992200618893119382",   # x3
+    "🎯": "5274266216544871353",   # x3
+    "🤖": "5987936442217664306",   # x3
+    "👑": "5895227687642861193",   # x3
+    "💼": "5987761718653096026",   # x3
+    "🖼": "5987725052517290172",   # x2
+    "🔤": "5285137865397773116",   # x2
+    "🔃": "5985813929509524032",   # x2
+    "🔒": "5985555183499743416",   # x2
+    "💎": "5267419403019886452",   # x2
+    "💡": "5228740817337727023",   # x2
+    "🏆": "5273899469287465771",   # x2
+    "🔧": "5258023599419171861",   # x2
+    "📚": "5987936747160342935",   # x2
+    "🔵": "5267145938157184110",   # x1
+    "😕": "5456667726644780828",   # x1
+    "📸": "5985533188972220512",   # x1
+    "💬": "5987856091969491239",   # x1
+    "🚪": "5988038228647612587",   # x1
+    "🔓": "5990055153879748658",   # x1
+    "🌱": "5895281744101247904",   # x1
+    "🆓": "5406756500108501710",   # x1
+    "🍎": "5895717395518984341",   # x1
+    "💸": "5895325492638125139",   # x1
+    "⭐": "5895651600914975891",   # x1
+    "🕐": "5992184495585889960",   # x1
+    "🙏": "5213309687037964344",   # x1
+    "🛠": "5213214428958306222",   # x1
+    "🟡": "5267176161842046521",   # x1
+    "👈": "5222391476989731666",   # x1
+    "👀": "5985412663599960164",   # x1
+    "❓": "5215320603610852113",   # x1
+    "📎": "5305265301917549162",   # x1
+    "🔁": "5472012979073456920",   # x1
+    "😉": "5168337651417219882",   # x1
+    "😎": "5368562433981947135",   # x1
+    "🛡": "5895576786879647172",   # x1
+    "📲": "5472367477084134145",   # x1
+    "✨": "5895512031657725404",   # x1
+    "📉": "5283224689395640696",   # x1
+}
+
+
+def premiumize(html_text: str) -> str:
+    """Swap plain emoji for their premium versions inside HTML message text.
+
+    ONLY safe on text that is already valid HTML and will be sent with
+    parse_mode="HTML" — a custom emoji has no Markdown syntax, so running this
+    over a Markdown message would put raw tags in front of the customer.
+    """
+    out = html_text
+    for glyph, eid in GLYPH_PREMIUM.items():
+        if glyph in out:
+            out = out.replace(glyph, f'<tg-emoji emoji-id="{eid}">{glyph}</tg-emoji>')
+    return out
+
+
+def split_leading_emoji(text: str) -> tuple:
+    """("🛒 خرید", ...) -> ("🛒", "خرید") when the glyph has a premium version.
+
+    Only the FIRST character is considered: a button icon sits before the label,
+    so an emoji in the middle of one has no slot to move into.
+    """
+    stripped = text.lstrip()
+    if stripped and stripped[0] in GLYPH_PREMIUM:
+        return stripped[0], stripped[1:].lstrip()
+    return "", text
+
+
 def _note_failure(exc: Exception) -> None:
     global _supported
     text = str(exc).lower()
