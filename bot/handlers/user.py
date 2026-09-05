@@ -596,7 +596,9 @@ async def wallet_home(msg: Message):
 @router.callback_query(F.data == "wallet_topup")
 async def wallet_topup_start(cb: CallbackQuery, state: FSMContext):
     await state.set_state(WalletTopup.waiting_amount)
-    await cb.message.answer("💵 مبلغ افزایش اعتبار را به تومان وارد کنید.\nمثال: `250000`", parse_mode="Markdown", reply_markup=flow_cancel_kb())
+    await cb.message.answer(
+        premiumize("💵 مبلغ افزایش اعتبار را به تومان بنویس.\nمثال: <code>250000</code>"),
+        parse_mode="HTML", reply_markup=flow_cancel_kb())
     await cb.answer()
 
 
@@ -792,7 +794,10 @@ async def user_status(msg: Message):
     configs, profiles = await _user_service_lists(user["id"])
     total = len(configs) + len(profiles)
     if total <= 0:
-        await msg.answer(await get_text("no_active_service"), parse_mode="Markdown")
+        # Owner-written, so its formatting is translated rather than escaped —
+        # and it gets the way back, since this is a dead end otherwise.
+        await msg.answer(premiumize(_md_to_html(await get_text("no_active_service"))),
+                         parse_mode="HTML", reply_markup=home_only_kb())
         return
     if total == 1 and configs:
         await _send_config_status(msg, configs[0]["id"])
@@ -1102,7 +1107,9 @@ async def sub_node_link(cb: CallbackQuery):
         await cb.answer("لینک این سرور هنوز آماده نیست.", show_alert=True)
         return
     remark = str(node.get("node_label") or node.get("server_name") or "سرور")
-    await cb.message.answer(f"📍 {remark}\n\n`{link}`", parse_mode="Markdown")
+    await cb.message.answer(
+        premiumize(f"📍 {_esc(remark)}\n\n<code>{_esc(link)}</code>"),
+        parse_mode="HTML")
     await cb.answer("لینک ارسال شد ⬇️")
 
 
@@ -1449,17 +1456,21 @@ async def send_config_link(cb: CallbackQuery):
     await cli.close()
 
     if link:
-        body = f" *لینک اتصال شما:*\n\n`{link}`\n"
+        # Both links go in <code>: it is what makes them tap-to-copy, and it is
+        # also what stops a link containing & or < from breaking the message the
+        # customer needs in order to connect at all.
+        body = f"🔗 <b>لینک اتصال شما</b>\n\n<code>{_esc(link)}</code>\n"
         if sub:
-            body += f"\n *لینک سابسکریپشن:*\n`{sub}`\n"
+            body += f"\n📡 <b>لینک اشتراک</b>\n<code>{_esc(sub)}</code>\n"
         body += (
-            "\n این لینک را کپی کن و در اپلیکیشن وارد کن.\n\n"
-            "اپ‌های پیشنهادی:\n"
-            "[📱 V2rayNG (اندروید)](https://github.com/2dust/v2rayNG/releases/latest) | "
-            "[🍎 Streisand (iOS)](https://apps.apple.com/us/app/streisand/id6450534064) | "
-            "[🪟 v2rayN (ویندوز)](https://github.com/2dust/v2rayN/releases/latest)"
+            "\n👆 لینک را کپی کن و در برنامه وارد کن.\n\n"
+            "<b>برنامه‌های پیشنهادی:</b>\n"
+            '<a href="https://github.com/2dust/v2rayNG/releases/latest">📱 V2rayNG (اندروید)</a> · '
+            '<a href="https://apps.apple.com/us/app/streisand/id6450534064">🍎 Streisand (iOS)</a> · '
+            '<a href="https://github.com/2dust/v2rayN/releases/latest">🪟 v2rayN (ویندوز)</a>'
         )
-        await cb.message.answer(body, parse_mode="Markdown", reply_markup=config_links_kb(link, sub or ""))
+        await cb.message.answer(premiumize(body), parse_mode="HTML",
+                                reply_markup=config_links_kb(link, sub or ""))
         try:
             ch = await get_setting("channel_username", "AtlasChannel")
             await cb.message.answer_photo(_qr_input_file(link, ch), caption="QR Code کانفیگ شما", parse_mode=None)
@@ -1502,7 +1513,9 @@ async def cfg_sub(cb: CallbackQuery):
     await cli.close()
 
     if sub:
-        await cb.message.answer(f" *لینک سابسکریپشن:*\n`{sub}`", parse_mode="Markdown", reply_markup=config_links_kb("", sub))
+        await cb.message.answer(
+            premiumize(f"🔗 <b>لینک اشتراک:</b>\n<code>{_esc(sub)}</code>"),
+            parse_mode="HTML", reply_markup=config_links_kb("", sub))
         await cb.answer()
     else:
         await cb.answer("لینک ساب پیدا نشد", show_alert=True)
@@ -1987,7 +2000,9 @@ async def prompt_receipt(cb: CallbackQuery, state: FSMContext):
     await state.set_state(BuyService.waiting_receipt)
     await state.update_data(order_id=oid)
     await update_order(oid, status="pending_receipt")
-    await cb.message.edit_text(" *ارسال فیش پرداخت*\n\nتصویر فیش واریزی را ارسال کنید ", parse_mode="Markdown", reply_markup=flow_cancel_kb())
+    await cb.message.edit_text(
+        premiumize("🧾 <b>ارسال فیش پرداخت</b>\n\nتصویر فیش واریزی را بفرست."),
+        parse_mode="HTML", reply_markup=flow_cancel_kb())
 
 
 @router.message(BuyService.waiting_receipt, F.photo)
@@ -2034,7 +2049,9 @@ async def receive_receipt(msg: Message, state: FSMContext, bot: Bot):
 
 @router.message(BuyService.waiting_receipt)
 async def wrong_receipt_format(msg: Message):
-    await msg.answer(" لطفاً *تصویر* (عکس) فیش را ارسال کنید.", parse_mode="Markdown", reply_markup=flow_cancel_kb())
+    await msg.answer(
+        premiumize("📷 لطفاً <b>تصویر</b> (عکس) فیش را بفرست — نه متن."),
+        parse_mode="HTML", reply_markup=flow_cancel_kb())
 
 
 @router.callback_query(F.data.startswith("cancel_order:"))
