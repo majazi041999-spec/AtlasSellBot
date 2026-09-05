@@ -84,6 +84,8 @@ from bot.rich_message import answer_rich, edit_rich, emoji as tg_emoji, date_tim
 from bot.keyboards import (
     user_menu,
     packages_kb,
+    home_only_kb,
+    with_home,
     packages_table_html,
     order_paid_kb,
     payment_kb,
@@ -1492,7 +1494,13 @@ async def cfg_qr(cb: CallbackQuery):
 
 
 @router.message(F.text == "🧪 تست رایگان")
-async def test_account(msg: Message):
+async def test_account(msg: Message, confirmed: bool = False):
+    """Show what the trial is, and only make it once the customer says yes.
+
+    `confirmed` is what the ✅ button passes. Every guard above re-runs on that
+    second pass on purpose: the button can be tapped twice, or hours later, and
+    the account is one per customer.
+    """
     if not await _ensure_channel_membership(msg):
         return
     if await _blocked(msg.from_user.id):
@@ -1541,6 +1549,29 @@ async def test_account(msg: Message):
             )
             return
 
+    if not confirmed:
+        # Offer it before making it. The trial is one per account, so a customer
+        # who taps once and is handed a live account never got to read what they
+        # were getting and has no second go at it.
+        from bot.keyboards import trial_confirm_kb
+        gb = settings["traffic_gb"]
+        gb_txt = f"{gb:g}"
+        lines = [
+            "🧪 <b>اکانت تست رایگان</b>",
+            "",
+            f"حجم: <b>{gb_txt} گیگابایت</b>",
+            f"مدت: <b>{settings['duration_days']} روز</b>",
+            "همه‌ی لوکیشن‌ها · ۵ کاربر هم‌زمان",
+        ]
+        if is_rep_daily:
+            lines.append(f"\nسهمیه‌ی امروز شما: {rep_daily - used_today} از {rep_daily}")
+        else:
+            lines.append("\n<i>هر حساب فقط یک بار می‌تواند تست بگیرد.</i>")
+        lines.append("\nبرای ساختش دکمه‌ی زیر را بزن.")
+        await msg.answer("\n".join(lines), parse_mode="HTML",
+                         reply_markup=trial_confirm_kb())
+        return
+
     # Building a trial means talking to a panel, which is the slowest thing this
     # bot does. Without a visible sign of work a customer assumes it is broken
     # and taps again — and a second tap here means a second account.
@@ -1578,6 +1609,20 @@ async def test_account(msg: Message):
     profile = await get_subscription_profile(int(result["profile_id"]))
     if profile:
         await _send_subscription_status(msg, profile, send_qr=True)
+
+
+@router.callback_query(F.data == "trial:go")
+async def trial_confirmed(cb: CallbackQuery):
+    await cb.answer()
+    # Take the offer screen away first: leaving it behind means a second tap
+    # lands on guards that have already run, and the customer sees a refusal
+    # where they expected their account.
+    try:
+        await cb.message.delete()
+    except Exception:
+        pass
+    proxy = cb.message.model_copy(update={"from_user": cb.from_user}).as_(cb.bot)
+    await test_account(proxy, confirmed=True)
 
 
 @router.message(F.text == "🛒 خرید سرویس")
@@ -2926,7 +2971,7 @@ async def my_orders(msg: Message):
     user = await get_or_create_user(msg.from_user.id)
     orders = await get_user_orders(user["id"])
     if not orders:
-        await msg.answer(" هنوز سفارشی ثبت نکرده‌اید.")
+        await msg.answer("📋 هنوز سفارشی ثبت نکرده‌اید.", reply_markup=home_only_kb())
         return
 
     STATUS = {
@@ -2944,7 +2989,7 @@ async def my_orders(msg: Message):
         text += f" {o['pkg_name']} — {st}\n"
         text += f" {o['price']:,} تومن | {o['created_at'][:10]}\n\n"
 
-    await msg.answer(text.strip(), parse_mode="Markdown")
+    await msg.answer(text.strip(), parse_mode="Markdown", reply_markup=home_only_kb())
 
 
 @router.message(F.text == "🕊️ پیام ناشناس")
@@ -3178,7 +3223,7 @@ async def referral_menu(msg: Message):
     if not await _ensure_channel_membership(msg):
         return
     if await get_setting("referral_enabled", "1") != "1":
-        await msg.answer("🎁 سیستم دعوت دوستان فعلاً غیرفعال است.")
+        await msg.answer("🎁 سیستم دعوت دوستان فعلاً غیرفعال است.", reply_markup=home_only_kb())
         return
 
     from core.rewards import referral_tier_reward_text
@@ -3240,7 +3285,7 @@ async def referral_menu(msg: Message):
         InlineKeyboardButton(text="📤 ارسال در تلگرام", url=f"https://t.me/share/url?url={quote(ref_link, safe='')}&text={quote(caption_no_link, safe='')}"),
         InlineKeyboardButton(text="🟢 ارسال در واتساپ", url=f"https://wa.me/?text={quote(share_text, safe='')}"),
     ]])
-    await msg.answer(info, parse_mode="Markdown", reply_markup=share_kb)
+    await msg.answer(info, parse_mode="Markdown", reply_markup=with_home(share_kb))
 
     # The forwardable banner + caption carries a catchy start-bot CTA button that
     # travels WITH the message when the user forwards it to friends.
@@ -3270,4 +3315,4 @@ async def support(msg: Message):
         text += f" تماس مستقیم: @{sup}\n"
     text += await get_text("support_body")
 
-    await msg.answer(text, parse_mode="Markdown")
+    await msg.answer(text, parse_mode="Markdown", reply_markup=home_only_kb())

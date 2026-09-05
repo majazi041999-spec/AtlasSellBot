@@ -564,9 +564,7 @@ def user_services_kb(configs: List[Dict], profiles: List[Dict], page: int = 0, p
         nav.append(_inline_button(text="بعدی ▶️", callback_data=f"svc:{page+1}:{sort}:{filt}", style="primary"))
     if nav:
         b.row(*nav)
-    # Same reason as wallet_kb: this list is a screen the home menu opens, so it
-    # owns the way back out of itself.
-    b.row(_inline_button(text="🏠 منوی اصلی", callback_data="back_to_menu", style="primary"))
+    b.row(home_row())
     return b.as_markup()
 
 
@@ -927,15 +925,45 @@ def legacy_claim_admin_kb(claim_id: int) -> InlineKeyboardMarkup:
     return b.as_markup()
 
 
+HOME_LABEL = "🏠 بازگشت به منوی اصلی"
+# Red, alone, and always last. Every screen the home menu opens has to offer the
+# way back or the customer's only exit is /start. It is RED because red is the
+# one colour nothing else on these screens uses — the content buttons are blue
+# and the actions are green — so it reads as "different from the list" at a
+# glance. The label names exactly what it does, so it cannot be mistaken for
+# something destructive.
+
+
+def home_row() -> InlineKeyboardButton:
+    return _inline_button(text=HOME_LABEL, callback_data="back_to_menu", style="danger")
+
+
+def with_home(markup: InlineKeyboardMarkup | None) -> InlineKeyboardMarkup:
+    """Append the way back to a keyboard some other screen already built."""
+    rows = list(markup.inline_keyboard) if markup else []
+    return InlineKeyboardMarkup(inline_keyboard=rows + [[home_row()]])
+
+
+def home_only_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[[home_row()]])
+
+
 def wallet_kb() -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
     _button(b, text="➕ افزایش اعتبار", callback_data="wallet_topup", style="success")
-    # Every screen the home menu opens has to offer the way back, or the
-    # customer's only exit is /start — which is how they end up with a chat full
-    # of half-finished screens.
-    _button(b, text="🏠 منوی اصلی", callback_data="back_to_menu", style="primary")
     b.adjust(1)
-    return b.as_markup()
+    return with_home(b.as_markup())
+
+
+def trial_confirm_kb() -> InlineKeyboardMarkup:
+    """The trial is offered, then made. A customer who taps "free trial" once
+    and gets an account has no chance to read what they are getting, and no way
+    to change their mind — and the trial is one per account, so there is no
+    second go."""
+    b = InlineKeyboardBuilder()
+    _button(b, text="✅ بله، اکانت تستم را بساز", callback_data="trial:go", style="success")
+    b.adjust(1)
+    return with_home(b.as_markup())
 
 
 def topup_review_kb(req_id: int) -> InlineKeyboardMarkup:
