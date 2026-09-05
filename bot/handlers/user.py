@@ -157,32 +157,48 @@ def _extract_subscription_token(text: str) -> str:
 
 
 def _format_subscription_status_card(profile: dict, sub_url: str, used: int, total: int, remaining: int,
-                                     pct: int, days_text: str, active_nodes: list[dict]) -> str:
+                                     pct: int, days_text: str, active_nodes: list[dict],
+                                     expire_unix: int = 0) -> str:
+    """The card a customer looks at more than any other screen.
+
+    HTML, and everything variable is escaped: the service name is theirs, the
+    node labels are the owner's, and the subscription URL is the one string on
+    here that MUST survive intact — a customer who cannot copy it cannot connect.
+    It sits in <code>, which both protects it and makes it tap-to-copy.
+
+    `expire_unix` renders the remaining time as a live <tg-time>: the client
+    counts it down in the customer's own timezone and offers "add to calendar".
+    Zero means there is no date to point at — an unlimited plan, or one that
+    starts on first use — and the plain text is used instead.
+    """
     service_name = profile.get("name") or profile.get("email") or f"ساب #{profile.get('id')}"
-    status_text = "فعال" if int(profile.get("is_active") or 0) else "غیرفعال"
+    status_text = "🟢 فعال" if int(profile.get("is_active") or 0) else "🔴 غیرفعال"
     filled = max(0, min(10, int(round((pct / 100) * 10))))
     usage_bar = "█" * filled + "░" * (10 - filled)
     node_names = [
         str(n.get("node_label") or n.get("server_name") or f"Node #{n.get('id')}")
         for n in active_nodes[:6]
     ]
-    nodes_text = "\n".join(f"• {name}" for name in node_names) if node_names else "• نودی فعال نیست"
+    nodes_text = ("\n".join(f"• {_esc(name)}" for name in node_names)
+                  if node_names else "• نودی فعال نیست")
+    days_html = (f'<tg-time unix="{int(expire_unix)}" format="r">{_esc(days_text)}</tg-time>'
+                 if expire_unix > 0 else f"<b>{_esc(days_text)}</b>")
     return (
-        "📡 وضعیت سرویس سابسکریپشن\n"
+        "📡 <b>وضعیت سرویس شما</b>\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
-        f"نام سرویس: {service_name}\n"
+        f"نام سرویس: <b>{_esc(service_name)}</b>\n"
         f"وضعیت: {status_text}\n\n"
-        "مصرف سرویس\n"
+        "📊 <b>مصرف</b>\n"
         f"{usage_bar} {pct}%\n"
-        f"مصرف‌شده: {fmt_bytes(used)}\n"
-        f"باقی‌مانده: {fmt_bytes(remaining)}\n"
-        f"حجم کل: {fmt_bytes(total)}\n\n"
-        "زمان سرویس\n"
-        f"باقی‌مانده: {days_text}\n\n"
-        f"نودهای فعال ({len(active_nodes)})\n"
+        f"مصرف‌شده: {_esc(fmt_bytes(used))}\n"
+        f"باقی‌مانده: <b>{_esc(fmt_bytes(remaining))}</b>\n"
+        f"حجم کل: {_esc(fmt_bytes(total))}\n\n"
+        "⏱ <b>زمان</b>\n"
+        f"باقی‌مانده: {days_html}\n\n"
+        f"🌐 <b>سرورهای فعال ({len(active_nodes)})</b>\n"
         f"{nodes_text}\n\n"
-        "لینک سابسکریپشن\n"
-        f"{sub_url}"
+        "🔗 <b>لینک اشتراک</b>\n"
+        f"<code>{_esc(sub_url)}</code>"
     )
 
 
@@ -253,28 +269,32 @@ async def _send_subscription_status(target, profile: dict, send_qr: bool = True)
         f"لینک ساب:\n{sub_url}"
     )
 
-    text = _format_subscription_status_card(profile, sub_url, used, total, remaining, pct, dl_text, active_nodes)
+    # The countdown is inline <tg-time> now rather than an entity attached by
+    # offset: Telegram takes parse_mode OR entities, never both, and the card
+    # needs parse_mode for its premium emoji. Zero when there is no real future
+    # date — unlimited, or a plan that starts on first use.
+    expire_unix = (int(profile.get("expire_timestamp") or 0) // 1000
+                   if (not not_started and dl > 0) else 0)
+    text = _format_subscription_status_card(profile, sub_url, used, total, remaining,
+                                            pct, dl_text, active_nodes, expire_unix)
 
     # Node links are exposed as buttons in subscription_detail_kb. Keeping long
     # configs out of the status text makes the card readable on mobile.
     guide = (await get_setting("sub_connection_guide", "")).strip()
     if guide:
-        text += "\n\n" + guide
+        # Owner-written and authored as Markdown, so translated rather than
+        # escaped — otherwise their formatting would show as raw asterisks.
+        text += "\n\n" + _md_to_html(guide)
+    text = premiumize(text)
     if len(text) > 3900:
-        text = text[:3900] + "\n…"
+        # Truncating HTML can cut a tag in half and Telegram rejects the whole
+        # message, so the cut is made at the last tag boundary before the limit.
+        cut = text.rfind(">", 0, 3900)
+        text = text[: cut + 1 if cut > 3000 else 3900] + "\n…"
 
     kb = subscription_detail_kb(int(profile["id"]), sub_url, active_nodes)
-    # Let the client render the remaining time: it counts down on its own, shows
-    # in the customer's timezone and language, and taps through to "add to
-    # calendar". Only for a real future expiry — "نامحدود" and a plan that has
-    # not started yet have no date to point at.
-    ents = []
-    if not not_started and dl > 0:
-        ents = date_time_entities(
-            text, "زمان سرویس\nباقی‌مانده: ", dl_text,
-            int(profile.get("expire_timestamp") or 0) // 1000, "r")
     if isinstance(target, Message):
-        await target.answer(text, parse_mode=None, entities=ents or None, reply_markup=kb)
+        await target.answer(text, parse_mode="HTML", reply_markup=kb)
         if send_qr:
             try:
                 qr_label = profile.get("name") or profile.get("email") or "Subscription"
@@ -282,7 +302,7 @@ async def _send_subscription_status(target, profile: dict, send_qr: bool = True)
             except Exception:
                 pass
     else:
-        await target.message.edit_text(text, parse_mode=None, entities=ents or None, reply_markup=kb)
+        await target.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
 
 
 async def _is_channel_member(msg_or_cb) -> bool:
