@@ -12,7 +12,7 @@ from urllib.parse import urlparse, parse_qs, unquote
 from aiogram import Router, F, Bot
 from aiogram.types import Message, CallbackQuery, BufferedInputFile
 from aiogram.fsm.context import FSMContext
-from aiogram.filters import StateFilter
+from aiogram.filters import Command, StateFilter
 
 from core.config import ADMIN_IDS, WEB_SECRET_PATH, WEB_PORT
 from core.database import (
@@ -64,7 +64,7 @@ from bot.keyboards import (
 )
 from bot.states import (
     AddPackage, CreateConfig, BulkConfig, EditConfig, EditSubProfile, Broadcast, PrivateMessage,
-    AdminUserSearch, AdminBalance, ChannelPost,
+    AdminUserSearch, AdminBalance, ChannelPost, EmojiIds,
 )
 
 router = Router()
@@ -3153,3 +3153,77 @@ async def _post_publish(target_msg: Message, state: FSMContext, channel: str):
         + link,
         parse_mode=None, reply_markup=admin_menu())
 
+
+# ═══════════════════════════════ /emojiid ════════════════════════════════════
+# Reading a premium emoji's id out of a message the owner sends is the only way
+# to get one WITHOUT logging into their Telegram account — which they asked us
+# not to do. Telegram already hands us the id in the message entities; the
+# account access we removed was never needed for this.
+
+def _custom_emoji_entities(msg: Message) -> list:
+    """Every custom-emoji entity in a message, whether it is text or a caption."""
+    return [e for e in ((msg.entities or []) + (msg.caption_entities or []))
+            if e.type == "custom_emoji" and e.custom_emoji_id]
+
+
+def _emoji_ids_reply(msg: Message) -> str:
+    """Render the ids found in `msg`, or say plainly that there were none."""
+    body = msg.text or msg.caption or ""
+    found = _custom_emoji_entities(msg)
+    if not found:
+        return (
+            "❌ اموجی پرمیومی در آن پیام نبود.\n\n"
+            "دقت کن: اموجی‌های <b>عادی</b> آیدی ندارند و اینجا پیدا نمی‌شوند. "
+            "فقط اموجی‌هایی که با اشتراک پرمیوم می‌فرستی آیدی دارند."
+        )
+
+    # Offsets are UTF-16 code units, not Python characters — extract_from() is
+    # what knows the difference. Slicing the string by hand puts the wrong
+    # character next to the id as soon as the text contains any emoji before it.
+    lines = [f"✅ <b>{len(found)}</b> اموجی پرمیوم پیدا شد:\n"]
+    seen = set()
+    for ent in found:
+        eid = str(ent.custom_emoji_id)
+        if eid in seen:
+            continue
+        seen.add(eid)
+        try:
+            glyph = ent.extract_from(body)
+        except Exception:
+            glyph = "?"
+        # The preview is the emoji rendered by its id, so the owner can confirm
+        # the id maps to the emoji they meant before we put it on a button.
+        lines.append(f'<tg-emoji emoji-id="{eid}">{glyph}</tg-emoji>  <code>{eid}</code>')
+    lines.append("\n\n💡 روی هر آیدی بزن تا کپی شود. بعد بگو کدام را روی کدام دکمه بگذارم.")
+    return "\n".join(lines)
+
+
+@router.message(Command("emojiid"))
+async def emojiid_start(msg: Message, state: FSMContext):
+    if not is_admin(msg.from_user.id):
+        return
+    # Used as a reply, answer straight away — no reason to ask for the message
+    # we are already looking at.
+    if msg.reply_to_message:
+        await msg.answer(_emoji_ids_reply(msg.reply_to_message), parse_mode="HTML")
+        return
+    await state.set_state(EmojiIds.collecting)
+    await msg.answer(
+        "🎨 <b>آیدی اموجی پرمیوم</b>\n\n"
+        "هر پیامی که اموجی پرمیوم دارد برایم بفرست (یا فوروارد کن) تا آیدی‌هایش را بدهم.\n"
+        "می‌توانی چندتا پشت سر هم بفرستی.\n\n"
+        "برای خروج بنویس: /cancel",
+        parse_mode="HTML",
+    )
+
+
+@router.message(StateFilter(EmojiIds.collecting))
+async def emojiid_collect(msg: Message, state: FSMContext):
+    if not is_admin(msg.from_user.id):
+        return
+    text = (msg.text or "").strip()
+    if text in ("/cancel", "/emojiid", "لغو", "انصراف"):
+        await state.clear()
+        await msg.answer("✅ از حالت آیدی اموجی خارج شدی.")
+        return
+    await msg.answer(_emoji_ids_reply(msg), parse_mode="HTML")

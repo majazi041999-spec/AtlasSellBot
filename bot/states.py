@@ -112,3 +112,6 @@ class AdminUserSearch(StatesGroup):
 
 class AdminBalance(StatesGroup):
     amount = State()
+
+class EmojiIds(StatesGroup):
+    collecting = State()
