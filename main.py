@@ -567,7 +567,7 @@ async def run_bot():
     from core.database import init_db
     from bot.handlers import common, admin, user, agent
     from bot import home, nav
-    from bot.middlewares import ChannelRequiredMiddleware
+    from bot.middlewares import ChannelRequiredMiddleware, MenuRefreshMiddleware
 
     if not BOT_TOKEN or len(BOT_TOKEN) < 20:
         logger.error("❌ BOT_TOKEN در فایل .env تنظیم نشده!")
@@ -586,6 +586,11 @@ async def run_bot():
     dp = Dispatcher(storage=MemoryStorage())
 
     # عضویت اجباری کانال: روی همه پیام‌ها/کال‌بک‌ها قبل از هندلرها چک شود
+    # OUTER: this has to run for every update, including ones no handler
+    # matches, or somebody holding a stale menu who only ever taps stale
+    # buttons would never be refreshed.
+    dp.message.outer_middleware(MenuRefreshMiddleware())
+    dp.callback_query.outer_middleware(MenuRefreshMiddleware())
     dp.message.middleware(ChannelRequiredMiddleware())
     dp.callback_query.middleware(ChannelRequiredMiddleware())
 

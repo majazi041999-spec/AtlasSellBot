@@ -439,6 +439,11 @@ async def _ensure_columns(db):
             ("load_weight", "REAL DEFAULT 1"),           # capacity multiplier; higher = can take more users
         ],
         "users": [
+            # Which build of the bot's menus this person is currently holding.
+            # A reply keyboard lives on the customer's phone until the bot sends
+            # a new one, so a menu change reaches nobody until they press
+            # /start — which most never do. See bot/middlewares/menu_refresh.py.
+            ("menu_version", "INTEGER DEFAULT 0"),
             ("discount_percent", "REAL DEFAULT 0"),
             ("price_per_gb", "INTEGER DEFAULT 0"),
             ("unlimited_price", "INTEGER DEFAULT 0"),
