@@ -43,6 +43,35 @@ except ImportError:  # pragma: no cover - depends on the installed aiogram
 
 _UNSUPPORTED_HINTS = ("method not found", "unknown method", "not found: method")
 
+# Premium (custom) emoji used in bot messages, keyed by the ROLE they play — so
+# swapping the artwork is a one-line change here and never a hunt through copy.
+#
+# Telegram renders these only where the bot may use custom emoji: a private,
+# group or supergroup chat, given the bot owner has Premium. Channels are
+# excluded, so a channel post falls back to the plain glyph on its own.
+#
+# Ids come from the /emojiid admin command. Set one to "" to drop back to the
+# plain emoji without touching any of the call sites.
+PREMIUM_EMOJI = {
+    "cart": "5258024802010026053",
+    "speed": "5422609593765241366",
+    "link": "5990332467033150285",
+    "price": "5427107837568360763",
+    "duration": "5981043230160981261",
+}
+
+
+def emoji(role: str, fallback: str) -> str:
+    """A premium emoji by role, or the plain glyph when none is configured.
+
+    `fallback` doubles as the alt text Telegram shows wherever the custom emoji
+    cannot be drawn — an old client, a channel, a viewer with images off — so
+    the sentence reads correctly either way. It is OUR glyph, not the sticker's
+    own: the point is the slot it fills in the copy.
+    """
+    eid = (PREMIUM_EMOJI.get(role) or "").strip()
+    return f'<tg-emoji emoji-id="{eid}">{fallback}</tg-emoji>' if eid else fallback
+
 
 def _note_failure(exc: Exception) -> None:
     global _supported
@@ -79,9 +108,9 @@ def table(
     what makes a price list scannable on a phone — the eye keeps its row while
     crossing from the package to its price.
 
-    Cell VALUES may contain inline markup (a `<b>` price, say) and are passed
-    through as-is; escape them with `esc()` at the call site if they came from
-    user input. Header text is escaped here because it is always ours.
+    Header and cell VALUES may both contain inline markup — a `<b>` price, a
+    `<tg-emoji>` icon — and are passed through as-is. Escape anything that came
+    from user input with `esc()` at the call site.
     """
     flags = "".join(f" {name}" for name, on in
                     (("bordered", bordered), ("striped", striped), ("compact", compact)) if on)
@@ -91,7 +120,7 @@ def table(
     if caption:
         out.append(f"<caption>{esc(caption)}</caption>")
     out.append("<tr>" + "".join(
-        f'<th align="{align[i] if i < len(align) else "left"}">{esc(h)}</th>'
+        f'<th align="{align[i] if i < len(align) else "left"}">{h}</th>'
         for i, h in enumerate(header)
     ) + "</tr>")
     for row in rows:

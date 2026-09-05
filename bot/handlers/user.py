@@ -80,7 +80,7 @@ from core.multi_subscription import (
 )
 from bot.middlewares.channel_required import ChannelRequiredMiddleware
 
-from bot.rich_message import answer_rich, edit_rich
+from bot.rich_message import answer_rich, edit_rich, emoji as tg_emoji
 from bot.keyboards import (
     user_menu,
     packages_kb,
@@ -361,13 +361,13 @@ def _packages_screen_html(pkgs: list[dict], bestseller_id: int = 0) -> str:
     the one `pkgs` list for that reason.
     """
     return (
-        "<h2>🛒 پکیج خودت رو انتخاب کن</h2>"
+        f'<h2>{tg_emoji("cart", "🛒")} پکیج خودت رو انتخاب کن</h2>'
         # Every claim on this line is one we can point at: the 5 devices come
         # from the guard's ip_limit_default, provisioning is automated, and the
         # customer really does only paste one link. Uptime promises were left
         # out on purpose — the first outage would be quoted back at us.
-        "<p>⚡ <b>تحویل آنی و خودکار</b> · 👥 <b>۵ کاربر هم‌زمان</b> "
-        "· 🔗 فقط یک لینک، بدون تنظیمات پیچیده</p>"
+        f'<p>{tg_emoji("speed", "⚡")} <b>تحویل آنی و خودکار</b> · 👥 <b>۵ کاربر هم‌زمان</b> '
+        f'· {tg_emoji("link", "🔗")} فقط یک لینک، بدون تنظیمات پیچیده</p>'
         + packages_table_html(pkgs)
         + _unlimited_callout(pkgs, bestseller_id)
         + "<p>👇 روی دکمه‌ی پکیج مورد نظرت بزن.</p>"

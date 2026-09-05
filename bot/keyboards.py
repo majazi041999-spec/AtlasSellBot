@@ -8,7 +8,7 @@ import time
 
 from core.sorting import fa_sort_key
 from core.pricing import is_unlimited_package
-from bot.rich_message import esc as rich_esc, table as rich_table
+from bot.rich_message import emoji as tg_emoji, esc as rich_esc, table as rich_table
 
 try:
     from aiogram.types import CopyTextButton
@@ -938,7 +938,9 @@ def packages_table_html(pkgs: List[Dict]) -> str:
             f"<mark><b>{price}</b></mark>" if star else f"<b>{price}</b>",
         ])
     return rich_table(
-        ["📦 پکیج", "⏱ مدت", "💰 قیمت"],
+        ["📦 پکیج",
+         f'{tg_emoji("duration", "⏱")} مدت',
+         f'{tg_emoji("price", "💰")} قیمت'],
         rows,
         align=["left", "center", "right"],
         caption="قیمت‌ها به تومان · ۵ کاربر هم‌زمان روی همه‌ی پکیج‌ها",
