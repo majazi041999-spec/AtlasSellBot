@@ -179,19 +179,18 @@ def user_menu(include_wholesale: bool = True) -> ReplyKeyboardMarkup:
     b = ReplyKeyboardBuilder()
     # Free trial is the top of the funnel — make it the first, full-width button
     # (biggest tap target) so newcomers try before they weigh buying.
-    b.row(KeyboardButton(text="🧪 تست رایگان"))
-    b.row(KeyboardButton(text="📡 وضعیت سرویس"), KeyboardButton(text="🛒 خرید سرویس"))
-    b.row(KeyboardButton(text="📋 سفارش‌های من"), KeyboardButton(text="🔄 شروع مجدد"))
-    b.row(KeyboardButton(text="💳 کیف پول"), KeyboardButton(text="🎁 دعوت دوستان"))
-    b.row(KeyboardButton(text="📞 پشتیبانی"), KeyboardButton(text="🕊️ پیام ناشناس"))
-    # Always show the representative entry: reps get their panel, everyone else
-    # gets the "apply to become a representative" flow. (Previously hidden from
-    # non-reps, so people who saw the ad couldn't find the button.)
-    b.row(KeyboardButton(text="🏢 پنل نمایندگی"))
-    # "انتقال سرور" and "افزودن سرویس قبلی" were dropped from the menu: both are
-    # rare, one-off jobs that confused far more people than they served. Their
-    # handlers are untouched, so any button or link already pointing at them
-    # still works.
+    # ONE button. Everything this panel used to hold now lives in the coloured
+    # menu inside the chat, where people actually see it — this was a second
+    # copy of the same nine actions, hidden behind a keyboard toggle, and two
+    # menus that must agree is one more than anyone can keep in step.
+    #
+    # What stays is the way back: a customer who has scrolled past the menu, or
+    # wandered into a flow and lost it, presses this and the menu returns.
+    #
+    # Every F.text handler behind the removed buttons is untouched and still
+    # reachable — the in-chat menu calls the same functions, and typing the old
+    # label still works for anyone who has it memorised.
+    b.row(KeyboardButton(text="🔄 شروع مجدد"))
     return b.as_markup(resize_keyboard=True)
 
 

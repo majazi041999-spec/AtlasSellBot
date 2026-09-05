@@ -32,7 +32,10 @@ log = logging.getLogger(__name__)
 # ── BUMP THIS whenever user_menu() or the home menu changes. ──────────────────
 # 1: the coloured in-chat home menu, premium emoji, "انتقال سرور" and
 #    "افزودن سرویس قبلی" removed from the reply keyboard.
-MENU_VERSION = 1
+# 2: the reply keyboard reduced to a single "شروع مجدد" — everything else now
+#    lives in the in-chat menu, and a stale phone would otherwise keep showing
+#    the old nine buttons forever.
+MENU_VERSION = 2
 
 
 class MenuRefreshMiddleware(BaseMiddleware):
