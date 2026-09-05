@@ -35,10 +35,14 @@ router = Router()
 # three: green starts something free, red is the one that costs money and should
 # stand out, blue is everything else.
 ACTIONS: List[Tuple[str, str, str, str]] = [
-    ("trial", "🧪 تست رایگان بگیر", "success", "test_account"),
-    ("buy", "🛒 خرید سرویس", "danger", "buy_service"),
+    # A newline inside the label makes the button TALLER as well as wide, which
+    # is the only size control Telegram gives: height follows the line count and
+    # width follows how many buttons share the row. The two that matter most get
+    # both — a second line and a row to themselves.
+    ("trial", "🧪 تست رایگان بگیر\nیک اکانت آزمایشی، همین حالا", "success", "test_account"),
+    ("buy", "🛒 خرید سرویس\nدیدن پکیج‌ها و قیمت‌ها", "danger", "buy_service"),
     ("status", "📡 سرویس‌های من", "primary", "user_status"),
-    ("ai", "🤖 دستیار هوشمند", "success", ""),          # handled here, not in user.py
+    ("ai", "🤖 دستیار هوشمند\nسوالت را بپرس، همین‌جا جواب بگیر", "success", ""),
     ("support", "📞 پشتیبانی", "primary", "support"),
     ("wallet", "💳 کیف پول", "primary", "wallet_home"),
     ("orders", "📋 سفارش‌های من", "primary", "my_orders"),
@@ -46,9 +50,10 @@ ACTIONS: List[Tuple[str, str, str, str]] = [
     ("rep", "🏢 پنل نمایندگی", "primary", "representative_start"),
 ]
 
-# Two per row, except the first two: the trial and the purchase are what a new
-# arrival is here for, and a full-width button is a bigger tap target.
-_LAYOUT = [1, 1, 2, 2, 2, 1]
+# Everything a newcomer actually needs gets the full width. Only the last three —
+# orders, invites and the reseller panel — share rows, because someone opening
+# the bot for the first time is not looking for those.
+_LAYOUT = [1, 1, 1, 1, 2, 2, 1]
 
 
 def home_kb() -> InlineKeyboardMarkup:
