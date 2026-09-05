@@ -134,7 +134,7 @@ GLYPH_PREMIUM = {
     "🔗": "5990023031819341856",   # x13  CenterOfEmoji99428805
     "👤": "5818715087237549366",   # x13  iconemoji1
     "➕": "5818651538901437748",   # x12  iconemoji1
-    "🔄": "5865956613642259750",   # x11  iconemoji1
+    "🔄": "5375338737028841420",   # owner picked this one by eye
     "👥": "5985335113670464151",   # x11  CenterOfEmoji61682288
     "🔎": "5895564043711680203",   # x11  CenterOfEmoji22890889
     "🖥": "5316891065423241127",   # x10  Decoration_Pack2
