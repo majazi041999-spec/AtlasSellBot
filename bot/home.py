@@ -36,17 +36,18 @@ router = Router()
 # stand out, blue is everything else.
 # key, label, colour, handler shared with the reply keyboard, premium-emoji role.
 #
-# A newline inside the label makes the button TALLER as well as wide, which is
-# the only size control Telegram gives: height follows the line count and width
-# follows how many buttons share the row. The ones that matter most get both.
+# LABELS MUST BE SHORT AND ONE LINE. A newline does NOT make the button taller:
+# Telegram folds it into a single line and TRUNCATES the overflow, which ate the
+# first words of two of these ("تست رایگان بگیر…" arrived as "رایگان بگیر…").
+# Width — how many buttons share a row — is the only size control there is.
 #
-# The plain emoji is left OUT of any label that has a premium icon — the icon
+# The plain emoji is left OUT of any label that has a premium icon: the icon
 # already fills that slot, and printing both shows the same idea twice.
 ACTIONS: List[Tuple[str, str, str, str, str]] = [
-    ("trial", "تست رایگان بگیر\nیک اکانت آزمایشی، همین حالا", "success", "test_account", "trial"),
-    ("buy", "خرید سرویس\nدیدن پکیج‌ها و قیمت‌ها", "danger", "buy_service", "cart"),
+    ("trial", "تست رایگان", "success", "test_account", "trial"),
+    ("buy", "خرید سرویس", "danger", "buy_service", "cart"),
     ("status", "سرویس‌های من", "primary", "user_status", "services"),
-    ("ai", "دستیار هوشمند\nسوالت را بپرس، همین‌جا جواب بگیر", "success", "", "assistant"),
+    ("ai", "دستیار هوشمند", "success", "", "assistant"),
     ("support", "پشتیبانی", "primary", "support", "support"),
     ("wallet", "💳 کیف پول", "primary", "wallet_home", ""),
     ("orders", "سفارش‌های من", "primary", "my_orders", "orders"),
@@ -54,10 +55,10 @@ ACTIONS: List[Tuple[str, str, str, str, str]] = [
     ("rep", "🏢 پنل نمایندگی", "primary", "representative_start", ""),
 ]
 
-# Everything a newcomer actually needs gets the full width. Only the last three —
-# orders, invites and the reseller panel — share rows, because someone opening
-# the bot for the first time is not looking for those.
-_LAYOUT = [1, 1, 1, 1, 2, 2, 1]
+# The two a newcomer came for get a full row each — the biggest tap target the
+# API allows. Everything after that pairs up, which reads as a tidy grid instead
+# of a column of near-empty bars.
+_LAYOUT = [1, 1, 2, 2, 2, 1]
 
 
 def home_kb() -> InlineKeyboardMarkup:
