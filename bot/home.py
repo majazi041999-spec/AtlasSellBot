@@ -72,15 +72,48 @@ def home_kb() -> InlineKeyboardMarkup:
     return b.as_markup()
 
 
-def _as_user(cb: CallbackQuery, bot: Bot) -> Message:
-    """The tapped message, re-attributed to the person who tapped it.
+class InPlaceMessage(Message):
+    """The tapped message, re-attributed to the tapper, whose first reply EDITS.
 
-    `cb.message.from_user` is the bot itself. Every downstream flow reads
-    `from_user.id` to decide whose wallet, whose services and whose orders it is
-    looking at, so handing it the unmodified message would act on the bot's own
-    account. The copy leaves the original untouched.
+    Two problems solved at once.
+
+    `cb.message.from_user` is the BOT. Every flow downstream reads from_user.id
+    to decide whose wallet, whose services and whose orders it is looking at, so
+    an unmodified message would run all of them against the bot's own account.
+
+    And every flow was written to `answer` with a NEW message — right for someone
+    who typed a command, wrong for someone tapping a menu already on screen: the
+    chat fills with one dead menu per tap and the live one scrolls away. Rather
+    than rewrite each flow, the FIRST reply replaces the menu where it stands and
+    everything after behaves normally.
+
+    A real subclass, not a wrapper, because `_send_subscription_status` and
+    others branch on `isinstance(target, Message)` — a duck-typed stand-in would
+    silently take the wrong branch.
     """
-    return cb.message.model_copy(update={"from_user": cb.from_user}).as_(bot)
+
+    async def answer(self, text=None, **kwargs):  # type: ignore[override]
+        if not getattr(self, "_replaced", False):
+            object.__setattr__(self, "_replaced", True)
+            try:
+                # edit_text takes a narrower set of kwargs than answer; anything
+                # it will not accept sends normally instead of raising.
+                return await self.edit_text(text, **kwargs)
+            except Exception:
+                pass
+        return await super().answer(text, **kwargs)
+
+
+def _as_user(cb: CallbackQuery, bot: Bot, edit: bool = True) -> Message:
+    """The tapped message, attributed to the tapper.
+
+    `edit=False` keeps the ordinary send-a-new-message behaviour, for the one
+    case where replacing the tapped message would destroy something worth
+    keeping — the restart button lives on an announcement, not on a menu.
+    """
+    fixed = cb.message.model_copy(update={"from_user": cb.from_user})
+    cls = InPlaceMessage if edit else Message
+    return cls.model_validate(fixed.model_dump()).as_(bot)
 
 
 @router.callback_query(F.data == "home:restart")
@@ -99,7 +132,8 @@ async def home_restart(cb: CallbackQuery, state: FSMContext, bot: Bot):
     await cb.answer("منو دوباره بارگذاری شد")
     user = await get_or_create_user(cb.from_user.id, cb.from_user.username,
                                     cb.from_user.full_name)
-    await send_home(_as_user(cb, bot), user, await _admin_role(cb.from_user.id, user))
+    await send_home(_as_user(cb, bot, edit=False), user,
+                    await _admin_role(cb.from_user.id, user))
 
 
 @router.callback_query(F.data.startswith("home:"))

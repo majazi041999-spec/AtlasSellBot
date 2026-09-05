@@ -169,17 +169,21 @@ async def cancel_cb(cb: CallbackQuery, state: FSMContext):
 @router.callback_query(F.data == "back_to_menu")
 async def back_menu_cb(cb: CallbackQuery, state: FSMContext):
     await state.clear()
-    from bot.keyboards import admin_menu, user_menu
-
     user = await get_or_create_user(cb.from_user.id, cb.from_user.username, cb.from_user.full_name)
     role = await _admin_role(cb.from_user.id, user)
-    kb = admin_menu(finance_only=(role == "finance")) if role != "none" else user_menu(include_wholesale=bool(user.get("is_wholesale", 0)))
-    try:
-        await cb.message.edit_text("🏠 برگشت به منوی اصلی")
-    except Exception:
-        pass
-    await cb.message.answer("منوی اصلی", reply_markup=kb)
     await cb.answer()
+    if role != "none":
+        from bot.keyboards import admin_menu
+        await cb.message.answer("منوی اصلی",
+                                reply_markup=admin_menu(finance_only=(role == "finance")))
+        return
+    # Replace the screen the customer is leaving with the menu, rather than
+    # stacking a third message under two dead ones.
+    from bot.home import home_kb
+    try:
+        await cb.message.edit_text("👇 از این‌جا ادامه بده:", reply_markup=home_kb())
+    except Exception:
+        await cb.message.answer("👇 از این‌جا ادامه بده:", reply_markup=home_kb())
 
 
 

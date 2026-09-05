@@ -213,7 +213,7 @@ async def agent_menu(cb, state: FSMContext):
 
 
 @router.callback_query(F.data == "agent:exit")
-async def agent_exit_btn(cb, state: FSMContext):
+async def agent_exit_btn(cb, state: FSMContext, bot: Bot):
     # No permission check: leaving must always work, even for someone the agent
     # would no longer answer.
     await state.clear()
@@ -222,7 +222,18 @@ async def agent_exit_btn(cb, state: FSMContext):
         await cb.message.edit_reply_markup(reply_markup=None)
     except Exception:
         pass
-    await cb.message.answer("✅ از دستیار خارج شدی. هر وقت خواستی /ai را بزن.")
+    # Leaving must land somewhere, not nowhere. Dropping the customer into a
+    # chat with no menu is how they end up typing at the bot in the dark.
+    from bot.handlers.common import send_home, _admin_role
+    from bot.home import home_kb
+    from core.database import get_or_create_user
+    user = await get_or_create_user(cb.from_user.id, cb.from_user.username,
+                                    cb.from_user.full_name)
+    if await _admin_role(cb.from_user.id, user) == "none":
+        await cb.message.answer("✅ از دستیار خارج شدی.\n\n👇 از این‌جا ادامه بده:",
+                                reply_markup=home_kb())
+    else:
+        await cb.message.answer("✅ از دستیار خارج شدی.")
 
 
 @router.callback_query(F.data == "agent:getapp")
