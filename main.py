@@ -565,7 +565,7 @@ async def run_bot():
 
     from core.config import BOT_TOKEN, ADMIN_IDS
     from core.database import init_db
-    from bot.handlers import common, admin, user, agent
+    from bot.handlers import common, admin, user, agent, membership
     from bot import home, nav
     from bot.middlewares import ChannelRequiredMiddleware, MenuRefreshMiddleware
 
@@ -600,6 +600,7 @@ async def run_bot():
     dp.include_router(admin.router)
     dp.include_router(agent.router)
     dp.include_router(home.router)
+    dp.include_router(membership.router)
     dp.include_router(user.router)
     dp.include_router(common.router)
 

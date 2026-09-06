@@ -439,6 +439,16 @@ async def _ensure_columns(db):
             ("load_weight", "REAL DEFAULT 1"),           # capacity multiplier; higher = can take more users
         ],
         "users": [
+            # When this person blocked the bot, and when they came back. Fed by
+            # Telegram's own my_chat_member update, not inferred from a send
+            # that failed: the update is exact, arrives the moment it happens,
+            # and catches people we would never have tried to message.
+            #
+            # NULL means never blocked as far as we know. Nothing is backfilled
+            # — anyone who blocked the bot before this existed is invisible, and
+            # counting them as active would be a lie the charts would repeat.
+            ("bot_blocked_at", "TEXT DEFAULT ''"),
+            ("bot_unblocked_at", "TEXT DEFAULT ''"),
             # Has this person had the new-arrival discount yet? A marker rather
             # than "is their row new", because MenuRefreshMiddleware runs BEFORE
             # /start and creates the row first — by the time the handler looks,
@@ -1639,6 +1649,129 @@ async def log_campaign_event(campaign: str, kind: str = "sent", user_id: int = 0
             ((campaign or "").strip(), kind, int(user_id or 0), int(order_id or 0), int(amount or 0)),
         )
         await db.commit()
+
+
+async def get_acquisition_funnel(days: int = 30) -> Dict:
+    """Who arrived, what they did next, and how many walked away.
+
+    One row per day plus the totals, so the panel can show both the trend and
+    the standing numbers without asking twice.
+
+    Every stage is counted against the day the person JOINED, not the day the
+    thing happened. A trial taken on Tuesday by somebody who arrived on Monday
+    belongs to Monday — otherwise the conversion rate for a day is a ratio of
+    two unrelated populations and reads like noise.
+
+    `blocked` is only as old as the my_chat_member handler. Days before that
+    report zero because nobody was watching, which is not the same as nobody
+    leaving; the panel says so rather than letting the chart imply it.
+    """
+    days = max(1, min(365, int(days or 30)))
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        rows = {}
+        async with db.execute(
+            """SELECT date(u.created_at) AS d,
+                      COUNT(*) AS joined,
+                      SUM(CASE WHEN t.user_id IS NOT NULL THEN 1 ELSE 0 END) AS trials,
+                      SUM(CASE WHEN o.user_id IS NOT NULL THEN 1 ELSE 0 END) AS buyers,
+                      SUM(CASE WHEN t.user_id IS NOT NULL AND o.user_id IS NOT NULL
+                               THEN 1 ELSE 0 END) AS trial_then_bought,
+                      SUM(CASE WHEN COALESCE(u.bot_blocked_at,'') != '' THEN 1 ELSE 0 END) AS blocked
+                 FROM users u
+                 LEFT JOIN (SELECT DISTINCT user_id FROM test_accounts) t ON t.user_id = u.id
+                 LEFT JOIN (SELECT DISTINCT user_id FROM orders
+                             WHERE status='approved') o ON o.user_id = u.id
+                WHERE COALESCE(u.is_admin,0) = 0
+                  AND u.created_at >= date('now','localtime',?)
+                GROUP BY date(u.created_at)
+                ORDER BY d""",
+            (f"-{days} days",),
+        ) as c:
+            for r in await c.fetchall():
+                rows[r["d"]] = dict(r)
+
+        # Blocks counted on the day they HAPPENED, which is the churn question:
+        # "how many did we lose today", not "how many of Monday's arrivals ever
+        # left".
+        churn = {}
+        async with db.execute(
+            """SELECT date(bot_blocked_at) AS d, COUNT(*) AS n
+                 FROM users
+                WHERE COALESCE(bot_blocked_at,'') != ''
+                  AND date(bot_blocked_at) >= date('now','localtime',?)
+                GROUP BY date(bot_blocked_at)""",
+            (f"-{days} days",),
+        ) as c:
+            for r in await c.fetchall():
+                churn[r["d"]] = int(r["n"])
+
+        daily = []
+        for d in sorted(set(list(rows.keys()) + list(churn.keys()))):
+            base = rows.get(d, {"joined": 0, "trials": 0, "buyers": 0,
+                                "trial_then_bought": 0, "blocked": 0})
+            joined = int(base.get("joined") or 0)
+            trials = int(base.get("trials") or 0)
+            buyers = int(base.get("buyers") or 0)
+            daily.append({
+                "date": d,
+                "joined": joined,
+                "trials": trials,
+                "buyers": buyers,
+                "trial_then_bought": int(base.get("trial_then_bought") or 0),
+                "trial_no_buy": max(0, trials - int(base.get("trial_then_bought") or 0)),
+                "blocked_today": churn.get(d, 0),
+                "trial_rate": round(100.0 * trials / joined, 1) if joined else 0.0,
+                "buy_rate": round(100.0 * buyers / joined, 1) if joined else 0.0,
+            })
+
+        async def one(sql: str, *args) -> int:
+            async with db.execute(sql, args) as c:
+                r = await c.fetchone()
+                return int(r[0] or 0)
+
+        base_where = "COALESCE(is_admin,0)=0"
+        total_users = await one(f"SELECT COUNT(*) FROM users WHERE {base_where}")
+        total_trials = await one(
+            f"SELECT COUNT(DISTINCT t.user_id) FROM test_accounts t "
+            f"JOIN users u ON u.id=t.user_id WHERE {base_where}")
+        total_buyers = await one(
+            f"SELECT COUNT(DISTINCT o.user_id) FROM orders o "
+            f"JOIN users u ON u.id=o.user_id WHERE o.status='approved' AND {base_where}")
+        trial_and_bought = await one(
+            f"SELECT COUNT(DISTINCT t.user_id) FROM test_accounts t "
+            f"JOIN orders o ON o.user_id=t.user_id AND o.status='approved' "
+            f"JOIN users u ON u.id=t.user_id WHERE {base_where}")
+        blocked_now = await one(
+            f"SELECT COUNT(*) FROM users WHERE COALESCE(bot_blocked_at,'')!='' AND {base_where}")
+        tracked_since = None
+        async with db.execute(
+            "SELECT MIN(date(bot_blocked_at)) FROM users WHERE COALESCE(bot_blocked_at,'')!=''"
+        ) as c:
+            r = await c.fetchone()
+            tracked_since = r[0] if r else None
+
+        return {
+            "days": days,
+            "daily": daily,
+            "totals": {
+                "users": total_users,
+                "trials": total_trials,
+                "buyers": total_buyers,
+                "trial_then_bought": trial_and_bought,
+                "trial_no_buy": max(0, total_trials - trial_and_bought),
+                "never_tried": max(0, total_users - total_trials),
+                "blocked_now": blocked_now,
+                "trial_rate": round(100.0 * total_trials / total_users, 1) if total_users else 0.0,
+                "buy_rate": round(100.0 * total_buyers / total_users, 1) if total_users else 0.0,
+                "trial_to_buy_rate": round(100.0 * trial_and_bought / total_trials, 1) if total_trials else 0.0,
+                "block_rate": round(100.0 * blocked_now / total_users, 1) if total_users else 0.0,
+            },
+            # The panel prints this next to the block figures. Without it a
+            # reader assumes zero blocks means nobody left, when it means we
+            # were not watching yet.
+            "block_tracking_since": tracked_since,
+        }
 
 
 async def get_campaign_overview() -> List[Dict]:

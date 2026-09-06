@@ -86,6 +86,11 @@ KNOWLEDGE: List[Dict[str, str]] = [
 
 نصب: بعد از دانلود، روی فایل بزن. اگر اندروید پیام «نصب از منابع ناشناس» داد،
 اجازه بده — چون اپ ما در گوگل‌پلی نیست و مستقیم نصب می‌شود.
+
+نسخه: شماره‌ی آخرین نسخه در FACTS آمده. اگر کاربر پرسید نسخه‌اش قدیمی است یا
+نه، از او بپرس داخل اپ چه شماره‌ای می‌بیند و با آن مقایسه کن. **شماره‌ای که در
+FACTS نیست را از خودت نساز.** اگر کاربر نسخه‌ی قدیمی داشت، بگو دکمه‌ی دریافت اپ
+را بزند تا آخرین نسخه را بگیرد.
 """.strip(),
     },
     {
@@ -341,6 +346,14 @@ async def build_facts(user: Dict, profiles: List[Dict], packages: List[Dict],
                 nodes=int(p.get("active_nodes") or 0),
             )
         )
+
+    app_ver = (await get_setting("clientapp_version_name", "") or "").strip()
+    if app_ver:
+        # Read live rather than written into the playbook: the version changes
+        # every release, and a number baked into a prompt is a number that goes
+        # stale and starts telling customers to "update" to what they already
+        # have.
+        lines.append(f"آخرین نسخه‌ی اپ اندروید ما: {app_ver}")
 
     if guard and guard.get("count"):
         lines.append(
