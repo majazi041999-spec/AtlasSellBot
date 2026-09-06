@@ -1,3 +1,4 @@
+import hashlib
 import httpx
 import json
 import math
@@ -11,6 +12,53 @@ from urllib.parse import urlparse, quote, urlencode, parse_qsl
 import base64
 
 logger = logging.getLogger(__name__)
+
+
+# Shadowsocks-2022 (SIP022) does not take a password. It takes a pre-shared KEY
+# of an exact length, base64-encoded — and xray refuses to load an inbound where
+# any user's key is the wrong size. Since a bad client would take the whole
+# inbound down with it, every SS2022 secret this module writes goes through
+# _ss_secret() rather than being whatever string happened to be at hand.
+SS2022_KEY_BYTES = {
+    "2022-blake3-aes-128-gcm": 16,
+    "2022-blake3-aes-256-gcm": 32,
+    "2022-blake3-chacha20-poly1305": 32,
+}
+
+
+def is_ss2022(method: str) -> bool:
+    return str(method or "").strip().lower() in SS2022_KEY_BYTES
+
+
+def _valid_psk(value: str, size: int) -> bool:
+    try:
+        return len(base64.b64decode(str(value or ""), validate=True)) == size
+    except Exception:
+        return False
+
+
+def _ss_secret(method: str, client_uuid: str, existing_password: str = "") -> str:
+    """The secret to store for one Shadowsocks client.
+
+    Legacy AEAD ciphers accept any string, so the old behaviour stands. For an
+    SS2022 cipher the value must be a correctly sized base64 key, and it is
+    DERIVED from the client's uuid rather than drawn at random: add_client can be
+    retried, and update_client refuses to write when a client's identity would
+    change, so a fresh random key on the second attempt would lock the customer
+    out of their own config. The same uuid always yields the same key.
+    """
+    size = SS2022_KEY_BYTES.get(str(method or "").strip().lower())
+    current = str(existing_password or "").strip()
+    if not size:
+        return current or str(client_uuid or "").replace("-", "")
+    if current and _valid_psk(current, size):
+        return current
+    seed = str(client_uuid or "").strip()
+    if not seed:
+        return ""
+    return base64.b64encode(
+        hashlib.blake2s(seed.encode(), digest_size=size).digest()
+    ).decode()
 
 
 def _parse_panel_time(value) -> int:
@@ -809,8 +857,20 @@ class XUIClient:
                 return False
         return True
 
+    @staticmethod
+    def _inbound_method(inbound: Optional[Dict]) -> str:
+        """The cipher an inbound was created with, for protocols that have one."""
+        try:
+            settings = inbound.get("settings") if inbound else None
+            if isinstance(settings, str):
+                settings = json.loads(settings or "{}")
+            return str((settings or {}).get("method") or "").strip()
+        except Exception:
+            return ""
+
     def _client_payload(self, protocol: str, client_uuid: str, email: str, traffic_bytes: int,
-                        expire_ms: int, enable: bool = True, existing: Optional[Dict] = None) -> Dict:
+                        expire_ms: int, enable: bool = True, existing: Optional[Dict] = None,
+                        method: str = "") -> Dict:
         existing = dict(existing or {})
         sub_id = existing.get("subId") or secrets.token_hex(8)
         base = {
@@ -833,11 +893,13 @@ class XUIClient:
                 raise ValueError("invalid_password_for_client_payload")
             base["password"] = pw
         elif protocol == "shadowsocks":
-            pw = (existing.get("password") or (client_uuid or "").replace("-", "")).strip()
+            pw = _ss_secret(method, client_uuid, existing.get("password") or "")
             if not pw:
                 raise ValueError("invalid_password_for_client_payload")
             base["password"] = pw
-            if existing.get("method"):
+            # An SS2022 inbound has one cipher for everybody; writing a per-client
+            # `method` there is what makes 3x-ui emit a client xray then rejects.
+            if existing.get("method") and not is_ss2022(method):
                 base["method"] = existing.get("method")
         elif protocol == "hysteria":
             auth = (existing.get("auth") or (client_uuid or "").replace("-", "")).strip()
@@ -888,7 +950,8 @@ class XUIClient:
         expire_ms = expiry_ms_from_days(expire_days)
 
         try:
-            client = self._client_payload(protocol, client_uuid, email, traffic_bytes, expire_ms, True)
+            client = self._client_payload(protocol, client_uuid, email, traffic_bytes, expire_ms, True,
+                                          method=self._inbound_method(inbound))
         except ValueError as e:
             self.last_error = str(e)
             return False
@@ -932,7 +995,8 @@ class XUIClient:
                 existing = api_existing
 
         try:
-            client = self._client_payload(protocol, client_uuid, payload_email, traffic_bytes, expire_ms, enable, existing)
+            client = self._client_payload(protocol, client_uuid, payload_email, traffic_bytes, expire_ms, enable,
+                                          existing, method=self._inbound_method(inbound))
         except ValueError as e:
             self.last_error = str(e)
             return False
@@ -1164,9 +1228,23 @@ class XUIClient:
                 return link if self._link_is_complete(link) else api_link
 
             elif protocol == "shadowsocks":
-                method = settings.get("method", "chacha20-poly1305")
-                password = settings.get("password", "")
-                userinfo = base64.urlsafe_b64encode(f"{method}:{password}".encode()).decode().rstrip("=")
+                method = str(settings.get("method") or client.get("method")
+                             or "chacha20-ietf-poly1305").strip()
+                client_pw = str(client.get("password") or "")
+                server_pw = str(settings.get("password") or "")
+                if is_ss2022(method):
+                    # SIP022 multi-user: the client proves it knows the inbound's
+                    # key AND its own, joined by a colon. This used to send the
+                    # inbound key alone, which authenticates as nobody — every
+                    # customer would have got the same unusable config.
+                    secret = f"{server_pw}:{client_pw}" if server_pw and client_pw else (client_pw or server_pw)
+                else:
+                    secret = client_pw or server_pw
+                if not secret:
+                    self.last_error = "no_shadowsocks_secret_for_link"
+                    return api_link
+                host, port = self._api_endpoint(api_link, "ss", host, port)
+                userinfo = base64.urlsafe_b64encode(f"{method}:{secret}".encode()).decode().rstrip("=")
                 link = f"ss://{userinfo}@{host}:{port}#{quote(email, safe='')}"
                 return link if self._link_is_complete(link) else api_link
 
