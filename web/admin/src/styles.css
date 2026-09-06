@@ -580,3 +580,15 @@ tbody tr:hover { background: rgba(255, 255, 255, 0.03); }
   .chips::-webkit-scrollbar { display: none; }
   .chip { flex: none; }
 }
+
+/* A caveat printed beside a number, where the number alone would mislead —
+   a zero that means "not measured yet" rather than "none happened". */
+.note{
+  background:rgba(56,189,248,.08);
+  border:1px solid rgba(56,189,248,.28);
+  border-inline-start:3px solid #38bdf8;
+  border-radius:0 10px 10px 0;
+  padding:10px 13px;
+  font-size:.85rem;
+  line-height:1.75;
+}

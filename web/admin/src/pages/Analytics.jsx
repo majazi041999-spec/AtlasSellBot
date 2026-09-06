@@ -331,6 +331,120 @@ function AiAnalysis() {
   );
 }
 
+
+// The acquisition funnel: who arrived, who tried, who bought, who left.
+//
+// Every stage except "blocked" is counted against the day the person JOINED,
+// which is what makes a day's conversion rate mean something — the server does
+// that; this only draws it.
+function Funnel() {
+  const [d, setD] = useState(null);
+  const [days, setDays] = useState(30);
+  useEffect(() => {
+    setD(null);
+    api.get(`/api/analytics/funnel?days=${days}`).then(setD).catch(() => setD({ error: true }));
+  }, [days]);
+
+  if (!d) return <Card title="🫙 قیف جذب"><div className="muted tiny">در حال محاسبه…</div></Card>;
+  if (d.error) return null;
+  const t = d.totals || {};
+
+  // Widths are relative to the widest stage, not to the total, so a small
+  // stage stays visible instead of collapsing into a line nobody can read.
+  const stages = [
+    { k: "users", label: "وارد شدند", v: t.users, c: "#38bdf8" },
+    { k: "trials", label: "تست گرفتند", v: t.trials, c: "#34d399", sub: `${t.trial_rate}٪ از واردشده‌ها` },
+    { k: "buyers", label: "خرید کردند", v: t.buyers, c: "#a78bfa", sub: `${t.buy_rate}٪ از واردشده‌ها` },
+  ];
+  const widest = Math.max(1, ...stages.map((s) => s.v || 0));
+
+  const cell = { padding: "7px 9px", borderBottom: "1px solid var(--line)", whiteSpace: "nowrap" };
+
+  return (
+    <Card
+      title="🫙 قیف جذب — از ورود تا خرید"
+      sub="هر مرحله به روزی نسبت داده می‌شود که کاربر وارد شده، نه روزی که آن کار را کرده"
+      right={
+        <select className="inp" value={days} onChange={(e) => setDays(Number(e.target.value))}
+          style={{ width: 110 }}>
+          <option value={7}>۷ روز</option>
+          <option value={30}>۳۰ روز</option>
+          <option value={90}>۹۰ روز</option>
+          <option value={180}>۱۸۰ روز</option>
+        </select>
+      }
+    >
+      <div className="grid" style={{ gap: 8, marginBottom: 14 }}>
+        {stages.map((s) => (
+          <div key={s.k}>
+            <div className="between" style={{ marginBottom: 4 }}>
+              <b>{s.label}</b>
+              <span style={{ color: s.c, fontWeight: 800 }}>{fmt(s.v)}</span>
+            </div>
+            <div style={{ height: 10, background: "rgba(255,255,255,.05)", borderRadius: 6, overflow: "hidden" }}>
+              <div style={{ width: `${Math.max(2, (100 * (s.v || 0)) / widest)}%`, height: "100%", background: s.c }} />
+            </div>
+            {s.sub ? <div className="muted tiny" style={{ marginTop: 3 }}>{s.sub}</div> : null}
+          </div>
+        ))}
+      </div>
+
+      <div className="grid stat-grid" style={{ marginBottom: 14 }}>
+        <Stat icon="🎯" value={`${t.trial_to_buy_rate}%`} label="تست ← خرید"
+          grad="linear-gradient(135deg,#34d399,#10b981)" foot={`${fmt(t.trial_then_bought)} از ${fmt(t.trials)} نفر`} />
+        <Stat icon="🕳" value={fmt(t.never_tried)} label="هرگز تست نگرفتند"
+          grad="linear-gradient(135deg,#fbbf24,#f59e0b)" foot="بزرگ‌ترین فرصت رشد" />
+        <Stat icon="💔" value={fmt(t.trial_no_buy)} label="تست گرفتند، نخریدند"
+          grad="linear-gradient(135deg,#fb7185,#f43f5e)" />
+        <Stat icon="🚫" value={fmt(t.blocked_now)} label="ربات را بلاک کرده‌اند"
+          grad="linear-gradient(135deg,#94a3b8,#64748b)" foot={`${t.block_rate}٪ از کاربران`} />
+      </div>
+
+      {!d.block_tracking_since && (
+        <div className="note" style={{ marginBottom: 12 }}>
+          ⓘ <b>ردیابی بلاک تازه شروع شده.</b> عدد صفر یعنی از زمان فعال‌شدنِ ردیابی
+          کسی بلاک نکرده — نه اینکه هیچ‌وقت کسی بلاک نکرده باشد. کسانی که قبلاً
+          رفته‌اند شمرده نمی‌شوند.
+        </div>
+      )}
+
+      <div style={{ overflowX: "auto" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: ".86rem" }}>
+          <thead>
+            <tr className="muted tiny">
+              <th style={{ ...cell, textAlign: "start" }}>تاریخ</th>
+              <th style={cell}>وارد</th>
+              <th style={cell}>تست</th>
+              <th style={cell}>خرید</th>
+              <th style={cell}>تست→خرید</th>
+              <th style={cell}>تست بدون خرید</th>
+              <th style={cell}>بلاک</th>
+            </tr>
+          </thead>
+          <tbody>
+            {(d.daily || []).slice().reverse().map((r) => (
+              <tr key={r.date}>
+                <td style={{ ...cell, textAlign: "start" }} className="mono tiny">{r.date}</td>
+                <td style={{ ...cell, textAlign: "center", fontWeight: 700 }}>{r.joined || "—"}</td>
+                <td style={{ ...cell, textAlign: "center", color: "#34d399" }}>{r.trials || "—"}</td>
+                <td style={{ ...cell, textAlign: "center", color: "#a78bfa" }}>{r.buyers || "—"}</td>
+                <td style={{ ...cell, textAlign: "center" }}>{r.trial_then_bought || "—"}</td>
+                <td style={{ ...cell, textAlign: "center", color: "#fb7185" }}>{r.trial_no_buy || "—"}</td>
+                <td style={{ ...cell, textAlign: "center", color: "#94a3b8" }}>{r.blocked_today || "—"}</td>
+              </tr>
+            ))}
+            {!(d.daily || []).length && (
+              <tr><td colSpan={7} className="muted tiny" style={{ padding: 14, textAlign: "center" }}>
+                در این بازه کاربری وارد نشده است.
+              </td></tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </Card>
+  );
+}
+
 export default function Analytics() {
   const [a, setA] = useState(null);
   const [seg, setSeg] = useState(null);
@@ -379,6 +493,8 @@ export default function Analytics() {
         </div>
         <ForecastNotes meta={a.forecast_meta} />
       </Card>
+
+      <Funnel />
 
       <RevenueMix mix={a.mix} totals={t} />
 

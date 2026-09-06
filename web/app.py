@@ -64,6 +64,7 @@ from core.database import (
     update_discount_code,
     delete_discount_code,
     get_campaign_overview,
+    get_acquisition_funnel,
     get_revenue_timeseries,
     reset_campaign_flag,
     CUSTOM_SEGMENTS,
@@ -3618,6 +3619,18 @@ async def campaigns_reset(request: Request, name: str):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     cleared = await reset_campaign_flag(name)
     return JSONResponse({"success": True, "cleared": cleared})
+
+
+@app.get(f"/{S}/api/analytics/funnel")
+async def api_analytics_funnel(request: Request):
+    """Joined → tried → bought, and who walked away."""
+    if not _api_guard(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    try:
+        days = max(7, min(180, int(request.query_params.get("days") or 30)))
+    except (TypeError, ValueError):
+        days = 30
+    return JSONResponse(await get_acquisition_funnel(days))
 
 
 @app.get(f"/{S}/api/campaigns")
