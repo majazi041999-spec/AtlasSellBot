@@ -2281,65 +2281,88 @@ def _format_lifecycle_template(template: str, values: Dict[str, str]) -> str:
         return template or ""
 
 
+def _renew_kb(pid: int):
+    """One tap to renew. Goes through bot.keyboards so the button carries the same
+    colour and premium icon as every other primary action in the bot."""
+    from aiogram.utils.keyboard import InlineKeyboardBuilder
+    from bot.keyboards import _button
+    b = InlineKeyboardBuilder()
+    _button(b, text="تمدید سرویس", callback_data=f"sub_renew:{pid}", style="success")
+    b.adjust(1)
+    return b.as_markup()
+
+
 async def run_subscription_expiry_warnings(bot, limit: int = 300) -> Dict:
-    """Pre-expiry nudge: warn users *before* their sub ends (low volume or few
-    days left) and attach a one-tap renew button. Sent once per cycle; the flag
-    resets on renewal so the next cycle warns again."""
+    """Pre-expiry nudges: walk a customer up a ladder of warnings as their service
+    runs out, one message per rung and never the same rung twice.
+
+    `prewarn_sent` holds the highest rung already sent, so this is safe to run as
+    often as you like — it only ever speaks when somebody has crossed into a new
+    rung. Renewal resets it to 0, which re-arms the ladder for the next period.
+
+    An admin who has written their own `sub_prewarn_template` keeps the old
+    single-message behaviour: their text is theirs, and quietly replacing it with
+    four of ours would be rude.
+    """
     if await get_setting("sub_prewarn_enabled", "1") != "1":
         return {"warned": 0}
     from core.database import get_subscription_profiles_for_prewarn
-    from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
     from core.jalali import jalali_display
+    from core import renewal_nudges as nudges
 
-    try:
-        days = max(1, int(await get_setting("sub_prewarn_days", "3") or 3))
-    except (TypeError, ValueError):
-        days = 3
-    try:
-        percent = max(1, min(90, int(await get_setting("sub_prewarn_percent", "15") or 15)))
-    except (TypeError, ValueError):
-        percent = 15
-    template = await get_setting(
-        "sub_prewarn_template",
-        "⏳ سرویس شما رو به اتمام است.\n\n"
-        "سرویس: {service}\n"
-        "حجم باقی‌مانده: {remaining} از {total}\n"
-        "زمان باقی‌مانده: حدود {days_left} روز\n\n"
-        "برای جلوگیری از قطعی، همین حالا تمدید کنید 👇",
-    )
+    custom_template = (await get_setting("sub_prewarn_template", "")).strip()
     brand = await get_setting("ui.brand_name", "Atlas Account")
     now_ms = int(time.time() * 1000)
-    used_fraction = (100 - percent) / 100.0
+    entry_fraction = nudges.ENTRY_PERCENT / 100.0
     warned = 0
-    for p in await get_subscription_profiles_for_prewarn(now_ms, days * 86400000, used_fraction, limit):
+    by_stage: Dict[int, int] = {}
+
+    for p in await get_subscription_profiles_for_prewarn(
+        now_ms, nudges.ENTRY_DAYS * 86400000, entry_fraction, limit,
+        max_stage=nudges.MAX_STAGE,
+    ):
         pid = int(p["id"])
         telegram_id = int(p.get("telegram_id") or 0)
         total = total_bytes(p.get("traffic_gb") or 0)
         used = int(p.get("used_bytes") or 0)
         remaining = max(0, total - used) if total > 0 else 0
         expire_ms = int(p.get("expire_timestamp") or 0)
-        days_left = max(0, int((expire_ms - now_ms) / 86400000)) if expire_ms > 0 else 0
+        days_left = max(0, int((expire_ms - now_ms) / 86400000)) if expire_ms > 0 else None
+        used_percent = (used / total * 100.0) if total > 0 else None
+
+        stage, reason = nudges.stage_for(days_left, used_percent)
+        already = int(p.get("prewarn_sent") or 0)
+        if stage <= already:
+            continue
+
         values = {
             "brand": brand,
             "service": str(p.get("name") or p.get("email") or f"#{pid}"),
             "remaining": _fmt_bytes_short(remaining),
             "total": _fmt_bytes_short(total) if total > 0 else "نامحدود",
-            "days_left": str(days_left),
+            "days_left": str(days_left if days_left is not None else "—"),
             "expire_date": jalali_display(datetime.fromtimestamp(expire_ms / 1000)) if expire_ms > 0 else "—",
         }
         if telegram_id:
-            kb = InlineKeyboardMarkup(inline_keyboard=[[
-                InlineKeyboardButton(text="♻️ تمدید سریع", callback_data=f"sub_renew:{pid}")
-            ]])
             try:
-                await bot.send_message(telegram_id, _format_lifecycle_template(template, values), parse_mode=None, reply_markup=kb)
+                if custom_template:
+                    body = _format_lifecycle_template(custom_template, values)
+                    mode = None
+                else:
+                    from bot.rich_message import premiumize
+                    body = premiumize(_format_lifecycle_template(
+                        nudges.message_for(stage, reason), values))
+                    mode = "HTML"
+                await bot.send_message(telegram_id, body, parse_mode=mode,
+                                       reply_markup=_renew_kb(pid))
                 warned += 1
+                by_stage[stage] = by_stage.get(stage, 0) + 1
                 await asyncio.sleep(0.1)
             except Exception:
                 pass
-        await update_subscription_profile(pid, prewarn_sent=1)
+        await update_subscription_profile(pid, prewarn_sent=stage)
     if warned:
-        logger.info("subscription pre-expiry warnings sent=%s (days=%s percent=%s)", warned, days, percent)
+        logger.info("pre-expiry nudges sent=%s by_stage=%s", warned, by_stage)
     return {"warned": warned}
 
 

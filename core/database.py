@@ -3807,18 +3807,23 @@ async def get_expired_subscription_profiles(now_ms: int, limit: int = 300) -> Li
             return [dict(r) for r in await c.fetchall()]
 
 
-async def get_subscription_profiles_for_prewarn(now_ms: int, within_ms: int, used_fraction: float, limit: int = 300) -> List[Dict]:
-    """Active profiles that are *about to* end (not yet ended), not warned yet.
+async def get_subscription_profiles_for_prewarn(now_ms: int, within_ms: int, used_fraction: float,
+                                                limit: int = 300, max_stage: int = 1) -> List[Dict]:
+    """Active profiles that are *about to* end, and have rungs of the warning
+    ladder left to climb.
 
-    Triggers when expiry is within `within_ms`, OR usage has crossed
-    `used_fraction` of the quota (e.g. 0.85 = 85% used / 15% left)."""
+    `within_ms` / `used_fraction` are the LOOSEST rung — this only decides who is
+    worth looking at. Which rung they have actually reached, and whether they have
+    already heard it, is settled in Python (see core/renewal_nudges.py), because
+    that comparison needs both thresholds per rung and reads far better there.
+    """
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         async with db.execute(
             """SELECT sp.*, u.telegram_id, u.full_name
                FROM subscription_profiles sp
                JOIN users u ON u.id = sp.user_id
-               WHERE sp.is_active = 1 AND COALESCE(sp.prewarn_sent,0) = 0
+               WHERE sp.is_active = 1 AND COALESCE(sp.prewarn_sent,0) < ?
                  AND (sp.expire_timestamp = 0 OR sp.expire_timestamp > ?)
                  AND (sp.traffic_gb <= 0 OR sp.used_bytes < sp.traffic_gb * 1073741824)
                  AND (
@@ -3827,7 +3832,8 @@ async def get_subscription_profiles_for_prewarn(now_ms: int, within_ms: int, use
                  )
                ORDER BY sp.id
                LIMIT ?""",
-            (int(now_ms), int(now_ms + within_ms), float(used_fraction), max(1, int(limit or 300))),
+            (max(1, int(max_stage or 1)), int(now_ms), int(now_ms + within_ms),
+             float(used_fraction), max(1, int(limit or 300))),
         ) as c:
             return [dict(r) for r in await c.fetchall()]
 
