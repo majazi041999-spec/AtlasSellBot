@@ -157,21 +157,46 @@ def post_confirm_kb(target: str = "") -> InlineKeyboardMarkup:
     return b.as_markup()
 
 
+def _kbtn(text: str, style: str | None = None) -> KeyboardButton:
+    """A reply-keyboard button, coloured where the client supports it.
+
+    `style` arrived with Bot API 9.4. An older aiogram rejects the field, and a
+    keyboard that fails to build is a bot with no menu at all — so the colour is
+    dropped rather than raised.
+
+    The TEXT is never touched. Every handler behind these buttons matches on it
+    exactly (`F.text == "📊 آمار کلی"`), so moving a glyph into an icon field —
+    which is what the inline buttons do — would silently unbind the whole menu.
+    """
+    if style:
+        try:
+            return KeyboardButton(text=text, style=style)
+        except Exception:
+            pass
+    return KeyboardButton(text=text)
+
+
 def admin_menu(finance_only: bool = False) -> ReplyKeyboardMarkup:
+    # Colour by what the button DOES, not to decorate. Telegram gives three:
+    #   red    — spends money, or is seen by customers if you get it wrong
+    #   green  — the day-to-day job: money in, services out
+    #   blue   — everything you only read
     b = ReplyKeyboardBuilder()
     if finance_only:
-        b.row(KeyboardButton(text="💰 سفارش‌های در انتظار"))
-        b.row(KeyboardButton(text="🔄 شروع مجدد"))
+        b.row(_kbtn("💰 سفارش‌های در انتظار", "success"))
+        b.row(_kbtn("🔄 شروع مجدد", "primary"))
         return b.as_markup(resize_keyboard=True)
 
-    b.row(KeyboardButton(text="📊 آمار کلی"), KeyboardButton(text="📈 گزارش روزانه"))
-    b.row(KeyboardButton(text="💰 سفارش‌های در انتظار"))
-    b.row(KeyboardButton(text="🔑 مدیریت کانفیگ"), KeyboardButton(text="📦 پکیج‌ها"))
-    b.row(KeyboardButton(text="👥 کاربران"), KeyboardButton(text="🔍 جستجوی کاربر"))
-    b.row(KeyboardButton(text="📣 پیام همگانی"), KeyboardButton(text="✉️ پیام خصوصی"))
-    b.row(KeyboardButton(text="📮 پست کانال"))
-    b.row(KeyboardButton(text="🌐 پنل مدیریت"))
-    b.row(KeyboardButton(text="🔄 شروع مجدد"))
+    b.row(_kbtn("📊 آمار کلی", "primary"), _kbtn("📈 گزارش روزانه", "primary"))
+    # The queue is the one thing that costs money while it waits.
+    b.row(_kbtn("💰 سفارش‌های در انتظار", "success"))
+    b.row(_kbtn("🔑 مدیریت کانفیگ", "success"), _kbtn("📦 پکیج‌ها", "primary"))
+    b.row(_kbtn("👥 کاربران", "primary"), _kbtn("🔍 جستجوی کاربر", "primary"))
+    # Red: these reach customers, and there is no unsending.
+    b.row(_kbtn("📣 پیام همگانی", "danger"), _kbtn("✉️ پیام خصوصی", "danger"))
+    b.row(_kbtn("📮 پست کانال", "danger"))
+    b.row(_kbtn("🌐 پنل مدیریت", "primary"))
+    b.row(_kbtn("🔄 شروع مجدد", "primary"))
     return b.as_markup(resize_keyboard=True)
 
 
@@ -190,7 +215,7 @@ def user_menu(include_wholesale: bool = True) -> ReplyKeyboardMarkup:
     # Every F.text handler behind the removed buttons is untouched and still
     # reachable — the in-chat menu calls the same functions, and typing the old
     # label still works for anyone who has it memorised.
-    b.row(KeyboardButton(text="🔄 شروع مجدد"))
+    b.row(_kbtn("🔄 شروع مجدد", "primary"))
     return b.as_markup(resize_keyboard=True)
 
 
