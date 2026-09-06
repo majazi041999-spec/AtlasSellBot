@@ -2206,8 +2206,9 @@ async def get_lapsed_users_for_winback(expired_before_ms: int, limit: int = 200)
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         async with db.execute(
-            """SELECT u.id, u.telegram_id, u.full_name FROM users u
+            f"""SELECT u.id, u.telegram_id, u.full_name FROM users u
                WHERE COALESCE(u.winback_sent,0)=0 AND u.telegram_id>0 AND COALESCE(u.is_blocked,0)=0
+                 AND {NOT_A_RETAIL_TARGET}
                  AND EXISTS(SELECT 1 FROM subscription_profiles sp WHERE sp.user_id=u.id AND sp.expire_timestamp>0 AND sp.expire_timestamp<=?)
                  AND NOT EXISTS(SELECT 1 FROM subscription_profiles s2 WHERE s2.user_id=u.id AND s2.is_active=1)
                ORDER BY u.id LIMIT ?""",
@@ -2222,15 +2223,30 @@ async def mark_winback_sent(user_id: int):
         await db.commit()
 
 
+# Automated retail campaigns must never reach a representative.
+#
+# A reseller creates trials FOR THEIR CUSTOMERS and buys at a wholesale tariff.
+# "Your free trial is over, here is 20% off" is nonsense addressed to them: the
+# trial was not theirs, and the code is priced against a retail number they do
+# not pay. It also reads as us marketing at the person who resells us.
+#
+# One named condition rather than three copies of the same clause — it was
+# missing from every target query at once, and three separate fixes would go out
+# of step the first time somebody adds a fourth campaign.
+NOT_A_RETAIL_TARGET = "COALESCE(u.is_wholesale,0)=0 AND COALESCE(u.is_admin,0)=0"
+
+
 async def get_trial_followups(created_before: str, limit: int = 200) -> List[Dict]:
     """Users whose free trial has ended (created before cutoff), no approved
-    purchase yet, not yet nudged."""
+    purchase yet, not yet nudged. Representatives are excluded — see
+    NOT_A_RETAIL_TARGET."""
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         async with db.execute(
-            """SELECT u.id, u.telegram_id, u.full_name FROM test_accounts ta
+            f"""SELECT u.id, u.telegram_id, u.full_name FROM test_accounts ta
                JOIN users u ON u.id = ta.user_id
                WHERE COALESCE(u.trial_followup_sent,0)=0 AND u.telegram_id>0 AND COALESCE(u.is_blocked,0)=0
+                 AND {NOT_A_RETAIL_TARGET}
                  AND ta.created_at <= ?
                  AND NOT EXISTS(SELECT 1 FROM orders o WHERE o.user_id=u.id AND o.status='approved')
                ORDER BY u.id LIMIT ?""",
@@ -3158,6 +3174,7 @@ async def get_abandoned_carts(stage: int, min_age: str, max_age: str, limit: int
               AND o.created_at >= ?
               AND u.telegram_id IS NOT NULL
               AND COALESCE(u.is_blocked,0)=0
+              AND COALESCE(u.is_wholesale,0)=0 AND COALESCE(u.is_admin,0)=0
               AND o.id = (
                     SELECT o2.id FROM orders o2
                     WHERE o2.user_id=o.user_id
