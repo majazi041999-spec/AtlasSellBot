@@ -248,7 +248,7 @@ async def panel_url(msg: Message):
 
 
 @router.callback_query(F.data == "check_channel_join")
-async def check_channel_join(cb: CallbackQuery):
+async def check_channel_join(cb: CallbackQuery, state: FSMContext):
     """The "بررسی عضویت" button.
 
     THIS HANDLER MUST EXIST, even though ChannelRequiredMiddleware answers the
@@ -271,7 +271,7 @@ async def check_channel_join(cb: CallbackQuery):
     if required and not await ChannelRequiredMiddleware.can_access(cb.bot, cb.from_user.id, channel_username):
         await cb.answer("❌ هنوز عضو کانال نشده‌اید.", show_alert=True)
         return
-    await ChannelRequiredMiddleware._render_join_success(cb, user)
+    await ChannelRequiredMiddleware._render_join_success(cb, user, state)
 
 
 # ─────────────────────────── the last-resort fallback ────────────────────────

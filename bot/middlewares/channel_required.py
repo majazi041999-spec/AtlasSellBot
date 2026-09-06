@@ -13,6 +13,19 @@ _POSITIVE_TTL = 900
 _STALE_TTL = 3600
 _MEMBERSHIP_CACHE: dict[tuple[str, int], float] = {}
 
+# Where a blocked /start was trying to go, held until the person gets in.
+#
+# A deeplink like ?start=rep is the only kind of button a channel post may carry,
+# and the reader it is aimed at has neither used the bot nor joined our channel.
+# The gate below stops that first message, and by the time they have joined, the
+# message carrying the payload is gone — so without this they land on the retail
+# menu and the post's promise ("tap here to apply") quietly breaks for exactly
+# the audience it was written for.
+#
+# In memory on purpose: this is worth seconds of a stranger's journey, not a
+# column. A restart in that window costs them one tap.
+_PENDING_START: dict[int, str] = {}
+
 
 class ChannelRequiredMiddleware(BaseMiddleware):
     @staticmethod
@@ -121,7 +134,30 @@ class ChannelRequiredMiddleware(BaseMiddleware):
         return isinstance(event, CallbackQuery) and event.data == "check_channel_join"
 
     @staticmethod
-    async def _render_join_success(event: CallbackQuery, user: dict) -> None:
+    def remember_start(uid: int, event: Message) -> None:
+        """Hold the destination of a /start that the gate is about to refuse."""
+        from bot.handlers.common import START_DESTINATIONS
+        parts = (event.text or "").split()
+        if (len(parts) > 1 and parts[0].split("@")[0] == "/start"
+                and parts[1] in START_DESTINATIONS and uid):
+            _PENDING_START[int(uid)] = parts[1]
+
+    @staticmethod
+    async def _resume_start(event: CallbackQuery, user: dict, state) -> None:
+        """Open whatever the refused /start was aimed at, now that they are in."""
+        uid = int(event.from_user.id) if event.from_user else 0
+        dest = _PENDING_START.pop(uid, None)
+        if dest != "rep" or user.get("is_admin", 0) or state is None:
+            return
+        from bot.handlers.user import representative_start
+        from bot.home import _as_user
+        try:
+            await representative_start(_as_user(event, event.bot), state)
+        except Exception:
+            pass          # the menu is already up; a missed screen is not worth an error
+
+    @staticmethod
+    async def _render_join_success(event: CallbackQuery, user: dict, state=None) -> None:
         """Membership just confirmed: pop the toast, DELETE the join prompt, and
         open the bot menu with a success message."""
         await event.answer("✅ عضویت شما تایید شد!", show_alert=False)
@@ -138,6 +174,7 @@ class ChannelRequiredMiddleware(BaseMiddleware):
             "🎉 عضویت شما تایید شد!\nحالا می‌توانید از همه‌ی امکانات ربات استفاده کنید. منوی ربات فعال شد 👇",
             reply_markup=kb,
         )
+        await ChannelRequiredMiddleware._resume_start(event, user, state)
 
     @staticmethod
     async def verify_join_callback(event: CallbackQuery, user: dict, channel_username: str) -> bool:
@@ -187,7 +224,7 @@ class ChannelRequiredMiddleware(BaseMiddleware):
         # failure just tells them they're not a member yet (no duplicate prompt).
         if self.is_join_check(event):
             if await self.is_member(event.bot, uid, channel_username, use_cache=False):
-                await self._render_join_success(event, user)
+                await self._render_join_success(event, user, data.get("state"))
             else:
                 await event.answer(
                     "❌ هنوز عضو کانال نشده‌اید.\nاول در کانال عضو شوید، بعد دوباره «بررسی عضویت» را بزنید.",
@@ -201,6 +238,7 @@ class ChannelRequiredMiddleware(BaseMiddleware):
         text = self.join_text(channel_username)
         kb = self.join_kb(channel_username)
         if isinstance(event, Message):
+            self.remember_start(uid, event)
             await event.answer(text, reply_markup=kb, parse_mode=None)
         else:
             await event.answer("ابتدا باید عضو کانال شوید.", show_alert=True)
