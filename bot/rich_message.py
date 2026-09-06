@@ -213,6 +213,18 @@ GLYPH_PREMIUM = {
 # Glyphs the owner picked BY HAND for a specific slot. Without this the same
 # emoji could render two ways: their chosen cart on the buy button, and whatever
 # a sticker set happened to offer on every other 🛒 in the bot.
+# Country flags, from the owner's FlagsByKoylli pack. Registered on the glyph
+# so every 🇩🇪 in the bot follows — the node labels customers read on their
+# service card carry these same flags, and one place looking different from
+# another is how a brand stops looking deliberate.
+GLYPH_PREMIUM.update({
+    "🇩🇪": "5222165617544542414",   # Germany
+    "🇹🇷": "5224601903383457698",   # Turkey
+    "🇳🇱": "5224516489368841614",   # Netherlands
+    "🇫🇮": "5224282903277482188",   # Finland
+    "🇺🇸": "5224321781321442532",   # United States
+})
+
 GLYPH_PREMIUM.update({
     "🛒": PREMIUM_EMOJI["cart"],
     "🏦": PREMIUM_EMOJI["bank"],
