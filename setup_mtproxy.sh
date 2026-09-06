@@ -25,6 +25,8 @@ CMD="${1:-status}"
 PORT="${MTPROXY_PORT:-443}"
 SECRET="${MTPROXY_SECRET:-}"
 TAG="${MTPROXY_TAG:-}"
+PREFER_IP="${MTPROXY_PREFER_IP:-ipv4}"
+DEBUG_MODE="${MTPROXY_DEBUG:-}"
 
 say(){ echo -e "$1"; }
 die(){ echo -e "❌ $1" >&2; exit 1; }
@@ -70,7 +72,13 @@ write_unit(){
   # listen on the default 3128. So we (a) set MTG_BIND via the environment (the
   # documented env for --bind) AND (b) put --bind before the positionals. Both
   # agree, so the proxy always binds to the intended port.
-  local args="run --bind 0.0.0.0:${PORT} ${SECRET}"
+  # --prefer-ip=ipv4 is NOT the mtg default; ipv6 is. Both of our hosts carry a
+  # global IPv6 address but have no working IPv6 route to Telegram, so the
+  # default made mtg authenticate a client and then stall reaching the DC — the
+  # proxy shows "no ping" while looking perfectly healthy from the server side.
+  # Nothing in the service state hints at it, which is why it is pinned here.
+  local args="run --prefer-ip=${PREFER_IP} --bind 0.0.0.0:${PORT} ${SECRET}"
+  if [[ -n "$DEBUG_MODE" ]]; then args="run --debug ${args#run }"; fi
   if [[ -n "$TAG" ]]; then args="${args} ${TAG}"; fi
   say "📝 نوشتن سرویس systemd (پورت ${PORT}$( [[ -n "$TAG" ]] && echo '، با اسپانسر' ))"
   cat > "$UNIT" <<EOF
