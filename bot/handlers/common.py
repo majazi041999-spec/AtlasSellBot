@@ -1,3 +1,5 @@
+import logging
+
 from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery
 from aiogram.filters import CommandStart
@@ -54,13 +56,27 @@ def _channel_join_kb(channel_username: str):
     return ChannelRequiredMiddleware.join_kb(channel_username)
 
 
+# A /start payload is normally a referral code. These few words are destinations
+# instead: a post published to a channel can only carry a URL button, so the link
+# itself has to be able to say where the tap should land.
+#
+# Only works for somebody opening the chat for the FIRST time. Telegram runs the
+# payload when it shows its own Start button, and shows that button only on an
+# empty chat — for everyone else the link just brings the conversation forward.
+# That is fine for a recruitment post, whose readers have mostly never been here,
+# and everyone else still has the button in the menu.
+START_DESTINATIONS = {"rep"}
+
+
 @router.message(CommandStart())
 async def cmd_start(msg: Message, state: FSMContext):
     await state.clear()
     from bot.keyboards import admin_menu, user_menu
 
     args = msg.text.split()
-    ref_code = args[1] if len(args) > 1 else None
+    payload = args[1] if len(args) > 1 else None
+    destination = payload if payload in START_DESTINATIONS else None
+    ref_code = None if destination else payload
 
     user = await get_or_create_user(msg.from_user.id, msg.from_user.username, msg.from_user.full_name)
     role = await _admin_role(msg.from_user.id, user)
@@ -88,6 +104,21 @@ async def cmd_start(msg: Message, state: FSMContext):
         return
 
     await send_home(msg, user, role)
+
+    if destination == "rep" and role == "none":
+        # Straight to the reseller screen. The recruitment post promises a place
+        # to apply, and a reader who lands on the retail menu and has to go
+        # hunting for the right button is a reader we have already lost.
+        #
+        # No welcome gift on this path: it is a retail discount, and somebody who
+        # arrived to sell has no use for it. If they come back as a customer, the
+        # next plain /start still offers it.
+        from bot.handlers.user import representative_start
+        try:
+            await representative_start(msg, state)
+        except Exception:
+            logging.getLogger(__name__).exception("rep deeplink failed")
+        return
 
     # After the menu, not before it: the gift is an offer, and an offer that
     # arrives before someone can see where they are is just noise. Only ever

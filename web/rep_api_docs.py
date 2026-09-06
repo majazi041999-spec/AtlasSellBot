@@ -400,10 +400,30 @@ console.log(r.data.representative.balance);   // موجودی به تومان</c
 <pre class="res"><code>{
   "ok": true,
   "representative": { "id": 12, "brand_name": "MyVPN", "balance": 4200000 },
-  "pricing": { "price_per_gb": 3500, "unlimited_price": 180000, "discount_percent": 0 },
+  "pricing": {
+    "price_per_gb": 3500, "unlimited_price": 169000, "discount_percent": 0,
+    "unlimited_tier": {
+      "active": 14, "price": 169000, "at": 10,
+      "rungs": [{ "from": 0, "price": 179000 }, { "from": 10, "price": 169000 },
+                { "from": 30, "price": 139000 }],
+      "next": { "in": 16, "price": 139000 }
+    }
+  },
   "stats": { "total_services": 380, "active_services": 291, "total_spent": 62150000 },
   "limits": { "max_batch": 10, "rate_per_min": 120, "trial_daily_limit": 5, "trial_used_today": 1 }
 }</code></pre>
+  <p>
+    <b>pricing.unlimited_tier</b> فقط وقتی می‌آید که قیمت نامحدودِ شما روی
+    <b>پلکان حجمی</b> باشد: هرچه سرویس فعالِ بیشتری داشته باشید، قیمت خریدتان
+    پایین‌تر می‌آید. <code>active</code> همان تعداد سرویس فعالی است که در پنل
+    خودتان می‌بینید، <code>at</code> پله‌ای که روی آن ایستاده‌اید، و
+    <code>next</code> می‌گوید با چند سرویس فعالِ دیگر به پله‌ی بعد می‌رسید
+    (<code>null</code> یعنی روی بهترین پله هستید).
+  </p>
+  <p>
+    اگر تعرفه‌ی شما ثابت باشد این کلید <code>null</code> است. نبودنش را به معنای
+    «تخفیفی در کار نیست» نگیرید — یعنی قیمت شما جداگانه توافق شده است.
+  </p>
 
 
   <div class="ep"><span class="m get">GET</span><span class="path">/services/{id}/connections</span></div>

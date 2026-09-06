@@ -5497,6 +5497,8 @@ async def _settings_snapshot() -> dict:
     settings["rep_min_topup"] = await get_setting("rep_min_topup", "500000")
     settings["rep_price_per_gb"] = await get_setting("rep_price_per_gb", "0")
     settings["rep_unlimited_price"] = await get_setting("rep_unlimited_price", "0")
+    from core import rep_tiers
+    settings["rep_unlimited_tiers"] = [[a, b] for a, b in await rep_tiers.ladder()]
     return settings
 
 
@@ -5527,6 +5529,18 @@ async def api_rep_pricing(request: Request):
     await set_setting("rep_price_per_gb", str(ppg))
     await set_setting("rep_unlimited_price", str(unl))
     await set_setting("rep_min_topup", str(mint))
+    if "rep_unlimited_tiers" in d:
+        # The ladder for resellers who joined after it existed. Saved through
+        # rep_tiers so a malformed rung is dropped here rather than at the till.
+        from core import rep_tiers
+        rows = []
+        for item in d.get("rep_unlimited_tiers") or []:
+            try:
+                rows.append((int(str(item[0]).replace(",", "") or 0),
+                             int(str(item[1]).replace(",", "") or 0)))
+            except (TypeError, ValueError, IndexError, KeyError):
+                continue
+        await rep_tiers.save(rows)
     return JSONResponse({"success": True})
 
 

@@ -471,6 +471,12 @@ async def _ensure_columns(db):
             ("hide_brand", "INTEGER DEFAULT 0"),
             ("rep_brand_name", "TEXT DEFAULT ''"),
             ("rep_topup_required", "INTEGER DEFAULT 0"),
+            # 1 = this reseller is OFF the volume ladder and keeps whatever
+            # price they were promised. Backfilled to 1 for every reseller
+            # alive when the ladder was introduced, and never cleared, so a
+            # reseller who is toggled off and on again stays grandfathered.
+            # See core/rep_tiers.py.
+            ("rep_tier_exempt", "INTEGER DEFAULT 0"),
             ("rep_logo", "TEXT DEFAULT ''"),
             ("admin_role", "TEXT DEFAULT 'none'"),
             ("balance_toman", "INTEGER DEFAULT 0"),
@@ -615,6 +621,19 @@ async def _ensure_columns(db):
         await db.execute("UPDATE users SET welcome_gift_sent=1")
         await db.execute(
             "INSERT OR REPLACE INTO settings(key,value) VALUES('welcome_gift_backfilled','1')")
+
+    # Every reseller we were already working with when the volume ladder arrived
+    # keeps the price they were promised. Without this the first restart after
+    # the migration would silently re-price the entire existing reseller base
+    # off a ladder none of them agreed to. Guarded by a setting so it runs once.
+    async with db.execute(
+        "SELECT value FROM settings WHERE key='rep_tier_backfilled'"
+    ) as c:
+        done = await c.fetchone()
+    if not done:
+        await db.execute("UPDATE users SET rep_tier_exempt=1 WHERE COALESCE(is_wholesale,0)=1")
+        await db.execute(
+            "INSERT OR REPLACE INTO settings(key,value) VALUES('rep_tier_backfilled','1')")
 
 
 def _gen_referral_code() -> str:
@@ -1974,6 +1993,24 @@ async def get_top_buyers(limit: int = 30) -> List[Dict]:
             return [dict(r) for r in await c.fetchall()]
 
 
+async def count_active_services(user_id: int) -> int:
+    """Live services this user is holding — the number their panel shows them.
+
+    The reseller volume ladder is priced off this, so it has to be the same count
+    the reseller can see for themselves; they must be able to work out why they
+    are on the rung they are on.
+    """
+    now_ms = int(time.time() * 1000)
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            """SELECT COUNT(*) FROM subscription_profiles
+               WHERE user_id=? AND is_active=1
+                 AND (expire_timestamp=0 OR expire_timestamp>?)""",
+            (user_id, now_ms),
+        ) as c:
+            return int((await c.fetchone())[0] or 0)
+
+
 async def get_rep_financials(user_id: int) -> Dict:
     """Financial summary for a representative: total & monthly spend, order count,
     and service counts (active/expired). Spend = sum of approved orders."""
@@ -2992,7 +3029,8 @@ async def get_user_pricing(user_id: int) -> Dict:
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         async with db.execute(
-            "SELECT discount_percent, price_per_gb, unlimited_price, is_wholesale FROM users WHERE id=?",
+            "SELECT discount_percent, price_per_gb, unlimited_price, is_wholesale, "
+            "COALESCE(rep_tier_exempt,0) AS rep_tier_exempt FROM users WHERE id=?",
             (user_id,),
         ) as c:
             r = await c.fetchone()
@@ -3000,6 +3038,7 @@ async def get_user_pricing(user_id: int) -> Dict:
         return {"discount_percent": 0, "price_per_gb": 0, "unlimited_price": 0}
     ppg = int(r["price_per_gb"] or 0)
     unl = int(r["unlimited_price"] or 0)
+    tier: Optional[Dict] = None
     # Representatives: a per-seller custom price ALWAYS wins; when it isn't set,
     # fall back to the single global representative price the admin configured.
     if int(r["is_wholesale"] or 0):
@@ -3009,15 +3048,29 @@ async def get_user_pricing(user_id: int) -> Dict:
             except (TypeError, ValueError):
                 ppg = 0
         if unl <= 0:
-            try:
-                unl = max(0, int(await get_setting("rep_unlimited_price", "0") or 0))
-            except (TypeError, ValueError):
-                unl = 0
-    return {
+            # Resellers who joined after the volume ladder are priced off it;
+            # the ones we already had are grandfathered onto the flat price.
+            # core/rep_tiers.py explains why the exemption is never cleared.
+            if not int(r["rep_tier_exempt"] or 0):
+                try:
+                    from core import rep_tiers
+                    tier = await rep_tiers.status(user_id)
+                    unl = int(tier["price"] or 0)
+                except Exception:
+                    tier, unl = None, 0
+            if unl <= 0:
+                try:
+                    unl = max(0, int(await get_setting("rep_unlimited_price", "0") or 0))
+                except (TypeError, ValueError):
+                    unl = 0
+    out = {
         "discount_percent": float(r["discount_percent"] or 0),
         "price_per_gb": ppg,
         "unlimited_price": unl,
     }
+    if tier:
+        out["unlimited_tier"] = tier
+    return out
 
 
 async def create_custom_order(user_id: int, name: str, total_traffic_gb: float, duration_days: int,

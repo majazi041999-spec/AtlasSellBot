@@ -33,6 +33,50 @@ function Toggle({ s, set, k, label }) {
     </div>
   );
 }
+// The reseller volume ladder: from N active services, the unlimited plan costs X.
+// Only resellers who joined after the ladder existed are priced off it — the ones
+// we already had keep the price they were promised, which is why the note below
+// says so out loud rather than leaving it to be discovered.
+function RepTierLadder({ rows, onChange }) {
+  const list = Array.isArray(rows) ? rows : [];
+  const edit = (i, j, v) => {
+    const next = list.map((r) => [...r]);
+    next[i][j] = Number(String(v).replace(/[^\d]/g, "") || 0);
+    onChange(next);
+  };
+  const num = (v) => Number(v || 0).toLocaleString("en-US");
+  return (
+    <div className="field">
+      <label>پلکان قیمت نامحدود</label>
+      <div className="grid" style={{ gap: 6 }}>
+        {list.map(([from, price], i) => (
+          <div key={i} className="row" style={{ gap: 8, alignItems: "center" }}>
+            <span className="muted tiny" style={{ minWidth: 62 }}>از</span>
+            <input className="inp" value={num(from)} dir="ltr" style={{ maxWidth: 110 }}
+                   onChange={(e) => edit(i, 0, e.target.value)} />
+            <span className="muted tiny" style={{ whiteSpace: "nowrap" }}>سرویس فعال →</span>
+            <input className="inp" value={num(price)} dir="ltr" style={{ maxWidth: 140 }}
+                   onChange={(e) => edit(i, 1, e.target.value)} />
+            <span className="muted tiny">تومان</span>
+            <button className="btn xs" title="حذف این پله"
+                    onClick={() => onChange(list.filter((_, k) => k !== i))}>✕</button>
+          </div>
+        ))}
+        <div className="row" style={{ gap: 8 }}>
+          <button className="btn xs" onClick={() => onChange([...list, [0, 0]])}>➕ پله‌ی جدید</button>
+          {list.length > 0 && <button className="btn xs" onClick={() => onChange([])}>پاک‌کردن پلکان</button>}
+        </div>
+      </div>
+      <p className="muted tiny" style={{ margin: "6px 0 0" }}>
+        هرچه نماینده سرویس فعال بیشتری داشته باشد، قیمت خریدش پایین‌تر می‌آید — همان جدولی
+        که در آگهی نمایندگی نشان داده‌ایم. <b>فقط برای نماینده‌هایی که از این به بعد اضافه
+        می‌شوند</b>؛ نماینده‌های فعلی روی قیمت توافق‌شده‌ی خودشان می‌مانند. قیمت اختصاصیِ
+        یک نماینده (صفحه‌ی کاربر) همچنان بر پلکان اولویت دارد. خالی‌گذاشتن پلکان یعنی همان
+        «قیمت نامحدود» بالا برای همه.
+      </p>
+    </div>
+  );
+}
 function Select({ s, set, k, label, options }) {
   return (
     <div className="field">
@@ -409,6 +453,7 @@ export default function Settings() {
     try {
       await api.post("/api/rep-pricing", {
         rep_price_per_gb: s.rep_price_per_gb, rep_unlimited_price: s.rep_unlimited_price, rep_min_topup: s.rep_min_topup,
+        rep_unlimited_tiers: (s.rep_unlimited_tiers || []).filter((t) => Number(t[1]) > 0),
       });
       toast("قیمت‌گذاری نمایندگان ذخیره شد ✅");
     } catch (e) { toast(e.message || "خطا", "error"); } finally { setBusy(false); }
@@ -495,6 +540,7 @@ export default function Settings() {
             <input className="inp" value={s.rep_min_topup ?? "0"} onChange={(e) => set("rep_min_topup", e.target.value)} dir="ltr" />
             <p className="muted tiny" style={{ margin: "4px 0 0" }}>فقط برای نماینده‌هایی که تازه درخواست می‌دهند اعمال می‌شود؛ نماینده‌های فعلی مستثنا هستند.</p>
           </div>
+          <RepTierLadder rows={s.rep_unlimited_tiers} onChange={(v) => set("rep_unlimited_tiers", v)} />
           <button className="btn primary sm" disabled={busy === "reppricing"} onClick={saveRepPricing}>💾 ذخیره قیمت‌گذاری نمایندگان</button>
         </div>
       </Card>

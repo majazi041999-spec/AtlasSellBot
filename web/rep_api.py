@@ -445,6 +445,10 @@ async def rep_me(request: Request):
             "price_per_gb": int(pricing.get("price_per_gb") or 0),
             "unlimited_price": int(pricing.get("unlimited_price") or 0),
             "discount_percent": float(pricing.get("discount_percent") or 0),
+            # Present only for resellers priced off the volume ladder. Absent
+            # means a fixed tariff, so a client must not treat its absence as
+            # "no discount available" — see core/rep_tiers.py.
+            "unlimited_tier": pricing.get("unlimited_tier"),
         },
         "stats": stats,
         "limits": {

@@ -2401,15 +2401,34 @@ async def rep_wallet(cb: CallbackQuery):
 @router.callback_query(F.data == "rep:pricing")
 async def rep_pricing(cb: CallbackQuery):
     user = await get_or_create_user(cb.from_user.id)
-    ppg = int(user.get("price_per_gb") or 0)
-    unl = int(user.get("unlimited_price") or 0)
-    disc = float(user.get("discount_percent") or 0)
-    lines = ["💰 *قیمت‌های اختصاصی تو*\n"]
+    # The effective price, not the raw column: a reseller on the volume ladder
+    # has no per-seller price stored, so reading the column would tell them
+    # "platform default" while the rung is what they are actually charged.
+    pricing = await get_user_pricing(user["id"])
+    ppg = int(pricing.get("price_per_gb") or 0)
+    unl = int(pricing.get("unlimited_price") or 0)
+    disc = float(pricing.get("discount_percent") or 0)
+    tier = pricing.get("unlimited_tier")
+    lines = ["💰 *قیمت خرید تو*\n"]
     lines.append(f"• هر گیگ: *{ppg:,}* تومان" if ppg else "• هر گیگ: قیمت پیش‌فرض پلتفرم")
     lines.append(f"• نامحدود: *{unl:,}* تومان" if unl else "• نامحدود: قیمت پیش‌فرض پلتفرم")
     if disc:
         lines.append(f"• تخفیف کلی: *{disc:g}%*")
-    lines.append("\nقیمت‌های اختصاصی توسط ادمین تنظیم می‌شود. برای تغییر با پشتیبانی هماهنگ کن.")
+    if tier:
+        # A price that moves on its own only motivates if the reseller can see
+        # what moves it — and this service count is the same one their own panel
+        # shows them, so they can check the arithmetic themselves.
+        lines.append("\n📈 *پلکان حجمی*")
+        lines.append(f"سرویس فعال تو الان: *{tier['active']:,}*\n")
+        for rung in tier["rungs"]:
+            here = " ← پله‌ی تو" if rung["from"] == tier.get("at") else ""
+            lines.append(f"• از *{rung['from']:,}* سرویس فعال به بالا: *{rung['price']:,}* تومان{here}")
+        nxt = tier.get("next")
+        if nxt:
+            lines.append(f"\nبا *{nxt['in']:,}* سرویس فعال دیگر، قیمت نامحدودت *{nxt['price']:,}* تومان می‌شود.")
+        else:
+            lines.append("\nروی بهترین پله‌ای ✅")
+    lines.append("\nقیمت فروش به مشتری‌های خودت کاملاً دست خودت است. برای هر سوالی درباره‌ی قیمت خرید، با پشتیبانی هماهنگ کن.")
     await cb.message.edit_text("\n".join(lines), reply_markup=rep_back_kb(), parse_mode="Markdown")
     await cb.answer()
 
