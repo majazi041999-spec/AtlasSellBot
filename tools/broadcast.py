@@ -15,6 +15,11 @@ nothing and says so.
 
 The campaign id is any short string; reusing one means "continue that send",
 and a new one means "a new announcement".
+
+The message body comes from --html-file, and each --button adds one button as
+"label|callback_data|style". Both were hardcoded once, which meant editing this
+file to send anything — and an announcement is not the kind of thing that should
+require a commit while the reason for sending it is still unfolding.
 """
 from __future__ import annotations
 
@@ -62,10 +67,21 @@ def announcement() -> str:
     )
 
 
-def announcement_kb():
+def announcement_kb(specs=None):
+    """Buttons from "label|callback_data|style" strings, or the restart default."""
     b = InlineKeyboardBuilder()
-    _button(b, text="🔄 شروع مجدد ربات", callback_data="home:restart", style="success")
-    b.adjust(1)
+    specs = [s for s in (specs or []) if s.strip()]
+    if not specs:
+        _button(b, text="🔄 شروع مجدد ربات", callback_data="home:restart", style="success")
+        b.adjust(1)
+        return b.as_markup()
+    for spec in specs:
+        parts = [p.strip() for p in spec.split("|")]
+        label = parts[0]
+        data = parts[1] if len(parts) > 1 and parts[1] else "home:restart"
+        style = parts[2] if len(parts) > 2 and parts[2] else "primary"
+        _button(b, text=label, callback_data=data, style=style)
+    b.adjust(2 if len(specs) > 1 else 1)
     return b.as_markup()
 
 
@@ -87,6 +103,9 @@ async def main() -> None:
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--only-active", action="store_true",
                     help="only customers with a live subscription")
+    ap.add_argument("--html-file", help="file holding the message body (HTML)")
+    ap.add_argument("--button", action="append", default=[],
+                    help='"label|callback_data|style", repeatable')
     args = ap.parse_args()
 
     db = sqlite3.connect(DB, timeout=20)
@@ -105,11 +124,22 @@ async def main() -> None:
         "SELECT telegram_id FROM broadcast_log WHERE campaign=?", (args.campaign,))}
     todo = [u for u in everyone if u not in done]
 
+    if args.html_file:
+        with open(args.html_file, encoding="utf-8") as fh:
+            body = fh.read().strip()
+    else:
+        body = announcement()
+    markup = announcement_kb(args.button)
+
     print(f"campaign      : {args.campaign}")
     print(f"audience      : {len(everyone)}")
     print(f"already sent  : {len(done)}")
     print(f"to send now   : {len(todo)}")
+    print(f"body          : {len(body)} chars from "
+          f"{args.html_file or 'the built-in announcement'}")
     if args.dry_run:
+        print("\n--- message ---")
+        print(body)
         print("\n(dry run — nothing sent)")
         return
     if not todo:
@@ -117,7 +147,6 @@ async def main() -> None:
         return
 
     bot = Bot(token=BOT_TOKEN)
-    body, markup = announcement(), announcement_kb()
     counts = {"sent": 0, "blocked": 0, "failed": 0}
     t0 = time.monotonic()
     try:
