@@ -142,14 +142,24 @@ async def send_home(msg: Message, user: dict, role: str):
     from bot.rich_message import emoji as tg_emoji
 
     welcome = await get_text("welcome_message")
+    admin_tail = ""
     if role != "none":
         head = "🔐 <b>پنل مدیریت</b>"
+        if role in ("owner", "full"):
+            # On the admin's home screen, not behind a button: the one moment
+            # this address is genuinely needed is when something is wrong, and
+            # that is the worst moment to be hunting through a menu for it.
+            try:
+                primary, _ = await admin_panel_urls()
+                admin_tail = f"\n\n🌐 <code>{_html.escape(primary)}</code>"
+            except Exception:
+                admin_tail = ""
     else:
         head = f'{tg_emoji("brand", "🌐")} <b>{BRAND}</b>'
     # HTML, not Markdown: a custom emoji has no Markdown syntax. Escaped with
     # html.escape rather than rich_message.esc, because that one collapses
     # whitespace and the welcome text is written across two lines.
-    text = f"{head}\n\n{_brandify(_html.escape(welcome, quote=False))}"
+    text = f"{head}\n\n{_brandify(_html.escape(welcome, quote=False))}{admin_tail}"
 
     kb = (admin_menu(finance_only=(role == "finance")) if role != "none"
           else user_menu(include_wholesale=bool(user.get("is_wholesale", 0))))
@@ -237,14 +247,45 @@ async def restart_menu(msg: Message, state: FSMContext):
     user = await get_or_create_user(msg.from_user.id, msg.from_user.username, msg.from_user.full_name)
     await send_home(msg, user, await _admin_role(msg.from_user.id, user))
 
+async def admin_panel_urls() -> tuple[str, str]:
+    """(the https address to use, the direct one for when the domain is down).
+
+    DERIVED, never typed. The stored help text carried a hand-written hostname
+    and an http:// scheme, and the day the bot moved servers it was pointing at
+    a machine that no longer ran it — which is precisely the day you need the
+    address. This reads the same setting the customers' subscription links are
+    built from, so the two cannot disagree.
+    """
+    from core.multi_subscription import public_base_url_async
+    base = (await public_base_url_async()).rstrip("/")
+    primary = f"{base}/{WEB_SECRET_PATH}/"
+    host = (await get_setting("server_public_ip", "")).strip()
+    direct = f"http://{host}:{WEB_PORT}/{WEB_SECRET_PATH}/" if host else ""
+    return primary, direct
+
+
 @router.message(F.text == "🌐 پنل مدیریت")
 async def panel_url(msg: Message):
+    import html as _html
     user = await get_or_create_user(msg.from_user.id)
     role = await _admin_role(msg.from_user.id, user)
     if role not in ("owner", "full"):
         return
-    panel_help = await get_text("panel_url_help", port=WEB_PORT, secret=WEB_SECRET_PATH)
-    await msg.answer(panel_help, parse_mode="Markdown")
+    primary, direct = await admin_panel_urls()
+    lines = [f'{tg_emoji_safe("brand", "🌐")} <b>پنل مدیریت</b>', "",
+             f"<code>{_html.escape(primary)}</code>"]
+    if direct:
+        lines += ["", "اگر دامنه بالا نیامد (مثلاً وسط جابه‌جایی سرور):",
+                  f"<code>{_html.escape(direct)}</code>"]
+    await msg.answer("\n".join(lines), parse_mode="HTML")
+
+
+def tg_emoji_safe(role: str, fallback: str) -> str:
+    from bot.rich_message import emoji as _e
+    try:
+        return _e(role, fallback)
+    except Exception:
+        return fallback
 
 
 @router.callback_query(F.data == "check_channel_join")
