@@ -4097,6 +4097,108 @@ async def miniapp_service_rename(request: Request):
     return JSONResponse({"ok": True, "name": name})
 
 
+@app.post("/app/api/discount/check")
+async def miniapp_discount_check(request: Request):
+    """Price a discount code WITHOUT creating an order.
+
+    The mini-app had a code box that did nothing until checkout: type a code,
+    press pay, and only then find out it was wrong. Now the same pricing
+    function answers up front, so the customer sees the new total before they
+    commit to anything — and a bad code costs them a tap instead of a failed
+    purchase.
+
+    Deliberately the same _miniapp_price the buy endpoint uses. A preview that
+    computed the discount its own way would eventually disagree with the till.
+    """
+    if await get_setting("miniapp_enabled", "0") != "1":
+        return JSONResponse({"error": "disabled"}, status_code=403)
+    user = await _miniapp_user(request)
+    if not user:
+        return JSONResponse({"error": "invalid_init_data"}, status_code=401)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    pkg = await get_package(int(body.get("package_id") or 0))
+    if not pkg or not int(pkg.get("is_active") or 0):
+        return JSONResponse({"error": "package_unavailable"}, status_code=400)
+    priced = await _miniapp_price(user, pkg, str(body.get("discount_code") or ""))
+    if priced.get("error"):
+        return JSONResponse({"error": priced["error"], "code_error": True}, status_code=400)
+    return JSONResponse({
+        "ok": True,
+        "base": priced["base"],
+        "net": priced["net"],
+        "code": priced["code"],
+        "code_amount": priced["code_amount"],
+    })
+
+
+@app.post("/app/api/services/delete")
+async def miniapp_service_delete(request: Request):
+    """Delete a subscription the customer owns.
+
+    Irreversible, so it takes an explicit `confirm` in the body rather than
+    trusting that a tap reached here on purpose — a mis-tap on a phone must not
+    be able to destroy somebody's service.
+    """
+    if await get_setting("miniapp_enabled", "0") != "1":
+        return JSONResponse({"error": "disabled"}, status_code=403)
+    user = await _miniapp_user(request)
+    if not user:
+        return JSONResponse({"error": "invalid_init_data"}, status_code=401)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not body.get("confirm"):
+        return JSONResponse({"error": "confirm_required"}, status_code=400)
+    from core.database import get_subscription_profile, delete_subscription_profile
+    from core.multi_subscription import delete_subscription_profile_remote
+    profile = await get_subscription_profile(int(body.get("profile_id") or 0))
+    if not profile or int(profile.get("user_id") or 0) != int(user["id"]):
+        return JSONResponse({"error": "not_your_service"}, status_code=403)
+    try:
+        await delete_subscription_profile_remote(int(profile["id"]))
+    except Exception as exc:
+        logger.warning("miniapp delete: remote cleanup failed for %s: %s", profile["id"], exc)
+    await delete_subscription_profile(int(profile["id"]))
+    return JSONResponse({"ok": True})
+
+
+@app.post("/app/api/services/relink")
+async def miniapp_service_relink(request: Request):
+    """Issue a fresh subscription link and kill the old one.
+
+    What somebody does when their link has leaked. The traffic and the days
+    carry over; only the URL changes. Also takes an explicit `confirm`, because
+    it disconnects every device currently using the old link.
+    """
+    if await get_setting("miniapp_enabled", "0") != "1":
+        return JSONResponse({"error": "disabled"}, status_code=403)
+    user = await _miniapp_user(request)
+    if not user:
+        return JSONResponse({"error": "invalid_init_data"}, status_code=401)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not body.get("confirm"):
+        return JSONResponse({"error": "confirm_required"}, status_code=400)
+    from core.database import get_subscription_profile
+    from core.multi_subscription import rotate_subscription_link, subscription_url
+    profile = await get_subscription_profile(int(body.get("profile_id") or 0))
+    if not profile or int(profile.get("user_id") or 0) != int(user["id"]):
+        return JSONResponse({"error": "not_your_service"}, status_code=403)
+    if not int(profile.get("is_active") or 0):
+        return JSONResponse({"error": "inactive"}, status_code=400)
+    result = await rotate_subscription_link(int(profile["id"]))
+    if not result.get("ok"):
+        return JSONResponse({"error": result.get("error") or "relink_failed"}, status_code=400)
+    fresh = await get_subscription_profile(int(profile["id"]))
+    return JSONResponse({"ok": True, "sub_url": await subscription_url(fresh["token"])})
+
+
 @app.post("/app/api/services/connections")
 async def miniapp_service_connections(request: Request):
     """"How many devices are on my service right now" — the mini-app's version.

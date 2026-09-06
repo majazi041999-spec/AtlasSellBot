@@ -106,12 +106,51 @@ function sortServices(rows, k) {
   });
 }
 
-function copy(text) {
-  try { navigator.clipboard.writeText(text); } catch (e) {
-    const t = document.createElement("textarea"); t.value = text; document.body.appendChild(t); t.select();
-    document.execCommand("copy"); t.remove();
+// A toast, addressed globally rather than through React state.
+//
+// Copying happens from a dozen places — a card number, a subscription link, a
+// UUID, a per-server config — and threading a setter down to each of them would
+// mean touching every component that ever wants to say something. A tiny event
+// bus keeps `copy()` a plain function that anything can call.
+let __toast = null;
+export function setToastHandler(fn) { __toast = fn; }
+export function toast(msg, kind = "ok") { if (__toast) __toast(msg, kind); }
+
+function copy(text, label = "کپی شد") {
+  let ok = true;
+  try {
+    navigator.clipboard.writeText(text);
+  } catch (e) {
+    try {
+      const t = document.createElement("textarea");
+      t.value = text; document.body.appendChild(t); t.select();
+      document.execCommand("copy"); t.remove();
+    } catch (e2) { ok = false; }
   }
-  haptic("success");
+  haptic(ok ? "success" : "error");
+  // Say something either way. A copy that silently failed and a copy that
+  // silently worked look identical, and the customer pastes nothing.
+  toast(ok ? `✅ ${label}` : "کپی نشد — دستی انتخاب کن", ok ? "ok" : "err");
+}
+
+function Toaster() {
+  const [items, setItems] = useState([]);
+  useEffect(() => {
+    setToastHandler((msg, kind) => {
+      const id = Date.now() + Math.random();
+      setItems((v) => [...v, { id, msg, kind }]);
+      // Long enough to read a short line, short enough not to sit over the UI.
+      setTimeout(() => setItems((v) => v.filter((t) => t.id !== id)), 2200);
+    });
+    return () => setToastHandler(null);
+  }, []);
+  return (
+    <div className="toast-wrap" aria-live="polite">
+      {items.map((t) => (
+        <div key={t.id} className={`toast ${t.kind === "err" ? "toast-err" : ""}`}>{t.msg}</div>
+      ))}
+    </div>
+  );
 }
 
 function Spinner() { return <div className="spinner" role="status" aria-label="در حال بارگذاری" />; }
@@ -195,7 +234,7 @@ function PayCard({ title, payment, kind, id, amount, onDone, walletBalance, onWa
         </div>
       )}
       <p className="muted tiny">لطفاً دقیقاً همین مبلغ را واریز کنید تا سریع شناسایی شود.</p>
-      <div className="pay-row card-num" onClick={() => copy(payment.card)}>
+      <div className="pay-row card-num" onClick={() => copy(payment.card, "شماره کارت کپی شد")}>
         <span>شماره کارت (لمس=کپی)</span><b dir="ltr">{payment.card}</b>
       </div>
       <div className="pay-row"><span>به نام</span><b>{payment.holder || "-"}</b></div>
@@ -301,6 +340,9 @@ function Services({ go, balance, onBalance, isRep }) {
   const [pkgs, setPkgs] = useState(null);       // packages for renewal
   const [editing, setEditing] = useState(null); // service id
   const [expanded, setExpanded] = useState(null); // service id whose servers are shown
+  // Delete and relink both destroy something the customer cannot get back — a
+  // service, or every device's current connection. Neither happens on one tap.
+  const [confirmAct, setConfirmAct] = useState(null);  // {kind, s}
   const [q, setQ] = useState("");               // search query
   const [sort, setSort] = useState("newest");   // see SVC_SORTS
   const [filt, setFilt] = useState("all");      // see SVC_FILTERS
@@ -314,6 +356,27 @@ function Services({ go, balance, onBalance, isRep }) {
     try { await api("services/rename", { profile_id: s.id, name }); haptic(); setEditing(null); reload(); }
     catch (e) { tg?.showAlert?.("تغییر نام ناموفق بود"); } finally { setBusy(0); }
   };
+  const runConfirmed = async () => {
+    if (!confirmAct) return;
+    const { kind, s } = confirmAct;
+    setBusy(s.id);
+    try {
+      if (kind === "delete") {
+        await api("services/delete", { profile_id: s.id, confirm: true });
+        toast("🗑️ سرویس حذف شد");
+      } else {
+        await api("services/relink", { profile_id: s.id, confirm: true });
+        toast("🔄 لینک تازه ساخته شد — لینک قبلی از کار افتاد");
+      }
+      haptic("success");
+      setConfirmAct(null);
+      reload();
+    } catch (e) {
+      haptic("error");
+      toast(kind === "delete" ? "حذف انجام نشد" : "تغییر لینک انجام نشد", "err");
+    } finally { setBusy(0); }
+  };
+
   // Renewal is plan-based: open a package picker for this service.
   const openRenew = async (s) => {
     setPlanFor(s); haptic();
@@ -423,13 +486,19 @@ function Services({ go, balance, onBalance, isRep }) {
               </div>
             ) : (
               <div className="svc-actions">
-                <button className="btn-soft sm" onClick={() => copy(s.sub_url)}><Icon name="copy" />کپی لینک</button>
+                <button className="btn-soft sm" onClick={() => copy(s.sub_url, "لینک اشتراک کپی شد")}><Icon name="copy" />کپی لینک</button>
                 <button className="btn-soft sm" onClick={() => setEditing(s.id)}><Icon name="edit" />نام</button>
                 <button className="btn-soft sm" onClick={() => { haptic("selection"); setExpanded(expanded === s.id ? null : s.id); }}><Icon name="services" />سرورها</button>
                 <button className="btn-soft sm" onClick={() => { haptic("selection"); loadConns(s.id); }}>
                   <Icon name="devices" />دستگاه‌های متصل
                 </button>
                 <button className="btn-primary sm" disabled={busy === s.id} onClick={() => openRenew(s)}><Icon name="refresh" />تمدید</button>
+                <button className="btn-soft sm" disabled={busy === s.id} onClick={() => setConfirmAct({ kind: "relink", s })}>
+                  <Icon name="refresh" />تغییر لینک
+                </button>
+                <button className="btn-danger sm" disabled={busy === s.id} onClick={() => setConfirmAct({ kind: "delete", s })}>
+                  <Icon name="trash" />حذف
+                </button>
               </div>
             )}
             {conns[s.id] && (
@@ -484,10 +553,10 @@ function Services({ go, balance, onBalance, isRep }) {
                 {(s.nodes || []).filter((n) => n.is_active && n.link).map((n, i) => (
                   <div className="node-card" key={i}>
                     <div className="node-top"><span className="node-dot" /><span className="node-lbl">{n.label}</span></div>
-                    {n.uuid && <div className="node-uuid" onClick={() => copy(n.uuid)} title="کپی UUID">UUID: <span dir="ltr">{n.uuid}</span></div>}
+                    {n.uuid && <div className="node-uuid" onClick={() => copy(n.uuid, "UUID کپی شد")} title="کپی UUID">UUID: <span dir="ltr">{n.uuid}</span></div>}
                     <div className="node-btns">
-                      <button className="btn-soft xs" onClick={() => copy(n.link)}><Icon name="copy" />کپی کانفیگ</button>
-                      {n.uuid && <button className="btn-soft xs" onClick={() => copy(n.uuid)}><Icon name="copy" />کپی UUID</button>}
+                      <button className="btn-soft xs" onClick={() => copy(n.link, "کانفیگ کپی شد")}><Icon name="copy" />کپی کانفیگ</button>
+                      {n.uuid && <button className="btn-soft xs" onClick={() => copy(n.uuid, "UUID کپی شد")}><Icon name="copy" />کپی UUID</button>}
                     </div>
                   </div>
                 ))}
@@ -497,8 +566,62 @@ function Services({ go, balance, onBalance, isRep }) {
           </div>
         );
       })}
+
+      {confirmAct && (
+        <div className="sheet-back" onClick={() => setConfirmAct(null)}>
+          <div className="sheet" onClick={(e) => e.stopPropagation()}>
+            <div className={"sheet-icon " + (confirmAct.kind === "delete" ? "danger" : "warn")}>
+              <Icon name={confirmAct.kind === "delete" ? "trash" : "refresh"} />
+            </div>
+            <h3 className="sheet-title">
+              {confirmAct.kind === "delete" ? "حذف سرویس؟" : "تغییر لینک اشتراک؟"}
+            </h3>
+            <p className="sheet-body">
+              {confirmAct.kind === "delete" ? (
+                <>سرویس <b>{svcName(confirmAct.s) || "بدون نام"}</b> از سرورها و از حساب تو پاک می‌شود.
+                   حجم و روزهای باقی‌مانده از بین می‌رود و <b>برگشتی ندارد</b>.</>
+              ) : (
+                <>لینک فعلی <b>بلافاصله از کار می‌افتد</b> و هر دستگاهی که با آن وصل است قطع می‌شود.
+                   حجم و روزهای باقی‌مانده دقیقاً حفظ و به لینک تازه منتقل می‌شود.</>
+              )}
+            </p>
+            <button
+              className={confirmAct.kind === "delete" ? "btn-danger" : "btn-primary"}
+              disabled={busy === confirmAct.s.id}
+              onClick={runConfirmed}>
+              {busy === confirmAct.s.id ? "…" : (confirmAct.kind === "delete" ? "بله، حذف کن" : "بله، لینک تازه بده")}
+            </button>
+            <button className="btn-ghost" onClick={() => setConfirmAct(null)}>منصرف شدم</button>
+          </div>
+        </div>
+      )}
     </div>
   );
+}
+
+// A number that counts to its new value instead of jumping.
+//
+// Used for the price when a discount lands: watching it fall is what makes the
+// discount feel real, and a total that silently changes is one people re-read
+// to check they were not overcharged.
+function CountUp({ to, ms = 550 }) {
+  const [v, setV] = useState(to);
+  const from = useRef(to);
+  useEffect(() => {
+    const start = performance.now(), a = from.current, b = to;
+    if (a === b) return;
+    let raf;
+    const step = (now) => {
+      const t = Math.min(1, (now - start) / ms);
+      // Ease-out: fast at first, settling at the end.
+      setV(Math.round(a + (b - a) * (1 - Math.pow(1 - t, 3))));
+      if (t < 1) raf = requestAnimationFrame(step);
+      else from.current = b;
+    };
+    raf = requestAnimationFrame(step);
+    return () => cancelAnimationFrame(raf);
+  }, [to, ms]);
+  return <>{fmt(v)}</>;
 }
 
 function Buy({ balance, onBalance }) {
@@ -506,9 +629,34 @@ function Buy({ balance, onBalance }) {
   const [sel, setSel] = useState(null);   // selected package
   const [code, setCode] = useState("");
   const [codeErr, setCodeErr] = useState("");
+  const [applied, setApplied] = useState(null);   // priced result from the server
+  const [checking, setChecking] = useState(false);
   const [order, setOrder] = useState(null);
   const [busy, setBusy] = useState(false);
   useEffect(() => { api("packages").then((d) => setPkgs(d.packages || [])).catch(() => setPkgs([])); }, []);
+
+  // Price the code before committing to anything. The server answers with the
+  // SAME function the purchase uses, so the preview and the till cannot
+  // disagree — a preview that did its own arithmetic would eventually lie.
+  const checkCode = async () => {
+    const c = code.trim();
+    if (!c) return;
+    setChecking(true); setCodeErr(""); setApplied(null);
+    try {
+      const d = await api("discount/check", { package_id: sel.id, discount_code: c });
+      if (d.code_amount > 0) {
+        setApplied(d);
+        haptic("success");
+        toast(`🎟️ ${fmt(d.code_amount)} تومان تخفیف گرفتی`);
+      } else {
+        setCodeErr("این کد برای این پکیج تخفیفی ندارد");
+        haptic("error");
+      }
+    } catch (e) {
+      setCodeErr(DISCOUNT_ERR[e.data?.error] || "کد نامعتبر است");
+      haptic("error");
+    } finally { setChecking(false); }
+  };
 
   const confirm = async () => {
     setBusy(true); setCodeErr("");
@@ -524,7 +672,7 @@ function Buy({ balance, onBalance }) {
       <h2 className="screen-title">پرداخت سفارش <bdi>#{order.order_id}</bdi></h2>
       <PayCard payment={order.payment} kind="order" id={order.order_id}
                walletBalance={balance} onWalletPaid={onBalance}
-               onDone={() => { setOrder(null); setSel(null); setCode(""); }} />
+               onDone={() => { setOrder(null); setSel(null); setCode(""); setApplied(null); }} />
     </div>
   );
   if (sel) return (
@@ -533,15 +681,29 @@ function Buy({ balance, onBalance }) {
       <div className="card confirm">
         <div className="confirm-name">{sel.name}</div>
         <PlanSpec plan={sel} className="confirm-spec" />
-        <div className="confirm-price">
-          {sel.base > 0 && <s className="price-base">{fmt(sel.base)}</s>} {fmt(sel.price)} <small>تومان</small>
+        <div className={"confirm-price" + (applied ? " price-cut" : "")}>
+          {/* Once a code lands, the old total is struck through beside the new
+              one. Showing only the new number leaves the customer with no idea
+              what the code was worth. */}
+          {applied ? <s className="price-base">{fmt(applied.base)}</s>
+                   : (sel.base > 0 && <s className="price-base">{fmt(sel.base)}</s>)}{" "}
+          <CountUp to={applied ? applied.net : sel.price} /> <small>تومان</small>
         </div>
+        {applied && (
+          <div className="code-ok">
+            🎟️ کد <b dir="ltr">{applied.code}</b> اعمال شد — <b>{fmt(applied.code_amount)}</b> تومان کمتر
+          </div>
+        )}
         <div className="code-row">
-          <input aria-label="کد تخفیف (اختیاری)" className="inp" value={code} onChange={(e) => { setCode(e.target.value); setCodeErr(""); }} placeholder="کد تخفیف (اختیاری)" dir="ltr" />
+          <input aria-label="کد تخفیف (اختیاری)" className="inp" value={code}
+            onChange={(e) => { setCode(e.target.value); setCodeErr(""); setApplied(null); }}
+            placeholder="کد تخفیف (اختیاری)" dir="ltr" disabled={checking} />
+          <button className="btn-soft sm" disabled={!code.trim() || checking}
+            onClick={checkCode}>{checking ? "…" : (applied ? "تغییر" : "اعمال")}</button>
         </div>
-        {codeErr && <div className="code-err">❌ {codeErr}</div>}
+        {codeErr && <div className="code-err shake">❌ {codeErr}</div>}
         <button className="btn-primary" disabled={busy} onClick={confirm}>{busy ? "…" : "ادامه به پرداخت"}</button>
-        <button className="btn-ghost" onClick={() => { setSel(null); setCode(""); setCodeErr(""); }}>برگشت</button>
+        <button className="btn-ghost" onClick={() => { setSel(null); setCode(""); setCodeErr(""); setApplied(null); }}>برگشت</button>
       </div>
     </div>
   );
@@ -635,7 +797,7 @@ function Referral() {
         <div className="earn-lbl">جایزهٔ دریافتی شما</div>
         <div className="earn-sub">👥 {d.invited || 0} دعوت · 🛒 {d.converted || 0} خرید</div>
       </div>
-      <div className="card link-card" onClick={() => copy(d.link)}>
+      <div className="card link-card" onClick={() => copy(d.link, "لینک دعوت کپی شد")}>
         <div className="muted">لینک اختصاصی (لمس=کپی)</div>
         <div className="link-text" dir="ltr">{d.link}</div>
       </div>
@@ -1020,6 +1182,8 @@ export default function App() {
           </button>
         ))}
       </nav>
+      {/* Outside <main> so a toast is never clipped by a scrolling panel. */}
+      <Toaster />
     </div>
   );
 }

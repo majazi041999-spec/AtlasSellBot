@@ -277,3 +277,96 @@ small { font-weight: 500; }
   *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
   .spinner { border-style: dotted; }
 }
+
+/* ═══════════ toast ═══════════
+   Above the tab bar, never over it: a message that covers the navigation is a
+   message that blocks the way out. */
+.toast-wrap{
+  position:fixed; inset-inline:0; bottom:calc(var(--tabbar-h,72px) + 14px);
+  display:flex; flex-direction:column; align-items:center; gap:8px;
+  pointer-events:none; z-index:60; padding:0 16px;
+}
+.toast{
+  max-width:min(92vw,420px);
+  background:rgba(20,24,38,.96); color:#eef2ff;
+  border:1px solid rgba(255,255,255,.12);
+  border-radius:14px; padding:10px 16px;
+  font-size:.88rem; font-weight:600; line-height:1.7;
+  box-shadow:0 12px 34px rgba(0,0,0,.45);
+  animation:toast-in .28s cubic-bezier(.16,1,.3,1);
+}
+.toast-err{ border-color:rgba(251,113,133,.5); background:rgba(60,20,30,.96); }
+@keyframes toast-in{
+  from{ opacity:0; transform:translateY(14px) scale(.96); }
+  to  { opacity:1; transform:none; }
+}
+
+/* ═══════════ discount applied ═══════════ */
+.code-row{ display:flex; gap:8px; align-items:center; }
+.code-row .inp{ flex:1; min-width:0; }
+.code-ok{
+  margin:8px 0 2px; padding:9px 12px; border-radius:12px;
+  background:rgba(52,211,153,.12); border:1px solid rgba(52,211,153,.32);
+  color:#34d399; font-size:.84rem; line-height:1.8;
+  animation:pop-in .34s cubic-bezier(.16,1,.3,1);
+}
+@keyframes pop-in{
+  0%  { opacity:0; transform:translateY(-6px) scale(.94); }
+  60% { transform:translateY(0) scale(1.03); }
+  100%{ opacity:1; transform:none; }
+}
+/* The price itself pulses green once, so the drop is noticed and not just
+   silently different from the number the customer remembers. */
+.price-cut{ animation:price-cut .7s ease-out; }
+@keyframes price-cut{
+  0%  { transform:scale(1); }
+  30% { transform:scale(1.09); color:#34d399; }
+  100%{ transform:scale(1); }
+}
+.shake{ animation:shake .34s; }
+@keyframes shake{
+  0%,100%{ transform:translateX(0); }
+  25%{ transform:translateX(-5px); }
+  75%{ transform:translateX(5px); }
+}
+
+/* ═══════════ confirm sheet ═══════════ */
+.sheet-back{
+  position:fixed; inset:0; z-index:70;
+  background:rgba(6,8,16,.62); backdrop-filter:blur(3px);
+  display:flex; align-items:flex-end; justify-content:center;
+  animation:fade-in .2s ease-out;
+}
+.sheet{
+  width:min(100%,460px);
+  background:var(--card,#141826); border:1px solid rgba(255,255,255,.1);
+  border-radius:22px 22px 0 0; padding:22px 20px calc(22px + env(safe-area-inset-bottom));
+  display:flex; flex-direction:column; gap:10px; text-align:center;
+  animation:sheet-up .32s cubic-bezier(.16,1,.3,1);
+}
+.sheet-icon{
+  width:52px; height:52px; margin:0 auto 4px; border-radius:16px;
+  display:grid; place-items:center;
+  background:rgba(148,163,184,.14); color:#94a3b8;
+}
+.sheet-icon.danger{ background:rgba(244,63,94,.14); color:#fb7185; }
+.sheet-icon.warn{ background:rgba(251,191,36,.14); color:#fbbf24; }
+.sheet-icon svg{ width:26px; height:26px; }
+.sheet-title{ margin:0; font-size:1.05rem; }
+.sheet-body{ margin:0 0 6px; font-size:.87rem; line-height:2; color:var(--muted,#9aa6bd); }
+@keyframes fade-in{ from{opacity:0} to{opacity:1} }
+@keyframes sheet-up{
+  from{ transform:translateY(100%); }
+  to  { transform:none; }
+}
+
+/* A destructive action must not look like the ordinary ones next to it. */
+.btn-danger{
+  background:linear-gradient(135deg,#fb7185,#f43f5e); color:#fff;
+  border:0; border-radius:14px; padding:12px 16px;
+  font-weight:700; font-size:.92rem; cursor:pointer;
+  display:inline-flex; align-items:center; justify-content:center; gap:6px;
+}
+.btn-danger.sm{ padding:7px 11px; font-size:.8rem; border-radius:11px; }
+.btn-danger:disabled{ opacity:.55; }
+.btn-danger svg{ width:15px; height:15px; }

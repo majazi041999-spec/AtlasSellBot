@@ -18,6 +18,8 @@ const paths = {
   copy: <><rect x="8" y="8" width="12" height="13" rx="2" /><path d="M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h3" /></>,
   edit: <><path d="m15 4 5 5M4 20l5-1L21 7a2 2 0 0 0-5-5L4 14Z" /></>,
   refresh: <><path d="M20 7v5h-5M4 17v-5h5M5 7a8 8 0 0 1 13-2l2 3M4 16l2 3a8 8 0 0 0 13-2" /></>,
+  trash: <><path d="M4 7h16M10 4h4M6 7l1 13a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1l1-13M10 11v6M14 11v6" /></>,
+  warn: <><path d="M12 3 2 20h20L12 3Z" /><path d="M12 10v4m0 3h.01" /></>,
   devices: <><rect x="2" y="4" width="14" height="11" rx="2" /><path d="M9 15v4H5m4 0h3" /><rect x="16" y="10" width="6" height="11" rx="1" /></>,
   check: <><circle cx="12" cy="12" r="9" /><path d="m8 12 3 3 5-6" /></>,
   upload: <><path d="M12 16V3m-5 5 5-5 5 5M4 15v6h16v-6" /></>,
