@@ -89,6 +89,16 @@ async def cmd_start(msg: Message, state: FSMContext):
 
     await send_home(msg, user, role)
 
+    # After the menu, not before it: the gift is an offer, and an offer that
+    # arrives before someone can see where they are is just noise. Only ever
+    # reaches a genuinely new arrival — see core/welcome_gift.py.
+    if role == "none":
+        from core import welcome_gift
+        try:
+            await welcome_gift.send(msg.bot, msg.chat.id, user)
+        except Exception:
+            pass
+
 
 async def send_home(msg: Message, user: dict, role: str):
     """The welcome message and the menus, in one place.

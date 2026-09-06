@@ -439,6 +439,15 @@ async def _ensure_columns(db):
             ("load_weight", "REAL DEFAULT 1"),           # capacity multiplier; higher = can take more users
         ],
         "users": [
+            # Has this person had the new-arrival discount yet? A marker rather
+            # than "is their row new", because MenuRefreshMiddleware runs BEFORE
+            # /start and creates the row first — by the time the handler looks,
+            # every user is an old user.
+            #
+            # Backfilled to 1 for everyone who already existed when the column
+            # was added, so a welcome gift only ever goes to people who arrive
+            # after it was switched on.
+            ("welcome_gift_sent", "INTEGER DEFAULT 0"),
             # Which build of the bot's menus this person is currently holding.
             # A reply keyboard lives on the customer's phone until the bot sends
             # a new one, so a menu change reaches nobody until they press
@@ -583,6 +592,20 @@ async def _ensure_columns(db):
             updates.append((int(m.group(1)), int(row[0])))
     if updates:
         await db.executemany("UPDATE subscription_nodes SET config_id=? WHERE id=?", updates)
+
+    # Everyone who was already here when welcome_gift_sent appeared counts as
+    # already welcomed. Without this the first restart after the migration would
+    # hand a "new arrival" discount to the entire existing customer base.
+    # Guarded by a setting so it runs exactly once, ever.
+    async with db.execute(
+        "SELECT value FROM settings WHERE key='welcome_gift_backfilled'"
+    ) as c:
+        done = await c.fetchone()
+    if not done:
+        await db.execute("UPDATE users SET welcome_gift_sent=1")
+        await db.execute(
+            "INSERT OR REPLACE INTO settings(key,value) VALUES('welcome_gift_backfilled','1')")
+
 
 def _gen_referral_code() -> str:
     chars = string.ascii_uppercase + string.digits
