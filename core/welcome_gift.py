@@ -25,6 +25,12 @@ from core.database import get_setting, update_user
 
 log = logging.getLogger(__name__)
 
+# The campaign slug the code is locked to. A targeted code checks for a 'sent'
+# event under this exact name — the one thing that must never drift, because a
+# mismatch rejects every recipient with "not_eligible" and nobody finds out
+# until a customer complains that their code does not work.
+CAMPAIGN = "welcome"
+
 SETTINGS = {
     "campaign_welcome_enabled": "1",
     "campaign_welcome_code": "",          # empty = feature is dormant
@@ -90,7 +96,12 @@ async def send(bot, chat_id: int, user: dict) -> bool:
     html, kb = await build(user)
     if not html:
         return False
+    from core.database import log_campaign_event
     await update_user(int(user["id"]), welcome_gift_sent=1)
+    # The code is campaign-locked: only somebody this event exists for may
+    # redeem it. Logged BEFORE the send, because a customer holding a code the
+    # checkout then calls invalid is worse than one who never got the message.
+    await log_campaign_event(CAMPAIGN, "sent", int(user["id"]))
     try:
         await bot.send_message(chat_id, html, parse_mode="HTML", reply_markup=kb)
         return True
