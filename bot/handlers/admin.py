@@ -3231,6 +3231,51 @@ async def _emoji_ids_reply(msg: Message) -> str:
     return "\n".join(lines)
 
 
+@router.message(Command("assign"))
+async def assign_subscription(msg: Message):
+    """/assign <service id> <telegram id> — hand a service to another customer.
+
+    Exists alongside the panel button because the owner is usually on a phone
+    when this comes up: they bought on their own topped-up account and want the
+    service to land with the person it was for, right then.
+    """
+    if not is_admin(msg.from_user.id):
+        return
+    from core.multi_subscription import reassign_subscription
+    from core.database import get_subscription_profile
+
+    parts = (msg.text or "").split()
+    if len(parts) < 3 or not parts[1].isdigit() or not parts[2].lstrip("-").isdigit():
+        await msg.answer(
+            "🎁 <b>تخصیص سرویس به کاربر</b>\n\n"
+            "<code>/assign &lt;آیدی سرویس&gt; &lt;آیدی عددی تلگرام&gt;</code>\n\n"
+            "مثال: <code>/assign 142 467732860</code>\n\n"
+            "سرویس با همان حجم، تاریخ و لینک به کاربر جدید منتقل می‌شود و "
+            "خودش هم پیام دریافت می‌کند. گیرنده باید قبلاً ربات را استارت کرده باشد.",
+            parse_mode="HTML")
+        return
+
+    pid, target = int(parts[1]), int(parts[2])
+    before = await get_subscription_profile(pid)
+    if not before:
+        await msg.answer("❌ سرویسی با این آیدی پیدا نشد.")
+        return
+
+    res = await reassign_subscription(pid, target, notify=True, bot=msg.bot)
+    if not res.get("ok"):
+        await msg.answer(f"❌ {res.get('error') or 'انتقال ناموفق بود.'}")
+        return
+    if res.get("unchanged"):
+        await msg.answer("ℹ️ این سرویس از قبل برای همین کاربر بود؛ چیزی عوض نشد.")
+        return
+    await msg.answer(
+        f"✅ سرویس <b>{pid}</b> منتقل شد.\n\n"
+        f"از: <code>{res['from']['telegram_id'] or '—'}</code>\n"
+        f"به: <code>{res['to']['telegram_id']}</code>\n"
+        f"اطلاع‌رسانی به کاربر: {'انجام شد' if res.get('notified') else 'ناموفق (شاید ربات را بلاک کرده)'}",
+        parse_mode="HTML")
+
+
 @router.message(Command("emojiid"))
 async def emojiid_start(msg: Message, state: FSMContext):
     if not is_admin(msg.from_user.id):

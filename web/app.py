@@ -2743,6 +2743,28 @@ async def subscription_profile_edit(
     return JSONResponse({"success": True})
 
 
+@app.post(f"/{S}/subs/profiles/{{profile_id}}/reassign")
+async def subscription_profile_reassign(request: Request, profile_id: int):
+    """Hand this subscription to a different customer, and tell them so."""
+    if not _auth(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    ct = request.headers.get("content-type", "")
+    if "application/json" in ct:
+        data = await request.json()
+    else:
+        data = dict(await request.form())
+    raw = str(data.get("telegram_id") or "").strip()
+    notify = str(data.get("notify", "1")) != "0"
+    if not raw.lstrip("-").isdigit():
+        return JSONResponse({"error": "آیدی عددی تلگرام را وارد کنید."}, status_code=400)
+
+    from core.multi_subscription import reassign_subscription
+    res = await reassign_subscription(profile_id, int(raw), notify=notify)
+    if not res.get("ok"):
+        return JSONResponse({"error": res.get("error") or "انتقال ناموفق بود."}, status_code=400)
+    return JSONResponse({"success": True, **res})
+
+
 @app.post(f"/{S}/subs/profiles/{{profile_id}}/reset-usage")
 async def subscription_profile_reset_usage(request: Request, profile_id: int):
     if not _auth(request):

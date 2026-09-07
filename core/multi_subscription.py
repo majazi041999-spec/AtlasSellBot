@@ -1784,6 +1784,128 @@ async def reset_subscription_usage(profile_id: int) -> Dict:
     return {"ok": True, "nodes": done}
 
 
+async def reassign_subscription(profile_id: int, target_telegram_id: int,
+                                notify: bool = True, bot=None) -> Dict:
+    """Hand an existing subscription to a different customer.
+
+    For the case where the owner buys on one account — their own, topped up with
+    balance — and the service is really for somebody else. Only the ownership
+    row moves: traffic, expiry, token and the clients on the panels are all left
+    exactly as they are, so the customer's link keeps working through the change
+    and nothing has to be rebuilt.
+
+    The panel clients keep e-mails containing the ORIGINAL owner's telegram id.
+    That is deliberate: those strings are the identity the remote panels index a
+    client by, and rewriting them means deleting and recreating every node —
+    a new link for the customer, and a real chance of orphaning a client on a
+    panel that happens to be unreachable at that moment. They are opaque
+    identifiers, and nothing reads an owner out of them.
+
+    The recipient must have opened the bot at least once. Telegram will not let
+    a bot message somebody who never started it, so an id that is not already a
+    user is refused up front rather than silently handing over a service whose
+    new owner can never be told about it.
+    """
+    from core.database import get_user_by_telegram
+
+    profile = await get_subscription_profile(int(profile_id))
+    if not profile:
+        return {"ok": False, "error": "سرویس پیدا نشد."}
+
+    target = await get_user_by_telegram(int(target_telegram_id))
+    if not target:
+        return {"ok": False, "error": "این آیدی هنوز ربات را استارت نکرده؛ اول باید وارد ربات شود."}
+
+    old_user = await get_user_by_id(int(profile.get("user_id") or 0))
+    if int(profile.get("user_id") or 0) == int(target["id"]):
+        return {"ok": True, "unchanged": True, "error": "",
+                "to": {"telegram_id": int(target["telegram_id"] or 0)}}
+
+    await update_subscription_profile(int(profile_id), user_id=int(target["id"]))
+    logger.info("subscription %s reassigned from user %s to %s (tg %s)",
+                profile_id, profile.get("user_id"), target["id"], target.get("telegram_id"))
+
+    notified = False
+    if notify:
+        try:
+            notified = await notify_subscription_assigned(int(profile_id), bot=bot)
+        except Exception:
+            logger.exception("assignment notice failed for profile %s", profile_id)
+
+    return {
+        "ok": True,
+        "unchanged": False,
+        "notified": notified,
+        "from": {"id": int(profile.get("user_id") or 0),
+                 "telegram_id": int((old_user or {}).get("telegram_id") or 0)},
+        "to": {"id": int(target["id"]), "telegram_id": int(target.get("telegram_id") or 0)},
+    }
+
+
+async def notify_subscription_assigned(profile_id: int, bot=None) -> bool:
+    """Tell the new owner the service is theirs, with everything they need to use it.
+
+    Built here rather than reusing the customer's own service screen: that one
+    edits a message the recipient never sent and syncs usage off every panel
+    first, which is a slow and failure-prone thing to hang a handover on.
+    """
+    from core.jalali import jalali_display
+
+    profile = await get_subscription_profile(int(profile_id))
+    if not profile:
+        return False
+    user = await get_user_by_id(int(profile.get("user_id") or 0))
+    telegram_id = int((user or {}).get("telegram_id") or 0)
+    if not telegram_id:
+        return False
+
+    own_bot = False
+    if bot is None:
+        from aiogram import Bot
+        from core.config import BOT_TOKEN
+        bot = Bot(token=BOT_TOKEN)
+        own_bot = True
+    try:
+        from bot.rich_message import premiumize, esc
+        from aiogram.utils.keyboard import InlineKeyboardBuilder
+        from bot.keyboards import _button
+
+        sub_url = await subscription_url(profile["token"])
+        total = total_bytes(profile.get("traffic_gb") or 0)
+        expire_ms = int(profile.get("expire_timestamp") or 0)
+        nodes = [n for n in await get_subscription_nodes(int(profile_id))
+                 if int(n.get("is_active") or 0)]
+        lines = [
+            "🎁 <b>یک سرویس برای شما فعال شد</b>",
+            "",
+            f"📦 {esc(str(profile.get('name') or profile.get('email') or ''))}",
+            f"💾 حجم: <b>{_fmt_bytes_short(total) if total > 0 else 'نامحدود'}</b>",
+        ]
+        if expire_ms > 0:
+            lines.append(f"⏱ تا: <b>{jalali_display(datetime.fromtimestamp(expire_ms / 1000))}</b>")
+        lines += [
+            f"🌐 سرورهای فعال: <b>{len(nodes)}</b>",
+            "",
+            "🔗 <b>لینک اشتراک</b>",
+            f"<code>{esc(sub_url)}</code>",
+            "",
+            "این لینک را در برنامه اضافه کن. از «سرویس‌های من» هم همیشه در دسترس است.",
+        ]
+        b = InlineKeyboardBuilder()
+        _button(b, text="سرویس‌های من", callback_data="home:status", style="primary")
+        _button(b, text="راهنمای اتصال", callback_data="agent:getapp", style="success")
+        b.adjust(2)
+        await bot.send_message(telegram_id, premiumize("\n".join(lines)),
+                               parse_mode="HTML", reply_markup=b.as_markup())
+        return True
+    finally:
+        if own_bot:
+            try:
+                await bot.session.close()
+            except Exception:
+                pass
+
+
 async def reset_subscription_time(profile_id: int) -> Dict:
     """Admin: re-arm the timer — a fresh full duration counted from now."""
     profile = await get_subscription_profile(profile_id)
