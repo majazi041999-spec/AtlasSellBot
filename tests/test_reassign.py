@@ -25,6 +25,7 @@ from core.database import (  # noqa: E402
     get_subscription_profile,
     init_db,
 )
+from core.database import get_user_by_username, update_user  # noqa: E402
 from core.multi_subscription import reassign_subscription  # noqa: E402
 
 try:
@@ -88,6 +89,20 @@ async def main():
     check("ok", r["ok"], True)
     check("owner is the buyer again",
           (await get_subscription_profile(pid))["user_id"], buyer["id"])
+
+    print("\nfinding the recipient by @username")
+    check("plain handle", (await get_user_by_username("recip"))["telegram_id"], 9002)
+    check("with the @", (await get_user_by_username("@recip"))["telegram_id"], 9002)
+    check("wrong case", (await get_user_by_username("@ReCiP"))["telegram_id"], 9002)
+    check("padded", (await get_user_by_username("  @recip  "))["telegram_id"], 9002)
+    check("unknown handle", await get_user_by_username("nobody"), None)
+    check("empty", await get_user_by_username(""), None)
+
+    print("\nan ambiguous handle is refused rather than guessed")
+    twin = await get_or_create_user(9003, "recip", "Same Handle")
+    check("two rows share it", await get_user_by_username("recip"), None)
+    await update_user(twin["id"], username="other")
+    check("unambiguous again", (await get_user_by_username("recip"))["telegram_id"], 9002)
 
     print("\n" + ("ALL PASSED" if not FAILED else f"FAILED: {FAILED}"))
     return 1 if FAILED else 0

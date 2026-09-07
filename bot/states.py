@@ -97,6 +97,11 @@ class PrivateMessage(StatesGroup):
     buttons = State()
 
 
+class MoveSubscription(StatesGroup):
+    """Waiting for who a subscription should be handed to."""
+    target = State()
+
+
 class WalletTopup(StatesGroup):
     waiting_amount = State()
     waiting_receipt = State()

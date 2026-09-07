@@ -64,6 +64,7 @@ from bot.keyboards import (
 )
 from bot.states import (
     AddPackage, CreateConfig, BulkConfig, EditConfig, EditSubProfile, Broadcast, PrivateMessage,
+    MoveSubscription,
     AdminUserSearch, AdminBalance, ChannelPost, EmojiIds,
 )
 
@@ -1628,6 +1629,83 @@ async def adm_sub_msg_start(cb: CallbackQuery, state: FSMContext):
     await state.update_data(uid=int(owner["telegram_id"]))
     await cb.message.answer("✍️ متن پیام به مالک این ساب را ارسال کنید:", reply_markup=flow_cancel_kb())
     await cb.answer()
+
+
+@router.callback_query(F.data.startswith("adm_sub_move:"))
+async def adm_sub_move_start(cb: CallbackQuery, state: FSMContext):
+    if not is_admin(cb.from_user.id):
+        return
+    pid = int(cb.data.split(":")[1])
+    profile = await get_subscription_profile(pid)
+    if not profile:
+        await cb.answer("ساب پیدا نشد", show_alert=True)
+        return
+    owner = await get_user_by_id(int(profile.get("user_id") or 0))
+    await state.set_state(MoveSubscription.target)
+    await state.update_data(pid=pid)
+    await cb.message.answer(
+        "👤 <b>انتقال سرویس به کاربر دیگر</b>\n\n"
+        f"مالک فعلی: <code>{(owner or {}).get('telegram_id') or '—'}</code>"
+        f" ({_esc_html((owner or {}).get('full_name') or '—')})\n\n"
+        "آیدی عددی یا یوزرنیم کاربر جدید را بفرست:\n"
+        "<code>467732860</code>  یا  <code>@username</code>\n\n"
+        "لینک اشتراک و اتصال دست‌نخورده می‌ماند؛ فقط مالک عوض می‌شود و "
+        "سرویس از فهرست مالک قبلی برداشته می‌شود.",
+        reply_markup=flow_cancel_kb(), parse_mode="HTML")
+    await cb.answer()
+
+
+def _esc_html(s) -> str:
+    import html as _h
+    return _h.escape(str(s or ""), quote=False)
+
+
+@router.message(MoveSubscription.target)
+async def adm_sub_move_finish(msg: Message, state: FSMContext):
+    if not is_admin(msg.from_user.id):
+        return
+    raw = (msg.text or "").strip()
+    if raw in ("لغو", "❌ لغو", "/cancel"):
+        await state.clear()
+        await msg.answer("انتقال لغو شد.", parse_mode=None)
+        return
+
+    data = await state.get_data()
+    pid = int(data.get("pid") or 0)
+
+    # Numeric id or @username — the admin usually has whichever one the chat in
+    # front of them happens to show.
+    from core.database import get_user_by_username
+    target = None
+    if raw.lstrip("-").isdigit():
+        target_tid = int(raw)
+    else:
+        found = await get_user_by_username(raw)
+        if not found:
+            await msg.answer(
+                "❌ کاربری با این یوزرنیم پیدا نشد.\n\n"
+                "یوزرنیم فقط وقتی کار می‌کند که کاربر قبلاً ربات را استارت کرده باشد. "
+                "اگر مطمئنی، آیدی عددی‌اش را بفرست.", parse_mode=None)
+            return
+        target = found
+        target_tid = int(found.get("telegram_id") or 0)
+
+    from core.multi_subscription import reassign_subscription
+    res = await reassign_subscription(pid, target_tid, notify=True, bot=msg.bot)
+    if not res.get("ok"):
+        await msg.answer(f"❌ {res.get('error') or 'انتقال ناموفق بود.'}", parse_mode=None)
+        return
+    await state.clear()
+    if res.get("unchanged"):
+        await msg.answer("ℹ️ این سرویس از قبل برای همین کاربر بود.", parse_mode=None)
+    else:
+        who = f"@{target['username']}" if (target and target.get("username")) else str(target_tid)
+        await msg.answer(
+            f"✅ منتقل شد به <b>{_esc_html(who)}</b>\n"
+            f"اطلاع‌رسانی: {'انجام شد' if res.get('notified') else 'ناموفق — شاید ربات را بلاک کرده'}",
+            parse_mode="HTML")
+    sent = await msg.answer("🔎 در حال بارگذاری پنل...", parse_mode=None)
+    await _render_sub_panel(sent, pid)
 
 
 @router.callback_query(F.data.startswith("adm_sub_del:"))

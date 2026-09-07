@@ -3807,6 +3807,30 @@ async def get_expired_subscription_profiles(now_ms: int, limit: int = 300) -> Li
             return [dict(r) for r in await c.fetchall()]
 
 
+async def get_user_by_username(username: str) -> Optional[Dict]:
+    """Find a customer by their @username, however it was typed.
+
+    Case-insensitive and tolerant of a leading @, because the admin usually
+    pastes it straight out of a chat. Telegram usernames are not unique over
+    time — someone can release one and another person can take it — so this is
+    only ever a convenience for a human who is looking at the person; anything
+    that must be durable keys off telegram_id.
+    """
+    handle = (username or "").strip().lstrip("@").lower()
+    if not handle:
+        return None
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT * FROM users WHERE LOWER(TRIM(COALESCE(username,''))) = ? LIMIT 2",
+            (handle,),
+        ) as c:
+            rows = await c.fetchall()
+    # Two matches means the handle is ambiguous in our own table; refuse rather
+    # than guess which person the admin meant.
+    return dict(rows[0]) if len(rows) == 1 else None
+
+
 async def get_subscription_profiles_for_prewarn(now_ms: int, within_ms: int, used_fraction: float,
                                                 limit: int = 300, max_stage: int = 1) -> List[Dict]:
     """Active profiles that are *about to* end, and have rungs of the warning

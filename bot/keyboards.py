@@ -949,10 +949,11 @@ def adm_sub_panel_kb(pid: int, is_active: bool, owner_uid: int = 0) -> InlineKey
     _button(b, text="🔐 سقف اتصال هم‌زمان", callback_data=f"adm_sub_iplimit:{pid}", style="primary")
     _button(b, text="📤 ارسال لینک به کاربر", callback_data=f"adm_sub_send:{pid}", style="primary")
     _button(b, text="✉️ پیام به مالک", callback_data=f"adm_sub_msg:{pid}", style="primary")
+    _button(b, text="👤 انتقال به کاربر دیگر", callback_data=f"adm_sub_move:{pid}", style="success")
     _button(b, text="🗑️ حذف کامل ساب", callback_data=f"adm_sub_del:{pid}", style="danger")
     if owner_uid:
         _button(b, text="🔙 سرویس‌های کاربر", callback_data=f"adm_usr_svcs:{owner_uid}", style="primary")
-    b.adjust(2, 1, 2, 2, 1, 1)
+    b.adjust(2, 1, 2, 2, 1, 1, 1)
     return b.as_markup()
 
 
