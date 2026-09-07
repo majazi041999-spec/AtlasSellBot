@@ -65,7 +65,16 @@ def _channel_join_kb(channel_username: str):
 # empty chat — for everyone else the link just brings the conversation forward.
 # That is fine for a recruitment post, whose readers have mostly never been here,
 # and everyone else still has the button in the menu.
-START_DESTINATIONS = {"rep"}
+START_DESTINATIONS = {"rep", "trial", "buy"}
+
+# Where each destination lands. The handler name is looked up on bot.handlers.user
+# so a channel advert's button opens the thing it advertised, rather than the
+# generic menu with the offer nowhere in sight.
+_DESTINATION_HANDLERS = {
+    "rep": "representative_start",
+    "trial": "test_account",
+    "buy": "buy_service",
+}
 
 
 @router.message(CommandStart())
@@ -105,19 +114,31 @@ async def cmd_start(msg: Message, state: FSMContext):
 
     await send_home(msg, user, role)
 
-    if destination == "rep" and role == "none":
-        # Straight to the reseller screen. The recruitment post promises a place
-        # to apply, and a reader who lands on the retail menu and has to go
-        # hunting for the right button is a reader we have already lost.
-        #
-        # No welcome gift on this path: it is a retail discount, and somebody who
-        # arrived to sell has no use for it. If they come back as a customer, the
-        # next plain /start still offers it.
-        from bot.handlers.user import representative_start
+    if destination and role == "none":
+        # Straight to what the link advertised. A reader who lands on the retail
+        # menu and has to go hunting for the offer they just tapped is a reader
+        # we have already lost.
+        import inspect
+        from bot.handlers import user as user_handlers
+        fn = getattr(user_handlers, _DESTINATION_HANDLERS.get(destination, ""), None)
+        if fn:
+            try:
+                if "state" in inspect.signature(fn).parameters:
+                    await fn(msg, state)
+                else:
+                    await fn(msg)
+            except Exception:
+                logging.getLogger(__name__).exception("%s deeplink failed", destination)
+        # No welcome gift on the reseller path: it is a retail discount and
+        # somebody who arrived to sell has no use for it. The retail
+        # destinations still get it — they are exactly who it is for.
+        if destination == "rep":
+            return
+        from core import welcome_gift
         try:
-            await representative_start(msg, state)
+            await welcome_gift.send(msg.bot, msg.chat.id, user)
         except Exception:
-            logging.getLogger(__name__).exception("rep deeplink failed")
+            pass
         return
 
     # After the menu, not before it: the gift is an offer, and an offer that
