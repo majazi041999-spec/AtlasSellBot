@@ -3185,6 +3185,33 @@ async def claim_order_for_approval(oid: int) -> bool:
         return (c.rowcount or 0) > 0
 
 
+async def reject_order_if_reviewable(oid: int, note: str = "") -> bool:
+    """Atomically flip a reviewable order to 'rejected'.
+
+    Returns True only if THIS call performed the transition (the order was still
+    'receipt_submitted'), so two admins acting at once — or an admin who rejects
+    an order another admin already approved — cannot both take effect. Mirrors
+    claim_order_for_approval's single conditional UPDATE. Optionally appends the
+    rejection reason to orders.notes for the record.
+    """
+    async with aiosqlite.connect(DB_PATH) as db:
+        if note:
+            c = await db.execute(
+                "UPDATE orders SET status='rejected', "
+                "notes=TRIM(COALESCE(notes,'') || char(10) || ?) "
+                "WHERE id=? AND status='receipt_submitted'",
+                (f"reject: {note}", oid),
+            )
+        else:
+            c = await db.execute(
+                "UPDATE orders SET status='rejected' "
+                "WHERE id=? AND status='receipt_submitted'",
+                (oid,),
+            )
+        await db.commit()
+        return (c.rowcount or 0) > 0
+
+
 async def claim_order_for_wallet_payment(oid: int) -> bool:
     """Move an order to paid, and say whether THIS caller is the one that did it.
 

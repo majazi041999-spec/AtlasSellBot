@@ -25,9 +25,11 @@ from core.database import (
     get_legacy_claim, update_legacy_claim, get_config_by_email, get_config_by_uuid,
     get_topup_request, get_pending_topup_requests, update_topup_request, add_user_balance,
     claim_order_for_approval,
+    reject_order_if_reviewable,
     release_order_processing,
     clear_config_alerts,
     add_review_message,
+    get_review_messages,
     snapshot_daily_report,
     get_recent_daily_reports,
     format_daily_report,
@@ -55,7 +57,7 @@ from core.multi_subscription import (
     delete_subscription_profile_remote,
 )
 from bot.keyboards import (
-    admin_menu, order_review_kb, order_server_select_kb,
+    admin_menu, order_review_kb, reject_reason_kb, order_server_select_kb,
     admin_configs_kb, adm_config_detail_kb, confirm_kb, packages_kb, servers_kb,
     broadcast_target_kb, legacy_claim_admin_kb, flow_cancel_kb, topup_review_kb,
     config_links_kb, parse_custom_buttons, parse_button_specs,
@@ -64,7 +66,7 @@ from bot.keyboards import (
 )
 from bot.states import (
     AddPackage, CreateConfig, BulkConfig, EditConfig, EditSubProfile, Broadcast, PrivateMessage,
-    MoveSubscription,
+    MoveSubscription, RejectOrder,
     AdminUserSearch, AdminBalance, ChannelPost, EmojiIds,
 )
 
@@ -832,22 +834,124 @@ async def _do_approve_impl(cb: CallbackQuery, oid: int, sid: int):
     return True
 
 
+async def _clear_order_review_kbs(bot: Bot, oid: int) -> None:
+    """Take the approve/reject buttons off EVERY admin's copy of the order's
+    review message. A decided order must not be actionable anywhere — not just on
+    the screen of the admin who happened to press the button."""
+    for rm in await get_review_messages("order", oid):
+        try:
+            await bot.edit_message_reply_markup(
+                chat_id=rm["chat_id"], message_id=rm["message_id"], reply_markup=None
+            )
+        except Exception:
+            pass
+
+
+async def _finalize_rejection(bot: Bot, oid: int, reason: str | None) -> bool:
+    """Reject the order and clean up. `reason=None` means reject silently (the
+    admin chose «رد بدون اطلاع»); any other value is sent to the buyer verbatim.
+
+    Returns False if the order was no longer reviewable (already approved/rejected
+    by someone else in the meantime) — the transition is a single conditional
+    UPDATE, so exactly one caller wins.
+    """
+    order = await get_order(oid)
+    if not order:
+        return False
+    if not await reject_order_if_reviewable(oid, note=(reason or "")):
+        return False
+    await _clear_order_review_kbs(bot, oid)
+    if reason:
+        try:
+            support = await get_setting("support_username", "")
+            sup = ("@" + support.lstrip("@")) if support else "پشتیبانی"
+            await bot.send_message(
+                order["telegram_id"],
+                "❌ سفارش شما تأیید نشد.\n\n"
+                f"📝 دلیل: {reason}\n\n"
+                f"در صورت نیاز با {sup} در ارتباط باش.",
+                parse_mode=None,
+            )
+        except Exception:
+            pass
+    return True
+
+
 @router.callback_query(F.data.startswith("reject:"))
-async def reject_order(cb: CallbackQuery):
+async def reject_order_start(cb: CallbackQuery, state: FSMContext):
     if not can_review_payments(cb.from_user.id):
         return
     oid = int(cb.data.split(":")[1])
     order = await get_order(oid)
-    await update_order(oid, status="rejected")
-    try:
-        await cb.bot.send_message(
-            order["telegram_id"],
-            "❌ *سفارش شما تأیید نشد.*\n\nلطفاً با پشتیبانی در تماس باشید.",
-            parse_mode="Markdown"
+    if not order:
+        await cb.answer("سفارش یافت نشد", show_alert=True)
+        return
+    status = order.get("status")
+    if status in ("rejected", "approved"):
+        # Terminally decided — the buttons everywhere are stale, so clear them.
+        await _clear_order_review_kbs(cb.bot, oid)
+        await cb.answer(
+            "این سفارش قبلاً رد شده است." if status == "rejected" else "این سفارش قبلاً تایید شده است.",
+            show_alert=True,
         )
+        return
+    if status != "receipt_submitted":
+        # 'processing' means another admin is mid-approval and it may revert to
+        # reviewable, so leave the buttons in place; only refuse this reject.
+        await cb.answer("این سفارش الان در حال بررسی توسط ادمین دیگری است یا آماده رد شدن نیست.", show_alert=True)
+        return
+    await state.set_state(RejectOrder.reason)
+    await state.update_data(reject_oid=oid)
+    await cb.message.answer(
+        f"📝 چرا سفارش #{oid} رد شد؟\n\n"
+        "دلیلش رو بنویس تا همون برای کاربر بره.\n"
+        "اگه لازم نیست کاربر خبردار بشه، «رد بدون اطلاع به کاربر» رو بزن.",
+        reply_markup=reject_reason_kb(oid),
+        parse_mode=None,
+    )
+    await cb.answer()
+
+
+@router.message(RejectOrder.reason)
+async def reject_order_reason(msg: Message, state: FSMContext):
+    if not can_review_payments(msg.from_user.id):
+        await state.clear()
+        return
+    data = await state.get_data()
+    oid = int(data.get("reject_oid") or 0)
+    reason = (msg.text or "").strip()
+    if not reason:
+        await msg.answer(
+            "لطفاً دلیل رد شدن رو به صورت متن بنویس، یا یکی از دکمه‌ها رو بزن.",
+            reply_markup=reject_reason_kb(oid),
+            parse_mode=None,
+        )
+        return
+    await state.clear()
+    if await _finalize_rejection(msg.bot, oid, reason):
+        await msg.answer(f"✅ سفارش #{oid} رد شد و دلیلش برای کاربر ارسال شد.", parse_mode=None)
+    else:
+        await msg.answer(
+            f"⚠️ سفارش #{oid} دیگه قابل رد کردن نبود (احتمالاً همین الان توسط ادمین دیگه‌ای بررسی شده).",
+            parse_mode=None,
+        )
+
+
+@router.callback_query(F.data.startswith("rej_skip:"))
+async def reject_order_skip(cb: CallbackQuery, state: FSMContext):
+    if not can_review_payments(cb.from_user.id):
+        return
+    oid = int(cb.data.split(":")[1])
+    await state.clear()
+    try:
+        await cb.message.edit_reply_markup(reply_markup=None)
     except Exception:
         pass
-    await cb.message.answer(f"✅ سفارش #{oid} رد شد.")
+    if await _finalize_rejection(cb.bot, oid, None):
+        await cb.message.answer(f"✅ سفارش #{oid} رد شد (بدون اطلاع به کاربر).", parse_mode=None)
+        await cb.answer()
+    else:
+        await cb.answer("این سفارش دیگه قابل رد کردن نبود یا قبلاً بررسی شده.", show_alert=True)
 
 
 # ─── PACKAGES ────────────────────────────────────────────────────

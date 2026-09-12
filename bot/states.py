@@ -102,6 +102,11 @@ class MoveSubscription(StatesGroup):
     target = State()
 
 
+class RejectOrder(StatesGroup):
+    """Waiting for the reason to tell the buyer when an order is rejected."""
+    reason = State()
+
+
 class WalletTopup(StatesGroup):
     waiting_amount = State()
     waiting_receipt = State()

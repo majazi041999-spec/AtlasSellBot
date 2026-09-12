@@ -864,6 +864,17 @@ def order_review_kb(order_id: int) -> InlineKeyboardMarkup:
     return b.as_markup()
 
 
+def reject_reason_kb(order_id: int) -> InlineKeyboardMarkup:
+    """Shown after «رد کردن»: type a reason (sent to the buyer), reject silently,
+    or back out. «انصراف» reuses the global `cancel` handler, which clears the
+    state and leaves the order — and its review buttons — untouched."""
+    b = InlineKeyboardBuilder()
+    _button(b, text="🚫 رد بدون اطلاع به کاربر", callback_data=f"rej_skip:{order_id}", style="danger")
+    _button(b, text="❌ انصراف", callback_data="cancel", style="primary")
+    b.adjust(1)
+    return b.as_markup()
+
+
 def order_server_select_kb(servers: List[Dict], order_id: int) -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
     for s in servers:
