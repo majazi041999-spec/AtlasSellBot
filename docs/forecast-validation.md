@@ -2,7 +2,7 @@
 
 The fixed 28-day count × trimmed basket forecast remains the fallback. Six candidates cover stable demand, recent levels, sparse demand, damped count trends and weekly revenue recurrence. Each horizon selects independently using only fully matured historical outcomes. A challenger needs at least 14 validation folds, 8% lower weighted sMAPE and wins on 55% of folds. The reported accuracy evaluates the entire selector at historical origins, not its tuning score.
 
-Inputs exclude today's unfinished receipts and padding before the first approved sale. Genuine zero-sale days remain. Revenue uses historical snapshots or net purchase wallet debits rather than today's package price. Missing historical amounts suppress forecasts. Charts retain today's receipts. Forecasts start tomorrow; validation uses the same one-day skip.
+Inputs exclude today's unfinished receipts and padding before the first approved sale. Genuine zero-sale days remain. Revenue uses historical snapshots or net purchase wallet debits rather than today's package price. When historical amounts are missing, training uses only the contiguous complete suffix after the last unknown day. The excluded days and unknown order count are disclosed; fewer than 14 remaining days suppress forecasts. Never remove isolated days or substitute current package prices. Charts retain today's receipts. Forecasts start tomorrow; validation uses the same one-day skip.
 
 The empirical range uses historical signed errors. Measured coverage uses only errors whose target windows had ended at each origin. Overlapping folds are not independent; neither ranges nor improvements guarantee future outcomes. With fewer than 14 complete days, no production forecast is displayed.
 

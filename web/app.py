@@ -1626,6 +1626,13 @@ async def _analytics_stats() -> dict:
     # Keep today's actual receipts on the chart, but do not train on a partial
     # day or the artificial zero padding before the business's first sale.
     complete = [r for r in rev if r.get("is_observed", True) and r.get("is_complete", r["date"] < datetime.now().strftime("%Y-%m-%d"))]
+    unknown = sum(r.get("unknown_revenue_orders", 0) for r in complete)
+    # Keep a contiguous suffix. Dropping individual unknown days would compress
+    # time and corrupt weekday patterns; legacy launch gaps need not block a
+    # later, fully priced history.
+    excluded = max((i + 1 for i, r in enumerate(complete)
+                    if r.get("unknown_revenue_orders", 0)), default=0)
+    complete = complete[excluded:]
     days = [datetime.strptime(r["date"], "%Y-%m-%d").date() for r in complete]
     revenue = [float(r["revenue"]) for r in complete]
     counts = [float(r["orders"]) for r in complete]
@@ -1634,10 +1641,11 @@ async def _analytics_stats() -> dict:
         asyncio.to_thread(run_forecast, revenue, counts, days, 7, skip_days=1),
         asyncio.to_thread(run_forecast, revenue, counts, days, 30, skip_days=1),
     )
-    unknown = sum(r.get("unknown_revenue_orders", 0) for r in complete)
     for fc in (fc7, fc30):
         fc["unknown_revenue_orders"] = unknown
-        if unknown:
+        fc["excluded_history_days"] = excluded
+        fc["training_start"] = days[0].isoformat() if days else None
+        if unknown and not fc["ok"]:
             fc.update(ok=False, reason="incomplete_revenue", points=[], total=None,
                       accuracy=None, band=None, versus_baseline=None, versus_linear=None)
     versus = fc7.get("versus_linear")
@@ -1706,6 +1714,8 @@ async def api_analytics(request: Request):
             "selection": fc7.get("selection"),
             "trained_through": fc7.get("trained_through"),
             "unknown_revenue_orders": fc7.get("unknown_revenue_orders"),
+            "excluded_history_days": fc7.get("excluded_history_days", 0),
+            "training_start": fc7.get("training_start"),
             "versus_baseline": fc7.get("versus_baseline"),
             "accuracy30": fc30.get("accuracy"),
             "method30_label": fc30.get("method_label"),

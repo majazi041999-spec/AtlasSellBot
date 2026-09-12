@@ -5,13 +5,7 @@ import {
   format as jFormat, formatLong as jLong, parse as jParse, today as jToday,
 } from "./jalali";
 
-const tg = window.Telegram?.WebApp;
-// Read initData at CALL time, not once at module load. Telegram hands a webview
-// its initData when the app opens, and a client that restores a cached webview
-// can hold an old one — reading it fresh each time is free and picks up a newer
-// value whenever the client does provide one.
-const initData = () => tg?.initData || "";
-const INIT = initData();
+import { initData, getTelegram, closeOrReload } from "./telegram.js";
 
 async function api(path, body) {
   const r = await fetch(`/app/api/${path}`, {
@@ -38,7 +32,7 @@ async function uploadReceipt(file, kind, id, amount) {
 
 const fmt = (n) => Number(n || 0).toLocaleString("en-US");
 const gb = (bytes) => Number(bytes || 0) / 1073741824;
-const haptic = (t = "success") => { try { tg?.HapticFeedback?.notificationOccurred?.(t); } catch (e) {} };
+const haptic = (t = "success") => { try { getTelegram()?.HapticFeedback?.notificationOccurred?.(t); } catch (e) {} };
 
 function remainText(s) {
   const total = (s.traffic_gb || 0) * 1073741824;
@@ -186,10 +180,10 @@ function PayCard({ title, payment, kind, id, amount, onDone, walletBalance, onWa
     if (!f) return;
     setStage("sending");
     try { await uploadReceipt(f, kind, id, amount); haptic("success"); setDoneKind("receipt"); setStage("done"); }
-    catch (err) { haptic("error"); tg?.showAlert?.("ارسال رسید ناموفق بود. دوباره تلاش کنید."); setStage("pay"); }
+    catch (err) { haptic("error"); getTelegram()?.showAlert?.("ارسال رسید ناموفق بود. دوباره تلاش کنید."); setStage("pay"); }
   };
   const payFromWallet = async () => {
-    if (!enoughBalance) { tg?.showAlert?.("موجودی کیف پول کافی نیست. ابتدا شارژ کنید."); return; }
+    if (!enoughBalance) { getTelegram()?.showAlert?.("موجودی کیف پول کافی نیست. ابتدا شارژ کنید."); return; }
     setStage("sending");
     try {
       const d = await api("wallet/pay", { order_id: id });
@@ -198,7 +192,7 @@ function PayCard({ title, payment, kind, id, amount, onDone, walletBalance, onWa
       setDoneKind("wallet"); setStage("done");
     } catch (err) {
       haptic("error");
-      tg?.showAlert?.(err.data?.error === "insufficient_balance" ? "موجودی کافی نیست" : "پرداخت از کیف پول ناموفق بود.");
+      getTelegram()?.showAlert?.(err.data?.error === "insufficient_balance" ? "موجودی کافی نیست" : "پرداخت از کیف پول ناموفق بود.");
       setStage("pay");
     }
   };
@@ -354,7 +348,7 @@ function Services({ go, balance, onBalance, isRep }) {
     const name = (document.getElementById(`rn-${s.id}`)?.value || "").trim();
     setBusy(s.id);
     try { await api("services/rename", { profile_id: s.id, name }); haptic(); setEditing(null); reload(); }
-    catch (e) { tg?.showAlert?.("تغییر نام ناموفق بود"); } finally { setBusy(0); }
+    catch (e) { getTelegram()?.showAlert?.("تغییر نام ناموفق بود"); } finally { setBusy(0); }
   };
   const runConfirmed = async () => {
     if (!confirmAct) return;
@@ -388,7 +382,7 @@ function Services({ go, balance, onBalance, isRep }) {
   const pickPlan = async (p) => {
     setBusy(p.id);
     try { const d = await api("services/renew", { profile_id: planFor.id, package_id: p.id }); setRenew({ ...d, name: planFor.name }); setPlanFor(null); }
-    catch (e) { tg?.showAlert?.("خطا در تمدید"); }
+    catch (e) { getTelegram()?.showAlert?.("خطا در تمدید"); }
     finally { setBusy(0); }
   };
 
@@ -663,7 +657,7 @@ function Buy({ balance, onBalance }) {
     try { const d = await api("buy", { package_id: sel.id, discount_code: code }); setOrder(d); haptic(); }
     catch (e) {
       if (e.data?.code_error) { setCodeErr(DISCOUNT_ERR[e.data.error] || "کد نامعتبر است"); }
-      else tg?.showAlert?.("خطا در ثبت سفارش");
+      else getTelegram()?.showAlert?.("خطا در ثبت سفارش");
     } finally { setBusy(false); }
   };
 
@@ -738,10 +732,10 @@ function Wallet() {
 
   const start = async () => {
     const a = parseInt(String(amount).replace(/[^\d]/g, ""), 10);
-    if (!a || a < 10000) { tg?.showAlert?.("حداقل مبلغ ۱۰٬۰۰۰ تومان است"); return; }
+    if (!a || a < 10000) { getTelegram()?.showAlert?.("حداقل مبلغ ۱۰٬۰۰۰ تومان است"); return; }
     setBusy(true);
     try { const d = await api("wallet/topup", { amount: a }); setTopup(d); haptic(); }
-    catch (e) { tg?.showAlert?.("خطا"); } finally { setBusy(false); }
+    catch (e) { getTelegram()?.showAlert?.("خطا"); } finally { setBusy(false); }
   };
   if (!w) return <div className="screen center"><Spinner /></div>;
   if (topup) return (
@@ -785,7 +779,7 @@ function Referral() {
   if (!d) return <div className="screen center"><Spinner /></div>;
   const share = () => {
     const u = `https://t.me/share/url?url=${encodeURIComponent(d.link)}&text=${encodeURIComponent(d.caption_no_link || "")}`;
-    tg?.openTelegramLink?.(u) || window.open(u);
+    getTelegram()?.openTelegramLink?.(u) || window.open(u);
   };
   return (
     <div className="screen">
@@ -1173,11 +1167,10 @@ export default function App() {
   }, []);
 
   if (err) {
-    // An expired session is by far the common case and it is not the customer
-    // doing anything wrong — their client kept the app open, or restored it
-    // from cache, so Telegram never issued a fresh signature. Telling them
-    // "invalid access" for that reads as an accusation and leaves them stuck.
-    const expired = reason === "expired" || reason === "no_data";
+    // Missing launch data (including an unavailable SDK) is different from a
+    // correctly signed but expired session. Recovery must not promise renewal.
+    const expired = reason === "expired";
+    const missing = reason === "no_data";
     return (
       <div className="fullscreen center">
         <div className="empty-emoji"><Icon name={expired ? "refresh" : "lock"} /></div>
@@ -1185,8 +1178,13 @@ export default function App() {
           <>
             <p>این صفحه قدیمی شده است.</p>
             <small className="muted" style={{ lineHeight: 2 }}>
-              یک بار ببندش و دوباره از داخل ربات باز کن — درست می‌شود.
+              نشست ورود منقضی شده است. مینی‌اپ را ببند و از دکمهٔ داخل ربات دوباره باز کن.
             </small>
+          </>
+        ) : missing ? (
+          <>
+            <p>اطلاعات ورود تلگرام دریافت نشد.</p>
+            <small className="muted" style={{ lineHeight: 2 }}>از دکمهٔ مینی‌اپ داخل ربات وارد شو. اگر همین‌جا باز کرده‌ای، اتصال را بررسی کن و دوباره تلاش کن.</small>
           </>
         ) : (
           <>
@@ -1195,8 +1193,8 @@ export default function App() {
           </>
         )}
         <button className="btn-primary sm" style={{ marginTop: 14 }}
-                onClick={() => { try { tg?.close?.(); } catch (e) { location.reload(); } }}>
-          {expired ? "بستن و باز کردن دوباره" : "تلاش دوباره"}
+                onClick={() => expired ? closeOrReload() : load()}>
+          {expired ? "بستن مینی‌اپ" : "تلاش دوباره"}
         </button>
       </div>
     );

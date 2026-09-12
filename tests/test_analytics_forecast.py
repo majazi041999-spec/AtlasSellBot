@@ -58,6 +58,12 @@ class AnalyticsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(fc['total'], 700000)
         self.assertEqual(fc['points'][0]['date'], (today+timedelta(days=1)).isoformat())
         self.assertEqual(result['revenue_series'][-1]['revenue'], 999999999)
+        rows[5]['unknown_revenue_orders'] = 57
+        result = await webapp._analytics_stats()
+        self.assertTrue(result['forecast']['ok'])
+        self.assertEqual(result['forecast']['history_days'], 23)
+        self.assertEqual(result['forecast']['excluded_history_days'], 1)
+        self.assertEqual(result['forecast']['unknown_revenue_orders'], 57)
         rows[-2]['unknown_revenue_orders'] = 1
         result = await webapp._analytics_stats()
         self.assertFalse(result['forecast']['ok'])

@@ -145,7 +145,7 @@ function ForecastNotes({ meta }) {
     <div className="forecast-notice">
       <b>{meta.reason === "incomplete_revenue" ? "مبالغ تاریخی کامل نیستند." : "هنوز سابقهٔ کافی برای پیش‌بینی نداریم."}</b>
       <p className="muted tiny">{meta.reason === "incomplete_revenue"
-        ? `مبلغ ${fmt(meta.unknown_revenue_orders)} سفارش مشخص نیست. برای جلوگیری از پیش‌بینی گمراه‌کننده، عددی نمایش داده نمی‌شود.`
+        ? `مبلغ ${fmt(meta.unknown_revenue_orders)} سفارش قدیمی مشخص نیست. پس از آخرین روز ناقص، ${fmt(meta.history_days)} روز کامل داریم؛ برای پیش‌بینی حداقل ۱۴ روز پیوسته لازم است.`
         : `${fmt(meta.history_days)} روز کامل از آغاز فروش داریم؛ حداقل ۱۴ روز لازم است. روز جاری و روزهای قبل از شروع فروش در آموزش نمی‌آیند.`}</p>
     </div>
   );
@@ -156,6 +156,9 @@ function ForecastNotes({ meta }) {
   ];
   return (
     <div className="forecast-notes">
+      {meta.excluded_history_days > 0 && <div className="forecast-notice tiny">
+        مبلغ تاریخی {fmt(meta.unknown_revenue_orders)} سفارش مشخص نیست؛ {fmt(meta.excluded_history_days)} روز ابتدایی کنار گذاشته شد. پیش‌بینی از سابقهٔ کاملِ <bdi>{meta.training_start}</bdi> به بعد استفاده می‌کند.
+      </div>}
       <p className="muted tiny">آموزش با {fmt(meta.history_days)} روز کامل، تا <bdi>{meta.trained_through}</bdi>؛ پیش‌بینی از فردا شروع می‌شود. روش هر افق جداگانه با آزمون روی گذشته انتخاب می‌شود.</p>
       <div className="forecast-quality-grid">
         {horizons.map(h => <div className="forecast-quality" key={h.label}>
