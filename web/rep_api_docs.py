@@ -713,8 +713,8 @@ print("تمدید شد" if data.get("ok") else data["message"])</code></pre>
 console.log(r.data.ok ? "تمدید شد" : r.data.message);</code></pre>
   </div>
 <pre class="res"><code>{ "ok": true, "order_id": 9140, "charged": 105000, "balance": 3885000,
-  "nodes_renewed": 6, "carried_over": true, "service": { ... } }</code></pre>
-  <p class="muted"><code>carried_over: true</code> یعنی سرویس هنوز حجم و زمان داشت و باقی‌مانده‌اش به بسته‌ی جدید <b>اضافه</b> شد.</p>
+  "nodes_renewed": 6, "carried_over": false, "service": { ... } }</code></pre>
+  <p class="muted"><code>carried_over: false</code> یعنی مانده قبلی حذف می‌شود؛ مصرف صفر و حجم و مدت دقیقاً مطابق پلن انتخاب‌شده، از لحظه تمدید تنظیم می‌شود.</p>
 
   <div class="ep"><span class="m post">POST</span><span class="path">/services/{id}/rename</span></div>
   <div class="snip">

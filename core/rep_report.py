@@ -123,15 +123,20 @@ def _expiry_label(item: Dict) -> str:
 
 async def build_rep_report(user: Dict, preset: str = DEFAULT_PRESET,
                            date_from: str = "", date_to: str = "",
-                           limit: int = 5000) -> Dict:
+                           limit: int = 5000, include_sales: bool = False) -> Dict:
     """The report as both surfaces render it: rows with Jalali dates + a summary."""
     rng = resolve_range(preset, date_from, date_to)
     data = await get_rep_purchases(int(user["id"]), since=rng["since"],
                                    until=rng["until"], limit=limit)
 
+    if include_sales:
+        from core.rep_accounting import add_private_accounting
+        await add_private_accounting(int(user["id"]), data["items"], data["summary"])
+    data["summary"]["report_row_count"] = len(data["items"])
     rows: List[Dict] = []
-    for index, item in enumerate(data["items"], start=1):
+    for index, item in enumerate(data["items"][:max(1, int(limit))], start=1):
         rows.append({
+            **({"sale_price": item["sale_price"], "profit": item["profit"]} if include_sales else {}),
             "row": index,
             "kind": item["kind"],
             "kind_label": "تمدید" if item["kind"] == "renewal" else "خرید",
@@ -151,6 +156,7 @@ async def build_rep_report(user: Dict, preset: str = DEFAULT_PRESET,
         })
 
     return {
+        "include_sales": include_sales,
         "range": rng,
         "presets": [{"key": k, "label": v["label"]} for k, v in PRESETS.items()],
         "rows": rows,
@@ -176,7 +182,7 @@ _COLUMNS = [
     {"header": "تاریخ خرید", "width": 20, "type": "text"},
     {"header": "تاریخ شروع", "width": 20, "type": "text"},
     {"header": "تاریخ انقضا", "width": 20, "type": "text"},
-    {"header": "مبلغ (تومان)", "width": 16, "type": "int"},
+    {"header": "قیمت خرید (تومان)", "width": 16, "type": "int"},
     {"header": "وضعیت", "width": 12, "type": "text"},
 ]
 
@@ -191,7 +197,7 @@ def rep_report_xlsx(report: Dict) -> bytes:
         # text when it is not parseable as a number.
         "نامحدود" if row["is_unlimited"] else row["traffic_gb"],
         row["duration_days"], row["purchased_at"], row["started_at"],
-        row["expires_at"], row["price"], row["status"],
+        row["expires_at"], row["price"] if row["price"] is not None else "نامشخص", row["status"],
     ] for row in report["rows"]]
 
     titles = [
@@ -203,9 +209,22 @@ def rep_report_xlsx(report: Dict) -> bytes:
          + f" | مجموع خرید: {summary['total_spent']:,} تومان"),
         f"تاریخ تهیه گزارش: {report['generated_at']}",
     ]
+    columns = list(_COLUMNS)
+    if report.get("include_sales"):
+        columns += [{"header": "قیمت فروش (تومان)", "width": 20, "type": "int"},
+                    {"header": "سود (تومان)", "width": 20, "type": "int"}]
+        for values, item in zip(rows, report["rows"]):
+            values += [item.get("sale_price") if item.get("sale_price") is not None else "ثبت نشده",
+                       item.get("profit") if item.get("profit") is not None else "نامشخص"]
+        titles += [f"فروش ثبت‌شده: {summary['total_revenue']:,} | سود قابل محاسبه: {summary['total_profit']:,} تومان",
+                   f"بدون قیمت فروش: {summary['unpriced_count']} | فروش با هزینه نامشخص: {summary['unknown_sale_cost_count']}"]
+    if summary.get("unknown_cost_orders"):
+        titles.append(f"قیمت خرید تاریخی {summary['unknown_cost_orders']} سفارش مشخص نیست؛ در مجموع خرید لحاظ نشده است.")
+    if summary.get("report_row_count", 0) > len(rows):
+        titles.append(f"نمایش {len(rows)} ردیف از {summary['report_row_count']}؛ جمع‌ها برای کل بازه است.")
     if not rows:
         titles.append("در این بازه هیچ خریدی ثبت نشده است.")
-    return build_xlsx(_COLUMNS, rows, sheet_name="خرید نماینده", titles=titles)
+    return build_xlsx(columns, rows, sheet_name="خرید نماینده", titles=titles)
 
 
 def rep_report_filename(report: Dict) -> str:

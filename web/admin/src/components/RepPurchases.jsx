@@ -131,6 +131,7 @@ export default function RepPurchases({ uid }) {
             <Stat icon="💰" value={<span>{fmt(s.total_spent)}<em className="rep-cur">تومان</em></span>} label="مجموع خرید" grad="linear-gradient(135deg,#f43f5e,#fb7185)" />
           </div>
 
+          {Number(s.unknown_cost_orders || 0) > 0 && <div className="rep-note">قیمت تاریخی {fmt(s.unknown_cost_orders)} سفارش مشخص نیست و در مجموع خرید نیامده است.</div>}
           {Number(s.legacy_configs || 0) > 0 && (
             <div className="rep-note">
               ℹ️ {fmt(s.legacy_configs)} کانفیگ تکی قدیمی هم برای این نماینده ثبت شده که در این جدول نمی‌آید.
@@ -163,7 +164,7 @@ export default function RepPurchases({ uid }) {
                       <td className="muted tiny"><bdi>{r.purchased_at}</bdi></td>
                       <td className="muted tiny"><bdi>{r.started_at}</bdi></td>
                       <td className="muted tiny"><bdi>{r.expires_at}</bdi></td>
-                      <td>{fmt(r.price)}</td>
+                      <td>{r.price == null ? "نامشخص" : fmt(r.price)}</td>
                       <td><span className={"badge " + statusClass(r.status)}>{r.status}</span></td>
                     </tr>
                   ))}

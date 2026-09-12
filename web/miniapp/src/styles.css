@@ -370,3 +370,17 @@ small { font-weight: 500; }
 .btn-danger.sm{ padding:7px 11px; font-size:.8rem; border-radius:11px; }
 .btn-danger:disabled{ opacity:.55; }
 .btn-danger svg{ width:15px; height:15px; }
+/* Private representative resale ledger. */
+.rep-sale { margin-top: 12px; border-top: 1px solid var(--bd); }
+.rep-sale .rp-fact b.pos { color: var(--g); }
+.rep-sale .rp-fact b.neg { color: var(--acc); }
+.sale-edit { width: 100%; margin-top: 12px; }
+.sale-form { display: flex; flex-direction: column; gap: 10px; margin-top: 14px; }
+.sale-form label { font-size: .76rem; color: var(--txt2); }
+.sale-actions { display: flex; gap: 10px; }
+.rep-money-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.rep-money-grid .card { padding: 16px 12px; }
+.rep-money-grid b { display: block; font-size: 1.1rem; margin-top: 8px; overflow-wrap: anywhere; }
+.rep-money-grid small { font-size: .65rem; color: var(--txt2); }
+.rep-money-grid .muted { font-size: .7rem; }
+.accounting-note { background: #67dfbd0c; color: var(--txt2); border: 1px solid var(--bd); }

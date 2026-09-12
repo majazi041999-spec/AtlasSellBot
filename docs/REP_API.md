@@ -454,11 +454,10 @@ const r = await atlas("POST", "/services/4471/renew", { package_id: 3 }, "renew-
 
 ```json
 { "ok": true, "order_id": 9140, "charged": 105000, "balance": 3885000,
-  "nodes_renewed": 6, "carried_over": true, "service": { } }
+  "nodes_renewed": 6, "carried_over": false, "service": { } }
 ```
 
-`carried_over: true` یعنی سرویس هنوز حجم و زمان داشت و باقی‌مانده‌اش به بسته‌ی
-جدید **اضافه** شد.
+`carried_over: false` یعنی حجم و زمان باقی‌مانده حذف می‌شود؛ مصرف صفر و حجم و مدت دقیقاً مطابق پلن انتخاب‌شده، از لحظه تمدید تنظیم می‌شود.
 
 ### `POST /services/{id}/rename` — تغییر نام
 

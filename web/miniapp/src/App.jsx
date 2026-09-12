@@ -869,6 +869,41 @@ function MonthGrid({ value, onPick }) {
 
 const PAGE = 20;
 
+function RepSalePrice({ row, onSaved }) {
+  const [editing, setEditing] = useState(false);
+  const [value, setValue] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const inputId = `sale-${row.kind}-${row.order_id}-${row.profile_id}`;
+  const save = async (e) => {
+    e.preventDefault();
+    const normalized = value.replace(/[۰-۹]/g, d => String("۰۱۲۳۴۵۶۷۸۹".indexOf(d)))
+      .replace(/[٠-٩]/g, d => String("٠١٢٣٤٥٦٧٨٩".indexOf(d))).replace(/[,٬\s]/g, "");
+    const price = normalized === "" ? null : Number(normalized);
+    if (price !== null && (!/^\d+$/.test(normalized) || !Number.isSafeInteger(price) || price > 1000000000000)) {
+      setError("مبلغ را به تومان و بدون اعشار وارد کن."); return;
+    }
+    setBusy(true); setError("");
+    try {
+      await api("rep/purchases/sale-price", { kind: row.kind, order_id: row.order_id, profile_id: row.profile_id, sale_price: price });
+      haptic("success"); setEditing(false); onSaved();
+    } catch (e) { setError(e.data?.message || "ذخیره نشد؛ دوباره تلاش کن."); }
+    finally { setBusy(false); }
+  };
+  return <div className="rep-sale">
+    <div className="rp-fact"><span>قیمت خرید همان زمان</span><b>{row.price == null ? "نامشخص" : <>{fmt(row.price)} <small>تومان</small></>}</b></div>
+    <div className="rp-fact"><span>قیمت فروش شما</span><b>{row.sale_price == null ? "ثبت نشده" : <>{fmt(row.sale_price)} <small>تومان</small></>}</b></div>
+    <div className="rp-fact"><span>سود این {row.kind === "renewal" ? "تمدید" : "خرید"}</span><b className={row.profit < 0 ? "neg" : "pos"}>{row.profit == null ? "—" : <><bdi>{fmt(row.profit)}</bdi> <small>تومان</small></>}</b></div>
+    {editing ? <form onSubmit={save} className="sale-form">
+      <label htmlFor={inputId}>قیمت فروش شما (تومان)</label>
+      <input id={inputId} className="inp" inputMode="numeric" dir="ltr" autoFocus value={value} maxLength={20} disabled={busy} onChange={e => setValue(e.target.value)} placeholder="مثلاً ۱۵۰٬۰۰۰" />
+      <p className="muted tiny">خالی = حذف قیمت فروش · صفر = فروش رایگان</p>
+      <div className="sale-actions"><button type="submit" className="btn-primary sm" disabled={busy}>{busy ? "در حال ذخیره…" : "ذخیره قیمت فروش"}</button><button type="button" className="btn-ghost sm" disabled={busy} onClick={() => { setEditing(false); setError(""); }}>لغو</button></div>
+    </form> : row.order_id > 0 && <button className="btn-soft sale-edit" onClick={() => { setValue(row.sale_price == null ? "" : String(row.sale_price)); setEditing(true); }}><Icon name="edit" />{row.sale_price == null ? "ثبت قیمت فروش" : "ویرایش قیمت فروش"}</button>}
+    {error && <p className="code-err" role="alert">{error}</p>}
+  </div>;
+}
+
 function RepReport() {
   const [presets, setPresets] = useState(REP_PRESETS);
   const [preset, setPreset] = useState("month");
@@ -888,6 +923,7 @@ function RepReport() {
   const fromStr = custom ? jFormat(from) : "";
   const toStr = custom ? jFormat(to) : "";
 
+  useEffect(() => { setShown(PAGE); }, [preset, custom, fromStr, toStr]);
   useEffect(() => {
     if (custom && !fromStr && !toStr) return;   // custom mode with nothing chosen
     const id = ++reqRef.current;                // last request in wins
@@ -895,7 +931,7 @@ function RepReport() {
     api("rep/purchases", { preset, from: fromStr, to: toStr })
       .then((d) => {
         if (id !== reqRef.current) return;
-        setData(d); setShown(PAGE);
+        setData(d);
         if (d.presets?.length) setPresets(d.presets);
       })
       .catch((e) => {
@@ -979,9 +1015,16 @@ function RepReport() {
       {!loading && !err && data && (
         <>
           <div className="card balance-card">
-            <div className="balance-lbl">مجموع خرید در این بازه</div>
+            <div className="balance-lbl">مجموع خرید ثبت‌شده در این بازه</div>
             <div className="balance-val">{fmt(s.total_spent)} <small>تومان</small></div>
           </div>
+          <div className="rep-money-grid">
+            <div className="card"><span className="muted">جمع فروش ثبت‌شده</span><b>{fmt(s.total_revenue)} <small>تومان</small></b></div>
+            <div className="card"><span className="muted">سود قابل محاسبه</span><b className={s.total_profit < 0 ? "neg" : "pos"}><bdi>{fmt(s.total_profit)}</bdi> <small>تومان</small></b></div>
+          </div>
+          <p className="muted tiny">قیمت فروش فقط برای حساب‌وکتاب خودت است و تعرفه، کیف پول یا سرویس را تغییر نمی‌دهد. سود = فروش منهای قیمت خرید همان مورد.</p>
+          <div className="rp-note accounting-note">{fmt(s.sales_count)} مورد قیمت فروش دارد؛ {fmt(s.unpriced_count)} مورد هنوز ثبت نشده. سود برای {fmt(s.profit_count)} مورد با قیمت خرید و فروش مشخص محاسبه شده است.</div>
+          {(s.unknown_cost_orders > 0 || s.unknown_sale_cost_count > 0) && <p className="muted tiny">قیمت تاریخی {fmt(s.unknown_cost_orders)} سفارش قابل بازیابی نیست و در مجموع خرید نیامده؛ سود {fmt(s.unknown_sale_cost_count)} فروش هم هنوز قابل محاسبه نیست.</p>}
 
           <div className="rep-stat-grid">
             <div className="card rep-stat">
@@ -1040,7 +1083,7 @@ function RepReport() {
                     <div className="rp-fact"><span>تاریخ شروع</span><b><D v={r.started_at} /></b></div>
                     <div className="rp-fact"><span>تاریخ انقضا</span><b><D v={r.expires_at} /></b></div>
                   </div>
-                  <div className="rp-price"><span>مبلغ</span><b>{fmt(r.price)} <small>تومان</small></b></div>
+                  <RepSalePrice row={r} onSaved={() => setTick(t => t + 1)} />
                 </div>
               ))}
               {shown < rows.length && (
@@ -1052,6 +1095,7 @@ function RepReport() {
             </>
           )}
           {data.generated_at && <p className="muted tiny" style={{ margin: 0 }}>تهیه گزارش: <D v={data.generated_at} /></p>}
+          {s.report_row_count > rows.length && <p className="muted tiny">فهرست به {fmt(rows.length)} مورد محدود شده؛ جمع‌ها مربوط به کل بازه است. برای مشاهدهٔ باقی موارد، بازه را کوتاه‌تر کن.</p>}
         </>
       )}
     </div>

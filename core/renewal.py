@@ -55,20 +55,15 @@ async def find_and_renew_config(cfg: Dict, traffic_gb: float, duration_days: int
                 last_error = "client email not found"
                 continue
 
-            remote_expire = int(remote.get("expiryTime") or 0)
-            if remote_email:
-                traffic = await client.get_client_traffic(remote_email)
-                if traffic:
-                    remote_expire = max(remote_expire, int(traffic.get("expiryTime") or 0))
-
-            base_expire = max(int(cfg.get("expire_timestamp") or 0), remote_expire, now_ms)
-            new_expire_ms = base_expire + int(duration_days) * 86400000 if int(duration_days) > 0 else 0
+            # A renewal is a replacement plan, not an extension of the old one.
+            new_expire_ms = now_ms + int(duration_days) * 86400000 if int(duration_days) > 0 else 0
             ok = await client.update_client(inbound_id, client_uuid, remote_email, traffic_gb, new_expire_ms, True)
             if not ok:
                 last_error = f"update failed on server {server.get('name')}"
                 continue
 
-            await client.reset_client_traffic(inbound_id, remote_email)
+            if not await client.reset_client_traffic(inbound_id, remote_email):
+                return {"ok": False, "error": "traffic_reset_failed"}
             link = await client.get_client_link(inbound_id, remote_email)
             sub = await client.get_subscription_link(inbound_id, remote_email)
 

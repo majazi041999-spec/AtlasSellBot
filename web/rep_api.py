@@ -871,8 +871,8 @@ async def rep_create_service(request: Request):
 
 @router.post("/v1/services/{profile_id}/renew")
 async def rep_renew_service(request: Request, profile_id: int):
-    """Extend an existing service. Leftover volume/time carry over exactly as
-    they do in the bot — the engine decides, not this route."""
+    """Replace the service with the selected plan, using the same reset engine
+    as the bot and mini-app. Previous volume and time are discarded."""
     ctx, err = await authorize(request, "write")
     if err:
         return err

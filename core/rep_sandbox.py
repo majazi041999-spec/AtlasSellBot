@@ -293,11 +293,8 @@ async def renew_service(key_id: int, sid: int, *, duration_days: int, traffic_gb
         if not ok:
             await db.commit()
             return {"ok": False, "error": "insufficient_funds", "balance": bal, "price": int(price)}
-        # Renewing from whichever is later — now, or the current expiry — is the
-        # behaviour production has, and getting it wrong is a classic bug in an
-        # integrator's retry path, so the sandbox has to reproduce it exactly.
-        base_ms = max(now * 1000, int(row.get("expire_timestamp") or 0))
-        expire_ms = base_ms + int(duration_days) * 86_400_000
+        # Match production: discard remaining time and start the selected plan now.
+        expire_ms = now * 1000 + int(duration_days) * 86_400_000 if int(duration_days) > 0 else 0
         await db.execute(
             """UPDATE rep_sandbox_services
                   SET expire_timestamp=?, duration_days=?, traffic_gb=?, is_active=1,

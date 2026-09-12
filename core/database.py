@@ -95,6 +95,16 @@ CREATE TABLE IF NOT EXISTS configs (
 );
 
 
+CREATE TABLE IF NOT EXISTS rep_sale_prices (
+    user_id INTEGER NOT NULL,
+    kind TEXT NOT NULL CHECK(kind IN ('purchase','renewal')),
+    order_id INTEGER NOT NULL,
+    profile_id INTEGER NOT NULL DEFAULT 0,
+    sale_price INTEGER NOT NULL CHECK(sale_price >= 0),
+    updated_at TEXT DEFAULT (datetime('now','localtime')),
+    PRIMARY KEY(user_id,kind,order_id,profile_id)
+);
+
 CREATE TABLE IF NOT EXISTS wallet_transactions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER NOT NULL,
@@ -419,6 +429,8 @@ async def init_db():
         from core.rep_api import ensure_schema as _ensure_rep_api
         await _ensure_rep_api(db)
         await _ensure_columns(db)
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_wallet_order_cost ON wallet_transactions(user_id,kind,note,id)")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_subprofile_order ON subscription_profiles(order_id,id)")
         await db.execute("UPDATE orders SET status='receipt_submitted', approved_at=NULL WHERE status='processing'")
         await db.commit()
 
@@ -510,6 +522,9 @@ async def _ensure_columns(db):
             ("discount_code", "TEXT DEFAULT ''"),
             ("discount_amount", "INTEGER DEFAULT 0"),
             ("base_price", "INTEGER DEFAULT 0"),
+            ("price_snapshot", "INTEGER"),
+            ("traffic_snapshot", "REAL"),
+            ("duration_snapshot", "INTEGER"),
             ("cart_reminder_stage", "INTEGER DEFAULT 0"),
         ],
         "daily_reports": [
@@ -2011,6 +2026,17 @@ async def count_active_services(user_id: int) -> int:
             return int((await c.fetchone())[0] or 0)
 
 
+_REP_ORDER_COST_SQL = """COALESCE(
+        (SELECT MAX(0,-SUM(wt.amount)) FROM wallet_transactions wt
+         WHERE wt.user_id=o.user_id AND (
+             (wt.kind='purchase' AND wt.note='order:' || o.id) OR
+             (wt.kind='refund' AND wt.note IN ('order_partial:' || o.id,
+                'order_error:' || o.id, 'order_failed:' || o.id,
+                'renew_failed:' || o.id, 'sub_renew_failed:' || o.id)))),
+        NULLIF(o.base_price,0), NULLIF(o.custom_price,0), o.price_snapshot,
+        CASE WHEN COALESCE(o.custom_name,'')!='' THEN 0 END)"""
+
+
 async def get_rep_financials(user_id: int) -> Dict:
     """Financial summary for a representative: total & monthly spend, order count,
     and service counts (active/expired). Spend = sum of approved orders."""
@@ -2018,7 +2044,7 @@ async def get_rep_financials(user_id: int) -> Dict:
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         async with db.execute(
-            """SELECT COALESCE(SUM(COALESCE(NULLIF(o.custom_price,0), p.price, 0)),0) AS total,
+            f"""SELECT COALESCE(SUM({_REP_ORDER_COST_SQL}),0) AS total,
                       COUNT(o.id) AS orders
                FROM orders o LEFT JOIN packages p ON p.id=o.package_id
                WHERE o.user_id=? AND o.status='approved'""",
@@ -2028,7 +2054,7 @@ async def get_rep_financials(user_id: int) -> Dict:
             total_spent = int(r["total"] or 0)
             orders = int(r["orders"] or 0)
         async with db.execute(
-            """SELECT COALESCE(SUM(COALESCE(NULLIF(o.custom_price,0), p.price, 0)),0) AS m
+            f"""SELECT COALESCE(SUM({_REP_ORDER_COST_SQL}),0) AS m
                FROM orders o LEFT JOIN packages p ON p.id=o.package_id
                WHERE o.user_id=? AND o.status='approved'
                  AND o.created_at >= date('now','start of month','localtime')""",
@@ -2054,35 +2080,20 @@ async def get_rep_financials(user_id: int) -> Dict:
 
 async def get_rep_purchases(user_id: int, since: Optional[str] = None,
                             until: Optional[str] = None, limit: int = 5000) -> Dict:
-    """Everything a representative bought in a date window, service by service.
+    """Historical purchases. Never reconstruct cost from today's package price.
 
-    `since`/`until` are inclusive `'YYYY-MM-DD HH:MM:SS'` bounds in the SAME
-    local-time frame the `created_at` columns are written in (build them with
-    core.jalali.tehran_to_db_string so a Jalali range lands on the right rows).
-
-    Two kinds of purchase are reported, because a rep's revenue is both:
-      • new services  — one row per subscription profile, which is the unit the
-        customer actually holds (a bulk order of 10 produces 10 rows, each with
-        its own name and dates — that is what makes the export usable as proof);
-      • renewals      — orders that topped up an existing service and so create
-        no new profile of their own.
-
-    The per-row price of a bulk order is divided by its service count, so the
-    rows sum to what was actually charged instead of counting the order N times.
-
-    Reseller prices are floored to the nearest 1000: every package price and
-    every reseller custom price is a multiple of 1000, and the card-matching
-    jitter is always <1000, so this recovers the exact clean amount the
-    wallet actually charged and keeps reseller accounting round. (The jitter
-    is pointless for reps — they pay from the wallet, not card-to-card.)
+    Wallet debits are authoritative. Otherwise use the stored clean price or
+    quote. Old orders without either are explicitly unknown, never guessed.
+    All rows are read for correct financial totals; the presentation caps rows.
     """
-    where = ["sp.user_id=?"]
+    cost_sql = _REP_ORDER_COST_SQL
+    where = ["COALESCE(o.user_id,sp.user_id)=?", "(o.id IS NULL OR o.status='approved')"]
     args: List = [int(user_id)]
     if since:
-        where.append("sp.created_at>=?")
+        where.append("COALESCE(o.created_at,sp.created_at)>=?")
         args.append(since)
     if until:
-        where.append("sp.created_at<=?")
+        where.append("COALESCE(o.created_at,sp.created_at)<=?")
         args.append(until)
 
     order_where = ["o.user_id=?", "o.status='approved'"]
@@ -2098,30 +2109,34 @@ async def get_rep_purchases(user_id: int, since: Optional[str] = None,
         db.row_factory = aiosqlite.Row
 
         async with db.execute(
-            f"""SELECT sp.id, sp.name, sp.traffic_gb, sp.duration_days, sp.created_at,
+            f"""SELECT sp.id, sp.name,
+                       COALESCE(NULLIF(o.bulk_each_gb,0), o.traffic_snapshot / MAX(COALESCE(NULLIF(o.bulk_count,0),1),1), sp.traffic_gb) AS traffic_gb,
+                       COALESCE(o.duration_snapshot,sp.duration_days) AS duration_days,
+                       COALESCE(o.created_at,sp.created_at) AS created_at,
                        sp.first_use_at, sp.expire_timestamp, sp.is_active, sp.used_bytes,
                        sp.order_id,
+                       (SELECT COUNT(*) FROM subscription_profiles unit
+                        WHERE unit.order_id=sp.order_id AND unit.id<sp.id) AS unit_index,
                        o.approved_at AS order_approved_at,
                        o.custom_config_name AS order_name,
                        MAX(COALESCE(NULLIF(o.bulk_count,0),1), 1) AS bulk_count,
-                       (COALESCE(NULLIF(o.custom_price,0), p.price, 0) / 1000 * 1000) AS order_price,
+                       {cost_sql} AS order_price,
                        COALESCE(p.name,'') AS package_name,
                        COALESCE(p.is_unlimited,0) AS pkg_unlimited
                 FROM subscription_profiles sp
                 LEFT JOIN orders o ON o.id=sp.order_id
                 LEFT JOIN packages p ON p.id=o.package_id
                 WHERE {' AND '.join(where)}
-                ORDER BY sp.created_at DESC, sp.id DESC
-                LIMIT ?""",
-            (*args, max(1, int(limit))),
+                ORDER BY sp.created_at DESC, sp.id DESC""",
+            tuple(args),
         ) as c:
             profile_rows = [dict(r) for r in await c.fetchall()]
 
         async with db.execute(
             f"""SELECT o.id AS order_id, o.created_at, o.approved_at AS order_approved_at,
-                       (COALESCE(NULLIF(o.custom_price,0), p.price, 0) / 1000 * 1000) AS order_price,
-                       COALESCE(NULLIF(o.custom_traffic_gb,0), p.traffic_gb, 0) AS traffic_gb,
-                       COALESCE(NULLIF(o.custom_duration_days,0), p.duration_days, 0) AS duration_days,
+                       {cost_sql} AS order_price,
+                       COALESCE(o.traffic_snapshot, CASE WHEN o.custom_name!='' THEN o.custom_traffic_gb ELSE p.traffic_gb END,0) AS traffic_gb,
+                       COALESCE(o.duration_snapshot, CASE WHEN o.custom_name!='' THEN o.custom_duration_days ELSE p.duration_days END,0) AS duration_days,
                        COALESCE(p.is_unlimited,0) AS pkg_unlimited,
                        COALESCE(NULLIF(o.custom_config_name,''), sp.name, cfg.email, '') AS name,
                        sp.expire_timestamp, sp.first_use_at, sp.is_active
@@ -2131,9 +2146,8 @@ async def get_rep_purchases(user_id: int, since: Optional[str] = None,
                 LEFT JOIN configs cfg ON cfg.id=o.renew_config_id
                 WHERE {' AND '.join(order_where)}
                   AND (COALESCE(o.renew_sub_profile_id,0)>0 OR COALESCE(o.renew_config_id,0)>0)
-                ORDER BY o.created_at DESC
-                LIMIT ?""",
-            (*order_args, max(1, int(limit))),
+                ORDER BY o.created_at DESC""",
+            tuple(order_args),
         ) as c:
             renewal_rows = [dict(r) for r in await c.fetchall()]
 
@@ -2141,7 +2155,8 @@ async def get_rep_purchases(user_id: int, since: Optional[str] = None,
         # bulk order would be counted once per service it produced.
         async with db.execute(
             f"""SELECT COUNT(*) AS n,
-                       COALESCE(SUM(COALESCE(NULLIF(o.custom_price,0), p.price, 0) / 1000 * 1000),0) AS total
+                       COALESCE(SUM({cost_sql}),0) AS total,
+                       SUM(CASE WHEN {cost_sql} IS NULL THEN 1 ELSE 0 END) AS unknown
                 FROM orders o LEFT JOIN packages p ON p.id=o.package_id
                 WHERE {' AND '.join(order_where)}""",
             tuple(order_args),
@@ -2176,7 +2191,9 @@ async def get_rep_purchases(user_id: int, since: Optional[str] = None,
             "traffic_gb": traffic,
             "is_unlimited": bool(int(row.get("pkg_unlimited") or 0)) or traffic <= 0,
             "duration_days": int(row.get("duration_days") or 0),
-            "price": int(round(int(row.get("order_price") or 0) / bulk)),
+            "price": (None if row.get("order_price") is None else
+                      int(row["order_price"]) // bulk +
+                      (1 if int(row.get("unit_index") or 0) < int(row["order_price"]) % bulk else 0)),
             "bulk_count": bulk,
             "purchased_at": row.get("created_at"),
             "approved_at": row.get("order_approved_at"),
@@ -2195,7 +2212,7 @@ async def get_rep_purchases(user_id: int, since: Optional[str] = None,
             "traffic_gb": traffic,
             "is_unlimited": bool(int(row.get("pkg_unlimited") or 0)) or traffic <= 0,
             "duration_days": int(row.get("duration_days") or 0),
-            "price": int(row.get("order_price") or 0),
+            "price": None if row.get("order_price") is None else int(row["order_price"]),
             "bulk_count": 1,
             "purchased_at": row.get("created_at"),
             "approved_at": row.get("order_approved_at"),
@@ -2217,6 +2234,7 @@ async def get_rep_purchases(user_id: int, since: Optional[str] = None,
             "orders": int(money["n"] or 0),
             "total_spent": int(money["total"] or 0),
             "legacy_configs": legacy_configs,
+            "unknown_cost_orders": int(money["unknown"] or 0),
         },
     }
 
@@ -3077,9 +3095,7 @@ async def create_custom_order(user_id: int, name: str, total_traffic_gb: float, 
                               price: int, bulk_count: int = 1, bulk_each_gb: float = 0, notes: str = "",
                               package_id: int = 0) -> int:
     async with aiosqlite.connect(DB_PATH) as db:
-        # Prefer an explicit plan (so get_order's COALESCE falls back to the
-        # right traffic/duration — important for unlimited plans where the
-        # custom value is 0 and NULLIF would otherwise drop it).
+        # Keep the selected package identity; entitlement values are snapshotted below.
         if package_id:
             async with db.execute("SELECT id FROM packages WHERE id=?", (int(package_id),)) as cp:
                 if not await cp.fetchone():
@@ -3093,18 +3109,25 @@ async def create_custom_order(user_id: int, name: str, total_traffic_gb: float, 
                                   ("پکیج سیستمی", 1, 30, 0, "system"))
             package_id = c1.lastrowid
         c = await db.execute(
-            """INSERT INTO orders(user_id,package_id,status,custom_name,custom_traffic_gb,custom_duration_days,custom_price,bulk_count,bulk_each_gb,notes)
-               VALUES(?,?,'pending_payment',?,?,?,?,?,?,?)""",
-            (user_id, package_id, name, total_traffic_gb, duration_days, price, bulk_count, bulk_each_gb, notes)
+            """INSERT INTO orders(user_id,package_id,status,custom_name,custom_traffic_gb,custom_duration_days,custom_price,bulk_count,bulk_each_gb,notes,price_snapshot,traffic_snapshot,duration_snapshot)
+               VALUES(?,?,'pending_payment',?,?,?,?,?,?,?,?,?,?)""",
+            (user_id, package_id, name, total_traffic_gb, duration_days, price, bulk_count, bulk_each_gb, notes, price, total_traffic_gb, duration_days)
         )
         await db.commit()
         return c.lastrowid
 async def create_order(user_id: int, package_id: int, custom_config_name: str = '', custom_price: int = 0,
                        base_price: int = 0) -> int:
     async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT price,traffic_gb,duration_days FROM packages WHERE id=?", (package_id,)) as c:
+            plan = await c.fetchone()
+        if not plan:
+            raise ValueError("package_not_found")
         c = await db.execute(
-            "INSERT INTO orders(user_id,package_id,status,custom_config_name,custom_price,base_price) VALUES(?,?,'pending_payment',?,?,?)",
-            (user_id, package_id, custom_config_name, int(custom_price or 0), int(base_price or 0))
+            """INSERT INTO orders(user_id,package_id,status,custom_config_name,custom_price,base_price,
+                                  price_snapshot,traffic_snapshot,duration_snapshot)
+               VALUES(?,?,'pending_payment',?,?,?,?,?,?)""",
+            (user_id, package_id, custom_config_name, int(custom_price or 0), int(base_price or 0),
+             int(custom_price or plan[0]), float(plan[1]), int(plan[2]))
         )
         await db.commit()
         return c.lastrowid
@@ -3116,9 +3139,9 @@ async def get_order(oid: int) -> Optional[Dict]:
             SELECT o.*,
                    u.telegram_id,u.username,u.full_name,u.referred_by,
                    COALESCE(NULLIF(o.custom_name,''), p.name) as pkg_name,
-                   COALESCE(NULLIF(o.custom_traffic_gb,0), p.traffic_gb) as traffic_gb,
-                   COALESCE(NULLIF(o.custom_duration_days,0), p.duration_days) as duration_days,
-                   COALESCE(NULLIF(o.custom_price,0), p.price) as price,
+                   COALESCE(o.traffic_snapshot, CASE WHEN o.custom_name!='' THEN o.custom_traffic_gb ELSE p.traffic_gb END) as traffic_gb,
+                   COALESCE(o.duration_snapshot, CASE WHEN o.custom_name!='' THEN o.custom_duration_days ELSE p.duration_days END) as duration_days,
+                   COALESCE(NULLIF(o.custom_price,0), o.price_snapshot, p.price) as price,
                    COALESCE(p.inbound_id,0) as package_inbound_id
             FROM orders o
             JOIN users u ON o.user_id=u.id

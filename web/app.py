@@ -3946,12 +3946,35 @@ async def miniapp_rep_purchases(request: Request):
     except Exception:
         body = {}
     report = await build_rep_report(
-        user,
+        user, include_sales=True,
         preset=str(body.get("preset") or DEFAULT_REPORT_PRESET),
         date_from=str(body.get("from") or ""),
         date_to=str(body.get("to") or ""),
     )
     return JSONResponse(report)
+
+
+@app.post("/app/api/rep/purchases/sale-price")
+async def miniapp_rep_sale_price(request: Request):
+    if await get_setting("miniapp_enabled", "0") != "1":
+        return JSONResponse({"error": "disabled"}, status_code=403)
+    user = await _miniapp_user(request)
+    if not user:
+        return JSONResponse({"error": "invalid_init_data"}, status_code=401)
+    if not int(user.get("is_wholesale") or 0) or int(user.get("is_blocked") or 0):
+        return JSONResponse({"error": "not_a_representative"}, status_code=403)
+    from core.rep_accounting import set_sale_price
+    try:
+        body = await request.json()
+        if not isinstance(body, dict) or "sale_price" not in body:
+            raise ValueError("invalid_body")
+        saved = await set_sale_price(int(user["id"]), body.get("kind"),
+                                     body.get("order_id"), body.get("profile_id"), body["sale_price"])
+    except (ValueError, TypeError):
+        return JSONResponse({"error": "invalid_price", "message": "مبلغ باید عدد صحیح و نامنفی به تومان باشد."}, status_code=400)
+    if not saved:
+        return JSONResponse({"error": "not_your_purchase"}, status_code=403)
+    return JSONResponse({"ok": True})
 
 
 @app.post("/app/api/rep/purchases/excel")
@@ -3974,7 +3997,7 @@ async def miniapp_rep_purchases_excel(request: Request):
     except Exception:
         body = {}
     report = await build_rep_report(
-        user,
+        user, include_sales=True,
         preset=str(body.get("preset") or DEFAULT_REPORT_PRESET),
         date_from=str(body.get("from") or ""),
         date_to=str(body.get("to") or ""),

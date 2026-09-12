@@ -1582,47 +1582,14 @@ async def set_nodes_enabled(profile_id: int, enabled: bool):
 
 
 async def renew_subscription_profile(profile: Dict, traffic_gb: float, duration_days: int) -> Dict:
-    """Renew a subscription.
+    """Replace the entitlement with the selected plan, starting at renewal time.
 
-    Rules (per product spec):
-      * Consumed/used volume ALWAYS resets to zero and counting restarts.
-      * If renewed *while still fully usable* — it still had BOTH remaining
-        volume AND remaining time — the leftover volume and leftover time are
-        CARRIED OVER and summed with the newly purchased volume/duration.
-      * Otherwise (it had run out of volume OR time) it starts fresh from now.
+    No previous volume, expiry, unlimited flag or first-use state carries over.
     """
-    # Freshest figures so carry-over isn't computed off stale usage.
-    fresh = await get_subscription_profile(profile["id"]) or profile
     now_ms = int(time.time() * 1000)
     new_duration = int(duration_days or 0)
-    new_traffic_gb = float(traffic_gb or 0)
-
-    cur_total = total_bytes(fresh.get("traffic_gb") or 0)        # 0 = unlimited volume
-    cur_used = int(fresh.get("used_bytes") or 0)
-    cur_expire = int(fresh.get("expire_timestamp") or 0)         # 0 = unlimited / not armed
-    not_started = bool(int(fresh.get("starts_on_first_use") or 0) and int(fresh.get("first_use_at") or 0) <= 0)
-
-    volume_remaining = cur_total <= 0 or cur_used < cur_total
-    time_remaining = cur_expire <= 0 or cur_expire > now_ms
-    carry = volume_remaining and time_remaining and not not_started
-
-    # Volume: carry leftover + new, or top-up unused, or fresh. Unlimited stays unlimited.
-    if carry:
-        final_traffic_gb = 0.0 if (cur_total <= 0 or new_traffic_gb <= 0) else \
-            round(max(0.0, (cur_total - cur_used) / (1024 ** 3)) + new_traffic_gb, 3)
-    elif not_started:
-        final_traffic_gb = 0.0 if (cur_total <= 0 or new_traffic_gb <= 0) else \
-            round(cur_total / (1024 ** 3) + new_traffic_gb, 3)
-    else:
-        final_traffic_gb = new_traffic_gb
-
-    # Time: carry leftover + new, or fresh from now. First-use timer stays unarmed.
-    if not_started:
-        final_expire_ms = 0
-    elif carry:
-        final_expire_ms = 0 if (cur_expire <= 0 or new_duration <= 0) else cur_expire + new_duration * 86400000
-    else:
-        final_expire_ms = now_ms + new_duration * 86400000 if new_duration > 0 else 0
+    final_traffic_gb = float(traffic_gb or 0)
+    final_expire_ms = now_ms + new_duration * 86400000 if new_duration > 0 else 0
 
     nodes = await get_subscription_nodes(profile["id"])
     ok_count = 0
@@ -1644,7 +1611,9 @@ async def renew_subscription_profile(profile: Dict, traffic_gb: float, duration_
                     node_uuid = resolved_uuid
                     ok = await cli.update_client(inbound_id, node_uuid, node_email, final_traffic_gb, final_expire_ms, True)
             if ok:
-                await cli.reset_client_traffic(inbound_id, node_email)
+                if not await cli.reset_client_traffic(inbound_id, node_email):
+                    failures.append(f"{node.get('server_id')}#{inbound_id}:traffic_reset_failed")
+                    continue
                 # Refresh the cached link/identity so the served sub immediately
                 # reflects the renewed client.
                 fresh_inbound, fresh_uuid, fresh_link = await _remote_identity_and_link(cli, inbound_id, node_email, node_uuid)
@@ -1662,8 +1631,8 @@ async def renew_subscription_profile(profile: Dict, traffic_gb: float, duration_
             failures.append(f"{node.get('server_name') or node.get('server_id')}#{node.get('inbound_id')}:{type(e).__name__}")
         finally:
             await cli.close()
-    if ok_count <= 0:
-        return {"ok": False, "error": "no_nodes_updated:" + ",".join(failures[:6])}
+    if ok_count <= 0 or failures:
+        return {"ok": False, "error": "renewal_incomplete:" + ",".join(failures[:6])}
     update_kwargs = dict(
         traffic_gb=float(final_traffic_gb),
         used_bytes=0,
@@ -1672,17 +1641,12 @@ async def renew_subscription_profile(profile: Dict, traffic_gb: float, duration_
         expiry_notified=0,
         prewarn_sent=0,
     )
-    if not_started:
-        update_kwargs.update(expire_timestamp=0, duration_days=int(new_duration))
-    else:
-        final_duration_days = _days_remaining(final_expire_ms, now_ms) if final_expire_ms > 0 else 0
-        update_kwargs.update(
-            expire_timestamp=int(final_expire_ms),
-            duration_days=int(final_duration_days),
-            starts_on_first_use=0,
-        )
+    update_kwargs.update(
+        expire_timestamp=int(final_expire_ms), duration_days=new_duration,
+        starts_on_first_use=0, first_use_at=now_ms,
+    )
     await update_subscription_profile(profile["id"], **update_kwargs)
-    return {"ok": True, "nodes": ok_count, "expire_ms": final_expire_ms, "carried": carry, "traffic_gb": final_traffic_gb}
+    return {"ok": True, "nodes": ok_count, "expire_ms": final_expire_ms, "carried": False, "traffic_gb": final_traffic_gb}
 
 
 async def edit_subscription_profile(profile: Dict, email: str, traffic_gb: float, expire_ms: int, is_active: bool = True) -> Dict:
