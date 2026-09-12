@@ -166,7 +166,10 @@ def build_payload(stats: Dict) -> Dict:
         },
         "forecast": {
             "horizon_days": fc.get("horizon"),
-            "total": fc.get("total"),
+            "available": fc.get("ok", False),
+            "unavailable_reason": fc.get("reason"),
+            "trained_through": fc.get("trained_through"),
+            "total": fc.get("total") if fc.get("ok") else None,
             "typical_range": {"low": band.get("low"), "high": band.get("high")},
             "measured_error_pct": acc.get("smape"),
             "orders_per_day": drivers.get("orders_per_day"),

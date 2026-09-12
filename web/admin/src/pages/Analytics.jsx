@@ -138,48 +138,53 @@ function SegTile({ icon, label, count, hint, onClick }) {
   );
 }
 
-/** What the forecast is, how accurate it has actually been, and what it is built
- *  from. The old copy named an algorithm ("رگرسیون خطی"), which told the owner
- *  nothing about whether to trust the number. A backtested error rate does. */
+/** Forecast quality is measured on later, unseen dates, including model selection. */
 function ForecastNotes({ meta }) {
   if (!meta) return null;
-  if (meta.ok === false) {
-    return (
-      <div style={{ background: "rgba(251,191,36,.1)", border: "1px solid rgba(251,191,36,.3)",
-                    borderRadius: 12, padding: 12, marginTop: 12 }}>
-        <b>هنوز داده‌ی کافی برای پیش‌بینی نیست.</b>
-        <p className="muted tiny" style={{ margin: "5px 0 0" }}>
-          {meta.history_days} روز داده داریم؛ برای پیش‌بینی قابل‌اتکا حداقل ۱۴ روز لازم است.
-          عدد بالا فقط میانگین روزهای موجود است.
-        </p>
-      </div>
-    );
-  }
-  const acc = meta.accuracy, vs = meta.versus_linear, d = meta.drivers || {}, b7 = meta.band7;
+  if (meta.ok === false) return (
+    <div className="forecast-notice">
+      <b>{meta.reason === "incomplete_revenue" ? "مبالغ تاریخی کامل نیستند." : "هنوز سابقهٔ کافی برای پیش‌بینی نداریم."}</b>
+      <p className="muted tiny">{meta.reason === "incomplete_revenue"
+        ? `مبلغ ${fmt(meta.unknown_revenue_orders)} سفارش مشخص نیست. برای جلوگیری از پیش‌بینی گمراه‌کننده، عددی نمایش داده نمی‌شود.`
+        : `${fmt(meta.history_days)} روز کامل از آغاز فروش داریم؛ حداقل ۱۴ روز لازم است. روز جاری و روزهای قبل از شروع فروش در آموزش نمی‌آیند.`}</p>
+    </div>
+  );
+  const d = meta.drivers || {};
+  const horizons = [
+    { label: "۷ روز", method: meta.method_label, accuracy: meta.accuracy, band: meta.band7, comparison: meta.versus_baseline },
+    { label: "۳۰ روز", method: meta.method30_label, accuracy: meta.accuracy30, band: meta.band30, comparison: meta.versus_baseline30 },
+  ];
   return (
-    <div className="grid" style={{ gap: 10, marginTop: 12 }}>
-      {b7 && (
-        <div className="muted tiny">
-          بازه‌ی معمول ۷ روز آینده:{" "}
-          <b style={{ color: "var(--txt2)" }}>{fmt(b7.low)}</b> تا{" "}
-          <b style={{ color: "var(--txt2)" }}>{fmt(b7.high)}</b> تومان — این بازه از
-          خطای واقعی همین مدل در گذشته درآمده، نه از یک فرمول.
-        </div>
-      )}
-      <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
-        {acc && <span className="badge b-blue">خطای اندازه‌گیری‌شده: {acc.smape}٪ روی {acc.folds} بازه‌ی آزمون</span>}
-        {vs && vs.error_reduction_pct > 0 && (
-          <span className="badge b-green">{vs.error_reduction_pct}٪ دقیق‌تر از مدل خطی قبلی</span>
-        )}
+    <div className="forecast-notes">
+      <p className="muted tiny">آموزش با {fmt(meta.history_days)} روز کامل، تا <bdi>{meta.trained_through}</bdi>؛ پیش‌بینی از فردا شروع می‌شود. روش هر افق جداگانه با آزمون روی گذشته انتخاب می‌شود.</p>
+      <div className="forecast-quality-grid">
+        {horizons.map(h => <div className="forecast-quality" key={h.label}>
+          <b>ارزیابی پیش‌بینی {h.label} آینده</b>
+          <div className="muted tiny">روش: {h.method || "سطح پایدار سفارش‌ها"}</div>
+          {h.accuracy ? <>
+            <div className="forecast-error"><b>{h.accuracy.smape}٪</b><span>خطای میانگین sMAPE · کمتر بهتر</span></div>
+            <div className="muted tiny">روی {fmt(h.accuracy.folds)} بازهٔ گذشته؛ میانگین خطای مبلغ: {fmt(h.accuracy.mae)} تومان</div>
+            {h.comparison && <div className={"badge " + (h.comparison.error_reduction_pct >= 0 ? "b-green" : "b-yellow")}>
+              {Math.abs(h.comparison.error_reduction_pct)}٪ خطای {h.comparison.error_reduction_pct >= 0 ? "کمتر" : "بیشتر"} از مدل قبلی
+            </div>}
+          </> : <p className="muted tiny">هنوز بازهٔ کافی برای اندازه‌گیری دقت نداریم.</p>}
+          {h.band && <div className="forecast-range">
+            <span className="muted tiny">بازهٔ معمول بر اساس خطاهای گذشته</span>
+            <b>{fmt(h.band.low)} تا {fmt(h.band.high)} تومان</b>
+            <span className="muted tiny">{h.band.observed_coverage != null
+              ? `پوشش آزموده‌شده: ${h.band.observed_coverage}٪ در ${fmt(h.band.coverage_folds)} بازه؛ تضمین نتیجهٔ آینده نیست.`
+              : "سابقهٔ کافی برای سنجش پوشش این بازه نداریم."}</span>
+          </div>}
+        </div>)}
       </div>
-      <p className="muted tiny" style={{ margin: 0, lineHeight: 2 }}>
-        روی همین سرور محاسبه می‌شود؛ بدون هزینه و بدون ارسال داده به بیرون. مبنا:
-        میانه‌ی <b>{d.orders_per_day}</b> سفارش در روز × سبد خرید <b>{fmt(d.avg_basket)}</b> تومان،
-        تعدیل‌شده با الگوی هفتگی خودت.
-        <br />
-        عمداً «روند» را امتداد نمی‌دهد: در آزمون روی داده‌ی خودت، مدل‌هایی که روند را
-        ادامه می‌دادند <b>بدتر</b> جواب دادند.
-      </p>
+      <p className="muted tiny">اطلاعات بازهٔ اخیر: {d.orders_per_day} سفارش در روز و متوسط مبلغ خرید {fmt(d.avg_basket)} تومان. همهٔ محاسبات روی همین سرور انجام می‌شود.</p>
+      {(meta.backtest || []).length > 0 && <details className="forecast-history">
+        <summary>پیش‌بینی در برابر درآمد واقعی در آزمون‌های گذشته</summary>
+        <div className="table-wrap"><table><thead><tr><th>آخرین روز آموزش</th><th>پیش‌بینی ۷ روز</th><th>درآمد واقعی همان بازه</th></tr></thead><tbody>
+          {meta.backtest.slice(-6).reverse().map(r => <tr key={r.origin}><td><bdi>{r.origin}</bdi></td><td>{fmt(r.predicted)}</td><td>{fmt(r.actual)}</td></tr>)}
+        </tbody></table></div>
+        <p className="muted tiny">ارقام به تومان است. انتخاب روش و محاسبهٔ هر ردیف فقط با دادهٔ قبل از آن انجام شده؛ بازه‌ها با هم هم‌پوشانی دارند.</p>
+      </details>}
     </div>
   );
 }
@@ -484,11 +489,11 @@ export default function Analytics() {
         <div className="grid" style={{ gridTemplateColumns: "1fr 1fr", gap: 10, marginTop: 12 }}>
           <div style={{ background: "rgba(124,111,255,.08)", border: "1px solid var(--line)", borderRadius: 12, padding: 12 }}>
             <div className="muted tiny">پیش‌بینی ۷ روز آینده</div>
-            <div style={{ fontWeight: 800, fontSize: "1.2rem", color: "var(--p2)" }}>{fmt(t.forecast_next7)} <span className="muted tiny">ت</span></div>
+            <div style={{ fontWeight: 800, fontSize: "1.2rem", color: "var(--p2)" }}>{t.forecast_next7 == null ? "—" : fmt(t.forecast_next7)} <span className="muted tiny">ت</span></div>
           </div>
           <div style={{ background: "rgba(52,211,153,.08)", border: "1px solid var(--line)", borderRadius: 12, padding: 12 }}>
             <div className="muted tiny">پیش‌بینی ۳۰ روز آینده</div>
-            <div style={{ fontWeight: 800, fontSize: "1.2rem", color: "#34d399" }}>{fmt(t.forecast_next30)} <span className="muted tiny">ت</span></div>
+            <div style={{ fontWeight: 800, fontSize: "1.2rem", color: "#34d399" }}>{t.forecast_next30 == null ? "—" : fmt(t.forecast_next30)} <span className="muted tiny">ت</span></div>
           </div>
         </div>
         <ForecastNotes meta={a.forecast_meta} />

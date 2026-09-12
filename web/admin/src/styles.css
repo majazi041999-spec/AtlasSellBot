@@ -592,3 +592,16 @@ tbody tr:hover { background: rgba(255, 255, 255, 0.03); }
   font-size:.85rem;
   line-height:1.75;
 }
+
+/* Forecast evidence: two independently evaluated horizons. */
+.forecast-notes { display: grid; gap: 12px; margin-top: 16px; }
+.forecast-quality-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 12px; }
+.forecast-quality { display: grid; align-content: start; gap: 9px; padding: 16px; border: 1px solid var(--line); border-radius: 14px; min-width: 0; }
+.forecast-quality > b { font-size: .84rem; }.forecast-quality .badge { width: fit-content; white-space: normal; }
+.forecast-error { display: flex; align-items: baseline; flex-wrap: wrap; gap: 10px; }
+.forecast-error b { font-size: 1.5rem; color: var(--p2); }.forecast-error span { font-size: .67rem; color: var(--txt3); }
+.forecast-range { display: grid; gap: 5px; padding-top: 10px; border-top: 1px solid var(--line); }.forecast-range b { font-size: .78rem; overflow-wrap: anywhere; }
+.forecast-history summary { cursor: pointer; font-size: .78rem; padding: 10px 0; }.forecast-history td { white-space: nowrap; }
+.forecast-notice { padding: 14px; border: 1px solid #fbbf2444; background: #fbbf2410; border-radius: 12px; margin-top: 14px; }
+.forecast-notice p { margin-top: 7px; }
+@media (max-width: 600px) { .forecast-quality-grid { grid-template-columns: 1fr; } }

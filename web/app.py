@@ -1617,18 +1617,30 @@ async def _analytics_stats() -> dict:
     """
     from core.database import (get_new_users_timeseries, count_users,
                                count_active_subscription_profiles, count_expiring_profiles)
-    from core.forecast import forecast as run_forecast, compare_to_line
+    from core.forecast import forecast as run_forecast
+    import asyncio
 
     # 120 days so the backtest inside the forecaster has folds to measure with.
     rev = await get_revenue_timeseries(120)
     users_ts = await get_new_users_timeseries(30)
-    days = [datetime.strptime(r["date"], "%Y-%m-%d").date() for r in rev]
-    revenue = [float(r["revenue"]) for r in rev]
-    counts = [float(r["orders"]) for r in rev]
+    # Keep today's actual receipts on the chart, but do not train on a partial
+    # day or the artificial zero padding before the business's first sale.
+    complete = [r for r in rev if r.get("is_observed", True) and r.get("is_complete", r["date"] < datetime.now().strftime("%Y-%m-%d"))]
+    days = [datetime.strptime(r["date"], "%Y-%m-%d").date() for r in complete]
+    revenue = [float(r["revenue"]) for r in complete]
+    counts = [float(r["orders"]) for r in complete]
 
-    fc7 = run_forecast(revenue, counts, days, 7)
-    fc30 = run_forecast(revenue, counts, days, 30)
-    versus = compare_to_line(revenue, counts, days, 7)
+    fc7, fc30 = await asyncio.gather(
+        asyncio.to_thread(run_forecast, revenue, counts, days, 7, skip_days=1),
+        asyncio.to_thread(run_forecast, revenue, counts, days, 30, skip_days=1),
+    )
+    unknown = sum(r.get("unknown_revenue_orders", 0) for r in complete)
+    for fc in (fc7, fc30):
+        fc["unknown_revenue_orders"] = unknown
+        if unknown:
+            fc.update(ok=False, reason="incomplete_revenue", points=[], total=None,
+                      accuracy=None, band=None, versus_baseline=None, versus_linear=None)
+    versus = fc7.get("versus_linear")
 
     last30 = rev[-30:]
     prev30 = rev[-60:-30] if len(rev) >= 60 else []
@@ -1687,9 +1699,18 @@ async def api_analytics(request: Request):
     return JSONResponse({
         "revenue": st["revenue_series"],
         "users": st["users"],
-        "forecast": fc7["points"],
+        "forecast": fc7["points"] if fc7["ok"] else [],
         "forecast_meta": {
             "method": fc7.get("method"),
+            "method_label": fc7.get("method_label"),
+            "selection": fc7.get("selection"),
+            "trained_through": fc7.get("trained_through"),
+            "unknown_revenue_orders": fc7.get("unknown_revenue_orders"),
+            "versus_baseline": fc7.get("versus_baseline"),
+            "accuracy30": fc30.get("accuracy"),
+            "method30_label": fc30.get("method_label"),
+            "versus_baseline30": fc30.get("versus_baseline"),
+            "backtest": fc7.get("backtest", []),
             "ok": fc7.get("ok"),
             "reason": fc7.get("reason"),
             "history_days": fc7.get("history_days"),
@@ -1715,8 +1736,8 @@ async def api_analytics(request: Request):
             "new_users_30d": st["new_users_30d"],
             "avg_daily_revenue": int(round(st["revenue_30d"] / max(1, len(st["revenue_series"])))),
             "momentum_pct": momentum,
-            "forecast_next7": fc7["total"],
-            "forecast_next30": fc30["total"],
+            "forecast_next7": fc7["total"] if fc7["ok"] else None,
+            "forecast_next30": fc30["total"] if fc30["ok"] else None,
             "near_expiry": st["expiring_7d"],
             "expiring_30d": st["expiring_30d"],
         },

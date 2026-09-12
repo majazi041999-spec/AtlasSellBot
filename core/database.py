@@ -1888,12 +1888,13 @@ async def get_revenue_mix(days: int = 90) -> Dict:
 
 
 async def get_revenue_timeseries(days: int = 14) -> List[Dict]:
-    """Daily approved-order revenue for the last N days (gaps filled with zero)."""
+    """Daily paid revenue, preserving zero-sale days and data completeness flags."""
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         async with db.execute(
-            """SELECT date(o.approved_at) AS d,
-                      COALESCE(SUM(COALESCE(NULLIF(o.custom_price,0), p.price)),0) AS rev,
+            f"""SELECT date(o.approved_at) AS d,
+                      COALESCE(SUM({_REP_ORDER_COST_SQL}),0) AS rev,
+                      SUM(CASE WHEN {_REP_ORDER_COST_SQL} IS NULL THEN 1 ELSE 0 END) AS unknown,
                       COUNT(*) AS cnt
                FROM orders o LEFT JOIN packages p ON p.id = o.package_id
                WHERE o.status='approved' AND o.approved_at IS NOT NULL
@@ -1901,13 +1902,18 @@ async def get_revenue_timeseries(days: int = 14) -> List[Dict]:
                GROUP BY date(o.approved_at)""",
             (f"-{max(1, int(days)) - 1} days",),
         ) as c:
-            rows = {r["d"]: {"rev": int(r["rev"]), "cnt": int(r["cnt"])} for r in await c.fetchall()}
+            rows = {r["d"]: {"rev": int(r["rev"]), "cnt": int(r["cnt"]), "unknown": int(r["unknown"] or 0)} for r in await c.fetchall()}
+        async with db.execute("SELECT MIN(date(approved_at)) FROM orders WHERE status='approved' AND approved_at IS NOT NULL") as c:
+            history_start = (await c.fetchone())[0]
     out = []
     today = datetime.now()
     for i in range(max(1, int(days)) - 1, -1, -1):
         d = (today - timedelta(days=i)).strftime("%Y-%m-%d")
-        v = rows.get(d, {"rev": 0, "cnt": 0})
-        out.append({"date": d, "revenue": v["rev"], "orders": v["cnt"]})
+        v = rows.get(d, {"rev": 0, "cnt": 0, "unknown": 0})
+        out.append({"date": d, "revenue": v["rev"], "orders": v["cnt"],
+                    "unknown_revenue_orders": v["unknown"],
+                    "is_observed": bool(history_start and d >= history_start),
+                    "is_complete": d < today.strftime("%Y-%m-%d")})
     return out
 
 
