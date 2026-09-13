@@ -1661,12 +1661,17 @@ async def _analytics_stats() -> dict:
         except Exception:
             return default
 
-    from core.database import get_revenue_mix
+    from core.database import get_revenue_mix, get_renewal_rate
     try:
         mix = await get_revenue_mix(90)
     except Exception as e:
         logger.warning('revenue mix failed: %s', e)
         mix = {}
+    try:
+        renewal = await get_renewal_rate(90, 14)
+    except Exception as e:
+        logger.warning('renewal rate failed: %s', e)
+        renewal = {}
     return {
         "today": datetime.now().strftime("%Y-%m-%d"),
         "revenue_series": last30,
@@ -1683,6 +1688,10 @@ async def _analytics_stats() -> dict:
         "active_subs": await _safe(count_active_subscription_profiles()),
         "expiring_7d": await _safe(count_expiring_profiles(7)),
         "expiring_30d": await _safe(count_expiring_profiles(30)),
+        "renewal_rate_pct": renewal.get("renewal_rate_pct"),
+        "renewal_rate_sample": renewal.get("decisions"),
+        "renewal_rate_renewed": renewal.get("renewed"),
+        "renewal_rate_window_days": renewal.get("window_days"),
         **mix,
     }
 
@@ -1735,6 +1744,8 @@ async def api_analytics(request: Request):
         "mix": {
             "reseller_share_pct": st.get("reseller_share_pct"),
             "renewal_share_pct": st.get("renewal_share_pct"),
+            "renewal_rate_pct": st.get("renewal_rate_pct"),
+            "renewal_rate_sample": st.get("renewal_rate_sample"),
             "top_packages": st.get("top_packages") or [],
         },
         "totals": {

@@ -1887,6 +1887,78 @@ async def get_revenue_mix(days: int = 90) -> Dict:
     return out
 
 
+async def get_renewal_rate(window_days: int = 90, grace_days: int = 14) -> Dict:
+    """Historical renewal rate: of the subscription periods that came due long
+    enough ago to judge, what share were renewed.
+
+    Measured per PERIOD, not per customer, and on ORDERS, not on the profile
+    row — deliberately. A renewal here extends the same subscription_profile and
+    OVERWRITES its expiry, so a profile renewed three times then dropped looks,
+    today, like a single lapsed profile: its earlier renewals leave no trace in
+    the profile row. The durable record of every paid period is the orders
+    table — the initial order (subscription_profiles.order_id) plus every
+    renewal order (orders.renew_sub_profile_id). Each opens a period ending at
+    approved_at + its duration, and that period end is one renewal decision.
+
+    A period is scored only once it is at least `grace_days` old, so a sub that
+    expired yesterday is not called churned before its owner has had a fair
+    chance to come back. A period counts as renewed when the same profile has a
+    LATER order that starts within `grace_days` of the period's end — early
+    birds and grace-period latecomers both count; a win-back after a long gap
+    does not.
+
+    Returns the percentage AND the raw counts, so a rate off a handful of
+    periods is not mistaken for a trend. `renewal_rate_pct` is None only when
+    nothing has matured yet — the one case where "no data" is the honest answer.
+
+    Assumption: period end = order date + duration. For a "starts on first use"
+    sub whose clock began days after purchase this runs slightly early, which is
+    acceptable noise for a 90-day aggregate.
+    """
+    window_days = max(1, int(window_days))
+    grace_days = max(0, int(grace_days))
+    out: Dict = {
+        "renewal_rate_pct": None, "decisions": 0, "renewed": 0,
+        "window_days": window_days, "grace_days": grace_days,
+    }
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            """
+            WITH periods AS (
+                SELECT sp.id AS profile_id,
+                       julianday(o.approved_at) AS start_j,
+                       julianday(o.approved_at)
+                         + COALESCE(NULLIF(o.duration_snapshot, 0), sp.duration_days, 0) AS end_j
+                FROM subscription_profiles sp
+                JOIN orders o
+                  ON (o.id = sp.order_id OR o.renew_sub_profile_id = sp.id)
+                WHERE o.status='approved' AND o.approved_at IS NOT NULL
+            )
+            SELECT
+                COUNT(*) AS decisions,
+                SUM(CASE WHEN EXISTS (
+                        SELECT 1 FROM periods n
+                        WHERE n.profile_id = p.profile_id
+                          AND n.start_j > p.start_j
+                          AND n.start_j <= p.end_j + ?
+                    ) THEN 1 ELSE 0 END) AS renewed
+            FROM periods p
+            WHERE p.end_j <= julianday('now','localtime') - ?
+              AND p.end_j >= julianday('now','localtime') - ? - ?
+            """,
+            (grace_days, grace_days, window_days, grace_days),
+        ) as c:
+            r = await c.fetchone()
+    decisions = int((r["decisions"] if r else 0) or 0)
+    renewed = int((r["renewed"] if r else 0) or 0)
+    out["decisions"] = decisions
+    out["renewed"] = renewed
+    if decisions > 0:
+        out["renewal_rate_pct"] = round(renewed / decisions * 100, 1)
+    return out
+
+
 async def get_revenue_timeseries(days: int = 14) -> List[Dict]:
     """Daily paid revenue, preserving zero-sale days and data completeness flags."""
     async with aiosqlite.connect(DB_PATH) as db:

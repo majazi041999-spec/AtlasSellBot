@@ -163,6 +163,10 @@ def build_payload(stats: Dict) -> Dict:
             "subscriptions_expiring_7d": int(stats.get("expiring_7d") or 0),
             "subscriptions_expiring_30d": int(stats.get("expiring_30d") or 0),
             "historical_renewal_rate_pct": stats.get("renewal_rate_pct"),
+            # How many matured renewal decisions the rate is measured over, so a
+            # figure off a handful of subscriptions is not read as a trend.
+            "historical_renewal_sample": stats.get("renewal_rate_sample"),
+            "historical_renewal_window_days": stats.get("renewal_rate_window_days"),
         },
         "forecast": {
             "horizon_days": fc.get("horizon"),
