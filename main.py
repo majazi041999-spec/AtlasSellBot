@@ -3,8 +3,10 @@ Atlas Account Bot — Main Entry Point
 Runs Telegram bot and web admin panel concurrently.
 """
 import asyncio
+import contextlib
 import logging
 import os
+import signal
 import sys
 import time
 import subprocess
@@ -557,7 +559,7 @@ async def _ip_guard_worker(bot):
         await asyncio.sleep(seconds)
 
 
-async def run_bot():
+async def run_bot(stop: asyncio.Event):
     from aiogram import Bot, Dispatcher
     from aiogram.fsm.storage.memory import MemoryStorage
     from aiogram.client.default import DefaultBotProperties
@@ -617,10 +619,27 @@ async def run_bot():
     asyncio.create_task(_server_backup_worker(bot))
     asyncio.create_task(_ip_guard_worker(bot))
     await bot.delete_webhook(drop_pending_updates=True)
-    await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
+    # handle_signals=False is deliberate: main() owns SIGTERM/SIGINT so the bot
+    # and the web server stop together. With the default (True), aiogram AND
+    # uvicorn each install their own signal handler and clobber one another —
+    # one server then never receives the stop, the process hangs, and systemd
+    # SIGKILLs it after TimeoutStopSec (15s). That 15s is a bot outage on EVERY
+    # restart. Now stop() is set once and both shut down in a second or two.
+    poll = asyncio.create_task(
+        dp.start_polling(bot, handle_signals=False,
+                         allowed_updates=dp.resolve_used_update_types())
+    )
+    await stop.wait()
+    logger.info("👋 در حال توقف ربات...")
+    with contextlib.suppress(Exception):
+        await dp.stop_polling()
+    with contextlib.suppress(Exception):
+        await poll
+    with contextlib.suppress(Exception):
+        await bot.session.close()
 
 
-async def run_web():
+async def run_web(stop: asyncio.Event):
     import uvicorn
     from core.config import WEB_HOST, WEB_PORT, WEB_SECRET_PATH
     from core.database import init_db
@@ -634,21 +653,40 @@ async def run_web():
         port=WEB_PORT,
         log_level="warning",
         access_log=False,
+        timeout_graceful_shutdown=5,
     )
     server = uvicorn.Server(config)
+    # main() owns the signals (see run_bot); neutralise uvicorn's own handler so
+    # it does not fight aiogram for SIGTERM. We stop it via should_exit instead.
+    server.install_signal_handlers = lambda: None
     logger.info(
         f"🌐 پنل وب: http://SERVER_IP:{WEB_PORT}/panel "
         f"| مسیر مستقیم: http://SERVER_IP:{WEB_PORT}/{WEB_SECRET_PATH}/ "
         f"| bind={WEB_HOST}:{WEB_PORT}"
     )
-    await server.serve()
+    serve = asyncio.create_task(server.serve())
+    await stop.wait()
+    server.should_exit = True
+    with contextlib.suppress(Exception):
+        await serve
 
 
 async def main():
     logger.info("🚀 Atlas Account Bot در حال راه‌اندازی...")
+    # One shutdown switch for the whole process. systemd stop / Ctrl-C sets it,
+    # and both the bot and the web server watch it, so the process exits cleanly
+    # in a second or two instead of being force-killed 15s later.
+    stop = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            loop.add_signal_handler(sig, stop.set)
+        except (NotImplementedError, RuntimeError):
+            # Windows or a non-main thread: fall back to default handling.
+            pass
     await asyncio.gather(
-        run_bot(),
-        run_web(),
+        run_bot(stop),
+        run_web(stop),
     )
 
 
