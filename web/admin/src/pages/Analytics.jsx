@@ -165,8 +165,10 @@ function ForecastNotes({ meta }) {
           <b>ارزیابی پیش‌بینی {h.label} آینده</b>
           <div className="muted tiny">روش: {h.method || "سطح پایدار سفارش‌ها"}</div>
           {h.accuracy ? <>
-            <div className="forecast-error"><b>{h.accuracy.smape}٪</b><span>خطای میانگین sMAPE · کمتر بهتر</span></div>
-            <div className="muted tiny">روی {fmt(h.accuracy.folds)} بازهٔ گذشته؛ میانگین خطای مبلغ: {fmt(h.accuracy.mae)} تومان</div>
+            {h.accuracy.accuracy_pct != null
+              ? <div className="forecast-error"><b>{h.accuracy.accuracy_pct}٪</b><span>دقت روی بازه‌هایی که مدل ندیده بود · بیشتر بهتر</span></div>
+              : <div className="forecast-error"><b>{h.accuracy.smape}٪</b><span>خطای میانگین sMAPE · کمتر بهتر</span></div>}
+            <div className="muted tiny">روی {fmt(h.accuracy.folds)} بازهٔ گذشته؛ خطای وزنی {h.accuracy.wape}٪ (دقت = ۱۰۰ منهای این عدد) · sMAPE {h.accuracy.smape}٪ · میانگین خطای مبلغ: {fmt(h.accuracy.mae)} تومان</div>
             {h.comparison && <div className={"badge " + (h.comparison.error_reduction_pct >= 0 ? "b-green" : "b-yellow")}>
               {Math.abs(h.comparison.error_reduction_pct)}٪ خطای {h.comparison.error_reduction_pct >= 0 ? "کمتر" : "بیشتر"} از مدل قبلی
             </div>}
@@ -174,13 +176,16 @@ function ForecastNotes({ meta }) {
           {h.band && <div className="forecast-range">
             <span className="muted tiny">بازهٔ معمول بر اساس خطاهای گذشته</span>
             <b>{fmt(h.band.low)} تا {fmt(h.band.high)} تومان</b>
-            <span className="muted tiny">{h.band.observed_coverage != null
-              ? `پوشش آزموده‌شده: ${h.band.observed_coverage}٪ در ${fmt(h.band.coverage_folds)} بازه؛ تضمین نتیجهٔ آینده نیست.`
-              : "سابقهٔ کافی برای سنجش پوشش این بازه نداریم."}</span>
+            <span className="muted tiny">{h.band.observed_coverage == null
+              ? "سابقهٔ کافی برای سنجش پوشش این بازه نداریم."
+              : h.band.coverage_folds < 8
+                ? `پوشش فقط روی ${fmt(h.band.coverage_folds)} بازه آزموده شده (${h.band.observed_coverage}٪)؛ هنوز برای اتکا کم است.`
+                : `پوشش آزموده‌شده: ${h.band.observed_coverage}٪ در ${fmt(h.band.coverage_folds)} بازه؛ تضمین نتیجهٔ آینده نیست.`}</span>
           </div>}
         </div>)}
       </div>
       <p className="muted tiny">اطلاعات بازهٔ اخیر: {d.orders_per_day} سفارش در روز و متوسط مبلغ خرید {fmt(d.avg_basket)} تومان. همهٔ محاسبات روی همین سرور انجام می‌شود.</p>
+      {d.month_factors && <p className="muted tiny">چرخهٔ ماه شمسی (از سابقهٔ خودتان آموخته شده): دههٔ اول ×{d.month_factors.early} · دههٔ دوم ×{d.month_factors.mid} · دههٔ سوم ×{d.month_factors.late}</p>}
       {(meta.backtest || []).length > 0 && <details className="forecast-history">
         <summary>پیش‌بینی در برابر درآمد واقعی در آزمون‌های گذشته</summary>
         <div className="table-wrap"><table><thead><tr><th>آخرین روز آموزش</th><th>پیش‌بینی ۷ روز</th><th>درآمد واقعی همان بازه</th></tr></thead><tbody>

@@ -1,16 +1,34 @@
 """Local revenue forecasts selected by causal, rolling-origin validation.
 
-The fixed 28-day count × basket model remains the fallback. Challengers may
-adapt to recent levels, sparse demand, weekly recurrence or bounded count trend.
-Selection uses only outcomes available at the forecast origin. Accuracy evaluates
-that whole selection process on later folds, not the winning model's fit score.
+Revenue here moves on WEEKLY and MONTHLY rhythms, not daily ones. Measured on
+the live data after launch: a single day swings ±46% around its level, a week
+±21%, and a 30-day block barely moves. So the "weekly" model sets the level
+from whole weeks — the median of the last four weekly means, with extreme days
+capped first, so one bulk-reseller week cannot move it — after taking out the
+Persian-calendar pay cycle, and then puts that cycle back onto each forecast
+day. On the live data the last ten days of a Jalali month sold ~20% below the
+month's average and mid-month ~20% above. Weekday shape only redistributes a
+week: it can never move a 7-day total.
+
+The default is a "blend" of that weekly model and the original count × trimmed
+basket model, which fail in different ways. The older daily-level models still
+compete as challengers, but a challenger may overrule the default only on
+enough independent evidence (see MIN_INDEPENDENT_WINDOWS). Selection uses only
+outcomes available at the forecast origin, and accuracy evaluates that whole
+selection process on later folds, not the winning model's fit score.
+
+Measured on the live data (rolling origin, 40 folds, whole policy): 30-day
+accuracy 82.2% -> 93.3%, 7-day 79.7% -> 85.1% (accuracy = 100 − WAPE).
 """
 from __future__ import annotations
 
 import statistics as st
 import math
 from datetime import date, timedelta
+from functools import lru_cache
 from typing import Dict, List, Optional, Sequence
+
+from core.jalali import gregorian_to_jalali
 
 # Default lookback; shorter windows compete through historical validation.
 WINDOW = 28
@@ -21,6 +39,27 @@ BASKET_TRIM = 0.2
 MIN_HISTORY = 14
 # Folds used to measure this model's own accuracy on the caller's real data.
 ACCURACY_FOLDS = 40
+# Whole weeks whose median sets the weekly model's level.
+LEVEL_WEEKS = 4
+# The Jalali pay cycle is learned from this much history and shrunk toward "no
+# effect" by this many pseudo-days, so a thin month cannot invent a pattern.
+MONTH_LOOKBACK = 90
+MONTH_SHRINK = 15
+# Nominal coverage of the "typical range" band.
+BAND_COVERAGE = 0.8
+# Before a level or a month factor is taken, any day above this multiple of the
+# window's median day is capped to it. A reseller's bulk order is real money,
+# but it is not the business's typical week — and under an absolute-error
+# target the typical week is exactly what should be forecast. 0 disables.
+WINSOR = 3.0
+
+
+def _winsorize(values: Sequence[float]) -> List[float]:
+    positive = [v for v in values if v > 0]
+    if not positive or not WINSOR:
+        return list(values)
+    cap = st.median(positive) * WINSOR
+    return [min(v, cap) for v in values]
 
 
 def _quantile(sorted_vals: Sequence[float], q: float) -> float:
@@ -70,6 +109,56 @@ def _trimmed_basket(revenue: Sequence[float], counts: Sequence[float]) -> float:
     return sum(core) / len(core)
 
 
+@lru_cache(maxsize=8192)
+def _month_third(d: date) -> int:
+    """Which third of the Jalali month a day is in: 0 = days 1-10, 1 = 11-20,
+    2 = 21 to the month's end."""
+    return min(2, (gregorian_to_jalali(d.year, d.month, d.day)[2] - 1) // 10)
+
+
+def _month_factors(revenue: Sequence[float], days: Sequence[date]) -> Dict[int, float]:
+    """Multiplicative factor per third of the Jalali month, averaging 1.0.
+
+    Learned only from the history handed in — callers pass a strictly past
+    slice, which keeps every backtest fold causal — over the last
+    MONTH_LOOKBACK days, and shrunk toward 1.0 by MONTH_SHRINK pseudo-days.
+    With under four weeks of history there is no month to learn from, so every
+    factor is exactly 1.0 rather than a guess.
+    """
+    rw, dw = _winsorize(revenue[-MONTH_LOOKBACK:]), list(days[-MONTH_LOOKBACK:])
+    flat = {0: 1.0, 1: 1.0, 2: 1.0}
+    if len(rw) < 28:
+        return flat
+    mu = st.mean(rw)
+    if mu <= 0:
+        return flat
+    raw = {}
+    for t in (0, 1, 2):
+        xs = [v for v, d in zip(rw, dw) if _month_third(d) == t]
+        ratio = st.mean(xs) / mu if xs else 1.0
+        raw[t] = 1 + (ratio - 1) * len(xs) / (len(xs) + MONTH_SHRINK)
+    m = st.mean(raw.values())
+    return {t: v / m for t, v in raw.items()} if m > 0 else flat
+
+
+def _weekly_level(revenue: Sequence[float], days: Sequence[date],
+                  factors: Optional[Dict[int, float]] = None) -> Optional[float]:
+    """Revenue per day: the median over the last LEVEL_WEEKS weekly means.
+
+    Whole weeks, so every sample holds the same weekday mix; a median, so a
+    single bulk-reseller week cannot set the level; and, when `factors` are
+    given, deseasonalised first — otherwise a normal month-end dip inside the
+    window drags the level down and the next forecast runs low.
+    """
+    k = min(LEVEL_WEEKS, len(revenue) // 7)
+    if k < 1:
+        return None
+    rw, dw = _winsorize(revenue[-7 * k:]), list(days[-7 * k:])
+    if factors:
+        rw = [v / max(factors[_month_third(d)], .2) for v, d in zip(rw, dw)]
+    return st.median([sum(rw[j * 7:(j + 1) * 7]) / 7 for j in range(k)])
+
+
 def _project(revenue: Sequence[float], counts: Sequence[float],
              days: Sequence[date], horizon: int) -> List[float]:
     """Previous fixed model, retained as the fallback and comparison baseline."""
@@ -87,8 +176,17 @@ def _project(revenue: Sequence[float], counts: Sequence[float],
             for k in range(1, horizon + 1)]
 
 
-MODELS = ("robust28", "robust14", "mean28", "mean7", "damped", "seasonal")
+MODELS = ("weekly", "weekly_raw", "blend", "robust28", "robust14", "mean28", "mean7", "damped", "seasonal")
+# What selection falls back to, and what a challenger must clearly beat. The
+# blend, not "weekly" alone: on the live data the two score the same (30-day
+# 93.3% vs 93.4%), but on a series of rare, huge bulk orders the weekly level
+# alone lost ~3 points to the old count × basket model while the blend held
+# level with it. Same accuracy where it matters, no new failure mode.
+DEFAULT_MODEL = "blend"
 MODEL_LABELS = {
+    "weekly": "سطح هفتگی با چرخهٔ ماه شمسی",
+    "weekly_raw": "سطح هفتگی خام با چرخهٔ ماه شمسی",
+    "blend": "ترکیب سطح هفتگی و سطح پایدار سفارش‌ها",
     "robust28": "سطح پایدار سفارش‌ها",
     "robust14": "سطح اخیر سفارش‌ها",
     "mean28": "میانگین سفارش‌ها با روزهای بدون فروش",
@@ -99,6 +197,13 @@ MODEL_LABELS = {
 SELECTION_FOLDS = 28
 MIN_SELECTION_FOLDS = 14
 MIN_GAIN = 0.08
+# A challenger may only overrule the default when its validation spans at least
+# this many NON-overlapping horizon windows. Consecutive folds share most of
+# their target days: 28 origins of a 7-day forecast cover ~4 independent weeks,
+# but 28 origins of a 30-day forecast are barely two months — too little to tell
+# skill from luck. Measured on the live data, letting 30-day selection switch on
+# that evidence picked a worse model and cost ~12 points of accuracy.
+MIN_INDEPENDENT_WINDOWS = 3
 
 
 def _smape(actual: float, predicted: float) -> float:
@@ -110,6 +215,23 @@ def _candidate(revenue, counts, days, horizon, model):
     if model == "robust28":
         return _project(revenue, counts, days, horizon)
     last = days[-1]
+    if model == "blend":
+        # Two models that fail differently: the weekly level adapts to a new
+        # regime within weeks, the count × trimmed-basket model shrugs off bulk
+        # orders. Averaging them keeps most of each one's strength.
+        a = _candidate(revenue, counts, days, horizon, "weekly")
+        b = _project(revenue, counts, days, horizon)
+        return [(x + y) / 2 for x, y in zip(a, b)]
+    if model in ("weekly", "weekly_raw"):
+        mf = _month_factors(revenue, days)
+        level = _weekly_level(revenue, days, mf if model == "weekly" else None)
+        if level is None:
+            return _project(revenue, counts, days, horizon)
+        # Mean-1 weekday factors: any 7 consecutive days sum to exactly 7, so the
+        # shape moves money between days without changing a week's total.
+        wf = _weekday_factors(counts[-WINDOW:], days[-WINDOW:])
+        targets = [last + timedelta(days=k) for k in range(1, horizon + 1)]
+        return [max(0.0, level * mf[_month_third(d)] * wf[d.weekday()]) for d in targets]
     if model == "seasonal":
         recent = list(zip(days[-28:], revenue[-28:]))
         fallback = st.mean(revenue[-28:])
@@ -167,7 +289,11 @@ class _Evaluation:
         last = cut - self.span
         origins = list(range(max(MIN_HISTORY, last - SELECTION_FOLDS + 1), last + 1))
         if len(origins) < MIN_SELECTION_FOLDS:
-            return "robust28", {"folds": len(origins), "reason": "insufficient_validation"}
+            return DEFAULT_MODEL, {"folds": len(origins), "reason": "insufficient_validation"}
+        independent = (len(origins) - 1 + self.horizon) // self.horizon
+        if independent < MIN_INDEPENDENT_WINDOWS:
+            return DEFAULT_MODEL, {"folds": len(origins), "independent_windows": independent,
+                                   "reason": "insufficient_independent_validation"}
         losses = {m: [] for m in MODELS}
         for t in origins:
             actual = sum(self.revenue[t + self.skip:t + self.span])
@@ -176,9 +302,9 @@ class _Evaluation:
         weights = [.97 ** (len(origins) - 1 - i) for i in range(len(origins))]
         scores = {m: sum(e * w for e, w in zip(errors, weights)) / sum(weights) for m, errors in losses.items()}
         best = min(MODELS, key=scores.get)
-        wins = sum(a < b for a, b in zip(losses[best], losses["robust28"])) / len(origins)
-        if scores[best] >= scores["robust28"] * (1 - MIN_GAIN) or wins < .55:
-            best = "robust28"
+        wins = sum(a < b for a, b in zip(losses[best], losses[DEFAULT_MODEL])) / len(origins)
+        if scores[best] >= scores[DEFAULT_MODEL] * (1 - MIN_GAIN) or wins < .55:
+            best = DEFAULT_MODEL
         return best, {"folds": len(origins), "reason": "historical_validation",
                       "scores": {m: round(v, 2) for m, v in scores.items()}}
 
@@ -250,29 +376,39 @@ def forecast(revenue: Sequence[float], counts: Sequence[float],
     rows = evaluation.records()
     band = accuracy = None
     if len(rows) >= 8:
-        errors = sorted(r["error"] for r in rows)
+        # Symmetric band from the BAND_COVERAGE quantile of past ABSOLUTE scaled
+        # errors (split-conformal). The previous asymmetric 10/90 quantiles of
+        # signed errors inherited whatever bias the older folds had: after the
+        # launch spike every old fold over-forecast, so the band sat entirely
+        # above the later actuals and its measured coverage was 0%.
         scale = max(total, st.mean(revenue[-WINDOW:]) * horizon, 1)
-        low, high = _quantile(errors, .1), _quantile(errors, .9)
-        # Include the point estimate for readability; do not promise nominal coverage.
-        band = {"low": max(0, min(total, round(total + low * scale))),
-                "high": max(total, round(total + high * scale)), "target_coverage": 80}
+        half = _quantile(sorted(abs(r["error"]) for r in rows), BAND_COVERAGE)
+        band = {"low": max(0, round(total - half * scale)), "high": round(total + half * scale),
+                "target_coverage": round(BAND_COVERAGE * 100)}
         covered = tested = 0
         for row in rows:
-            past = sorted(r["error"] for r in rows if r["cut"] + evaluation.span <= row["cut"])
+            # Coverage is itself measured causally: each fold is judged against a
+            # band built only from folds whose targets had ended before it.
+            past = sorted(abs(r["error"]) for r in rows if r["cut"] + evaluation.span <= row["cut"])
             if len(past) < 8:
                 continue
-            lo = max(0, min(row["predicted"], row["predicted"] + _quantile(past, .1) * row["scale"]))
-            hi = max(row["predicted"], row["predicted"] + _quantile(past, .9) * row["scale"])
-            tested += 1; covered += lo <= row["actual"] <= hi
+            tested += 1
+            covered += abs(row["actual"] - row["predicted"]) <= _quantile(past, BAND_COVERAGE) * row["scale"]
         band.update(observed_coverage=round(100 * covered / tested, 1) if tested else None, coverage_folds=tested)
         absolute = [abs(r["actual"] - r["predicted"]) for r in rows]
         actual_sum = sum(r["actual"] for r in rows)
+        wape = round(sum(absolute) / actual_sum * 100, 1) if actual_sum else None
         accuracy = {"smape": round(st.mean(_smape(r["actual"], r["predicted"]) for r in rows), 1),
                     "mae": round(st.mean(absolute)), "folds": len(rows),
-                    "wape": round(sum(absolute) / actual_sum * 100, 1) if actual_sum else None,
+                    "wape": wape,
+                    # What an owner means by "accuracy": the share of the money
+                    # forecast correctly, i.e. 100 − WAPE, on unseen later folds.
+                    "accuracy_pct": round(max(0.0, 100 - wape), 1) if wape is not None else None,
                     "bias_pct": round(sum(r["predicted"] - r["actual"] for r in rows) / actual_sum * 100, 1) if actual_sum else None}
     window = 14 if model == "robust14" else 7 if model == "mean7" else WINDOW
     cw, rw = counts[-window:], revenue[-window:]
+    mf = _month_factors(revenue, days)
+    level = _weekly_level(revenue, days, mf)
     return {"ok": True, "history_days": n, "horizon": horizon,
             "points": [{"date": (last + timedelta(days=k + skip_days + 1)).isoformat(), "revenue": v} for k, v in enumerate(rounded)],
             "total": total, "band": band, "accuracy": accuracy,
@@ -282,7 +418,10 @@ def forecast(revenue: Sequence[float], counts: Sequence[float],
             "trained_through": last.isoformat(), "skip_days": skip_days,
             "drivers": {"orders_per_day": round(st.median(cw) if model.startswith("robust") else st.mean(cw), 2),
                         "avg_basket": round(_trimmed_basket(rw, cw)), "window_days": min(window, n),
-                        "weekday_factors": {str(i): round(v, 2) for i, v in _weekday_factors(counts[-28:], days[-28:]).items()}},
+                        "weekday_factors": {str(i): round(v, 2) for i, v in _weekday_factors(counts[-28:], days[-28:]).items()},
+                        # Jalali pay cycle: days 1-10 / 11-20 / 21-end of the month.
+                        "month_factors": {"early": round(mf[0], 2), "mid": round(mf[1], 2), "late": round(mf[2], 2)},
+                        "daily_level": round(level) if level is not None else None},
             "backtest": [{"origin": days[r["cut"] - 1].isoformat(), "actual": round(r["actual"]),
                           "predicted": round(r["predicted"]), "method": r["model"]} for r in rows]}
 

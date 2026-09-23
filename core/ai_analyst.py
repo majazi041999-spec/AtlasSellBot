@@ -140,6 +140,9 @@ def build_payload(stats: Dict) -> Dict:
     acc = fc.get("accuracy") or {}
     band = fc.get("band") or {}
     drivers = fc.get("drivers") or {}
+    fc30 = stats.get("forecast30") or {}
+    acc30 = fc30.get("accuracy") or {}
+    band30 = fc30.get("band") or {}
     return {
         "currency": "toman",
         "today": stats.get("today"),
@@ -179,9 +182,22 @@ def build_payload(stats: Dict) -> Dict:
             "total": fc.get("total") if fc.get("ok") else None,
             "typical_range": {"low": band.get("low"), "high": band.get("high")},
             "measured_error_pct": acc.get("smape"),
+            # 100 − WAPE on unseen past folds: the figure the panel headlines.
+            "measured_accuracy_pct": acc.get("accuracy_pct"),
             "orders_per_day": drivers.get("orders_per_day"),
             "avg_basket": drivers.get("avg_basket"),
             "method": fc.get("method"),
+            # Jalali pay cycle learned from this business's own history.
+            "month_cycle_factors": drivers.get("month_factors"),
+        },
+        # The 30-day forecast is the more reliable of the two (week-level totals
+        # are far noisier than month-level ones), so the model sees it too.
+        "forecast_30d": {
+            "available": fc30.get("ok", False),
+            "total": fc30.get("total") if fc30.get("ok") else None,
+            "typical_range": {"low": band30.get("low"), "high": band30.get("high")},
+            "measured_accuracy_pct": acc30.get("accuracy_pct"),
+            "method": fc30.get("method"),
         },
         "top_packages": [
             {"name": _clean(p.get("name")), "orders": int(p.get("orders") or 0),
