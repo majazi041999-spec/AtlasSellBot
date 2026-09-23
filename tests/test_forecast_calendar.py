@@ -118,6 +118,18 @@ def main():
     check("the learned cycle is exposed for explanation",
           sorted(f["drivers"]["month_factors"]), ["early", "late", "mid"])
 
+    print("\n8. a business closed some weekdays is not forecast at half its revenue")
+    # Median orders/day is 0 when the shop is shut four days a week. A blend
+    # partner built on that median forecast 0 and halved every total (benchmark
+    # "closed", 30 days: sMAPE 4 -> 67). The partner must use the MEAN.
+    cd = [date(2026, 1, 1) + timedelta(days=i) for i in range(125)]
+    cc = [10.0 if d.weekday() < 3 else 0.0 for d in cd]
+    cr = [c * 100_000 for c in cc]
+    fc = F.forecast(cr[:90], cc[:90], cd[:90], 30, skip_days=1)
+    actual = sum(cr[91:121])
+    check_true("30-day total within 15% of what the open days earn",
+               abs(fc["total"] - actual) / actual < 0.15)
+
     print("")
     if FAILED:
         print(f"FAILED: {len(FAILED)} -> {FAILED}")

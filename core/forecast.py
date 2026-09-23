@@ -10,7 +10,7 @@ day. On the live data the last ten days of a Jalali month sold ~20% below the
 month's average and mid-month ~20% above. Weekday shape only redistributes a
 week: it can never move a 7-day total.
 
-The default is a "blend" of that weekly model and the original count × trimmed
+The default is a "blend" of that weekly model and the mean-orders × trimmed
 basket model, which fail in different ways. The older daily-level models still
 compete as challengers, but a challenger may overrule the default only on
 enough independent evidence (see MIN_INDEPENDENT_WINDOWS). Selection uses only
@@ -18,7 +18,10 @@ outcomes available at the forecast origin, and accuracy evaluates that whole
 selection process on later folds, not the winning model's fit score.
 
 Measured on the live data (rolling origin, 40 folds, whole policy): 30-day
-accuracy 82.2% -> 93.3%, 7-day 79.7% -> 85.1% (accuracy = 100 − WAPE).
+accuracy 82.2% -> 93.0%, 7-day 79.7% -> 85.3% (accuracy = 100 − WAPE). The
+known cost, from tools/benchmark_forecast.py: the 30-day forecast does not chase
+sustained trends or step changes (see docs/forecast-validation.md) — every
+trend-following variant lost on this business's own history.
 """
 from __future__ import annotations
 
@@ -178,15 +181,14 @@ def _project(revenue: Sequence[float], counts: Sequence[float],
 
 MODELS = ("weekly", "weekly_raw", "blend", "robust28", "robust14", "mean28", "mean7", "damped", "seasonal")
 # What selection falls back to, and what a challenger must clearly beat. The
-# blend, not "weekly" alone: on the live data the two score the same (30-day
-# 93.3% vs 93.4%), but on a series of rare, huge bulk orders the weekly level
-# alone lost ~3 points to the old count × basket model while the blend held
-# level with it. Same accuracy where it matters, no new failure mode.
+# blend, not "weekly" alone: on the live data the two score the same, but on a
+# series of rare, huge bulk orders the weekly level alone lost ~3 points to the
+# count × basket model while the blend held level with it.
 DEFAULT_MODEL = "blend"
 MODEL_LABELS = {
     "weekly": "سطح هفتگی با چرخهٔ ماه شمسی",
     "weekly_raw": "سطح هفتگی خام با چرخهٔ ماه شمسی",
-    "blend": "ترکیب سطح هفتگی و سطح پایدار سفارش‌ها",
+    "blend": "ترکیب سطح هفتگی و میانگین سفارش‌ها",
     "robust28": "سطح پایدار سفارش‌ها",
     "robust14": "سطح اخیر سفارش‌ها",
     "mean28": "میانگین سفارش‌ها با روزهای بدون فروش",
@@ -218,9 +220,12 @@ def _candidate(revenue, counts, days, horizon, model):
     if model == "blend":
         # Two models that fail differently: the weekly level adapts to a new
         # regime within weeks, the count × trimmed-basket model shrugs off bulk
-        # orders. Averaging them keeps most of each one's strength.
+        # orders. The partner uses MEAN orders/day, not the median: on sparse
+        # demand or a business closed some weekdays the median count is 0, and a
+        # blend with a zero forecast halves every total (benchmark "closed",
+        # 30 days: sMAPE 4 → 67 with the median partner, 6 with the mean).
         a = _candidate(revenue, counts, days, horizon, "weekly")
-        b = _project(revenue, counts, days, horizon)
+        b = _candidate(revenue, counts, days, horizon, "mean28")
         return [(x + y) / 2 for x, y in zip(a, b)]
     if model in ("weekly", "weekly_raw"):
         mf = _month_factors(revenue, days)
