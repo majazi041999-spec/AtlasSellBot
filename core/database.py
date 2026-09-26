@@ -1,4 +1,5 @@
 import aiosqlite
+import json
 import re
 import secrets
 import string
@@ -448,6 +449,7 @@ async def _ensure_columns(db):
             ("online_avg", "REAL DEFAULT 0"),            # smoothed sample; what routing decisions use
             ("online_ok", "INTEGER DEFAULT 0"),          # 0 = last poll failed → count unknown, not zero
             ("online_checked_at", "INTEGER DEFAULT 0"),  # epoch ms
+            ("online_nodes", "TEXT DEFAULT ''"),         # JSON {node config id | "other": online}, same sample as online_count
             ("load_weight", "REAL DEFAULT 1"),           # capacity multiplier; higher = can take more users
         ],
         "users": [
@@ -933,11 +935,16 @@ async def get_auto_node_configs(active_only: bool = True) -> List[Dict]:
 ONLINE_SMOOTHING = 0.4
 
 
-async def set_server_online_stats(server_id: int, count: Optional[int], checked_at_ms: int) -> None:
+async def set_server_online_stats(server_id: int, count: Optional[int], checked_at_ms: int,
+                                  by_node: Optional[Dict[str, int]] = None) -> None:
     """Persist a server's live online count. `None` = the poll failed.
 
     A failed poll leaves the previous numbers untouched and only clears
     `online_ok`, so readers can tell "we don't know" from "nobody is online".
+
+    `by_node` is the same reading split per node config (see
+    core.autonode.online_by_node). It is stored with the count, never on its
+    own, so the parts always belong to the total they are shown under.
     """
     async with aiosqlite.connect(DB_PATH) as db:
         if count is None:
@@ -958,9 +965,11 @@ async def set_server_online_stats(server_id: int, count: Optional[int], checked_
             else:
                 average = ONLINE_SMOOTHING * sample + (1 - ONLINE_SMOOTHING) * float(row[0] or 0)
             await db.execute(
-                """UPDATE servers SET online_count=?, online_avg=?, online_ok=1, online_checked_at=?
+                """UPDATE servers SET online_count=?, online_avg=?, online_ok=1, online_checked_at=?,
+                                      online_nodes=?
                    WHERE id=?""",
-                (sample, round(average, 3), int(checked_at_ms), int(server_id)),
+                (sample, round(average, 3), int(checked_at_ms),
+                 json.dumps(by_node or {}, separators=(",", ":")), int(server_id)),
             )
         await db.commit()
 

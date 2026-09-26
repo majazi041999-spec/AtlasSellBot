@@ -605,3 +605,8 @@ tbody tr:hover { background: rgba(255, 255, 255, 0.03); }
 .forecast-notice { padding: 14px; border: 1px solid #fbbf2444; background: #fbbf2410; border-radius: 12px; margin-top: 14px; }
 .forecast-notice p { margin-top: 7px; }
 @media (max-width: 600px) { .forecast-quality-grid { grid-template-columns: 1fr; } }
+
+/* Dashboard "online now": each server's users split per node, tucked under
+   that server's bar (130px name column + 10px gap) so it reads as its detail. */
+.online-nodes { display: flex; flex-wrap: wrap; gap: 6px; padding-inline-start: 140px; }
+@media (max-width: 640px) { .online-nodes { padding-inline-start: 0; } }

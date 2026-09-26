@@ -94,6 +94,29 @@ async def main() -> int:
     await case("cooldown outranks a real imbalance",
                [_server(1, 40), _server(2, 2)], {1: 40, 2: 2}, 1, 1, moved_ago_min=5)
 
+    print("online split per node (dashboard):")
+
+    def check(name, got, expected):
+        ok = got == expected
+        if not ok:
+            failures.append(name)
+        print(f"  [{'ok  ' if ok else 'FAIL'}] {name} → {got}")
+
+    emails = ["sub_1_2_ab_n16", "sub_3_4_cd_n16", "sub_5_6_ef_n9", "legacy_user_77", "", "x_n25 "]
+    split = an.online_by_node(emails)
+    check("node suffix picks the config; the rest is 'other'",
+          split, {"16": 2, "9": 1, "other": 2, "25": 1})
+    check("the parts add up to the server total", sum(split.values()), len(emails))
+    check("an 'n' inside the name is not a node suffix",
+          an.online_by_node(["user_n12_x"]), {"other": 1})
+    fresh = dict(_server(1, 4), online_nodes='{"16": 3, "9": 1, "7": 0}')
+    check("split shown with a trusted total, empty nodes dropped",
+          an._fresh_online_nodes(fresh, 4), {"16": 3, "9": 1})
+    check("no split beside an unknown total",
+          an._fresh_online_nodes(dict(_server(1, None), online_nodes='{"16": 3}'), None), None)
+    check("a corrupt stored split is ignored, not fatal",
+          an._fresh_online_nodes(dict(_server(1, 2), online_nodes="{oops"), 2), None)
+
     print()
     if failures:
         print("FAILED: " + ", ".join(failures))

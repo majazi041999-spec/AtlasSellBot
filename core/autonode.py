@@ -33,7 +33,9 @@ Three things keep the balancing from making matters worse:
 """
 
 import asyncio
+import json
 import logging
+import re
 import time
 from typing import Dict, List, Optional
 
@@ -89,6 +91,43 @@ async def is_enabled() -> bool:
 
 # ── live online counts ──────────────────────────────────────────────────────
 
+# Every subscription client is created as "<profile email>_n<node config id>"
+# (core/multi_subscription.py), so the suffix alone says which node it is.
+_NODE_SUFFIX = re.compile(r"_n(\d+)$")
+
+
+def online_by_node(emails: List[str]) -> Dict[str, int]:
+    """Split one panel's online emails per node config: {"<config id>": n}.
+
+    Emails without the node suffix (a legacy single config, a client made by
+    hand in the panel) are counted under "other" rather than dropped, so the
+    parts always add up to the server's total.
+    """
+    out: Dict[str, int] = {}
+    for email in emails or []:
+        m = _NODE_SUFFIX.search(str(email or "").strip())
+        key = m.group(1) if m else "other"
+        out[key] = out.get(key, 0) + 1
+    return out
+
+
+def _fresh_online_nodes(server: Dict, live: Optional[int]) -> Optional[Dict[str, int]]:
+    """The stored per-node split, but only alongside a trusted total.
+
+    When the total is unknown or stale the split is too, and showing it would
+    present an old reading as the current one.
+    """
+    if live is None:
+        return None
+    try:
+        nodes = json.loads(server.get("online_nodes") or "{}")
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(nodes, dict):
+        return None
+    return {str(k): int(v) for k, v in nodes.items() if isinstance(v, (int, float)) and int(v) > 0}
+
+
 async def refresh_server_online_counts(servers: Optional[List[Dict]] = None) -> Dict[int, Optional[int]]:
     """Ask every active panel how many clients are online and store the answer.
 
@@ -106,13 +145,19 @@ async def refresh_server_online_counts(servers: Optional[List[Dict]] = None) -> 
     async def probe(server: Dict) -> None:
         sid = int(server["id"])
         count: Optional[int] = None
+        by_node: Optional[Dict[str, int]] = None
         async with limit:
             cli = XUIClient(
                 server["url"], server["username"], server["password"],
                 server.get("sub_path") or "", server.get("api_token", "") or "",
             )
             try:
-                count = await asyncio.wait_for(cli.get_online_count(), timeout=15)
+                # The same call get_online_count() makes; keeping the emails
+                # lets one reading give both the total and its per-node split.
+                emails, ok = await asyncio.wait_for(cli.get_onlines_checked(), timeout=15)
+                if ok:
+                    count = len(emails)
+                    by_node = online_by_node(emails)
             except asyncio.TimeoutError:
                 logger.warning("autonode: onlines timed out for server %s", server.get("name") or sid)
             except Exception as e:
@@ -126,7 +171,7 @@ async def refresh_server_online_counts(servers: Optional[List[Dict]] = None) -> 
             finally:
                 await cli.close()
         results[sid] = count
-        await set_server_online_stats(sid, count, now_ms)
+        await set_server_online_stats(sid, count, now_ms, by_node)
 
     await asyncio.gather(*(probe(s) for s in servers), return_exceptions=True)
     invalidate_load_views()   # the numbers just changed; don't decide on the old ones
@@ -514,6 +559,7 @@ async def server_load_snapshot() -> List[Dict]:
             "name": server.get("name") or f"#{server['id']}",
             "is_active": int(server.get("is_active") or 0),
             "online": live,
+            "online_nodes": _fresh_online_nodes(server, live),
             "online_known": live is not None,
             "online_avg": round(float(server.get("online_avg") or 0), 1),
             "raw_online": int(server.get("online_count") or 0),

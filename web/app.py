@@ -1581,6 +1581,31 @@ async def api_dashboard(request: Request):
     known = [s for s in servers_online if s.get("online") is not None]
     newest_check = max((int(s.get("checked_at") or 0) for s in servers_online), default=0)
 
+    # Which node each server's users are on — the same reading as the total,
+    # split by the node suffix of each online client (core.autonode.online_by_node).
+    try:
+        node_labels = {int(n["id"]): (n.get("label") or "").strip()
+                       for n in await get_subscription_node_configs(active_only=False)}
+    except Exception as e:
+        logger.warning("dashboard node labels failed: %s", e)
+        node_labels = {}
+
+    def _online_nodes(split):
+        if not split:
+            return None
+        rows, other = [], 0
+        for key, n in split.items():
+            if not str(key).isdigit():          # "other", or anything unexpected
+                other += int(n)
+                continue
+            cid = int(key)
+            label = node_labels.get(cid) if cid in node_labels else f"نود #{cid} (حذف‌شده)"
+            rows.append({"id": cid, "label": label or f"نود #{cid}", "online": int(n)})
+        if other:
+            rows.append({"id": None, "label": "سایر (کانفیگ تکی)", "online": other})
+        rows.sort(key=lambda r: (-r["online"], r["label"]))
+        return rows
+
     return JSONResponse({
         "stats": stats,
         "online": {
@@ -1593,6 +1618,7 @@ async def api_dashboard(request: Request):
                 "online": s["online"],            # null = unknown, not zero
                 "avg": s.get("online_avg"),
                 "stale": bool(s.get("stale")),
+                "nodes": _online_nodes(s.get("online_nodes")),   # null = no split to show
             } for s in servers_online],
         },
         "pending": [_slim(o) for o in pending[:8]],

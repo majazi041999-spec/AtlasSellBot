@@ -47,27 +47,43 @@ function OnlineNow({ data, onRefresh }) {
             )}
           </div>
 
-          <div className="grid" style={{ gap: 8 }}>
+          <div className="grid" style={{ gap: 12 }}>
             {servers.map((s) => {
               const unknown = s.online === null || s.online === undefined;
+              // Which node this server's users are on — the same reading as the
+              // total, so the chips always add up to the number beside the bar.
+              const nodes = !unknown && Array.isArray(s.nodes) ? s.nodes : [];
               return (
-                <div key={s.id} className="row" style={{ gap: 10 }}>
-                  <span style={{ minWidth: 130, flexShrink: 0 }}>{s.name}</span>
-                  <div style={{ flex: 1, height: 8, borderRadius: 6, background: "rgba(255,255,255,.06)", overflow: "hidden" }}>
-                    {!unknown && (
-                      <div style={{
-                        width: `${Math.round((s.online / max) * 100)}%`, height: "100%",
-                        background: "linear-gradient(90deg,#34d399,#10b981)", borderRadius: 6,
-                      }} />
+                <div key={s.id} className="grid" style={{ gap: 6 }}>
+                  <div className="row" style={{ gap: 10 }}>
+                    <span style={{ minWidth: 130, flexShrink: 0 }}>{s.name}</span>
+                    <div style={{ flex: 1, height: 8, borderRadius: 6, background: "rgba(255,255,255,.06)", overflow: "hidden" }}>
+                      {!unknown && (
+                        <div style={{
+                          width: `${Math.round((s.online / max) * 100)}%`, height: "100%",
+                          background: "linear-gradient(90deg,#34d399,#10b981)", borderRadius: 6,
+                        }} />
+                      )}
+                    </div>
+                    {unknown ? (
+                      <span className="badge b-yellow" style={{ minWidth: 74, justifyContent: "center" }}
+                            title={s.stale ? "آخرین پاسخ پنل قدیمی شده است" : "پنل به درخواست پاسخ نداد"}>
+                        ؟ نامعلوم
+                      </span>
+                    ) : (
+                      <b className="mono" style={{ minWidth: 74, textAlign: "left", color: "var(--txt1)" }}>{fmt(s.online)}</b>
                     )}
                   </div>
-                  {unknown ? (
-                    <span className="badge b-yellow" style={{ minWidth: 74, justifyContent: "center" }}
-                          title={s.stale ? "آخرین پاسخ پنل قدیمی شده است" : "پنل به درخواست پاسخ نداد"}>
-                      ؟ نامعلوم
-                    </span>
-                  ) : (
-                    <b className="mono" style={{ minWidth: 74, textAlign: "left", color: "var(--txt1)" }}>{fmt(s.online)}</b>
+                  {nodes.length > 0 && (
+                    <div className="online-nodes">
+                      {nodes.map((n) => (
+                        <span key={n.id ?? "other"} className="badge b-gray"
+                              title={s.online ? `${Math.round((n.online / s.online) * 100)}٪ از کاربران آنلاین این سرور` : undefined}>
+                          {n.label}
+                          <b className="mono" style={{ color: "var(--txt1)" }}>{fmt(n.online)}</b>
+                        </span>
+                      ))}
+                    </div>
                   )}
                 </div>
               );
