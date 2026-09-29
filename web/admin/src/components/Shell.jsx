@@ -18,6 +18,7 @@ const NAV = [
   { k: "/appstats", icon: "📈", label: "آمار و اعلان اپ" },
   { k: "/appdiag", icon: "🩺", label: "تشخیص سرورها" },
   { k: "/transactions", icon: "🧾", label: "رسیدها" },
+  { k: "/telegram", icon: "✈️", label: "تلگرام" },
 ];
 
 // Second group: setup, records and maintenance. Everything the retired

@@ -610,3 +610,9 @@ tbody tr:hover { background: rgba(255, 255, 255, 0.03); }
    that server's bar (130px name column + 10px gap) so it reads as its detail. */
 .online-nodes { display: flex; flex-wrap: wrap; gap: 6px; padding-inline-start: 140px; }
 @media (max-width: 640px) { .online-nodes { padding-inline-start: 0; } }
+
+/* Telegram page: the embedded Telegram Web fills the content area. */
+.tg-screen { display: flex; flex-direction: column; gap: 10px; }
+.tg-bar { gap: 10px; flex-wrap: wrap; }
+.tg-frame { width: 100%; height: calc(100dvh - 150px); min-height: 480px; border: 1px solid var(--line); border-radius: 14px; background: #fff; }
+@media (max-width: 640px) { .tg-frame { height: calc(100dvh - 130px); border-radius: 10px; } }

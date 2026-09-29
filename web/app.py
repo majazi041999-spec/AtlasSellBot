@@ -1548,6 +1548,66 @@ async def api_me(request: Request):
     return JSONResponse({"ok": True, "username": user})
 
 
+# ── Telegram web client (admin only) ────────────────────────────────────────
+# The panel hosts its own build of Telegram Web A under /<secret>/tg/ (static,
+# served by nginx from /opt/atlas-tgweb) and relays its MTProto traffic through
+# /<secret>/tgws/, because *.web.telegram.org is filtered in Iran. nginx asks
+# /api/tg/auth before serving either, so the relay is never an open proxy.
+# The owner's own api_id/api_hash reach the client as atlas-config.js; the
+# Telegram session itself lives only in the owner's browser. See
+# docs/telegram-web.md.
+
+@app.get(f"/{S}/api/tg/auth")
+async def api_tg_auth(request: Request):
+    """nginx auth_request target: 204 for a logged-in admin, 401 otherwise."""
+    return PlainTextResponse("", status_code=204 if _api_guard(request) else 401)
+
+
+async def _tg_web_credentials() -> tuple[str, str]:
+    return ((await get_setting("tg_web_api_id", "")).strip(),
+            (await get_setting("tg_web_api_hash", "")).strip())
+
+
+@app.get(f"/{S}/api/tg/settings")
+async def api_tg_settings(request: Request):
+    if not _api_guard(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    api_id, api_hash = await _tg_web_credentials()
+    # The hash is write-only here, like ai_api_key: the page only learns whether one is set.
+    return JSONResponse({"configured": bool(api_id and api_hash), "api_id": api_id, "hash_set": bool(api_hash)})
+
+
+@app.post(f"/{S}/api/tg/settings")
+async def api_tg_settings_save(request: Request):
+    if not _api_guard(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    d = await request.json()
+    api_id = str(d.get("api_id") or "").strip()
+    api_hash = str(d.get("api_hash") or "").strip()
+    if not api_id.isdigit():
+        return JSONResponse({"error": "api_id باید فقط عدد باشد"}, status_code=400)
+    if api_hash and not re.fullmatch(r"[0-9a-fA-F]{32}", api_hash):
+        return JSONResponse({"error": "api_hash باید ۳۲ کاراکتر (۰-۹ و a-f) باشد"}, status_code=400)
+    _, stored_hash = await _tg_web_credentials()
+    if not api_hash and not stored_hash:
+        return JSONResponse({"error": "api_hash را وارد کنید"}, status_code=400)
+    await set_setting("tg_web_api_id", api_id)
+    if api_hash:                      # empty keeps the stored hash
+        await set_setting("tg_web_api_hash", api_hash.lower())
+    return JSONResponse({"ok": True})
+
+
+@app.get(f"/{S}/tg/atlas-config.js")
+async def tg_atlas_config(request: Request):
+    """The client's API credentials, loaded by the Telegram page before it boots."""
+    if not _api_guard(request):
+        return PlainTextResponse("/* unauthorized */", status_code=401, media_type="application/javascript")
+    api_id, api_hash = await _tg_web_credentials()
+    cfg = {"apiId": int(api_id) if api_id.isdigit() else None, "apiHash": api_hash or None}
+    return PlainTextResponse(f"window.__ATLAS_TG__={json.dumps(cfg)};", media_type="application/javascript",
+                             headers={"Cache-Control": "no-store"})
+
+
 @app.get(f"/{S}/api/dashboard")
 async def api_dashboard(request: Request):
     if not _api_guard(request):

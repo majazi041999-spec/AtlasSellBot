@@ -28,6 +28,7 @@ import Backups from "./pages/Backups.jsx";
 import Transactions from "./pages/Transactions.jsx";
 import LegacyClaims from "./pages/LegacyClaims.jsx";
 import Reports from "./pages/Reports.jsx";
+import Telegram from "./pages/Telegram.jsx";
 
 export default function App() {
   const [authed, setAuthed] = useState(null); // null=checking, false=login, true=in
@@ -70,6 +71,7 @@ export default function App() {
   else if (base === "/transactions") page = <Transactions />;
   else if (base === "/legacy-claims") page = <LegacyClaims />;
   else if (base === "/reports") page = <Reports />;
+  else if (base === "/telegram") page = <Telegram />;
   else if (base === "/update") page = <Update />;
   else page = <Dashboard onBadges={onBadges} go={go} />;
 
