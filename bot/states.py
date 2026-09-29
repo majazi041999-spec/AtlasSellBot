@@ -129,3 +129,10 @@ class EmojiIds(StatesGroup):
 
 class AgentChat(StatesGroup):
     talking = State()
+
+
+class PollCreate(StatesGroup):
+    """Building a poll from the bot menu: the question, then options one per
+    message (so each keeps its own premium-emoji entities)."""
+    question = State()
+    options = State()

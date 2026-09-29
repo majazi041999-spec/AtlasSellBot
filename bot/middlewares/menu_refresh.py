@@ -35,7 +35,10 @@ log = logging.getLogger(__name__)
 # 2: the reply keyboard reduced to a single "شروع مجدد" — everything else now
 #    lives in the in-chat menu, and a stale phone would otherwise keep showing
 #    the old nine buttons forever.
-MENU_VERSION = 2
+# 3: admin reply keyboard gained "📊 نظرسنجی" (in-bot polls). Only the admin
+#    menu changed, but the version is global — a bumped user simply re-receives
+#    the same user menu once, which is harmless.
+MENU_VERSION = 3
 
 
 class MenuRefreshMiddleware(BaseMiddleware):

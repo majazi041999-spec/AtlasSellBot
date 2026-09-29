@@ -192,6 +192,7 @@ def admin_menu(finance_only: bool = False) -> ReplyKeyboardMarkup:
     b.row(_kbtn("💰 سفارش‌های در انتظار", "success"))
     b.row(_kbtn("🔑 مدیریت کانفیگ", "success"), _kbtn("📦 پکیج‌ها", "primary"))
     b.row(_kbtn("👥 کاربران", "primary"), _kbtn("🔍 جستجوی کاربر", "primary"))
+    b.row(_kbtn("📊 نظرسنجی", "primary"))
     # Red: these reach customers, and there is no unsending.
     b.row(_kbtn("📣 پیام همگانی", "danger"), _kbtn("✉️ پیام خصوصی", "danger"))
     b.row(_kbtn("📮 پست کانال", "danger"))
@@ -356,13 +357,50 @@ def wholesale_request_admin_kb(user_id: int) -> InlineKeyboardMarkup:
     return b.as_markup()
 
 
-def poll_vote_kb(poll_id: int, options: List[Dict], closed: bool = False) -> InlineKeyboardMarkup:
-    """One button per option. callback_data kept short (`pv:{id}:{idx}`) for the 64-byte cap."""
+# Colours for poll option buttons, cycled across the options. Each circle has a
+# premium counterpart in GLYPH_PREMIUM, so `_button` also draws it as the owner's
+# custom emoji. success=green, primary=blue, ""=default(grey), danger=red.
+POLL_CIRCLES = ["🟢", "🔵", "🟡", "🔴", "🟣", "🟠", "⚪️", "🟤"]
+_POLL_STYLES = ["success", "primary", "", "danger", "", "primary", "success", ""]
+
+
+def poll_menu_kb() -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    _button(b, text="➕ ساخت نظرسنجی", callback_data="pnew", style="success")
+    _button(b, text="📋 نظرسنجی‌ها و نتایج", callback_data="plist", style="primary")
+    b.adjust(1)
+    return b.as_markup()
+
+
+def poll_cancel_kb() -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    _button(b, text="❌ انصراف", callback_data="pcancel", style="danger")
+    b.adjust(1)
+    return b.as_markup()
+
+
+def poll_creating_kb() -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    _button(b, text="✅ پایان و ساخت", callback_data="pdone", style="success")
+    _button(b, text="❌ انصراف", callback_data="pcancel", style="danger")
+    b.adjust(1)
+    return b.as_markup()
+
+
+def poll_vote_kb(poll_id: int, options: list, closed: bool = False) -> InlineKeyboardMarkup:
+    """One coloured button per option (`pv:{id}:{idx}`, short for the 64-byte cap).
+
+    `options` is the stored list of {"t": plain, "h": html} dicts. The button
+    label is the PLAIN text (button labels can't carry custom-emoji entities),
+    prefixed with a premium coloured circle that also colours the button.
+    """
     b = InlineKeyboardBuilder()
     for i, opt in enumerate(options):
-        label = str(opt)[:60]
-        _button(b, text=(f"🔒 {label}" if closed else label),
-                callback_data=f"pv:{poll_id}:{i}", style="primary")
+        plain = (opt.get("t") if isinstance(opt, dict) else str(opt)) or ""
+        circle = POLL_CIRCLES[i % len(POLL_CIRCLES)]
+        style = "" if closed else _POLL_STYLES[i % len(_POLL_STYLES)]
+        label = (f"🔒 {plain}" if closed else f"{circle} {plain}")[:60]
+        _button(b, text=label, callback_data=f"pv:{poll_id}:{i}", style=style)
     b.adjust(1)
     return b.as_markup()
 
@@ -371,9 +409,22 @@ def poll_admin_kb(poll_id: int, is_active: bool = True) -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
     _button(b, text="🧪 ارسال به خودم (تست)", callback_data=f"psend_self:{poll_id}", style="primary")
     _button(b, text="📣 ارسال به همه‌ی کاربران", callback_data=f"psend_all:{poll_id}", style="success")
-    _button(b, text="📊 نتایج", callback_data=f"pres:{poll_id}")
+    _button(b, text="📊 نتایج", callback_data=f"pres:{poll_id}", style="primary")
     if is_active:
         _button(b, text="🔒 بستن نظرسنجی", callback_data=f"pclose:{poll_id}", style="danger")
+    b.adjust(1)
+    return b.as_markup()
+
+
+def poll_list_kb(polls: list) -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    for p in polls:
+        pid = int(p.get("id"))
+        mark = "🟢" if int(p.get("is_active") or 0) else "🔒"
+        label = f"{mark} {p.get('title') or ('#' + str(pid))}"[:60]
+        _button(b, text=label, callback_data=f"pres:{pid}", style="primary")
+    if not polls:
+        _button(b, text="— هنوز نظرسنجی‌ای نساخته‌ای —", callback_data="pnoop")
     b.adjust(1)
     return b.as_markup()
 

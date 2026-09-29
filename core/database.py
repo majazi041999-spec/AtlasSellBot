@@ -3784,12 +3784,26 @@ async def set_setting(key: str, value: str):
 
 # ══════════════════ POLLS (نظرسنجی) ══════════════════
 
-async def create_poll(question: str, options: List[str], is_anonymous: int = 1, created_by: int = 0) -> int:
-    opts = [str(o).strip() for o in options if str(o).strip()]
+def _norm_poll_option(o) -> Optional[Dict]:
+    """One stored option as {"t": plain, "h": html}. Accepts a bare string too,
+    so an option entered without formatting still round-trips."""
+    if isinstance(o, dict):
+        t = str(o.get("t") or "").strip()
+        h = str(o.get("h") or "").strip() or t
+    else:
+        t = str(o or "").strip()
+        h = t
+    return {"t": t, "h": h} if t else None
+
+
+async def create_poll(question: str, options, is_anonymous: int = 1, created_by: int = 0) -> int:
+    """`question` is HTML (preserves the admin's premium emoji + formatting);
+    `options` is a list of {"t": plain, "h": html} dicts (or bare strings)."""
+    norm = [x for x in (_norm_poll_option(o) for o in (options or [])) if x]
     async with aiosqlite.connect(DB_PATH) as db:
         c = await db.execute(
             "INSERT INTO polls(question,options,is_anonymous,created_by) VALUES(?,?,?,?)",
-            ((question or "").strip(), json.dumps(opts, ensure_ascii=False),
+            ((question or "").strip(), json.dumps(norm, ensure_ascii=False),
              int(is_anonymous or 0), int(created_by or 0)),
         )
         await db.commit()
@@ -3799,9 +3813,10 @@ async def create_poll(question: str, options: List[str], is_anonymous: int = 1, 
 def _poll_row_to_dict(r) -> Dict:
     d = dict(r)
     try:
-        d["options"] = json.loads(d.get("options") or "[]")
+        raw = json.loads(d.get("options") or "[]")
     except (ValueError, TypeError):
-        d["options"] = []
+        raw = []
+    d["options"] = [x for x in (_norm_poll_option(o) for o in raw) if x]
     return d
 
 
