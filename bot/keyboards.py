@@ -356,6 +356,28 @@ def wholesale_request_admin_kb(user_id: int) -> InlineKeyboardMarkup:
     return b.as_markup()
 
 
+def poll_vote_kb(poll_id: int, options: List[Dict], closed: bool = False) -> InlineKeyboardMarkup:
+    """One button per option. callback_data kept short (`pv:{id}:{idx}`) for the 64-byte cap."""
+    b = InlineKeyboardBuilder()
+    for i, opt in enumerate(options):
+        label = str(opt)[:60]
+        _button(b, text=(f"🔒 {label}" if closed else label),
+                callback_data=f"pv:{poll_id}:{i}", style="primary")
+    b.adjust(1)
+    return b.as_markup()
+
+
+def poll_admin_kb(poll_id: int, is_active: bool = True) -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    _button(b, text="🧪 ارسال به خودم (تست)", callback_data=f"psend_self:{poll_id}", style="primary")
+    _button(b, text="📣 ارسال به همه‌ی کاربران", callback_data=f"psend_all:{poll_id}", style="success")
+    _button(b, text="📊 نتایج", callback_data=f"pres:{poll_id}")
+    if is_active:
+        _button(b, text="🔒 بستن نظرسنجی", callback_data=f"pclose:{poll_id}", style="danger")
+    b.adjust(1)
+    return b.as_markup()
+
+
 def representative_panel_kb() -> InlineKeyboardMarkup:
     """Main inline menu of the representative (reseller) panel."""
     b = InlineKeyboardBuilder()

@@ -567,7 +567,7 @@ async def run_bot(stop: asyncio.Event):
 
     from core.config import BOT_TOKEN, ADMIN_IDS
     from core.database import init_db
-    from bot.handlers import common, admin, user, agent, membership
+    from bot.handlers import common, admin, user, agent, membership, polls
     from bot import home, nav
     from bot.middlewares import ChannelRequiredMiddleware, MenuRefreshMiddleware
 
@@ -599,6 +599,7 @@ async def run_bot(stop: asyncio.Event):
     # ترتیب اهمیت دارد: common باید آخر باشه
     # nav اول ثبت می‌شود تا تنها هندلر «برگشت» یکپارچه باشد
     dp.include_router(nav.router)
+    dp.include_router(polls.router)
     dp.include_router(admin.router)
     dp.include_router(agent.router)
     dp.include_router(home.router)

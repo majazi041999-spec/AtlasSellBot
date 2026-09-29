@@ -398,6 +398,29 @@ CREATE TABLE IF NOT EXISTS ip_guard_gateways (
     last_seen INTEGER DEFAULT 0
 );
 
+CREATE TABLE IF NOT EXISTS polls (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    question TEXT NOT NULL,
+    options TEXT NOT NULL DEFAULT '[]',   -- JSON array of option label strings
+    is_anonymous INTEGER DEFAULT 1,       -- 1 = who-voted-what hidden in the bot UI, still stored server-side
+    allow_multiple INTEGER DEFAULT 0,     -- reserved, 0 = one choice per user
+    is_active INTEGER DEFAULT 1,          -- 0 = closed, votes refused
+    created_by INTEGER DEFAULT 0,         -- admin telegram id that created it
+    sent_count INTEGER DEFAULT 0,
+    created_at TEXT DEFAULT (datetime('now','localtime'))
+);
+
+CREATE TABLE IF NOT EXISTS poll_votes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    poll_id INTEGER NOT NULL,
+    telegram_id INTEGER NOT NULL,         -- voter identity and dedup key
+    option_idx INTEGER NOT NULL,          -- index into polls.options
+    created_at TEXT DEFAULT (datetime('now','localtime')),
+    UNIQUE(poll_id, telegram_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_poll_votes_poll ON poll_votes(poll_id);
+
 CREATE INDEX IF NOT EXISTS idx_ipguard_events_profile ON ip_guard_events(profile_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_ipguard_sight_seen ON ip_guard_sightings(last_seen);
 CREATE INDEX IF NOT EXISTS idx_ipguard_sight_ip ON ip_guard_sightings(ip);
@@ -3757,6 +3780,86 @@ async def set_setting(key: str, value: str):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("INSERT OR REPLACE INTO settings(key,value) VALUES(?,?)", (key, value))
         await db.commit()
+
+
+# ══════════════════ POLLS (نظرسنجی) ══════════════════
+
+async def create_poll(question: str, options: List[str], is_anonymous: int = 1, created_by: int = 0) -> int:
+    opts = [str(o).strip() for o in options if str(o).strip()]
+    async with aiosqlite.connect(DB_PATH) as db:
+        c = await db.execute(
+            "INSERT INTO polls(question,options,is_anonymous,created_by) VALUES(?,?,?,?)",
+            ((question or "").strip(), json.dumps(opts, ensure_ascii=False),
+             int(is_anonymous or 0), int(created_by or 0)),
+        )
+        await db.commit()
+        return c.lastrowid
+
+
+def _poll_row_to_dict(r) -> Dict:
+    d = dict(r)
+    try:
+        d["options"] = json.loads(d.get("options") or "[]")
+    except (ValueError, TypeError):
+        d["options"] = []
+    return d
+
+
+async def get_poll(poll_id: int) -> Optional[Dict]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute("SELECT * FROM polls WHERE id=?", (int(poll_id),)) as c:
+            r = await c.fetchone()
+            return _poll_row_to_dict(r) if r else None
+
+
+async def list_polls(limit: int = 20) -> List[Dict]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute("SELECT * FROM polls ORDER BY id DESC LIMIT ?", (int(limit),)) as c:
+            return [_poll_row_to_dict(r) for r in await c.fetchall()]
+
+
+async def set_poll_active(poll_id: int, active: int):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE polls SET is_active=? WHERE id=?", (int(active), int(poll_id)))
+        await db.commit()
+
+
+async def bump_poll_sent(poll_id: int, n: int):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE polls SET sent_count=sent_count+? WHERE id=?", (int(n or 0), int(poll_id)))
+        await db.commit()
+
+
+async def record_poll_vote(poll_id: int, telegram_id: int, option_idx: int):
+    """Upsert a vote — a user changing their choice overwrites the previous one."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """INSERT INTO poll_votes(poll_id,telegram_id,option_idx) VALUES(?,?,?)
+               ON CONFLICT(poll_id,telegram_id)
+               DO UPDATE SET option_idx=excluded.option_idx, created_at=datetime('now','localtime')""",
+            (int(poll_id), int(telegram_id), int(option_idx)),
+        )
+        await db.commit()
+
+
+async def get_poll_results(poll_id: int) -> Dict:
+    poll = await get_poll(poll_id)
+    if not poll:
+        return {"question": "", "options": [], "counts": [], "total": 0}
+    opts = poll.get("options") or []
+    counts = [0] * len(opts)
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT option_idx, COUNT(*) FROM poll_votes WHERE poll_id=? GROUP BY option_idx",
+            (int(poll_id),),
+        ) as c:
+            for idx, n in await c.fetchall():
+                i = int(idx)
+                if 0 <= i < len(counts):
+                    counts[i] = int(n)
+    return {"question": poll.get("question"), "options": opts, "counts": counts, "total": sum(counts)}
 
 
 # ══════════════════ MULTI-SERVER SUBSCRIPTIONS (EXPERIMENTAL) ══════════════════
