@@ -136,3 +136,10 @@ class PollCreate(StatesGroup):
     message (so each keeps its own premium-emoji entities)."""
     question = State()
     options = State()
+
+
+class PollEdit(StatesGroup):
+    """Editing a poll after it exists: a new question, or a fresh option list
+    (which clears the old votes, since votes are stored by option index)."""
+    question = State()
+    options = State()

@@ -390,17 +390,16 @@ def poll_creating_kb() -> InlineKeyboardMarkup:
 def poll_vote_kb(poll_id: int, options: list, closed: bool = False) -> InlineKeyboardMarkup:
     """One coloured button per option (`pv:{id}:{idx}`, short for the 64-byte cap).
 
-    `options` is the stored list of {"t": plain, "h": html} dicts. The button
-    label is the PLAIN text (button labels can't carry custom-emoji entities),
-    prefixed with a premium coloured circle that also colours the button.
+    Label is the option's PLAIN text — the button COLOUR alone distinguishes the
+    options, so no decorative circle is added (keeps a poll uncluttered). A leading
+    emoji the admin typed still becomes a premium icon via `_button`.
     """
     b = InlineKeyboardBuilder()
     for i, opt in enumerate(options):
-        plain = (opt.get("t") if isinstance(opt, dict) else str(opt)) or ""
-        circle = POLL_CIRCLES[i % len(POLL_CIRCLES)]
+        plain = ((opt.get("t") if isinstance(opt, dict) else str(opt)) or "")[:58]
         style = "" if closed else _POLL_STYLES[i % len(_POLL_STYLES)]
-        label = (f"🔒 {plain}" if closed else f"{circle} {plain}")[:60]
-        _button(b, text=label, callback_data=f"pv:{poll_id}:{i}", style=style)
+        _button(b, text=(f"🔒 {plain}" if closed else plain),
+                callback_data=f"pv:{poll_id}:{i}", style=style)
     b.adjust(1)
     return b.as_markup()
 
@@ -410,8 +409,36 @@ def poll_admin_kb(poll_id: int, is_active: bool = True) -> InlineKeyboardMarkup:
     _button(b, text="🧪 ارسال به خودم (تست)", callback_data=f"psend_self:{poll_id}", style="primary")
     _button(b, text="📣 ارسال به همه‌ی کاربران", callback_data=f"psend_all:{poll_id}", style="success")
     _button(b, text="📊 نتایج", callback_data=f"pres:{poll_id}", style="primary")
+    _button(b, text="✏️ ویرایش", callback_data=f"pedit:{poll_id}", style="primary")
     if is_active:
         _button(b, text="🔒 بستن نظرسنجی", callback_data=f"pclose:{poll_id}", style="danger")
+    _button(b, text="🗑 حذف نظرسنجی", callback_data=f"pdel:{poll_id}", style="danger")
+    _button(b, text="⬅️ لیستِ نظرسنجی‌ها", callback_data="plist")
+    b.adjust(1)
+    return b.as_markup()
+
+
+def poll_edit_kb(poll_id: int) -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    _button(b, text="✏️ ویرایشِ سؤال", callback_data=f"peditq:{poll_id}", style="primary")
+    _button(b, text="✏️ ویرایشِ گزینه‌ها", callback_data=f"pedito:{poll_id}", style="primary")
+    _button(b, text="⬅️ بازگشت", callback_data=f"padmin:{poll_id}")
+    b.adjust(1)
+    return b.as_markup()
+
+
+def poll_editing_kb() -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    _button(b, text="✅ پایانِ ویرایش", callback_data="pedone", style="success")
+    _button(b, text="❌ انصراف", callback_data="pcancel", style="danger")
+    b.adjust(1)
+    return b.as_markup()
+
+
+def poll_del_confirm_kb(poll_id: int) -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    _button(b, text="🗑 بله، حذف کن", callback_data=f"pdel2:{poll_id}", style="danger")
+    _button(b, text="❌ انصراف", callback_data=f"padmin:{poll_id}")
     b.adjust(1)
     return b.as_markup()
 
@@ -422,7 +449,7 @@ def poll_list_kb(polls: list) -> InlineKeyboardMarkup:
         pid = int(p.get("id"))
         mark = "🟢" if int(p.get("is_active") or 0) else "🔒"
         label = f"{mark} {p.get('title') or ('#' + str(pid))}"[:60]
-        _button(b, text=label, callback_data=f"pres:{pid}", style="primary")
+        _button(b, text=label, callback_data=f"padmin:{pid}", style="primary")
     if not polls:
         _button(b, text="— هنوز نظرسنجی‌ای نساخته‌ای —", callback_data="pnoop")
     b.adjust(1)

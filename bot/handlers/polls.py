@@ -1,52 +1,56 @@
-"""In-bot polls (نظرسنجی), driven entirely from the admin menu — no slash command.
+"""In-bot polls (نظرسنجی), driven entirely from the admin menu — no slash command,
+nothing in the web panel.
 
 Flow: the admin taps "📊 نظرسنجی" (a coloured reply-keyboard button) → an inline
-menu to CREATE a poll or view RESULTS. Creating is conversational (FSM): the
-question, then options one per message. Each message is captured as HTML via
-aiogram's `Message.html_text`, so ANY text and the admin's own PREMIUM (custom)
-emoji are preserved verbatim and re-rendered on the poll — nothing is parsed,
-whitelisted or stripped.
+menu to CREATE a poll or open the LIST. Each poll has an admin panel: send to
+self / broadcast / results / EDIT (question or options) / close / DELETE.
 
-The poll body is sent as HTML: static chrome (📊, 👇, the coloured circles) is
-turned into the owner's premium emoji, while the admin's question/options are
-passed through exactly as they typed them. Option BUTTONS carry a real colour
-(InlineKeyboardButton.style) and a premium coloured-circle icon; their label is
-the plain text, because button labels can't hold custom-emoji entities.
+Creation and editing are conversational (FSM): the question, then options one per
+message. Every message is captured via aiogram's `Message.html_text`, so ANY text
+and the admin's own PREMIUM (custom) emoji are preserved verbatim — nothing is
+parsed, whitelisted or stripped.
 
-Kept as its own router so the whole feature is one file to read or remove. The
-vote handler (`pv:`) has NO admin guard — any user may vote — while every other
-action is owner/full-admin only. Every callback_data has a handler here, so no
-button leaves a user staring at a spinner (PROJECT_MAP §13).
+Rendering is kept UNCLUTTERED on purpose: the body shows the header, the question
+(with its premium emoji) and a short prompt — the OPTIONS live only on the
+buttons, which are distinguished by COLOUR alone (no decorative circles). Voting
+is one-per-person and FINAL. Every callback_data has a handler (PROJECT_MAP §13);
+the vote handler has no admin guard, everything else is owner/full-admin only.
 """
 import asyncio
 import logging
 import re
 
 from aiogram import Bot, F, Router
+from aiogram.filters import StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
 from bot.handlers.admin import is_admin
 from bot.keyboards import (
-    POLL_CIRCLES,
     poll_admin_kb,
     poll_cancel_kb,
     poll_creating_kb,
+    poll_del_confirm_kb,
+    poll_edit_kb,
+    poll_editing_kb,
     poll_list_kb,
     poll_menu_kb,
     poll_vote_kb,
 )
 from bot.rich_message import GLYPH_PREMIUM
-from bot.states import PollCreate
+from bot.states import PollCreate, PollEdit
 from core.database import (
     bump_poll_sent,
     create_poll,
+    delete_poll,
     get_poll,
     get_poll_results,
     get_segment_users,
     list_polls,
     record_poll_vote,
     set_poll_active,
+    update_poll_options,
+    update_poll_question,
 )
 
 logger = logging.getLogger(__name__)
@@ -63,16 +67,12 @@ def _pe(glyph: str) -> str:
     return f'<tg-emoji emoji-id="{eid}">{glyph}</tg-emoji>' if eid else glyph
 
 
-def _circle(i: int) -> str:
-    return _pe(POLL_CIRCLES[i % len(POLL_CIRCLES)])
-
-
 def _strip_html(s: str) -> str:
     return re.sub(r"<[^>]+>", "", s or "").strip()
 
 
 def _msg_html(msg: Message) -> str:
-    """The message's text WITH its entities as HTML (custom emoji → <tg-emoji>)."""
+    """The message text WITH its entities as HTML (custom emoji → <tg-emoji>)."""
     try:
         return (msg.html_text or "").strip()
     except Exception:
@@ -80,26 +80,21 @@ def _msg_html(msg: Message) -> str:
 
 
 def _poll_html(poll: dict) -> str:
-    opts = poll.get("options") or []
-    parts = [f"{_pe('📊')} <b>نظرسنجی</b>", "", (poll.get("question") or ""), ""]
-    for i, opt in enumerate(opts):
-        parts.append(f"{_circle(i)} {opt.get('h') or opt.get('t') or ''}")
-    parts += ["", f"{_pe('👇')} گزینه‌ی خودت را با دکمه‌های زیر انتخاب کن:"]
-    return "\n".join(parts)
+    # Body stays minimal: header + question + prompt. The options are on the
+    # buttons, so listing them here too would just be clutter.
+    return (f"{_pe('📊')} <b>نظرسنجی</b>\n\n"
+            f"{poll.get('question') or ''}\n\n"
+            f"{_pe('👇')} برای رأی، یکی از دکمه‌ها را بزن:")
 
 
 def _poll_fallback(poll: dict) -> str:
-    opts = poll.get("options") or []
-    lines = ["📊 نظرسنجی", "", _strip_html(poll.get("question") or ""), ""]
-    for i, opt in enumerate(opts):
-        lines.append(f"{POLL_CIRCLES[i % len(POLL_CIRCLES)]} {opt.get('t') or ''}")
-    lines += ["", "👇 گزینه‌ی خودت را با دکمه‌های زیر انتخاب کن:"]
-    return "\n".join(lines)
+    return (f"📊 نظرسنجی\n\n{_strip_html(poll.get('question') or '')}\n\n"
+            "👇 برای رأی، یکی از دکمه‌ها را بزن:")
 
 
 async def deliver_poll(bot: Bot, chat_id: int, poll: dict) -> bool:
-    """Send the polished poll to one chat, degrading to plain text on any error.
-    Shared by send-to-self, broadcast and one-off delivery so they can't drift."""
+    """Send the poll to one chat, degrading to plain text on any error. Shared by
+    send-to-self, broadcast and one-off delivery so they can't drift apart."""
     kb = poll_vote_kb(poll["id"], poll.get("options") or [])
     try:
         await bot.send_message(chat_id, _poll_html(poll), parse_mode="HTML", reply_markup=kb)
@@ -120,7 +115,7 @@ def _results_html(res: dict, poll_id: int) -> str:
         n = counts[i] if i < len(counts) else 0
         pct = (n * 100 // total) if total else 0
         bar = "█" * (pct // 10) + "░" * (10 - pct // 10)
-        parts.append(f"{_circle(i)} {opt.get('h') or opt.get('t') or ''}")
+        parts.append(f"• {opt.get('h') or opt.get('t') or ''}")
         parts.append(f"<code>{bar}</code>  {n} رأی ({pct}%)")
     parts += ["", f"مجموع: <b>{total}</b> رأی"]
     return "\n".join(parts)
@@ -134,7 +129,7 @@ def _results_fallback(res: dict, poll_id: int) -> str:
         n = counts[i] if i < len(counts) else 0
         pct = (n * 100 // total) if total else 0
         bar = "█" * (pct // 10) + "░" * (10 - pct // 10)
-        lines.append(f"{POLL_CIRCLES[i % len(POLL_CIRCLES)]} {opt.get('t') or ''}\n{bar}  {n} رأی ({pct}%)")
+        lines.append(f"• {opt.get('t') or ''}\n{bar}  {n} رأی ({pct}%)")
     lines += ["", f"مجموع: {total} رأی"]
     return "\n".join(lines)
 
@@ -147,6 +142,19 @@ async def _send_results(target: Message, poll_id: int) -> None:
         await target.answer(_results_fallback(res, poll_id), parse_mode=None)
 
 
+async def _panel(target: Message, poll_id: int) -> None:
+    poll = await get_poll(poll_id)
+    if not poll:
+        await target.answer("نظرسنجی پیدا نشد.", parse_mode=None)
+        return
+    res = await get_poll_results(poll_id)
+    active = bool(int(poll.get("is_active") or 0))
+    txt = (f"📊 نظرسنجی #{poll_id} — {'🟢 باز' if active else '🔒 بسته'}\n\n"
+           f"سؤال: {_strip_html(poll.get('question') or '')}\n"
+           f"گزینه‌ها: {len(poll.get('options') or [])} • رأی‌ها: {int(res.get('total') or 0)}")
+    await target.answer(txt, parse_mode=None, reply_markup=poll_admin_kb(poll_id, active))
+
+
 # ─── entry: the "📊 نظرسنجی" menu button ─────────────────────────────────────
 
 @router.message(F.text == "📊 نظرسنجی")
@@ -156,7 +164,7 @@ async def poll_menu(msg: Message):
     await msg.answer("📊 نظرسنجی — یکی را انتخاب کن:", parse_mode=None, reply_markup=poll_menu_kb())
 
 
-# ─── create (FSM) ────────────────────────────────────────────────────────────
+# ─── create / edit: shared option collection ─────────────────────────────────
 
 @router.callback_query(F.data == "pnew")
 async def poll_new(cb: CallbackQuery, state: FSMContext):
@@ -164,7 +172,7 @@ async def poll_new(cb: CallbackQuery, state: FSMContext):
         await cb.answer()
         return
     await state.set_state(PollCreate.question)
-    await state.update_data(poll_q="", poll_opts=[])
+    await state.update_data(poll_q="", poll_opts=[], edit_poll_id=0)
     await cb.message.answer(
         "📝 سؤالِ نظرسنجی را بفرست.\nمی‌تونی اموجیِ پرمیوم و هر متنی بذاری — عیناً حفظ می‌شود.",
         parse_mode=None, reply_markup=poll_cancel_kb(),
@@ -187,24 +195,24 @@ async def poll_got_question(msg: Message, state: FSMContext):
     )
 
 
-@router.message(PollCreate.options)
+@router.message(StateFilter(PollCreate.options, PollEdit.options))
 async def poll_got_option(msg: Message, state: FSMContext):
     plain = (msg.text or "").strip()
+    editing = (await state.get_state()) == PollEdit.options.state
+    kb = poll_editing_kb() if editing else poll_creating_kb()
     if not plain:
-        await msg.answer("این گزینه متن نداشت؛ یک گزینه‌ی متنی بفرست.", parse_mode=None, reply_markup=poll_creating_kb())
+        await msg.answer("این گزینه متن نداشت؛ یک گزینه‌ی متنی بفرست.", parse_mode=None, reply_markup=kb)
         return
     data = await state.get_data()
     opts = list(data.get("poll_opts") or [])
     if len(opts) >= _MAX_OPTIONS:
-        await msg.answer(f"به سقفِ {_MAX_OPTIONS} گزینه رسیدی. «✅ پایان و ساخت» را بزن.",
-                         parse_mode=None, reply_markup=poll_creating_kb())
+        await msg.answer(f"به سقفِ {_MAX_OPTIONS} گزینه رسیدی؛ «✅ پایان» را بزن.", parse_mode=None, reply_markup=kb)
         return
     opts.append({"t": plain, "h": _msg_html(msg) or plain})
     await state.update_data(poll_opts=opts)
-    await msg.answer(
-        f"✅ گزینه‌ی {len(opts)} ثبت شد.\nگزینه‌ی بعدی را بفرست یا «✅ پایان و ساخت».",
-        parse_mode=None, reply_markup=poll_creating_kb(),
-    )
+    done = "✅ پایانِ ویرایش" if editing else "✅ پایان و ساخت"
+    await msg.answer(f"✅ گزینه‌ی {len(opts)} ثبت شد.\nگزینه‌ی بعدی را بفرست یا «{done}».",
+                     parse_mode=None, reply_markup=kb)
 
 
 @router.callback_query(F.data == "pdone")
@@ -220,10 +228,8 @@ async def poll_done(cb: CallbackQuery, state: FSMContext):
         return
     poll_id = await create_poll(q, opts, is_anonymous=1, created_by=cb.from_user.id)
     await state.clear()
-    await cb.message.answer(
-        f"✅ نظرسنجی #{poll_id} ساخته شد.\nاول با «🧪 ارسال به خودم» ببینش، بعد برای همه بفرست:",
-        parse_mode=None, reply_markup=poll_admin_kb(poll_id, is_active=True),
-    )
+    await cb.message.answer(f"✅ نظرسنجی #{poll_id} ساخته شد.", parse_mode=None)
+    await _panel(cb.message, poll_id)
     await cb.answer("ساخته شد ✅")
 
 
@@ -237,7 +243,105 @@ async def poll_cancel(cb: CallbackQuery, state: FSMContext):
     await cb.answer("لغو شد")
 
 
-# ─── list + results ──────────────────────────────────────────────────────────
+# ─── edit ────────────────────────────────────────────────────────────────────
+
+@router.callback_query(F.data.startswith("pedit:"))
+async def poll_edit(cb: CallbackQuery):
+    if not is_admin(cb.from_user.id):
+        await cb.answer()
+        return
+    poll_id = int(cb.data.split(":")[1])
+    await cb.message.answer("✏️ چی رو می‌خوای ویرایش کنی؟", parse_mode=None, reply_markup=poll_edit_kb(poll_id))
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("peditq:"))
+async def poll_edit_question(cb: CallbackQuery, state: FSMContext):
+    if not is_admin(cb.from_user.id):
+        await cb.answer()
+        return
+    poll_id = int(cb.data.split(":")[1])
+    await state.set_state(PollEdit.question)
+    await state.update_data(edit_poll_id=poll_id)
+    await cb.message.answer("📝 سؤالِ جدید را بفرست (اموجیِ پرمیوم و هر متنی مجاز است):",
+                            parse_mode=None, reply_markup=poll_cancel_kb())
+    await cb.answer()
+
+
+@router.message(PollEdit.question)
+async def poll_edit_question_got(msg: Message, state: FSMContext):
+    q_html = _msg_html(msg)
+    if not q_html:
+        await msg.answer("لطفاً یک پیامِ متنی بفرست.", parse_mode=None, reply_markup=poll_cancel_kb())
+        return
+    data = await state.get_data()
+    poll_id = int(data.get("edit_poll_id") or 0)
+    await state.clear()
+    if poll_id:
+        await update_poll_question(poll_id, q_html)
+        await msg.answer("✅ سؤال ویرایش شد.", parse_mode=None)
+        await _panel(msg, poll_id)
+
+
+@router.callback_query(F.data.startswith("pedito:"))
+async def poll_edit_options(cb: CallbackQuery, state: FSMContext):
+    if not is_admin(cb.from_user.id):
+        await cb.answer()
+        return
+    poll_id = int(cb.data.split(":")[1])
+    await state.set_state(PollEdit.options)
+    await state.update_data(edit_poll_id=poll_id, poll_opts=[])
+    await cb.message.answer(
+        "✏️ گزینه‌های جدید را «یکی‌یکی» بفرست، بعد «✅ پایانِ ویرایش».\n"
+        "⚠️ با ثبتِ گزینه‌های جدید، رأی‌های قبلیِ این نظرسنجی پاک می‌شوند.",
+        parse_mode=None, reply_markup=poll_editing_kb(),
+    )
+    await cb.answer()
+
+
+@router.callback_query(F.data == "pedone")
+async def poll_edit_done(cb: CallbackQuery, state: FSMContext):
+    if not is_admin(cb.from_user.id):
+        await cb.answer()
+        return
+    data = await state.get_data()
+    poll_id = int(data.get("edit_poll_id") or 0)
+    opts = data.get("poll_opts") or []
+    if not poll_id or len(opts) < 2:
+        await cb.answer("حداقل ۲ گزینه لازم است.", show_alert=True)
+        return
+    await update_poll_options(poll_id, opts)
+    await state.clear()
+    await cb.message.answer("✅ گزینه‌ها ویرایش شد (رأی‌های قبلی پاک شدند).", parse_mode=None)
+    await _panel(cb.message, poll_id)
+    await cb.answer("ویرایش شد ✅")
+
+
+# ─── delete ──────────────────────────────────────────────────────────────────
+
+@router.callback_query(F.data.startswith("pdel:"))
+async def poll_delete_confirm(cb: CallbackQuery):
+    if not is_admin(cb.from_user.id):
+        await cb.answer()
+        return
+    poll_id = int(cb.data.split(":")[1])
+    await cb.message.answer(f"🗑 نظرسنجی #{poll_id} و همه‌ی رأی‌هاش حذف بشه؟",
+                            parse_mode=None, reply_markup=poll_del_confirm_kb(poll_id))
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("pdel2:"))
+async def poll_delete_do(cb: CallbackQuery):
+    if not is_admin(cb.from_user.id):
+        await cb.answer()
+        return
+    poll_id = int(cb.data.split(":")[1])
+    await delete_poll(poll_id)
+    await cb.message.answer(f"🗑 نظرسنجی #{poll_id} حذف شد.", parse_mode=None)
+    await cb.answer("حذف شد")
+
+
+# ─── list + panel + results ──────────────────────────────────────────────────
 
 @router.callback_query(F.data == "plist")
 async def poll_list(cb: CallbackQuery):
@@ -250,8 +354,17 @@ async def poll_list(cb: CallbackQuery):
         "is_active": p.get("is_active"),
         "title": _strip_html(p.get("question") or "")[:30] or f"#{p['id']}",
     } for p in polls]
-    await cb.message.answer("📋 نظرسنجی‌ها — یکی را بزن تا نتایجش را ببینی:",
+    await cb.message.answer("📋 نظرسنجی‌ها — یکی را بزن تا مدیریتش کنی:",
                             parse_mode=None, reply_markup=poll_list_kb(view))
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("padmin:"))
+async def poll_panel(cb: CallbackQuery):
+    if not is_admin(cb.from_user.id):
+        await cb.answer()
+        return
+    await _panel(cb.message, int(cb.data.split(":")[1]))
     await cb.answer()
 
 
@@ -260,20 +373,18 @@ async def poll_results(cb: CallbackQuery):
     if not is_admin(cb.from_user.id):
         await cb.answer()
         return
-    poll_id = int(cb.data.split(":")[1])
-    await _send_results(cb.message, poll_id)
+    await _send_results(cb.message, int(cb.data.split(":")[1]))
     await cb.answer()
 
 
-# ─── send ────────────────────────────────────────────────────────────────────
+# ─── send / close ────────────────────────────────────────────────────────────
 
 @router.callback_query(F.data.startswith("psend_self:"))
 async def poll_send_self(cb: CallbackQuery, bot: Bot):
     if not is_admin(cb.from_user.id):
         await cb.answer()
         return
-    poll_id = int(cb.data.split(":")[1])
-    poll = await get_poll(poll_id)
+    poll = await get_poll(int(cb.data.split(":")[1]))
     if not poll:
         await cb.answer("نظرسنجی پیدا نشد", show_alert=True)
         return
@@ -327,7 +438,8 @@ async def poll_close(cb: CallbackQuery):
         return
     poll_id = int(cb.data.split(":")[1])
     await set_poll_active(poll_id, 0)
-    await cb.answer("نظرسنجی بسته شد 🔒", show_alert=True)
+    await cb.answer("نظرسنجی بسته شد 🔒")
+    await _panel(cb.message, poll_id)
 
 
 @router.callback_query(F.data == "pnoop")
@@ -335,7 +447,7 @@ async def poll_noop(cb: CallbackQuery):
     await cb.answer("لغو شد")
 
 
-# ─── any user: vote ──────────────────────────────────────────────────────────
+# ─── any user: vote (one per person, final) ──────────────────────────────────
 
 @router.callback_query(F.data.startswith("pv:"))
 async def poll_vote(cb: CallbackQuery):
@@ -359,5 +471,9 @@ async def poll_vote(cb: CallbackQuery):
     if not (0 <= idx < len(opts)):
         await cb.answer()
         return
-    await record_poll_vote(poll_id, cb.from_user.id, idx)
-    await cb.answer(f"رأی شما ثبت شد ✅\n«{opts[idx].get('t') or ''}»")
+    is_new = await record_poll_vote(poll_id, cb.from_user.id, idx)
+    if is_new:
+        await cb.answer(f"رأی شما ثبت شد ✅\n«{opts[idx].get('t') or ''}»")
+    else:
+        await cb.answer("شما قبلاً در این نظرسنجی رأی داده‌اید ✋\nهر نفر فقط یک رأی می‌تواند بدهد.",
+                        show_alert=True)

@@ -3847,15 +3847,40 @@ async def bump_poll_sent(poll_id: int, n: int):
         await db.commit()
 
 
-async def record_poll_vote(poll_id: int, telegram_id: int, option_idx: int):
-    """Upsert a vote — a user changing their choice overwrites the previous one."""
+async def record_poll_vote(poll_id: int, telegram_id: int, option_idx: int) -> bool:
+    """One vote per person, FINAL. Returns True if this was a NEW vote, False if
+    the person had already voted (their earlier choice is kept, not changed)."""
     async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute(
-            """INSERT INTO poll_votes(poll_id,telegram_id,option_idx) VALUES(?,?,?)
-               ON CONFLICT(poll_id,telegram_id)
-               DO UPDATE SET option_idx=excluded.option_idx, created_at=datetime('now','localtime')""",
+        c = await db.execute(
+            "INSERT OR IGNORE INTO poll_votes(poll_id,telegram_id,option_idx) VALUES(?,?,?)",
             (int(poll_id), int(telegram_id), int(option_idx)),
         )
+        await db.commit()
+        return (c.rowcount or 0) > 0
+
+
+async def update_poll_question(poll_id: int, question: str):
+    """Edit the question (HTML). Votes are index-based, so this keeps them."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE polls SET question=? WHERE id=?", ((question or "").strip(), int(poll_id)))
+        await db.commit()
+
+
+async def update_poll_options(poll_id: int, options):
+    """Replace the options. This CLEARS existing votes, because a vote is stored
+    as an option index and editing the list would otherwise mis-attribute them."""
+    norm = [x for x in (_norm_poll_option(o) for o in (options or [])) if x]
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE polls SET options=? WHERE id=?",
+                         (json.dumps(norm, ensure_ascii=False), int(poll_id)))
+        await db.execute("DELETE FROM poll_votes WHERE poll_id=?", (int(poll_id),))
+        await db.commit()
+
+
+async def delete_poll(poll_id: int):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("DELETE FROM poll_votes WHERE poll_id=?", (int(poll_id),))
+        await db.execute("DELETE FROM polls WHERE id=?", (int(poll_id),))
         await db.commit()
 
 
