@@ -10,9 +10,13 @@ SITE=/etc/nginx/conf.d/atlas.conf
 SNIPPET=/etc/nginx/snippets/atlas-tgweb.conf
 MAPCONF=/etc/nginx/conf.d/atlas-tgweb-map.conf
 
-# The panel's secret prefix, exactly as core/config.py reads it.
-S="$(sed -n 's/^WEB_SECRET_PATH=//p' "$BOT_DIR/.env" | tail -1 | tr -d '"'"'"' \r' | sed 's#^/*##; s#/*$##')"
-[ -n "$S" ] || S=AtlasPanel2024
+# The panel's secret prefix, asked from the bot itself so it is read exactly the way
+# the panel reads it (parsing .env by hand here once produced a wrong path).
+S="$(cd "$BOT_DIR" && "$BOT_DIR/.venv/bin/python" -c 'from core.config import WEB_SECRET_PATH as s; print(s)')"
+if [ -z "$S" ] || [[ "$S" == */* ]]; then
+    echo "could not read WEB_SECRET_PATH from core.config" >&2
+    exit 1
+fi
 
 backup_dir="/root/nginx-bak-tgweb-$(date +%Y%m%d-%H%M%S)"
 mkdir -p "$backup_dir"
