@@ -5,6 +5,18 @@ The panel's «✈️ تلگرام» menu opens a full Telegram client. It is **T
 patch and served under `/<secret>/tg/`. The owner logs in inside it exactly as on
 web.telegram.org.
 
+**How it opens.** It is not boxed inside the panel. The owner asked for it to feel like
+Telegram Desktop.
+- The menu item is a plain link to `/<secret>/tg/` in a named tab (`atlas-telegram`), so it
+  opens full-window and repeat clicks reuse the same tab.
+- Chrome's address-bar **Install** turns it into a desktop app with its own window and
+  taskbar icon. The manifest is relative, so its scope is `/<secret>/tg/`.
+- **Expired panel session** (24 h, `JWT_EXPIRE_HOURS`): nginx turns the 401 into a redirect
+  to `/<secret>/#/telegram`. After the login, the panel returns to that route, which forwards
+  to the app.
+- **No api_id yet:** `atlas-config.js` sends the owner to `#/telegram/setup` instead.
+- **Changing the api_id later:** open `#/telegram/setup` in the panel.
+
 ## Why it is built this way
 
 `*.web.telegram.org` is filtered in Iran, and the panel is not. So the browser only ever

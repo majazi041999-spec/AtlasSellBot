@@ -2,15 +2,21 @@ import React, { useEffect, useState } from "react";
 import { api, BASE } from "../api.js";
 import { Card, Loading, toast } from "../components/ui.jsx";
 
-/** A full Telegram client inside the panel.
+/** Telegram inside the panel.
  *
- *  It is our own build of Telegram Web A, served under <secret>/tg/ with its
- *  traffic relayed through our server (docs/telegram-web.md), so it works from
- *  Iran without a VPN. The owner logs in inside it exactly as on
- *  web.telegram.org, and the session stays in this browser, never on the server.
- *  Telegram requires every client to carry its own api_id/api_hash; the owner
- *  creates one once at my.telegram.org and enters it below.
+ *  The app itself is our own build of Telegram Web A at <secret>/tg/, opened
+ *  full-window (the «تلگرام» menu links straight to it, and Chrome can install
+ *  it as a desktop app). Its traffic is relayed through our server
+ *  (docs/telegram-web.md), so it works from Iran without a VPN, and the
+ *  Telegram session stays in the owner's browser.
+ *
+ *  This page only exists for the one-time setup (#/telegram/setup): Telegram
+ *  requires every client to carry its own api_id/api_hash. Landing on
+ *  #/telegram (e.g. after the panel login that /tg/ redirected to) goes
+ *  straight on to the app.
  */
+const APP_URL = `${BASE}/tg/`;
+
 function Setup({ current, onSaved, onCancel }) {
   const [apiId, setApiId] = useState(current?.api_id || "");
   const [apiHash, setApiHash] = useState("");
@@ -29,7 +35,7 @@ function Setup({ current, onSaved, onCancel }) {
 
   return (
     <div className="screen grid" style={{ gap: 18, maxWidth: 720 }}>
-      <Card title="✈️ راه‌اندازی تلگرام" sub="فقط یک بار لازم است">
+      <Card title="✈️ تنظیم تلگرام" sub="فقط یک بار لازم است">
         <div className="grid" style={{ gap: 10, lineHeight: 1.9 }}>
           <div>تلگرام برای هر برنامه‌ی تلگرامی یک شناسه‌ی اختصاصی می‌خواهد. یک بار بساز و این‌جا وارد کن:</div>
           <ol style={{ margin: 0, paddingInlineStart: 20 }}>
@@ -48,8 +54,8 @@ function Setup({ current, onSaved, onCancel }) {
                    onChange={(e) => setApiHash(e.target.value.trim())} placeholder="0123456789abcdef0123456789abcdef" />
           </div>
           <div className="row" style={{ gap: 8 }}>
-            <button className="btn primary" disabled={busy || !apiId} onClick={save}>ذخیره</button>
-            {onCancel && <button className="btn" onClick={onCancel}>انصراف</button>}
+            <button className="btn primary" disabled={busy || !apiId} onClick={save}>ذخیره و باز کردن تلگرام</button>
+            {onCancel && <button className="btn" onClick={onCancel}>باز کردن تلگرام بدون تغییر</button>}
           </div>
         </div>
       </Card>
@@ -57,32 +63,18 @@ function Setup({ current, onSaved, onCancel }) {
   );
 }
 
-export default function Telegram() {
+export default function Telegram({ path = "" }) {
+  const wantsSetup = path.startsWith("/telegram/setup");
   const [cfg, setCfg] = useState(null);
-  const [editing, setEditing] = useState(false);
-  const load = () => api.get("/api/tg/settings").then(setCfg).catch(() => setCfg({ error: true }));
-  useEffect(() => { load(); }, []);
+  const openApp = () => window.location.replace(APP_URL);
+
+  useEffect(() => { api.get("/api/tg/settings").then(setCfg).catch(() => setCfg({ error: true })); }, []);
+  useEffect(() => { if (cfg?.configured && !wantsSetup) openApp(); }, [cfg, wantsSetup]);
 
   if (!cfg) return <Loading />;
   if (cfg.error) return <Card title="✈️ تلگرام"><div className="muted">دریافت تنظیمات ناموفق بود.</div></Card>;
-  if (!cfg.configured || editing) {
-    return <Setup current={cfg} onSaved={() => { setEditing(false); load(); }}
-                  onCancel={cfg.configured ? () => setEditing(false) : null} />;
+  if (!cfg.configured || wantsSetup) {
+    return <Setup current={cfg} onSaved={openApp} onCancel={cfg.configured ? openApp : null} />;
   }
-
-  const src = `${BASE}/tg/`;
-  return (
-    <div className="screen tg-screen">
-      <div className="row tg-bar">
-        <b>✈️ تلگرام</b>
-        <span className="muted tiny">نشست تلگرامت فقط در همین مرورگر ذخیره می‌شود، نه روی سرور.</span>
-        <div className="row" style={{ gap: 8, marginInlineStart: "auto" }}>
-          <a className="btn xs" href={src} target="_blank" rel="noopener noreferrer">↗ تب جدید</a>
-          <button className="btn xs" onClick={() => setEditing(true)}>⚙️ api_id</button>
-        </div>
-      </div>
-      <iframe className="tg-frame" src={src} title="Telegram"
-              allow="clipboard-read; clipboard-write; microphone; camera; fullscreen; autoplay; display-capture" />
-    </div>
-  );
+  return <Loading />;   // on the way to the app
 }

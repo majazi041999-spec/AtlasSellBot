@@ -44,7 +44,7 @@ export default function App() {
   const logout = async () => { try { await api.post("/api/logout"); } catch (e) {} setAuthed(false); };
 
   if (authed === null) return <ToastWrap><Loading /></ToastWrap>;
-  if (!authed) return <ToastWrap><Login onAuthed={() => { setAuthed(true); go("/dashboard"); }} /></ToastWrap>;
+  if (!authed) return <ToastWrap><Login onAuthed={() => { setAuthed(true); go(path || "/dashboard"); }} /></ToastWrap>;
 
   const base = "/" + path.split("/").filter(Boolean)[0];
   const userDetail = match("/users/:id", path);
@@ -71,7 +71,7 @@ export default function App() {
   else if (base === "/transactions") page = <Transactions />;
   else if (base === "/legacy-claims") page = <LegacyClaims />;
   else if (base === "/reports") page = <Reports />;
-  else if (base === "/telegram") page = <Telegram />;
+  else if (base === "/telegram") page = <Telegram path={path} />;
   else if (base === "/update") page = <Update />;
   else page = <Dashboard onBadges={onBadges} go={go} />;
 

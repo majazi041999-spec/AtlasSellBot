@@ -1603,7 +1603,11 @@ async def tg_atlas_config(request: Request):
     if not _api_guard(request):
         return PlainTextResponse("/* unauthorized */", status_code=401, media_type="application/javascript")
     api_id, api_hash = await _tg_web_credentials()
-    cfg = {"apiId": int(api_id) if api_id.isdigit() else None, "apiHash": api_hash or None}
+    if not (api_id.isdigit() and api_hash):
+        # Without credentials the client can only fail to connect; send the owner to the setup form.
+        return PlainTextResponse(f'location.replace("/{S}/#/telegram/setup");', media_type="application/javascript",
+                                 headers={"Cache-Control": "no-store"})
+    cfg = {"apiId": int(api_id), "apiHash": api_hash}
     return PlainTextResponse(f"window.__ATLAS_TG__={json.dumps(cfg)};", media_type="application/javascript",
                              headers={"Cache-Control": "no-store"})
 

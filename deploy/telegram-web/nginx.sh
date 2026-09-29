@@ -55,9 +55,16 @@ location = /$S/tg/atlas-config.js {
 
 location ^~ /$S/tg/ {
     auth_request /$S/api/tg/auth;
+    # Panel session expired (it lasts JWT_EXPIRE_HOURS): log in, then the panel's
+    # #/telegram route sends the owner straight back here.
+    error_page 401 = @atlas_tg_login;
     alias /opt/atlas-tgweb/current/;
     index index.html;
     add_header Cache-Control \$atlas_tg_cache always;
+}
+
+location @atlas_tg_login {
+    return 302 /$S/#/telegram;
 }
 
 # Only Telegram's five web DCs (and their -1 media twins) — never an open proxy.

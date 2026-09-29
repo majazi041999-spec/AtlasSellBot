@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { api } from "../api.js";
+import { api, BASE } from "../api.js";
 
 const NAV = [
   { k: "/dashboard", icon: "📊", label: "داشبورد" },
@@ -18,7 +18,8 @@ const NAV = [
   { k: "/appstats", icon: "📈", label: "آمار و اعلان اپ" },
   { k: "/appdiag", icon: "🩺", label: "تشخیص سرورها" },
   { k: "/transactions", icon: "🧾", label: "رسیدها" },
-  { k: "/telegram", icon: "✈️", label: "تلگرام" },
+  // Opens Telegram full-window in its own tab (or the installed app), not inside the panel.
+  { k: "/telegram", icon: "✈️", label: "تلگرام", href: "/tg/" },
 ];
 
 // Second group: setup, records and maintenance. Everything the retired
@@ -34,7 +35,7 @@ const TOOLS = [
   { k: "/update", icon: "🔄", label: "به‌روزرسانی" },
 ];
 
-const TITLES = { "/dashboard": "داشبورد", "/users": "کاربران", "/reps": "نمایندگان", "/orders": "سفارش‌ها", "/subs": "نودهای ساب", "/subprofiles": "ساب‌های کاربران", "/servers": "سرورها", "/packages": "پکیج‌ها", "/proxy": "پروکسی تلگرام", "/discounts": "تخفیف‌ها", "/campaigns": "کمپین‌ها", "/referrals": "رفرال", "/clientapp": "اپ اندروید", "/appstats": "آمار و اعلان اپ", "/appdiag": "تشخیص سرورها", "/transactions": "رسیدها", "/miniapp": "مینی‌اپ", "/reports": "گزارش روزانه", "/configs": "کانفیگ‌های قدیمی", "/legacy-claims": "درخواست انتقال", "/backups": "پشتیبان‌گیری", "/settings": "تنظیمات", "/update": "به‌روزرسانی" };
+const TITLES = { "/dashboard": "داشبورد", "/users": "کاربران", "/reps": "نمایندگان", "/orders": "سفارش‌ها", "/subs": "نودهای ساب", "/subprofiles": "ساب‌های کاربران", "/servers": "سرورها", "/packages": "پکیج‌ها", "/proxy": "پروکسی تلگرام", "/discounts": "تخفیف‌ها", "/campaigns": "کمپین‌ها", "/referrals": "رفرال", "/clientapp": "اپ اندروید", "/appstats": "آمار و اعلان اپ", "/appdiag": "تشخیص سرورها", "/transactions": "رسیدها", "/miniapp": "مینی‌اپ", "/reports": "گزارش روزانه", "/configs": "کانفیگ‌های قدیمی", "/legacy-claims": "درخواست انتقال", "/backups": "پشتیبان‌گیری", "/settings": "تنظیمات", "/update": "به‌روزرسانی", "/telegram": "تلگرام" };
 
 export default function Shell({ path, go, badges = {}, children, onLogout }) {
   const [open, setOpen] = useState(false);
@@ -59,7 +60,12 @@ export default function Shell({ path, go, badges = {}, children, onLogout }) {
         </div>
 
         <div className="nav-group-label">اصلی</div>
-        {NAV.map((n) => (
+        {NAV.map((n) => n.href ? (
+          <a key={n.k} className="nav-item" href={BASE + n.href} target="atlas-telegram" rel="noopener"
+             onClick={() => setOpen(false)} style={{ textDecoration: "none", color: "inherit" }}>
+            <span className="nav-ico">{n.icon}</span><span>{n.label}</span>
+          </a>
+        ) : (
           <div key={n.k} className={"nav-item" + (base === n.k ? " active" : "")} onClick={() => nav(n.k)}>
             <span className="nav-ico">{n.icon}</span><span>{n.label}</span>
             {n.badgeKey && badges[n.badgeKey] > 0 && <span className="nav-badge">{badges[n.badgeKey]}</span>}
