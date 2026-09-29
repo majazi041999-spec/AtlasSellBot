@@ -18,6 +18,8 @@ atlas-job.log
 atlas-sync.log
 backups/
 *.patch
+# the pinned Telegram Web patch is source, not scratch
+!deploy/telegram-web/*.patch
 update-local-changes-*.patch
 
 # Env / secrets

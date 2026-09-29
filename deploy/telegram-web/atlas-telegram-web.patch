@@ -1,0 +1,144 @@
+diff --git a/index.html b/index.html
+index 73e86b4..c58bf7e 100644
+--- a/index.html
++++ b/index.html
+@@ -50,6 +50,7 @@
+   <link rel="alternate icon" href="./favicon.ico" type="image/x-icon">
+   <link rel="manifest" id="the-manifest-placeholder" href="./%TG_MANIFEST%">
+ 
++  <script vite-ignore src="./atlas-config.js"></script>
+   <script vite-ignore src="./redirect.js"></script>
+   <style>
+     @layer reset, variables, ui, components;
+diff --git a/src/api/gramjs/methods/client.ts b/src/api/gramjs/methods/client.ts
+index b6ff3da..b2a7a64 100644
+--- a/src/api/gramjs/methods/client.ts
++++ b/src/api/gramjs/methods/client.ts
+@@ -109,8 +109,8 @@ export async function init(initialArgs: ApiInitialArgs, onConnected?: NoneToVoid
+ 
+   client = new TelegramClient(
+     session,
+-    TELEGRAM_API_ID,
+-    TELEGRAM_API_HASH,
++    initialArgs.apiId || TELEGRAM_API_ID,
++    initialArgs.apiHash || TELEGRAM_API_HASH,
+     {
+       deviceModel: navigator.userAgent || userAgent || DEFAULT_USER_AGENT,
+       systemVersion: platform || DEFAULT_PLATFORM,
+diff --git a/src/api/types/misc.ts b/src/api/types/misc.ts
+index 315a824..d9d68f3 100644
+--- a/src/api/types/misc.ts
++++ b/src/api/types/misc.ts
+@@ -33,6 +33,8 @@ export interface ApiInitialArgs {
+   isTestServerRequested?: boolean;
+   accountIds?: string[];
+   hasPasskeySupport?: boolean;
++  apiId?: number;
++  apiHash?: string;
+ }
+ 
+ export type ApiPasskeyOption = {
+diff --git a/src/global/actions/api/initial.ts b/src/global/actions/api/initial.ts
+index a5a5656..37e13f8 100644
+--- a/src/global/actions/api/initial.ts
++++ b/src/global/actions/api/initial.ts
+@@ -113,6 +113,9 @@ addActionHandler('initApi', async (global, actions): Promise<void> => {
+       isTestServerRequested: hasTestParam,
+       accountIds,
+       hasPasskeySupport: IS_WEBAUTHN_SUPPORTED,
++      // Atlas panel: the owner's own api_id/api_hash, served by the panel as atlas-config.js
++      apiId: Number((window as any).__ATLAS_TG__?.apiId) || undefined,
++      apiHash: (window as any).__ATLAS_TG__?.apiHash || undefined,
+     });
+ 
+     void setShouldEnableDebugLog(Boolean(shouldCollectDebugLogs));
+diff --git a/src/lib/gramjs/extensions/HttpStream.ts b/src/lib/gramjs/extensions/HttpStream.ts
+index cb258e2..3f41ca0 100644
+--- a/src/lib/gramjs/extensions/HttpStream.ts
++++ b/src/lib/gramjs/extensions/HttpStream.ts
+@@ -1,4 +1,5 @@
+ import { concat } from '../../../util/encoding/buffer';
++import { atlasProxyLink } from './atlasProxy';
+ 
+ const closeError = new Error('HttpStream was closed');
+ const REQUEST_TIMEOUT = 30000;
+@@ -69,6 +70,8 @@ export default class HttpStream {
+   }
+ 
+   static getURL(ip: string, port: number, isTestServer?: boolean, isPremium?: boolean) {
++    const proxied = atlasProxyLink('https', ip, `apiw1${isTestServer ? '_test' : ''}${isPremium ? '_premium' : ''}`);
++    if (proxied) return proxied;
+     if (port === 443) {
+       return `https://${ip}:${port}/apiw1${isTestServer ? '_test' : ''}${isPremium ? '_premium' : ''}`;
+     } else {
+diff --git a/src/lib/gramjs/extensions/PromisedWebSockets.ts b/src/lib/gramjs/extensions/PromisedWebSockets.ts
+index 9df8439..2ce5886 100644
+--- a/src/lib/gramjs/extensions/PromisedWebSockets.ts
++++ b/src/lib/gramjs/extensions/PromisedWebSockets.ts
+@@ -1,4 +1,5 @@
+ import { Mutex } from 'async-mutex';
++import { atlasProxyLink } from './atlasProxy';
+ 
+ import { concat } from '../../../util/encoding/buffer';
+ 
+@@ -79,6 +80,8 @@ export default class PromisedWebSockets {
+   }
+ 
+   getWebSocketLink(ip: string, port: number, isTestServer?: boolean, isPremium?: boolean) {
++    const proxied = atlasProxyLink('wss', ip, `apiws${isTestServer ? '_test' : ''}${isPremium ? '_premium' : ''}`);
++    if (proxied) return proxied;
+     if (port === 443) {
+       return `wss://${ip}:${port}/apiws${isTestServer ? '_test' : ''}${isPremium ? '_premium' : ''}`;
+     } else {
+diff --git a/src/lib/gramjs/extensions/atlasProxy.ts b/src/lib/gramjs/extensions/atlasProxy.ts
+new file mode 100644
+index 0000000..75886fc
+--- /dev/null
++++ b/src/lib/gramjs/extensions/atlasProxy.ts
+@@ -0,0 +1,23 @@
++// Atlas panel build: when this client is served from the admin panel (".../tg/"),
++// every Telegram web endpoint is reached through our own server instead of
++// *.web.telegram.org, which is filtered in Iran. nginx relays
++// "<panel>/tgws/<dc>/<path>" to "https://<dc>.web.telegram.org/<path>"; the
++// traffic stays MTProto-encrypted end to end, the relay only forwards it.
++const TELEGRAM_WEB_SUFFIX = '.web.telegram.org';
++
++function detectProxyBase(): string | undefined {
++  try {
++    const { host, pathname } = self.location;
++    const i = pathname.indexOf('/tg/');
++    return i >= 0 ? `${host}${pathname.slice(0, i)}/tgws` : undefined;
++  } catch {
++    return undefined;
++  }
++}
++
++const PROXY_BASE = detectProxyBase();
++
++export function atlasProxyLink(scheme: 'wss' | 'https', ip: string, path: string): string | undefined {
++  if (!PROXY_BASE || !ip.endsWith(TELEGRAM_WEB_SUFFIX)) return undefined;
++  return `${scheme}://${PROXY_BASE}/${ip.slice(0, -TELEGRAM_WEB_SUFFIX.length)}/${path}`;
++}
+diff --git a/vite.config.ts b/vite.config.ts
+index 3701a7a..8641fc5 100644
+--- a/vite.config.ts
++++ b/vite.config.ts
+@@ -167,7 +167,8 @@ export default defineConfig(({ mode }): UserConfig => {
+ 
+   const shouldCollectWorkerReportBundles = bundleStatsVisualizerValue === '1' || bundleStatsValue === '1';
+ 
+-  if (appEnv !== 'test' && (!telegramApiId || !telegramApiHash)) {
++  // Atlas panel build: api_id/api_hash arrive at runtime from the panel (atlas-config.js)
++  if (appEnv !== 'test' && env.ATLAS_RUNTIME_API !== '1' && (!telegramApiId || !telegramApiHash)) {
+     throw new Error('Missing required Telegram API credentials');
+   }
+ 
+@@ -228,7 +229,7 @@ export default defineConfig(({ mode }): UserConfig => {
+       },
+     },
+     build: {
+-      sourcemap: true,
++      sourcemap: false,
+       assetsInlineLimit: (filePath) => (IMAGE_ASSET_RE.test(filePath) ? false : undefined),
+     },
+     worker: {
