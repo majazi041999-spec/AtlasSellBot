@@ -472,8 +472,13 @@ async def poll_vote(cb: CallbackQuery):
         await cb.answer()
         return
     is_new = await record_poll_vote(poll_id, cb.from_user.id, idx)
+    # Remove the poll from the voter's chat right after they vote: they can't
+    # re-tap or pass the live buttons around, and the tally stays owner-only.
+    try:
+        await cb.message.delete()
+    except Exception:
+        pass
     if is_new:
-        await cb.answer(f"رأی شما ثبت شد ✅\n«{opts[idx].get('t') or ''}»")
+        await cb.answer("✅ رأیت ثبت شد، ممنون!")
     else:
-        await cb.answer("شما قبلاً در این نظرسنجی رأی داده‌اید ✋\nهر نفر فقط یک رأی می‌تواند بدهد.",
-                        show_alert=True)
+        await cb.answer("قبلاً رأی داده بودی ✋ (هر نفر فقط یک رأی)", show_alert=True)
