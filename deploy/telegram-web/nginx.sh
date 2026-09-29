@@ -53,7 +53,8 @@ location = /$S/tg/atlas-config.js {
     proxy_set_header X-Forwarded-Proto https;
 }
 
-location ^~ /$S/tg/ {
+# Plain prefix (not ^~) so the regex just below can carve out the public files.
+location /$S/tg/ {
     auth_request /$S/api/tg/auth;
     # Panel session expired (it lasts JWT_EXPIRE_HOURS): log in, then the panel's
     # #/telegram route sends the owner straight back here.
@@ -61,6 +62,14 @@ location ^~ /$S/tg/ {
     alias /opt/atlas-tgweb/current/;
     index index.html;
     add_header Cache-Control \$atlas_tg_cache always;
+}
+
+# Browsers fetch these WITHOUT cookies (service worker script, web manifest, icons),
+# so behind the login they were redirected: the service worker failed to register and
+# the app could not be installed. They are stock Telegram Web files, nothing secret.
+location ~ ^/$S/tg/((?:service\.worker-[A-Za-z0-9_-]+\.js)|(?:site(?:_dev)?\.webmanifest)|(?:favicon[A-Za-z0-9._-]*)|(?:(?:apple-touch-)?icon[A-Za-z0-9._-]*\.png)|(?:browserconfig\.xml))\$ {
+    alias /opt/atlas-tgweb/current/\$1;
+    add_header Cache-Control "no-cache" always;
 }
 
 location @atlas_tg_login {
