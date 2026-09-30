@@ -11,7 +11,7 @@ Telegram Desktop.
   opens full-window and repeat clicks reuse the same tab.
 - Chrome's address-bar **Install** turns it into a desktop app with its own window and
   taskbar icon. The manifest is relative, so its scope is `/<secret>/tg/`.
-- **Expired panel session** (24 h, `JWT_EXPIRE_HOURS`): nginx turns the 401 into a redirect
+- **Expired panel session** (`JWT_EXPIRE_HOURS` in `.env`, default 24 h; NL runs 720): nginx turns the 401 into a redirect
   to `/<secret>/#/telegram`. After the login, the panel returns to that route, which forwards
   to the app.
 - **No api_id yet:** `atlas-config.js` sends the owner to `#/telegram/setup` instead.
