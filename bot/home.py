@@ -47,6 +47,8 @@ ACTIONS: List[Tuple[str, str, str, str, str]] = [
     ("trial", "تست رایگان", "success", "test_account", "trial"),
     ("buy", "خرید سرویس", "danger", "buy_service", "cart"),
     ("status", "سرویس‌های من", "primary", "user_status", "services"),
+    # Shown only while `server_load_public` is on — see bot/handlers/server_load.py.
+    ("load", "شلوغی سرورها", "primary", "", "speed"),
     ("ai", "دستیار هوشمند", "success", "", "assistant"),
     ("support", "پشتیبانی", "primary", "support", "support"),
     ("wallet", "💳 کیف پول", "primary", "wallet_home", ""),
@@ -59,6 +61,17 @@ ACTIONS: List[Tuple[str, str, str, str, str]] = [
 # API allows. Everything after that pairs up, which reads as a tidy grid instead
 # of a column of near-empty bars.
 _LAYOUT = [1, 1, 2, 2, 2, 1]
+# With «شلوغی سرورها» it sits beside «سرویس‌های من» and the last two pair up.
+_LAYOUT_WITH_LOAD = [1, 1, 2, 2, 2, 2]
+
+# Whether customers get «شلوغی سرورها». Cached here because home_kb() is sync and
+# called from five places; set at startup and by the admin's on/off button.
+_LOAD_PUBLIC = False
+
+
+def set_load_public(on: bool) -> None:
+    global _LOAD_PUBLIC
+    _LOAD_PUBLIC = bool(on)
 
 
 def home_kb() -> InlineKeyboardMarkup:
@@ -66,9 +79,11 @@ def home_kb() -> InlineKeyboardMarkup:
     from bot.rich_message import emoji_id
     b = InlineKeyboardBuilder()
     for key, label, style, _fn, role in ACTIONS:
+        if key == "load" and not _LOAD_PUBLIC:
+            continue
         _button(b, text=label, callback_data=f"home:{key}", style=style,
                 icon_custom_emoji_id=emoji_id(role) if role else None)
-    b.adjust(*_LAYOUT)
+    b.adjust(*(_LAYOUT_WITH_LOAD if _LOAD_PUBLIC else _LAYOUT))
     return b.as_markup()
 
 
@@ -157,6 +172,12 @@ async def home_action(cb: CallbackQuery, state: FSMContext, bot: Bot):
     entry = next((a for a in ACTIONS if a[0] == key), None)
     if not entry:
         await cb.answer()
+        return
+    if key == "load":
+        # Before the generic cb.answer() below: this screen answers the callback
+        # itself, because when it is rate-limited it has to say "wait N seconds".
+        from bot.handlers.server_load import open_from_home
+        await open_from_home(cb)
         return
     await cb.answer()
     await state.clear()

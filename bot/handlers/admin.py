@@ -287,6 +287,15 @@ async def owner_config_link_lookup(msg: Message):
 
 # ─── STATS ───────────────────────────────────────────────────────
 
+def _server_load_entry_kb():
+    """The owner's way into «شلوغی سرورها» — admins never get the customer home
+    menu, so the preview (and its on/off switch) hangs off the stats screen."""
+    from aiogram.utils.keyboard import InlineKeyboardBuilder
+    b = InlineKeyboardBuilder()
+    b.button(text="📶 شلوغی سرورها (نمای مشتری)", callback_data="sload:open")
+    return b.as_markup()
+
+
 @router.message(F.text == "📊 آمار کلی")
 async def show_stats(msg: Message):
     if not is_admin(msg.from_user.id):
@@ -308,7 +317,8 @@ async def show_stats(msg: Message):
         f"💵 کل درآمد: `{s['total_revenue']:,}` تومن\n\n"
         f"🖥️ *سرورها* ({s['active_servers']}/{s['total_servers']} فعال)\n"
         f"{srv_lines}",
-        parse_mode="Markdown"
+        parse_mode="Markdown",
+        reply_markup=_server_load_entry_kb(),
     )
 
 

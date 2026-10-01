@@ -246,6 +246,16 @@ Three of this project's features fail by simply not happening: an AI model id th
 - `ip_guard.diagnose(profile_id)` runs the REAL `decide()` on the REAL current state and names the ONE thing standing in the way: `feature_off`, `worker_not_running`, `within_limit`, `building_strikes`, `in_grace_period` or `warn_only`. The bot's admin "اتصال‌های زنده" button shows it, because that is the screen where the question gets asked.
 - `run_cycle` writes `ip_limit_last_run` on EVERY cycle including the disabled one, which is what lets "switched off" be told apart from "the process was never restarted".
 
+## 6g. «شلوغی سرورها» — server load for customers (`bot/handlers/server_load.py`)
+A home-menu button (beside «سرویس‌های من») showing each server's load as a PERCENTAGE ONLY. Covered by `tests/test_server_load.py`.
+- **A tap never reaches a panel.** It reads the counts `_online_poll_worker` already stores (§6b) through one shared in-memory snapshot (`SNAPSHOT_TTL` 20s, single lock with a re-check inside) — 200 viewers inside the TTL cost one rebuild (§6 of the test). Do not add a live panel call to this path.
+- **Percent = `online_avg` ÷ (`server_load_capacity` × `load_weight`)**, clamped 0–100. A server whose reading is unknown/stale (`online` is None) shows «نامشخص», never 0% — 0% reads as "empty, go here".
+- **Customers never see counts** (business information); admins see `(N از M)` beside each figure to calibrate capacity.
+- Only servers a customer can be on: active, with an active non-auto node config. The flag comes from that node's label, the name is `servers.name` minus «سرور».
+- **Limits protect the BOT, not the servers:** per user a cooldown (`server_load_cooldown`, 30s) and a daily cap (`server_load_daily`, 40, Tehran day), admins exempt; a global token bucket (`GLOBAL_RATE` 8/s, burst 25) so a coordinated group cannot spend the send budget buying shares; refresh edits in place. State is in-memory (resets on restart, which is harmless).
+- **Ships OFF** (`server_load_public`=0). Admins never get the customer home menu, so the preview + on/off switch + capacity ± buttons hang off «📊 آمار کلی» (`sload:open`). `home_kb()` is sync, so the on/off state is cached in `bot.home._LOAD_PUBLIC`, loaded at startup (`load_public_flag`) and updated by the toggle. With it off the home layout is byte-for-byte the old one.
+- `home_action` dispatches `home:load` BEFORE its generic `cb.answer()` — the screen must answer the callback itself to say "wait N seconds".
+
 ## 7. Pricing (`core/pricing.py`)
 `package_price_for_user(user_id, pkg)` → {base, final, discount, ...}. Rules:
 - Unlimited pkg (`is_unlimited` flag or traffic_gb<=0): base = user `unlimited_price` if >0 else pkg price. NEVER per-GB.
@@ -370,6 +380,7 @@ Brand/UI: `ui.brand_name`, `ui.logo_data`, `ui.panel_subtitle`, `ui.custom_css/j
   `SUB_SORTS`, `SERVICE_SORTS`, …) AND the matching label list in the JSX page — the two must stay in sync.
 - x-ui API behavior → core/xui_api.py (XUIClient). Anything that reads state for MANY clients at once → `get_all_client_traffics()` + `PanelSessions`, never a per-node loop (§6). Anything that WRITES to many clients at once → `bulk_set_clients_enabled()` (§6c).
 - Turning legacy single configs off (one, or all of them) → `core/legacy_configs.py` + `/{S}/api/configs/disable*` + the danger card in `Configs.jsx`. See §6c.
+- Customer-facing server load «شلوغی سرورها» (percent formula, limits, on/off, capacity) → `bot/handlers/server_load.py` + `home.ACTIONS`/`_LOAD_PUBLIC`. Settings `server_load_public|capacity|cooldown|daily` are edited from the bot, NOT `_settings_snapshot`. See §6g.
 - Live online counts → `_online_poll_worker` (main.py) writes them, `server_load_snapshot()` (core/autonode.py) reads them, `/{S}/api/dashboard` → `online` serves them (each server also carries `nodes`: `[{id, label, online}]`, the per-node split), `OnlineNow` in Dashboard.jsx renders them (the split as chips under each server). See §6b.
 - Telegram inside the panel → «✈️ تلگرام» menu (`pages/Telegram.jsx`) iframes our own build of Telegram Web A at `/{S}/tg/` (nginx static, `/opt/atlas-tgweb/current`), MTProto relayed via `/{S}/tgws/` because *.web.telegram.org is filtered in Iran; both gated by nginx `auth_request` → `/{S}/api/tg/auth`. Owner's own api_id/api_hash: settings `tg_web_api_id`/`tg_web_api_hash`, served as `/{S}/tg/atlas-config.js`. Build/patch/nginx: `deploy/telegram-web/`, `docs/telegram-web.md`.
 ```
