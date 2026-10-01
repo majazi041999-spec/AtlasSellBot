@@ -580,7 +580,7 @@ async def run_bot(stop: asyncio.Event):
     from core.database import seed_default_campaigns
     await seed_default_campaigns()
     await _repair_missing_expiries()
-    # The home menu is built synchronously, so it reads «شلوغی سرورها» on/off
+    # The home menu is built synchronously, so it reads «وضعیت سرورها» on/off
     # from a flag that has to be loaded once here.
     await server_load.load_public_flag()
 

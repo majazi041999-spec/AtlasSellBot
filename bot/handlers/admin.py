@@ -288,11 +288,11 @@ async def owner_config_link_lookup(msg: Message):
 # ─── STATS ───────────────────────────────────────────────────────
 
 def _server_load_entry_kb():
-    """The owner's way into «شلوغی سرورها» — admins never get the customer home
+    """The owner's way into «وضعیت سرورها» — admins never get the customer home
     menu, so the preview (and its on/off switch) hangs off the stats screen."""
     from aiogram.utils.keyboard import InlineKeyboardBuilder
     b = InlineKeyboardBuilder()
-    b.button(text="📶 شلوغی سرورها (نمای مشتری)", callback_data="sload:open")
+    b.button(text="📶 وضعیت سرورها", callback_data="sload:open")
     return b.as_markup()
 
 

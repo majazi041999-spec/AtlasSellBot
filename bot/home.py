@@ -48,7 +48,7 @@ ACTIONS: List[Tuple[str, str, str, str, str]] = [
     ("buy", "خرید سرویس", "danger", "buy_service", "cart"),
     ("status", "سرویس‌های من", "primary", "user_status", "services"),
     # Shown only while `server_load_public` is on — see bot/handlers/server_load.py.
-    ("load", "شلوغی سرورها", "primary", "", "speed"),
+    ("load", "وضعیت سرورها", "primary", "", "speed"),
     ("ai", "دستیار هوشمند", "success", "", "assistant"),
     ("support", "پشتیبانی", "primary", "support", "support"),
     ("wallet", "💳 کیف پول", "primary", "wallet_home", ""),
@@ -61,10 +61,10 @@ ACTIONS: List[Tuple[str, str, str, str, str]] = [
 # API allows. Everything after that pairs up, which reads as a tidy grid instead
 # of a column of near-empty bars.
 _LAYOUT = [1, 1, 2, 2, 2, 1]
-# With «شلوغی سرورها» it sits beside «سرویس‌های من» and the last two pair up.
+# With «وضعیت سرورها» it sits beside «سرویس‌های من» and the last two pair up.
 _LAYOUT_WITH_LOAD = [1, 1, 2, 2, 2, 2]
 
-# Whether customers get «شلوغی سرورها». Cached here because home_kb() is sync and
+# Whether customers get «وضعیت سرورها». Cached here because home_kb() is sync and
 # called from five places; set at startup and by the admin's on/off button.
 _LOAD_PUBLIC = False
 

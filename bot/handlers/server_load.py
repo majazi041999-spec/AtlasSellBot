@@ -1,4 +1,4 @@
-"""«شلوغی سرورها» — a customer taps a button and sees how busy each server is
+"""«وضعیت سرورها» — a customer taps a button and sees how busy each server is
 right now, as a PERCENTAGE ONLY.
 
 A TAP NEVER REACHES A SERVER. The figures are the online counts that
@@ -32,13 +32,18 @@ import re
 import time
 from typing import Dict, Optional
 
-from aiogram import F, Router
+from aiogram import Bot, F, Router
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from bot.keyboards import _button
-from bot.rich_message import GLYPH_PREMIUM
-from core.database import get_setting, get_subscription_node_configs, set_setting
+from bot.rich_message import GLYPH_PREMIUM, premiumize
+from core.database import (
+    get_segment_users,
+    get_setting,
+    get_subscription_node_configs,
+    set_setting,
+)
 from core.jalali import tehran_now
 
 log = logging.getLogger(__name__)
@@ -49,6 +54,7 @@ DEFAULTS = {
     "server_load_capacity": "100",  # concurrent users that read as 100% (load_weight 1)
     "server_load_cooldown": "30",   # seconds between two views, per customer
     "server_load_daily": "40",      # views per customer per Tehran day
+    "server_load_promo_sent": "",   # set once the announcement has been broadcast
 }
 
 SNAPSHOT_TTL = 20.0   # seconds one snapshot serves every viewer
@@ -247,7 +253,7 @@ def _ago(checked_ms: int) -> str:
 
 
 def _render(data: Dict, admin: bool) -> str:
-    lines = [f"{_pe('📶')} <b>شلوغی سرورها</b>", ""]
+    lines = [f"{_pe('📶')} <b>وضعیت سرورها</b>", ""]
     if not data["rows"]:
         lines.append("فعلاً اطلاعاتی در دسترس نیست؛ کمی بعد دوباره سر بزن.")
     for r in data["rows"]:
@@ -366,3 +372,89 @@ async def adjust_capacity(cb: CallbackQuery):
     await set_setting("server_load_capacity", str(new))
     invalidate()
     await _show(cb, edit=True, toast=f"ظرفیت: {_fa(new)}")
+
+
+# ─── the update announcement (owner approves, then it goes to everyone) ───────
+
+# Short, Telegram-style, premium emoji. premiumize() swaps the plain glyphs for
+# the owner's custom emoji; the text is plain (no existing <tg-emoji>) so there is
+# no double-wrap.
+_PROMO_HTML = (
+    "🚀 <b>قابلیت جدید: وضعیت سرورها</b>\n\n"
+    "حالا قبل از اتصال می‌تونی ببینی هر سرور چقدر شلوغه و <b>خلوت‌ترین</b> رو انتخاب کنی. ⚡\n\n"
+    "📶 کافیه از منوی اصلی ربات، «وضعیت سرورها» رو بزنی 👇"
+)
+
+
+def _promo_text() -> str:
+    return premiumize(_PROMO_HTML)
+
+
+def _promo_preview_kb() -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    _button(b, text="✅ تأیید و ارسال به همه", callback_data="sload:promo_ok", style="success")
+    _button(b, text="❌ فعلاً نه", callback_data="sload:promo_no", style="danger")
+    b.adjust(1)
+    return b.as_markup()
+
+
+async def send_promo_preview(bot: Bot, chat_id: int) -> None:
+    """Show the owner exactly what customers will get, with approve / cancel."""
+    await bot.send_message(chat_id, "👀 پیش‌نمایشِ اعلانِ آپدیت (همینی که برای مشتری‌ها می‌ره):",
+                           parse_mode=None)
+    await bot.send_message(chat_id, _promo_text(), parse_mode="HTML",
+                           disable_web_page_preview=True, reply_markup=_promo_preview_kb())
+
+
+async def _run_announce(bot: Bot, owner_id: int) -> None:
+    text = _promo_text()
+    sent = 0
+    for u in await get_segment_users("all", include_reps=True):
+        tid = int(u.get("telegram_id") or 0)
+        if not tid:
+            continue
+        try:
+            await bot.send_message(tid, text, parse_mode="HTML", disable_web_page_preview=True)
+            sent += 1
+            await asyncio.sleep(0.08)
+        except Exception:
+            pass
+    try:
+        await bot.send_message(owner_id, f"📣 اعلانِ «وضعیت سرورها» برای {_fa(sent)} کاربر ارسال شد.",
+                               parse_mode=None)
+    except Exception:
+        pass
+
+
+@router.callback_query(F.data == "sload:promo_ok")
+async def promo_ok(cb: CallbackQuery, bot: Bot):
+    if not _is_admin(cb.from_user.id):
+        await cb.answer()
+        return
+    # Guard: a second tap must not broadcast again. Set the flag BEFORE the task.
+    if (await get_setting("server_load_promo_sent", "")).strip():
+        await cb.answer("این اعلان قبلاً ارسال شده.", show_alert=True)
+        return
+    await set_setting("server_load_promo_sent", tehran_now().strftime("%Y-%m-%d %H:%M"))
+    await set_setting("server_load_public", "1")
+    from bot.home import set_load_public
+    set_load_public(True)
+    invalidate()
+    try:
+        await cb.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+    await cb.answer("✅ روشن شد؛ ارسال به همه شروع شد")
+    asyncio.create_task(_run_announce(bot, cb.from_user.id))
+
+
+@router.callback_query(F.data == "sload:promo_no")
+async def promo_no(cb: CallbackQuery):
+    if not _is_admin(cb.from_user.id):
+        await cb.answer()
+        return
+    try:
+        await cb.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+    await cb.answer("باشه، فعلاً ارسال نشد.")

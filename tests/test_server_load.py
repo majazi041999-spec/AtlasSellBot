@@ -1,4 +1,4 @@
-"""«شلوغی سرورها» — what customers see, and the limits that keep it cheap.
+"""«وضعیت سرورها» — what customers see, and the limits that keep it cheap.
 
 Plain `python tests/test_server_load.py` — no test framework, because the project
 has none and these need to stay runnable on the server.
