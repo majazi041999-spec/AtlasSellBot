@@ -51,7 +51,6 @@ router = Router()
 
 DEFAULTS = {
     "server_load_public": "0",      # customers see the home button
-    "server_load_capacity": "100",  # concurrent users that read as 100% (load_weight 1)
     "server_load_cooldown": "30",   # seconds between two views, per customer
     "server_load_daily": "40",      # views per customer per Tehran day
     "server_load_promo_sent": "",   # set once the announcement has been broadcast
@@ -103,10 +102,27 @@ def invalidate() -> None:
     _SNAP["at"] = 0.0
 
 
+def _assign_shares(known: list, total: float) -> None:
+    """Integer percentages of the total online that sum to EXACTLY 100
+    (largest-remainder), written onto each row's 'pct'. No traffic → all zero."""
+    if not known:
+        return
+    if total <= 0:
+        for r in known:
+            r["pct"] = 0
+        return
+    raw = [(r, r["basis"] / total * 100) for r in known]
+    for r, x in raw:
+        r["pct"] = int(x)
+    short = 100 - sum(r["pct"] for r in known)
+    # hand each leftover point to the largest fractional part
+    for r, _x in sorted(raw, key=lambda rx: rx[1] - int(rx[1]), reverse=True)[:max(0, short)]:
+        r["pct"] += 1
+
+
 async def _build() -> Dict:
     from core.autonode import server_load_snapshot
 
-    capacity = await _cfg_int("server_load_capacity", 1, 100000)
     cooldown = await _cfg_int("server_load_cooldown", 0, 3600)
     daily = await _cfg_int("server_load_daily", 1, 10000)
     public = (await get_setting("server_load_public", DEFAULTS["server_load_public"])) == "1"
@@ -135,23 +151,30 @@ async def _build() -> Dict:
             continue
         raw_name = str(s.get("name") or f"#{sid}").strip()
         name = re.sub(r"^سرور\s*", "", raw_name).strip() or raw_name
-        try:
-            weight = float(s.get("load_weight") or 1) or 1.0
-        except (TypeError, ValueError):
-            weight = 1.0
-        cap = max(1.0, capacity * weight)
-        pct = basis = None
-        # `online` is None when the panel did not answer or the reading is stale.
-        # Unknown is shown as unknown — never as 0%, which would read as "empty".
+        # `online` is None when the panel did not answer or the reading is stale:
+        # that server shows «نامشخص» and is left OUT of the total, never counted 0.
+        basis = None
         if s.get("online") is not None:
-            basis = float(s.get("online_avg") or 0) or float(s.get("online") or 0)
-            pct = max(0, min(100, round(basis / cap * 100)))
+            basis = float(s.get("online_avg") or 0)
+            if basis <= 0:
+                basis = float(s.get("online") or 0)
         newest = max(newest, int(s.get("checked_at") or 0))
-        rows.append({"flag": flags.get(sid, ""), "name": name, "pct": pct,
-                     "online": None if basis is None else round(basis), "cap": round(cap)})
-    # Least busy first: the answer to "where should I connect" is the top line.
+        rows.append({"flag": flags.get(sid, ""), "name": name, "basis": basis})
+
+    # The percentage is each server's SHARE of everyone online right now, so the
+    # figures add up to 100 — "۷۵٪ روی آلمان، بقیه بینِ باقی". Capacity plays no
+    # part; the auto-node does the real balancing, this is just where people are.
+    known = [r for r in rows if r["basis"] is not None]
+    total = sum(r["basis"] for r in known)
+    _assign_shares(known, total)
+    for r in rows:
+        if r["basis"] is None:
+            r["pct"] = None
+        r["online"] = None if r["basis"] is None else round(r["basis"])
+        del r["basis"]
+    # Least busy first: the smallest share is the best place to connect.
     rows.sort(key=lambda r: (r["pct"] is None, r["pct"] if r["pct"] is not None else 0))
-    return {"rows": rows, "checked_at": newest, "capacity": capacity,
+    return {"rows": rows, "checked_at": newest, "total": round(total),
             "cooldown": cooldown, "daily": daily, "public": public}
 
 
@@ -254,21 +277,32 @@ def _ago(checked_ms: int) -> str:
 
 def _render(data: Dict, admin: bool) -> str:
     lines = [f"{_pe('📶')} <b>وضعیت سرورها</b>", ""]
-    if not data["rows"]:
+    rows = data["rows"]
+    if not rows:
         lines.append("فعلاً اطلاعاتی در دسترس نیست؛ کمی بعد دوباره سر بزن.")
-    for r in data["rows"]:
+        return "\n".join(lines)
+    if int(data.get("total", 0)) <= 0:
+        lines.append("الان خیلی خلوته — کاربرِ آنلاینِ قابلِ‌توجهی نیست. ✅")
+    else:
+        lines.append("سهمِ هر سرور از کاربرانِ آنلاین (هرچه کمتر، خلوت‌تر):")
+    lines.append("")
+    for r in rows:
         flag = f"{_pe(r['flag'])} " if r["flag"] else ""
         pct = f"{_fa(r['pct'])}٪" if r["pct"] is not None else "نامشخص"
         line = f"{flag}{html.escape(r['name'])} — <b>{pct}</b>"
         if admin and r["online"] is not None:
-            line += f"  <i>({_fa(r['online'])} از {_fa(r['cap'])})</i>"
+            line += f"  <i>({_fa(r['online'])} نفر)</i>"
         lines.append(line)
+    tail = []
+    if admin:
+        tail.append(f"مجموعِ آنلاین: {_fa(int(data.get('total', 0)))} نفر")
     ago = _ago(data["checked_at"])
     if ago:
-        lines += ["", f"<i>به‌روزرسانی: {ago}</i>"]
+        tail.append(f"به‌روزرسانی: {ago}")
+    if tail:
+        lines += ["", "<i>" + " • ".join(tail) + "</i>"]
     if admin:
-        lines += ["", f"<i>فقط ادمین — ظرفیتِ ۱۰۰٪: {_fa(data['capacity'])} کاربرِ همزمان • "
-                      f"برای مشتری‌ها: {'روشن' if data['public'] else 'خاموش'}</i>"]
+        lines.append(f"<i>فقط ادمین — برای مشتری‌ها: {'روشن' if data['public'] else 'خاموش'}</i>")
     return "\n".join(lines)
 
 
@@ -279,10 +313,7 @@ def _kb(data: Dict, admin: bool) -> InlineKeyboardMarkup:
     if admin:
         _button(b, text=("⛔️ خاموش کن برای مشتری‌ها" if data["public"] else "✅ روشن کن برای مشتری‌ها"),
                 callback_data="sload:pub", style=("danger" if data["public"] else "success"))
-        for step in (-50, -10, 10, 50):
-            _button(b, text=f"{'−' if step < 0 else '+'}{_fa(abs(step))}",
-                    callback_data=f"sload:cap:{step}")
-        sizes += [1, 4]
+        sizes += [1]
     _button(b, text="🏠 منوی اصلی", callback_data="back_to_menu")
     sizes.append(1)
     b.adjust(*sizes)
@@ -355,23 +386,6 @@ async def toggle_public(cb: CallbackQuery):
     set_load_public(on)
     invalidate()
     await _show(cb, edit=True, toast=("✅ برای مشتری‌ها روشن شد" if on else "⛔️ برای مشتری‌ها خاموش شد"))
-
-
-@router.callback_query(F.data.startswith("sload:cap:"))
-async def adjust_capacity(cb: CallbackQuery):
-    if not _is_admin(cb.from_user.id):
-        await cb.answer()
-        return
-    try:
-        step = int(cb.data.rsplit(":", 1)[1])
-    except ValueError:
-        await cb.answer()
-        return
-    current = await _cfg_int("server_load_capacity", 1, 100000)
-    new = max(10, min(100000, current + step))
-    await set_setting("server_load_capacity", str(new))
-    invalidate()
-    await _show(cb, edit=True, toast=f"ظرفیت: {_fa(new)}")
 
 
 # ─── the update announcement (owner approves, then it goes to everyone) ───────

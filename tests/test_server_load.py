@@ -80,32 +80,39 @@ def section(n, title):
 
 
 async def main():
-    # ── §1 which servers, which numbers ─────────────────────────────────────
-    section(1, "build: filtering, flags, names, percentages, unknown stays unknown")
+    # ── §1 shares that sum to 100, unknown excluded ─────────────────────────
+    section(1, "build: SHARE of total online, sums to 100, unknown excluded")
     data = await sl._build()
     rows = data["rows"]
     names = [r["name"] for r in rows]
     assert names == ["ترکیه ۱", "فنلاند", "آلمان ۲", "هلند ۱"], names
     by = {r["name"]: r for r in rows}
-    assert by["ترکیه ۱"]["pct"] == 9 and by["ترکیه ۱"]["flag"] == "🇹🇷"
-    assert by["فنلاند"]["pct"] == 20 and by["فنلاند"]["cap"] == 200 and by["فنلاند"]["flag"] == ""
-    assert by["آلمان ۲"]["pct"] == 100, "over capacity must clamp to 100"
+    # basis: ترکیه 9.28, فنلاند 40, آلمان 150; total 199.28; هلند unknown (excluded).
+    # largest-remainder → 5 / 20 / 75, summing to exactly 100.
+    assert by["ترکیه ۱"]["pct"] == 5 and by["ترکیه ۱"]["flag"] == "🇹🇷", by["ترکیه ۱"]
+    assert by["فنلاند"]["pct"] == 20 and by["فنلاند"]["flag"] == ""
+    assert by["آلمان ۲"]["pct"] == 75
     assert by["هلند ۱"]["pct"] is None, "a silent panel is unknown, never 0%"
-    assert rows[-1]["pct"] is None, "unknown sorts last, never above a real reading"
+    assert rows[-1]["pct"] is None, "unknown sorts last"
+    shares = [r["pct"] for r in rows if r["pct"] is not None]
+    assert sum(shares) == 100, f"shares must total 100, got {shares}"
+    assert data["total"] == 199, data["total"]
+    assert by["آلمان ۲"]["online"] == 150 and by["هلند ۱"]["online"] is None
     assert data["public"] is False and data["cooldown"] == 30 and data["daily"] == 3
 
-    # ── §2 customers see percentages only ───────────────────────────────────
-    section(2, "render: no online counts for customers, counts for admins")
+    # ── §2 customers see shares only, admins see counts + total ──────────────
+    section(2, "render: no counts for customers, counts + total for admins")
     customer = sl._render(data, admin=False)
     admin = sl._render(data, admin=True)
-    assert "۹٪" in customer and "۱۰۰٪" in customer and "نامشخص" in customer
+    assert "۵٪" in customer and "۷۵٪" in customer and "نامشخص" in customer
     assert "۱۵۰" not in customer, "a customer must never see how many are online"
-    assert "از" not in customer.split("به‌روزرسانی")[0], "no 'N از M' for customers"
-    assert "(۱۵۰ از ۱۰۰)" in admin and "خاموش" in admin
+    assert "نفر" not in customer, "no raw counts for customers"
+    assert "(۱۵۰ نفر)" in admin and "مجموعِ آنلاین: ۱۹۹ نفر" in admin and "خاموش" in admin
     kb_customer = [b.callback_data for row in sl._kb(data, False).inline_keyboard for b in row]
     kb_admin = [b.callback_data for row in sl._kb(data, True).inline_keyboard for b in row]
-    assert "sload:pub" not in kb_customer and not any(c.startswith("sload:cap") for c in kb_customer)
-    assert "sload:pub" in kb_admin and "sload:cap:10" in kb_admin
+    assert "sload:pub" not in kb_customer
+    assert "sload:pub" in kb_admin
+    assert not any((c or "").startswith("sload:cap") for c in kb_admin), "capacity buttons are gone"
 
     # ── §3 per-customer limits ──────────────────────────────────────────────
     section(3, "per user: cooldown between views and a daily cap")
