@@ -28,3 +28,37 @@ AtlasAndroid's known core has the needed primitives; that does not prove its URI
 - Primary-page retrieval exposed chart labels but no dated Oct 3–5 point values/outage records; filtered dated views failed to load. No current Cloudflare primary report corroborating the claimed last-two-days event was found. This is unavailable verification, not evidence that disruption did not occur. [Iran traffic](https://radar.cloudflare.com/traffic/ir), [Outage Center](https://radar.cloudflare.com/outage-center)
 - Even very low HTTP/3 share measures successful observed request composition, not proof that all UDP is blocked; aggregate volume also cannot distinguish a Cloudflare incident from Iranian filtering or routing changes. Use dated operator-level observations and actual client tests. [HTTP dataset scope](https://developers.cloudflare.com/radar/investigate/http-requests/)
 - Trial priority adjustment: treat the user's current network observations as operational constraints, start TCP/H2 only, avoid relying on Cloudflare for both new candidates, and require direct-origin and CDN comparisons from the affected Iranian connection before promotion. ECH cannot repair loss of reachability to a CDN edge.
+
+## Published result
+
+Exactly two additive node configurations are active and visible in the admin panel:
+
+- **Germany Plus**: server 4, inbound 6, node configuration 27. VLESS XHTTP/TLS on TCP 443, explicit client `stream-one`, H2, empty flow, certificate verification enabled. Direct connection to an owned Germany hostname; no CDN or ECH dependency.
+- **USA Plus**: server 6, inbound 5, node configuration 26. VLESS XHTTP/TLS on TCP 2053, `stream-one`, H2, empty flow, certificate verification enabled. A fixed-destination Germany TCP relay forwards the encrypted connection to the USA origin. TLS terminates in the USA, where authentication and usage accounting live. This is **not an independent backup for a Germany outage**. `subscription_node_dependencies` includes `{"6:5":[4]}`; disabling server 4 immediately hides this node on subscription rendering.
+
+259 active subscriptions received one independently authenticated client per new node. Existing remaining quotas and exact expiration timestamps were retained; held/expired/exhausted profiles were excluded. The owner's existing unlimited quota remained unlimited. Configurations stayed inactive until both networks passed trial transfer tests. Trial clients were removed before publication. Existing USA New and Germany WS published URIs are byte-identical to the saved baseline; their panel port, protocol, enable flag, stream and sniffing settings are unchanged.
+
+### Actual observations and limits
+
+Tests used laptop Mobinnet and Xiaomi MCI, with the same Xray version as Atlas. At the user's request, Xiaomi data was subsequently switched through the standard Settings UI to the installed Irancell SIM; the active cellular subscription and NOT_VPN capability were verified before testing. HTTPS certificates were verified. Transfers used an authenticated, temporary benchmark on an owned server, not bulk external scans. Both final subscriber UUIDs were checked; observed source addresses matched their respective USA/Germany origins.
+
+| Network / stage | Germany Plus | USA Plus |
+| --- | --- | --- |
+| Mobinnet pilot, 4 MiB down / 1 MiB up | 8/8 HTTP probes; 6.16 / 0.90 Mbps | 7/8 HTTP probes; 8.54 / 0.38 Mbps |
+| MCI, final published link, 1 MiB / 256 KiB | complete; 3.91 / 3.05 Mbps | complete; 3.85 / 2.52 Mbps |
+| Irancell, final published link, 1 MiB / 256 KiB | complete; 3.96 / 3.31 Mbps | complete; 2.92 / 2.31 Mbps |
+| Mobinnet, final published link, 1 MiB / 256 KiB | 3/3 probes; complete; 1.67 / 0.64 Mbps | 3/3 probes; down 1.47 Mbps; upload exceeded 18-second diagnostic deadline |
+| Mobinnet USA repeat, 45-second transfer deadline | — | 3/3 probes; complete; 2.59 / 0.19 Mbps |
+
+In the last comparison, untouched USA New completed with 3.62 / 1.05 Mbps on Mobinnet. USA Plus is therefore a working alternate path with weaker Mobinnet upload, **not a demonstrated improvement over USA New**. Irancell Germany WS completed with 3.71 / 2.42 Mbps. USA New timed out in the initial Irancell probe and two repeat probes with a 35-second deadline; its existing client was confirmed enabled and unlimited. Its settings were not modified, and this result does not establish failure in every client. Trials lowering XHTTP mux concurrency and changing the gRPC header did not establish a consistent improvement in latency and throughput, so those settings were not published. Values are sampled application throughput and HTTP timings, not line capacity or measured ICMP packet loss. No guarantee of zero drops or long-term availability follows from these bounded tests.
+
+Cloudflare/ECH succeeded on MCI but failed on Mobinnet, including tests with fetched static ECH material. It was not promoted. A separate origin-side issue was proven: Germany's existing broad `172.0.0.0/8` input deny covered Cloudflare addresses. A narrowly scoped trial exception changed a Cloudflare request from timeout to a normal 404. Those temporary exceptions were removed because the published paths use direct TLS. Original broad firewall rules and original working listener rules were not rewritten.
+
+### Operations and recovery
+
+- The old **disabled** Germany inbound 2 reserved TCP 443 and prevented the panel from adding a separate inbound. Only its reserved port was moved to 10443; it remains disabled. Its private pre-change object and database snapshots are retained on the bot host. Active Germany WS on 8443 was untouched.
+- New inbounds are managed by their respective panels. The USA entry relay is a persistent enabled systemd service, `atlas-usa-entry-relay`, with a fixed origin and port; it cannot relay to arbitrary client-selected destinations. The unit is tracked in `deploy/atlas-usa-entry-relay.service`; `deploy/fixed-tcp-relay.example.json` requires an owned origin to be substituted before use. Keep the real configuration under `/etc/atlas-relays/usa-entry.json`, directory mode 0700, file mode 0600. Validate it with Xray's `run -test` before a service restart.
+- New certificate renewal hooks restart the owning `x-ui` service; existing certificate configuration was retained. Private keys have mode 0600.
+- Rejected sidecars, trial clients, temporary benchmark process and its source-restricted TCP 9443 firewall rules are removed at completion. Existing unrelated listeners are retained. Private UUIDs, subscription tokens, credentials and raw configuration receipts are deliberately not committed.
+- After Irancell testing, the phone's data SIM was restored to its original MCI subscription. Test fixtures and temporary UI dumps were removed.
+- Source was fast-forward deployed with the repository's `update.sh pull-no-stash`; targeted subscription and XHTTP regression tests passed on both the laptop and bot server. Four tutorial messages were delivered only to the owner, with premium emoji entities verified; this task did not broadcast them.

@@ -1,0 +1,17 @@
+[Unit]
+Description=Atlas fixed USA TLS entry relay
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/x-ui/bin/xray-linux-amd64 run -c /etc/atlas-relays/usa-entry.json
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
