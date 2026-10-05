@@ -707,10 +707,19 @@ async def add_server(name, url, username, password, sub_path, inbound_id, note='
         return c.lastrowid
 
 async def update_server(sid: int, **kw):
+    if not kw:
+        return
     fields = ','.join(f"{k}=?" for k in kw)
     async with aiosqlite.connect(DB_PATH) as db:
+        previous = None
+        if 'is_active' in kw:
+            async with db.execute('SELECT is_active FROM servers WHERE id=?', (sid,)) as cursor:
+                previous = await cursor.fetchone()
         await db.execute(f"UPDATE servers SET {fields} WHERE id=?", (*kw.values(), sid))
         await db.commit()
+    if previous and not int(previous[0] or 0) and int(kw.get('is_active') or 0):
+        from core.multi_subscription import schedule_server_activation
+        schedule_server_activation(int(sid))
 
 async def delete_server(sid: int):
     async with aiosqlite.connect(DB_PATH) as db:
@@ -4014,6 +4023,8 @@ async def get_subscription_nodes(profile_id: int) -> List[Dict]:
                       COALESCE(own.priority, phys.priority, 100) AS node_priority,
                       COALESCE(NULLIF(own.connect_host,''), phys.connect_host, '') AS connect_host,
                       COALESCE(own.is_auto, 0) AS node_is_auto,
+                      COALESCE(own.is_active, phys.is_active, 1) AS node_config_active,
+                      COALESCE(s.is_active, 0) AS server_active,
                       COALESCE(own.auto_show_server, 0) AS node_auto_show_server
                FROM subscription_nodes n
                JOIN servers s ON s.id=n.server_id

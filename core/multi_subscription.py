@@ -9,7 +9,7 @@ import time
 import uuid
 from datetime import datetime
 from typing import Dict, List, Optional
-from urllib.parse import quote, urlsplit, urlunsplit
+from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
 
 from core.autonode import expand_node_configs
 from core.config import WEB_PORT
@@ -26,6 +26,7 @@ from core.database import (
     get_subscription_node_config,
     get_subscription_node_configs,
     get_setting,
+    get_server,
     get_subscription_nodes,
     get_subscription_profile,
     get_subscription_profile_by_token,
@@ -35,6 +36,8 @@ from core.database import (
     update_subscription_profile,
 )
 from core.xui_api import XUIClient, expiry_ms_from_days
+from core.subscription_tuning import apply_ws_early_data, apply_ws_ech, apply_ws_backup, without_ws_early_data
+from core.subscription_variants import variant_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -401,7 +404,12 @@ def _link_dedupe_key(link: str) -> str:
         parts = urlsplit(raw)
         port = parts.port or ""
         username = parts.username or ""
-        return f"{parts.scheme.lower()}:{username}@{(parts.hostname or '').lower()}:{port}:{parts.path}"
+        key = f"{parts.scheme.lower()}:{username}@{(parts.hostname or '').lower()}:{port}:{parts.path}"
+        # Transport variants must coexist. Ignore remark and query order, while
+        # retaining path, ECH, SNI, fingerprint and every other connection field.
+        if parts.scheme.lower() == 'vless':
+            key += ':' + urlencode(sorted(parse_qsl(parts.query, keep_blank_values=True)))
+        return key
     except Exception:
         return raw.split("#", 1)[0]
 
@@ -425,6 +433,8 @@ def _dedupe_complete_links(links: list[str]) -> list[str]:
 
 
 async def _ensure_node_link(node: Dict, force_refresh: bool | None = None) -> str:
+    if not int(node.get('server_active', 1)) or not int(node.get('node_config_active',1)):
+        return ''
     link = (node.get("link") or "").strip()
     if force_refresh is None:
         force_refresh = await get_setting("sub_force_local_links_on_render", "1") == "1"
@@ -658,6 +668,12 @@ async def create_profile_for_order(user: Dict, order: Dict, traffic_gb: float, d
     # An auto node carries no server of its own — resolve it to the currently
     # least-busy one before we start provisioning.
     nodes = await expand_node_configs(await get_available_subscription_node_configs())
+    available = []
+    for node in nodes:
+        server = await get_server(int(node['server_id']))
+        if server and int(server.get('is_active') or 0):
+            available.append(node)
+    nodes = available
     min_nodes = 1
     if not nodes:
         return {"ok": False, "error": "no_subscription_nodes_configured"}
@@ -687,7 +703,11 @@ async def create_profile_for_order(user: Dict, order: Dict, traffic_gb: float, d
     failures: list[str] = []
 
     try:
-        for node in nodes:
+        semaphore = asyncio.Semaphore(4)
+        async def provision(node):
+            server = await get_server(int(node['server_id']))
+            if not server or not int(server.get('is_active') or 0):
+                return
             inbound_id = int(node.get("inbound_id") or 1)
             client_uuid = str(uuid.uuid4())
             node_email = f"{email}_n{node['id']}"
@@ -696,7 +716,7 @@ async def create_profile_for_order(user: Dict, order: Dict, traffic_gb: float, d
                 ok = await cli.add_client(inbound_id, client_uuid, node_email, traffic_gb, node_expire_days, starts_on_first_use=False)
                 if not ok:
                     failures.append(f"{node.get('server_name') or node['server_id']}#{inbound_id}:add_failed")
-                    continue
+                    return
                 inbound_id, client_uuid, link = await _remote_identity_and_link(cli, inbound_id, node_email, client_uuid)
                 if not _subscription_link_is_complete(link):
                     failures.append(f"{node.get('server_name') or node['server_id']}#{inbound_id}:link_failed")
@@ -704,7 +724,7 @@ async def create_profile_for_order(user: Dict, order: Dict, traffic_gb: float, d
                         await cli.delete_client(inbound_id, client_uuid, node_email)
                     except Exception:
                         pass
-                    continue
+                    return
                 await add_subscription_node(profile_id, node["server_id"], inbound_id, client_uuid,
                                             node_email, link, config_id=int(node["id"]))
                 created_remote.append((node, inbound_id, client_uuid, node_email))
@@ -712,6 +732,13 @@ async def create_profile_for_order(user: Dict, order: Dict, traffic_gb: float, d
                 failures.append(f"{node.get('server_name') or node['server_id']}#{inbound_id}:{e}")
             finally:
                 await cli.close()
+        async def bounded(node):
+            async with semaphore:
+                try:
+                    await asyncio.wait_for(provision(node), timeout=15)
+                except asyncio.TimeoutError:
+                    failures.append(f"{node['server_id']}#{node['inbound_id']}:timeout")
+        await asyncio.gather(*(bounded(node) for node in nodes))
 
         if len(created_remote) < min_nodes:
             detail = ",".join(failures[:6])
@@ -995,10 +1022,19 @@ async def render_subscription(token: str) -> tuple[str, Dict[str, int]] | None:
         return body, {"upload": 0, "download": used, "total": total, "expire": expire, "title": title}
 
     nodes = await get_subscription_nodes(profile["id"])
+    ws_options = {}
+    for key in ("subscription_ws_early_data", "subscription_ws_fallbacks", "subscription_ws_ech", "subscription_ws_no_ed", "subscription_ws_backups", "subscription_ws_hide_regular", "subscription_ws_disabled_variants"):
+        try:
+            value = json.loads(await get_setting(key, "{}"))
+            ws_options[key] = value if isinstance(value, dict) else {}
+        except (TypeError, ValueError):
+            ws_options[key] = {}
     links = []
     active_count = 0
+    extra_links = []
+    backup_links = []
     for n in nodes:
-        if not int(n.get("is_active") or 0):
+        if not int(n.get("is_active") or 0) or not int(n.get("node_config_active", 1)) or not int(n.get('server_active', 1)):
             continue
         raw_link = (n.get("link") or "").strip()
         if not _subscription_link_is_complete(raw_link):
@@ -1016,11 +1052,62 @@ async def render_subscription(token: str) -> tuple[str, Dict[str, int]] | None:
         host_override = (n.get("connect_host") or "").strip()
         if host_override:
             raw_link = _apply_host_override(raw_link, host_override)
+        target = f"{n.get('server_id')}:{n.get('inbound_id')}"
+        raw_link = apply_ws_early_data(raw_link, ws_options["subscription_ws_early_data"].get(target))
         label = await _subscription_node_display_label(profile, n, active_count + 1)
         link = _label_subscription_link(raw_link, label)
         if _subscription_link_is_complete(link):
-            active_count += 1
-            links.append(link)
+            # Suppress only an opted-in regular WS/TLS variant. Its working
+            # fallback and tuned siblings still use the same customer identity.
+            transport = dict(parse_qsl(urlsplit(link).query))
+            hide_regular = (
+                target not in ('4:3', '6:2')
+                and ws_options['subscription_ws_hide_regular'].get(target) is True
+                and transport.get('type') == 'ws'
+                and transport.get('security') == 'tls'
+            )
+            if not hide_regular and variant_enabled(ws_options,target,'regular'):
+                active_count += 1
+                links.append(link)
+            fallback = None
+            fallback_host = ws_options["subscription_ws_fallbacks"].get(target)
+            if isinstance(fallback_host, str) and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9.-]{0,252}", fallback_host):
+                fallback = _apply_host_override(link, fallback_host)
+                if fallback != link:
+                    if variant_enabled(ws_options,target,'fallback'):
+                        links.append(_label_subscription_link(fallback, f"{label} | Backup"))
+                        active_count += 1
+            ech_options = ws_options["subscription_ws_ech"].get(target)
+            if isinstance(ech_options, dict):
+                for original, resolver, suffix in (
+                    (link, ech_options.get('primary'), 'Plus'),
+                    (fallback, ech_options.get('backup'), 'Plus Backup'),
+                ):
+                    if not original:
+                        continue
+                    tuned = apply_ws_ech(original, resolver)
+                    kind='plus' if suffix=='Plus' else 'plus-backup'
+                    if tuned != original and variant_enabled(ws_options,target,kind):
+                        extra_links.append(_label_subscription_link(tuned, f"{label} | {suffix}"))
+            if ws_options["subscription_ws_no_ed"].get(target) is True:
+                for original, suffix in ((link, 'Mobin WS'), (fallback, 'Mobin WS Backup')):
+                    if not original:
+                        continue
+                    tuned = without_ws_early_data(original)
+                    kind='mobin' if suffix=='Mobin WS' else 'mobin-backup'
+                    if tuned != original and variant_enabled(ws_options,target,kind):
+                        extra_links.append(_label_subscription_link(tuned, f"{label} | {suffix}"))
+
+            backups = ws_options['subscription_ws_backups'].get(target)
+            if target not in ('4:3', '6:2') and isinstance(backups, list):
+                for index, options in enumerate(backups[:3]):
+                    tuned = apply_ws_backup(link, options)
+                    if tuned != link and _subscription_link_is_complete(tuned) and variant_enabled(ws_options,target,f'backup-{index}'):
+                        suffix = 'Backup M' if options.get('no_ed') and not options.get('ech') else f'Backup {index+1}'
+                        backup_links.append(_label_subscription_link(tuned, f'{label} | {suffix}'))
+
+    links.extend(extra_links + backup_links)
+    active_count += len(extra_links) + len(backup_links)
 
     expire = int(expire_ms / 1000) if expire_ms > 0 else 0
     info_links = await _subscription_info_links(profile, used, total, active_count)
@@ -1037,9 +1124,40 @@ async def render_subscription(token: str) -> tuple[str, Dict[str, int]] | None:
     return body, {"upload": 0, "download": used, "total": total, "expire": expire, "title": title}
 
 
+_server_activation_tasks = {}
+
+def schedule_server_activation(server_id: int):
+    """Restore this server's missing clients off the admin request path."""
+    old = _server_activation_tasks.get(server_id)
+    if old and not old.done():
+        return
+    async def restore():
+        try:
+            configs = await get_subscription_node_configs(active_only=True)
+            ids = {int(n['id']) for n in configs if int(n['server_id']) == server_id}
+            if not ids:
+                return
+            semaphore = asyncio.Semaphore(4)
+            async def worker(profile):
+                async with semaphore:
+                    server = await get_server(server_id)
+                    if not server or not int(server.get('is_active') or 0):
+                        return
+                    try:
+                        fresh = await get_subscription_profile_by_token(profile['token'])
+                        if fresh:
+                            await asyncio.wait_for(ensure_subscription_profile_nodes(fresh, force_refresh=True, only_config_ids=ids, restore_limits=True), timeout=45)
+                    except Exception:
+                        logger.warning('Server activation reconciliation failed server=%s profile=%s',server_id,profile['id'])
+            await asyncio.gather(*(worker(p) for p in await get_active_subscription_profiles(1000000)))
+        finally:
+            _server_activation_tasks.pop(server_id, None)
+    _server_activation_tasks[server_id] = asyncio.create_task(restore())
+
+
 async def ensure_subscription_profile_nodes(profile: Dict, force_refresh: bool = False,
                                             only_config_ids: set | None = None,
-                                            auto_targets: Dict[int, Dict] | None = None) -> Dict:
+                                            auto_targets: Dict[int, Dict] | None = None, restore_limits: bool = False) -> Dict:
     """Create missing clients for newly configured subscription nodes.
 
     `only_config_ids`: when given, restrict the whole pass to just those node
@@ -1166,6 +1284,9 @@ async def ensure_subscription_profile_nodes(profile: Dict, force_refresh: bool =
     created = refreshed = verified = moved = failed = 0
     errors: list[str] = []
     for node, existing in move_nodes:
+        server = await get_server(int(node['server_id']))
+        if not server or not int(server.get('is_active') or 0):
+            continue
         inbound_id = int(node.get("inbound_id") or 1)
         client_uuid = str(existing.get("uuid") or uuid.uuid4())
         node_email = f"{profile['email']}_n{node['id']}"[:120]
@@ -1230,11 +1351,16 @@ async def ensure_subscription_profile_nodes(profile: Dict, force_refresh: bool =
             await cli.close()
 
     for node, existing in refresh_nodes:
+        server = await get_server(int(node['server_id']))
+        if not server or not int(server.get('is_active') or 0):
+            continue
         cli = XUIClient(node["server_url"], node["srv_user"], node["srv_pass"], node.get("sub_path") or "", node.get("srv_api_token", ""))
         try:
             inbound_id = int(node.get("inbound_id") or existing.get("inbound_id") or 1)
             client_uuid = str(existing.get("uuid") or uuid.uuid4())
             node_email = str(existing.get("email") or f"{profile['email']}_n{node['id']}"[:120])
+            if restore_limits:
+                await cli.update_client(inbound_id, client_uuid, node_email, traffic_gb, expire_ms, True)
             link = await cli.get_client_link(inbound_id, node_email) or ""
             if not _subscription_link_is_complete(link):
                 added = await cli.add_client(inbound_id, client_uuid, node_email, traffic_gb, duration_days, starts_on_first_use=False)
@@ -1281,6 +1407,9 @@ async def ensure_subscription_profile_nodes(profile: Dict, force_refresh: bool =
             await cli.close()
 
     for node in missing_nodes:
+        server = await get_server(int(node['server_id']))
+        if not server or not int(server.get('is_active') or 0):
+            continue
         inbound_id = int(node.get("inbound_id") or 1)
         client_uuid = str(uuid.uuid4())
         node_email = f"{profile['email']}_n{node['id']}"[:120]
@@ -1462,6 +1591,9 @@ async def sync_profile_usage(profile: Dict, sessions: Optional[PanelSessions] = 
         return {"used": int(profile.get("used_bytes") or 0), "disabled": True, "expired": True}
 
     for node in nodes:
+        if not int(node.get('server_active', 1)) or not int(node.get('node_config_active',1)):
+            used_total += int(node.get('last_used_bytes') or 0) + int(node.get('carried_bytes') or 0)
+            continue
         cli = None if sessions is not None else XUIClient(
             node["server_url"], node["srv_user"], node["srv_pass"],
             node.get("sub_path") or "", node.get("srv_api_token", ""))
@@ -1522,6 +1654,8 @@ async def set_nodes_enabled(profile_id: int, enabled: bool):
     duration_days = _days_remaining(expire_ms, now_ms) if expire_ms > 0 else 0
 
     for node in nodes:
+        if not int(node.get('server_active',1)):
+            continue
         cli = XUIClient(node["server_url"], node["srv_user"], node["srv_pass"], node.get("sub_path") or "", node.get("srv_api_token", ""))
         try:
             inbound_id = int(node.get("inbound_id") or 1)
@@ -1595,6 +1729,8 @@ async def renew_subscription_profile(profile: Dict, traffic_gb: float, duration_
     ok_count = 0
     failures = []
     for node in nodes:
+        if not int(node.get('server_active',1)):
+            continue
         cli = XUIClient(node["server_url"], node["srv_user"], node["srv_pass"], node.get("sub_path") or "", node.get("srv_api_token", ""))
         try:
             inbound_id = int(node.get("inbound_id") or 0)
@@ -1655,6 +1791,8 @@ async def edit_subscription_profile(profile: Dict, email: str, traffic_gb: float
     failures = []
     old_email = str(profile.get("email") or "")
     for node in nodes:
+        if not int(node.get('server_active',1)):
+            continue
         cli = XUIClient(node["server_url"], node["srv_user"], node["srv_pass"], node.get("sub_path") or "", node.get("srv_api_token", ""))
         try:
             node_email = str(node.get("email") or "")
@@ -1734,6 +1872,8 @@ async def reset_subscription_usage(profile_id: int) -> Dict:
     nodes = await get_subscription_nodes(profile_id)
     done = 0
     for node in nodes:
+        if not int(node.get('server_active',1)):
+            continue
         cli = XUIClient(node["server_url"], node["srv_user"], node["srv_pass"], node.get("sub_path") or "", node.get("srv_api_token", ""))
         try:
             if await cli.reset_client_traffic(int(node.get("inbound_id") or 0), node.get("email") or ""):

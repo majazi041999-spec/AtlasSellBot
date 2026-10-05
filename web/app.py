@@ -177,6 +177,7 @@ import core.client_app as _client_app
 import core.app_analytics as _app_analytics
 from core.database import get_subscription_profile_by_token as _get_sub_profile_by_token
 from core.database import get_subscription_nodes as _get_sub_nodes
+from core.subscription_variants import load_variant_options, describe_variants, toggle_variant
 from core.autonode import (
     DEFAULTS as AUTONODE_DEFAULTS,
     auto_node_overview,
@@ -3294,6 +3295,7 @@ async def api_subs(request: Request):
     if not _api_guard(request):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     nodes = await get_subscription_node_configs(active_only=False)
+    variant_options = await load_variant_options()
     out_nodes = []
     for node in nodes:
         status = await subscription_node_config_status(node)
@@ -3323,6 +3325,7 @@ async def api_subs(request: Request):
             "is_auto": is_auto,
             "auto_pool": node.get("auto_pool") or "",
             "auto_show_server": int(node.get("auto_show_server") or 0),
+            "variants": describe_variants(variant_options,f"{node['server_id']}:{node['inbound_id']}",node.get('connect_host') or ''),
         })
     servers = await get_servers(active_only=False)
     return JSONResponse({
@@ -3335,6 +3338,20 @@ async def api_subs(request: Request):
             "sub_auto_sync_interval_hours": await get_setting("sub_auto_sync_interval_hours", "1"),
         },
     })
+
+
+@app.post(f"/{S}/subs/nodes/{{node_id}}/variants/{{kind}}/toggle")
+async def subscription_variant_toggle(request: Request,node_id: int,kind: str):
+    if not _auth(request):
+        return JSONResponse({'error':'unauthorized'},status_code=401)
+    node=await get_subscription_node_config(node_id)
+    if not node:
+        return JSONResponse({'error':'not_found'},status_code=404)
+    try:
+        enabled=await toggle_variant(f"{node['server_id']}:{node['inbound_id']}",kind)
+    except ValueError:
+        return JSONResponse({'error':'invalid_variant'},status_code=400)
+    return JSONResponse({'success':True,'is_active':enabled})
 
 
 @app.post(f"/{S}/subs/autonode/refresh")

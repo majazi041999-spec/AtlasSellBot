@@ -519,6 +519,7 @@ export default function Subscriptions() {
   };
 
   const toggle = (n) => act(() => api.post(`/subs/nodes/${n.id}/toggle`));
+  const toggleVariant = (n,v) => act(() => api.post(`/subs/nodes/${n.id}/variants/${v.id}/toggle`), false);
   const del = (n) => { if (confirm(`نود «${n.label || n.server_name || "خودکار"}» حذف شود؟ از همه لینک‌ها هم پاک می‌شود.`)) act(() => api.post(`/subs/nodes/${n.id}/delete`)); };
   const reconcile = (n) => act(() => api.post(`/subs/nodes/${n.id}/reconcile`));
   const testNode = async (n) => {
@@ -622,6 +623,21 @@ export default function Subscriptions() {
                     <button className="btn xs danger" onClick={() => del(n)}>🗑</button>
                   </div>
                 </div>
+                {(n.variants || []).length > 0 && (
+                  <div style={{marginTop:12,borderTop:"1px solid var(--border)",paddingTop:10}}>
+                    <div className="muted tiny" style={{marginBottom:8}}>گزینه‌های این نود در ساب؛ حجم و اعتبار همه مشترک است.</div>
+                    {n.variants.map(v => (
+                      <div key={v.id} className="row between" style={{gap:8,padding:"6px 0",flexWrap:"wrap"}}>
+                        <div className="row" style={{gap:8,flexWrap:"wrap"}}>
+                          <span>{v.label}</span>
+                          <span className={"badge " + (on && v.is_active ? "b-green" : "b-gray")}>{on && v.is_active ? "در ساب" : "پنهان"}</span>
+                          {v.address && <span className="muted tiny mono">{v.address}</span>}
+                        </div>
+                        <button className="btn xs" onClick={() => toggleVariant(n,v)}>{v.is_active ? "غیرفعال" : "فعال"}</button>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </Card>
             );
           })}
