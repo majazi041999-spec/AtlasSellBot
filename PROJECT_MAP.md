@@ -142,6 +142,15 @@ One vocabulary of keys is shared across panel, bot and mini-app — keep the lis
   NOCASE if that private path ever breaks**. In JS use `localeCompare(x, "fa")`.
 
 ## 6. Subscription / node engine (`core/multi_subscription.py`) — most complex, highest risk
+
+Server switches are enforced on cached subscription rendering, usage reads and
+provisioning. Offline traffic uses banked counters; activation restores missing
+clients and current limits in a targeted background job. Orders provision up to
+four targets concurrently with a 15-second per-target bound. Transport variants
+share their parent client and quota: `core/subscription_tuning.py` builds them,
+`core/subscription_variants.py` exposes their independent switches in the admin
+Subscriptions page. See `docs/subscription-server-state.md` and
+`tests/test_subscription_*.py` for the behavior and regression checks.
 Concept: a sold sub = 1 `subscription_profile` + a client on EVERY active `subscription_node_config` (a `subscription_node` row per node). Link `/sub/{token}` returns all node links + info lines.
 - `render_subscription(token)` → base64 body served to VPN clients. Serves cached links fast; kicks background sync. Applies per-node `connect_host` override at render time (HTTP-free, instant).
 - **The render-triggered sync is rate-limited and must stay that way** (`_background_render_sync`, `sub_render_sync_min_seconds`, default 900s). One pass opens a FRESH session per node — `XUIClient` logs in per instance — so it costs a login + query per node, per poll, per customer. Clients re-fetch the sub on a timer (some on every connect), and unthrottled that is enough to saturate the panels; a saturated panel then fails the link check, which sends us down the repair path that re-adds the client and makes xray reload, dropping every live connection on that server. `force=True` bypasses the limit and is only for one-shot transitions (arming first-use, disabling an exhausted sub). Quota/expiry enforcement does NOT depend on this — the worker does it.
