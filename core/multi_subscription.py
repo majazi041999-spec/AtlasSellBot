@@ -1680,19 +1680,22 @@ async def set_nodes_enabled(profile_id: int, enabled: bool):
     for node in nodes:
         if not int(node.get('server_active',1)):
             continue
+        node_enabled = bool(enabled) and bool(int(node.get('node_config_active', 1)))
+        if not node_enabled and not int(node.get('is_active') or 0) and int(node.get('remote_disabled_at') or 0):
+            continue
         cli = XUIClient(node["server_url"], node["srv_user"], node["srv_pass"], node.get("sub_path") or "", node.get("srv_api_token", ""))
         try:
             inbound_id = int(node.get("inbound_id") or 1)
             node_uuid = node.get("uuid") or ""
             node_email = node.get("email") or ""
-            ok = await cli.update_client(inbound_id, node_uuid, node_email, traffic_gb, expire_ms, bool(enabled))
+            ok = await cli.update_client(inbound_id, node_uuid, node_email, traffic_gb, expire_ms, node_enabled)
             if not ok:
                 # Identity drift: cached uuid/inbound may be stale → re-resolve.
                 r_in, r_uuid, _ = await _remote_identity_and_link(cli, inbound_id, node_email, node_uuid)
                 if r_uuid:
                     inbound_id, node_uuid = (r_in or inbound_id), r_uuid
-                    ok = await cli.update_client(inbound_id, node_uuid, node_email, traffic_gb, expire_ms, bool(enabled))
-            if enabled:
+                    ok = await cli.update_client(inbound_id, node_uuid, node_email, traffic_gb, expire_ms, node_enabled)
+            if node_enabled:
                 if not ok:
                     # Client is genuinely gone → re-create so this server comes back.
                     new_uuid = node_uuid or str(uuid.uuid4())
@@ -1730,7 +1733,7 @@ async def set_nodes_enabled(profile_id: int, enabled: bool):
                         getattr(cli, "last_error", "") or "unknown")
         except Exception as e:
             logger.warning("set_nodes_enabled node id=%s failed: %s", node.get("id"), e)
-            if not enabled:
+            if not node_enabled:
                 try:
                     await update_subscription_node(node["id"], is_active=0)
                 except Exception:
@@ -1753,7 +1756,7 @@ async def renew_subscription_profile(profile: Dict, traffic_gb: float, duration_
     ok_count = 0
     failures = []
     for node in nodes:
-        if not int(node.get('server_active',1)):
+        if not int(node.get('server_active',1)) or not int(node.get('node_config_active', 1)):
             continue
         cli = XUIClient(node["server_url"], node["srv_user"], node["srv_pass"], node.get("sub_path") or "", node.get("srv_api_token", ""))
         try:
@@ -1816,6 +1819,8 @@ async def edit_subscription_profile(profile: Dict, email: str, traffic_gb: float
     old_email = str(profile.get("email") or "")
     for node in nodes:
         if not int(node.get('server_active',1)):
+            continue
+        if is_active and not int(node.get('node_config_active', 1)):
             continue
         cli = XUIClient(node["server_url"], node["srv_user"], node["srv_pass"], node.get("sub_path") or "", node.get("srv_api_token", ""))
         try:
@@ -2044,6 +2049,8 @@ async def reset_subscription_time(profile_id: int) -> Dict:
     new_expire = now_ms + duration * 86400000 if duration > 0 else 0
     traffic_gb = float(profile.get("traffic_gb") or 0)
     for node in await get_subscription_nodes(profile_id):
+        if not int(node.get('server_active', 1)) or not int(node.get('node_config_active', 1)):
+            continue
         cli = XUIClient(node["server_url"], node["srv_user"], node["srv_pass"], node.get("sub_path") or "", node.get("srv_api_token", ""))
         try:
             await cli.update_client(int(node.get("inbound_id") or 0), node.get("uuid") or "", node.get("email") or "", traffic_gb, new_expire, True)
@@ -2133,6 +2140,8 @@ async def rotate_subscription_link(profile_id: int) -> Dict:
     old_clients: list[tuple] = []
 
     for node in nodes:
+        if not int(node.get('server_active', 1)) or not int(node.get('node_config_active', 1)):
+            continue
         cfg_id = int(node.get("config_id") or 0)
         if not cfg_id:
             m = re.search(r"_n(\d+)$", str(node.get("email") or ""))
@@ -2430,21 +2439,29 @@ async def _remove_node_config_from_profile(profile: Dict, node_id: int) -> Dict:
     nodes = await get_subscription_nodes(profile["id"])
     suffix = f"_n{int(node_id)}"
     targets = [n for n in nodes if str(n.get("email") or "").endswith(suffix)]
-    removed = 0
+    removed = failed = 0
     for n in targets:
+        # Keep the identity until the panel confirms removal. Otherwise a
+        # failed delete leaves a usable cached config with no local retry row.
+        await update_subscription_node(int(n['id']), is_active=0, remote_disabled_at=0)
+        deleted = False
         cli = XUIClient(n["server_url"], n["srv_user"], n["srv_pass"], n.get("sub_path") or "", n.get("srv_api_token", ""))
         try:
-            await cli.delete_client(int(n.get("inbound_id") or 0), n.get("uuid") or "", n.get("email") or "")
+            deleted = await cli.delete_client(int(n.get("inbound_id") or 0), n.get("uuid") or "", n.get("email") or "")
         except Exception as e:
             logger.warning("node remove: remote delete failed profile=%s node=%s: %s", profile.get("id"), n.get("id"), e)
         finally:
             await cli.close()
+        if not deleted:
+            failed += 1
+            continue
         try:
             await delete_subscription_node(int(n["id"]))
             removed += 1
         except Exception as e:
             logger.warning("node remove: db delete failed profile=%s node=%s: %s", profile.get("id"), n.get("id"), e)
-    return {"removed": removed, "targets": len(targets)}
+            failed += 1
+    return {"removed": removed, "targets": len(targets), "failed": failed}
 
 
 async def reconcile_node_config_streamed(
@@ -2485,6 +2502,7 @@ async def reconcile_node_config_streamed(
                 if remove:
                     r = await asyncio.wait_for(_remove_node_config_from_profile(p, node_id), timeout=per_profile_timeout)
                     agg["removed"] += int(r.get("removed") or 0)
+                    agg["failed"] += int(r.get("failed") or 0)
                     agg["checked"] += 1
                     state["done"] += 1
                     log(f"[{state['done']}/{total}] 🗑 {lbl}: حذف‌شده={r.get('removed', 0)}")

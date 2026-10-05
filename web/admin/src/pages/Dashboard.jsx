@@ -12,6 +12,18 @@ import Analytics from "./Analytics.jsx";
  *  says how many panels it actually covers.
  */
 function OnlineNow({ data, onRefresh }) {
+  const [refreshing, setRefreshing] = useState(false);
+  const refresh = async () => {
+    setRefreshing(true);
+    try {
+      await api.post("/subs/autonode/refresh");
+      await onRefresh();
+    } catch {
+      toast("دریافت آمار تازه از سرورها ناموفق بود", "error");
+    } finally {
+      setRefreshing(false);
+    }
+  };
   const o = data || {};
   const servers = o.servers || [];
   const partial = o.servers_known < o.servers_total;
@@ -20,7 +32,7 @@ function OnlineNow({ data, onRefresh }) {
 
   return (
     <Card
-      title="🟢 آنلاین‌های همین لحظه"
+      title="🟢 آخرین آمار اتصال"
       sub={
         o.servers_total
           ? (partial
@@ -28,7 +40,7 @@ function OnlineNow({ data, onRefresh }) {
               : `روی ${o.servers_total} سرور`)
           : "سروری تنظیم نشده"
       }
-      right={<button className="btn xs" onClick={onRefresh}>↻ تازه‌سازی</button>}
+      right={<button className="btn xs" disabled={refreshing} onClick={refresh}>{refreshing ? "در حال بررسی…" : "↻ بررسی سرورها"}</button>}
     >
       {!servers.length ? (
         <Empty emoji="🖥">هنوز از سرورها آماری نگرفته‌ایم.</Empty>
@@ -36,16 +48,17 @@ function OnlineNow({ data, onRefresh }) {
         <>
           <div className="row" style={{ gap: 12, alignItems: "baseline", marginBottom: 14, flexWrap: "wrap" }}>
             <span style={{ fontSize: "2.4rem", fontWeight: 800, lineHeight: 1 }}>{fmt(o.total)}</span>
-            <span className="muted">کاربر متصل</span>
+            <span className="muted">کلاینت آنلاین</span>
             {partial && (
               <span className="badge b-yellow">
                 {o.servers_total - o.servers_known} پنل پاسخ نداد — عدد ناقص است
               </span>
             )}
-            {ageMin !== null && ageMin > 10 && (
+            {ageMin !== null && (
               <span className="badge b-gray">آخرین بررسی: {ageMin} دقیقه پیش</span>
             )}
           </div>
+          <p className="muted tiny">آمار از آخرین نمونهٔ پنل‌هاست و معمولاً هر دو دقیقه به‌روز می‌شود. یک کاربر ممکن است روی چند نود شمرده شود؛ تست اتصال برنامه هم ممکن است در آمار بیاید.</p>
 
           <div className="grid" style={{ gap: 12 }}>
             {servers.map((s) => {
@@ -56,7 +69,10 @@ function OnlineNow({ data, onRefresh }) {
               return (
                 <div key={s.id} className="grid" style={{ gap: 6 }}>
                   <div className="row" style={{ gap: 10 }}>
-                    <span style={{ minWidth: 130, flexShrink: 0 }}>{s.name}</span>
+                    <span style={{ minWidth: 130, flexShrink: 0 }}>
+                      {s.name}
+                      {s.checked_at > 0 && <small className="muted tiny" style={{ display: "block" }}>بررسی: {timeAgo(new Date(s.checked_at).toISOString())}</small>}
+                    </span>
                     <div style={{ flex: 1, height: 8, borderRadius: 6, background: "rgba(255,255,255,.06)", overflow: "hidden" }}>
                       {!unknown && (
                         <div style={{
@@ -77,9 +93,10 @@ function OnlineNow({ data, onRefresh }) {
                   {nodes.length > 0 && (
                     <div className="online-nodes">
                       {nodes.map((n) => (
-                        <span key={n.id ?? "other"} className="badge b-gray"
+                        <span key={n.id ?? "other"} className={`badge ${n.is_active === false ? "b-yellow" : "b-gray"}`}
                               title={s.online ? `${Math.round((n.online / s.online) * 100)}٪ از کاربران آنلاین این سرور` : undefined}>
                           {n.label}
+                          {n.is_active === false && <span>غیرفعال در پنل</span>}
                           <b className="mono" style={{ color: "var(--txt1)" }}>{fmt(n.online)}</b>
                         </span>
                       ))}

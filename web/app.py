@@ -1649,11 +1649,11 @@ async def api_dashboard(request: Request):
     # Which node each server's users are on — the same reading as the total,
     # split by the node suffix of each online client (core.autonode.online_by_node).
     try:
-        node_labels = {int(n["id"]): (n.get("label") or "").strip()
-                       for n in await get_subscription_node_configs(active_only=False)}
+        node_configs = {int(n["id"]): n
+                        for n in await get_subscription_node_configs(active_only=False)}
     except Exception as e:
         logger.warning("dashboard node labels failed: %s", e)
-        node_labels = {}
+        node_configs = {}
 
     def _online_nodes(split):
         if not split:
@@ -1664,8 +1664,10 @@ async def api_dashboard(request: Request):
                 other += int(n)
                 continue
             cid = int(key)
-            label = node_labels.get(cid) if cid in node_labels else f"نود #{cid} (حذف‌شده)"
-            rows.append({"id": cid, "label": label or f"نود #{cid}", "online": int(n)})
+            node = node_configs.get(cid)
+            label = (node.get('label') or '').strip() if node else f"نود #{cid} (حذف‌شده)"
+            rows.append({"id": cid, "label": label or f"نود #{cid}", "online": int(n),
+                         "is_active": bool(int(node.get('is_active') or 0)) if node else False})
         if other:
             rows.append({"id": None, "label": "سایر (کانفیگ تکی)", "online": other})
         rows.sort(key=lambda r: (-r["online"], r["label"]))
@@ -1683,6 +1685,7 @@ async def api_dashboard(request: Request):
                 "online": s["online"],            # null = unknown, not zero
                 "avg": s.get("online_avg"),
                 "stale": bool(s.get("stale")),
+                "checked_at": int(s.get("checked_at") or 0),
                 "nodes": _online_nodes(s.get("online_nodes")),   # null = no split to show
             } for s in servers_online],
         },
@@ -3250,10 +3253,15 @@ async def subscription_node_toggle(request: Request, node_id: int):
     node = await get_subscription_node_config(node_id)
     if not node:
         return JSONResponse({"success": False, "error": "not found"}, status_code=404)
+    if _read_job_log("nodeops").get("running"):
+        return JSONResponse({"success": False, "error": "یک عملیات نود همین الان در حال اجراست."}, status_code=409)
     now_active = 0 if int(node.get("is_active") or 0) else 1
     await update_subscription_node_config(node_id, is_active=now_active)
     # Real-time: disabling removes this node from every link; enabling re-creates it.
     started = _start_nodeops(node_id, remove=(now_active == 0), force_refresh=False)
+    if not started:
+        await update_subscription_node_config(node_id, is_active=int(node.get('is_active') or 0))
+        return JSONResponse({"success": False, "error": "عملیات نود شروع نشد؛ وضعیت قبلی حفظ شد."}, status_code=409)
     return JSONResponse({"success": True, "is_active": now_active, "job_started": started})
 
 
