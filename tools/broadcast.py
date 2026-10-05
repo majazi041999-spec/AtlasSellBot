@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import os
 import sqlite3
 import sys
@@ -95,12 +96,20 @@ def _ensure_table(db: sqlite3.Connection) -> None:
         "  PRIMARY KEY (campaign, telegram_id))"
     )
     db.commit()
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS broadcast_messages ("
+        "campaign TEXT NOT NULL, telegram_id INTEGER NOT NULL, "
+        "message_id INTEGER NOT NULL, body_sha256 TEXT NOT NULL, "
+        "PRIMARY KEY(campaign, telegram_id))"
+    )
+    db.commit()
 
 
 async def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("campaign")
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--edit", action="store_true", help="edit recorded campaign messages without sending new ones")
     ap.add_argument("--only-active", action="store_true",
                     help="only customers with a live subscription")
     ap.add_argument("--html-file", help="file holding the message body (HTML)")
@@ -143,18 +152,57 @@ async def main() -> None:
         print("\n(dry run — nothing sent)")
         return
     if not todo:
-        print("\nnothing to do; this campaign is already complete.")
-        return
+        if not args.edit:
+            print("\nnothing to do; this campaign is already complete.")
+            return
 
     bot = Bot(token=BOT_TOKEN)
     counts = {"sent": 0, "blocked": 0, "failed": 0}
     t0 = time.monotonic()
     try:
+        if args.edit:
+            digest = hashlib.sha256(body.encode()).hexdigest()
+            messages = list(db.execute(
+                "SELECT telegram_id, message_id FROM broadcast_messages "
+                "WHERE campaign=? AND body_sha256<>?", (args.campaign, digest)))
+            for uid, mid in messages:
+                for attempt in range(3):
+                    try:
+                        await bot.edit_message_text(chat_id=uid, message_id=mid, text=body,
+                                                    parse_mode="HTML", reply_markup=markup)
+                    except TelegramRetryAfter as e:
+                        await asyncio.sleep(e.retry_after + 1)
+                        continue
+                    except TelegramBadRequest as e:
+                        if "not modified" not in str(e).lower():
+                            counts["failed"] += 1
+                            break
+                    except TelegramForbiddenError:
+                        counts["blocked"] += 1
+                        break
+                    except Exception:
+                        if attempt < 2:
+                            await asyncio.sleep(1)
+                            continue
+                        counts["failed"] += 1
+                        break
+                    db.execute("UPDATE broadcast_messages SET body_sha256=? WHERE campaign=? AND telegram_id=?",
+                               (digest, args.campaign, uid))
+                    db.commit()
+                    counts["sent"] += 1
+                    break
+                else:
+                    counts["failed"] += 1
+                await asyncio.sleep(DELAY)
+            print(f"edited: {counts['sent']}; unavailable: {counts['blocked']}; failed: {counts['failed']}")
+            return
         for i, uid in enumerate(todo, 1):
             status = "failed"
+            message_id = None
             for attempt in range(3):
                 try:
-                    await bot.send_message(uid, body, parse_mode="HTML", reply_markup=markup)
+                    delivered = await bot.send_message(uid, body, parse_mode="HTML", reply_markup=markup)
+                    message_id = delivered.message_id
                     status = "sent"
                     break
                 except TelegramRetryAfter as e:
@@ -174,6 +222,9 @@ async def main() -> None:
             # killed halfway leaves a usable record behind.
             db.execute("INSERT OR REPLACE INTO broadcast_log VALUES (?,?,?,?)",
                        (args.campaign, uid, status, int(time.time())))
+            if message_id is not None:
+                db.execute("INSERT OR REPLACE INTO broadcast_messages VALUES (?,?,?,?)",
+                           (args.campaign, uid, message_id, hashlib.sha256(body.encode()).hexdigest()))
             db.commit()
             await asyncio.sleep(DELAY)
             if i % 50 == 0:
@@ -189,4 +240,5 @@ async def main() -> None:
     print(f"elapsed        : {round(time.monotonic() - t0, 1)}s")
 
 
-asyncio.run(main())
+if __name__ == "__main__":
+    asyncio.run(main())

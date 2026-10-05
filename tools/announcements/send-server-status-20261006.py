@@ -77,7 +77,7 @@ async def main():
             save()
         finally:
             await bot.session.close()
-    assert receipt['custom_emoji_count'] == receipt['expected_emoji_count'] == 6, 'Premium emoji delivery verification failed'
+    assert receipt['custom_emoji_count'] == receipt['expected_emoji_count'] == 5, 'Premium emoji delivery verification failed'
     assert receipt['button_icons_verified'], 'Premium button icons missing'
     if not receipt.get('broadcast_started'):
         command = ['systemd-run', '--unit='+CAMPAIGN, '--property=WorkingDirectory='+str(ROOT), str(ROOT/'.venv/bin/python'), str(ROOT/'tools/broadcast.py'), CAMPAIGN, '--html-file', str(delivery)]
