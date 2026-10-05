@@ -1029,6 +1029,16 @@ async def render_subscription(token: str) -> tuple[str, Dict[str, int]] | None:
             ws_options[key] = value if isinstance(value, dict) else {}
         except (TypeError, ValueError):
             ws_options[key] = {}
+    # A relay can depend on another physical server, even though authentication
+    # and accounting belong to its own origin. Hide it immediately if that
+    # entry server is disabled; no panel calls or cached-client deletion needed.
+    try:
+        dependencies = json.loads(await get_setting("subscription_node_dependencies", "{}"))
+        if not isinstance(dependencies, dict):
+            dependencies = {}
+    except (TypeError, ValueError):
+        dependencies = {}
+    dependency_states = {}
     links = []
     active_count = 0
     extra_links = []
@@ -1036,6 +1046,20 @@ async def render_subscription(token: str) -> tuple[str, Dict[str, int]] | None:
     for n in nodes:
         if not int(n.get("is_active") or 0) or not int(n.get("node_config_active", 1)) or not int(n.get('server_active', 1)):
             continue
+        target = f"{n.get('server_id')}:{n.get('inbound_id')}"
+        required = dependencies.get(target, []) if target not in ('4:3', '6:2') else []
+        if required:
+            if not isinstance(required, list) or len(required) > 8:
+                continue
+            available = True
+            for sid in required:
+                sid = _as_int(sid)
+                if sid not in dependency_states:
+                    dependency_server = await get_server(sid) if sid > 0 else None
+                    dependency_states[sid] = bool(dependency_server and int(dependency_server.get('is_active') or 0))
+                available = available and dependency_states[sid]
+            if not available:
+                continue
         raw_link = (n.get("link") or "").strip()
         if not _subscription_link_is_complete(raw_link):
             # Only broken/missing cached links are repaired inline, and only

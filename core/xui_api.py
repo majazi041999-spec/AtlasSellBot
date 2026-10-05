@@ -1196,6 +1196,14 @@ class XUIClient:
                     grpc = stream.get("grpcSettings", {})
                     params.append(("serviceName", grpc.get("serviceName", "")))
                     params.append(("mode", "gun"))
+                elif network == "xhttp":
+                    xhttp = stream.get("xhttpSettings", {})
+                    params.append(("path", xhttp.get("path", "/")))
+                    params.append(("mode", xhttp.get("mode", "auto")))
+                    if xhttp.get("host"):
+                        params.append(("host", xhttp["host"]))
+                    if isinstance(xhttp.get("extra"), dict) and xhttp["extra"]:
+                        params.append(("extra", json.dumps(xhttp["extra"], separators=(",", ":"))))
                 flow = client.get("flow", "")
                 if flow: params.append(("flow", flow))
                 params = self._merge_api_query_params(params, api_link, "vless")
