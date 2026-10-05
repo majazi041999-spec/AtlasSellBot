@@ -1062,11 +1062,11 @@ async def render_subscription(token: str) -> tuple[str, Dict[str, int]] | None:
             transport = dict(parse_qsl(urlsplit(link).query))
             hide_regular = (
                 target not in ('4:3', '6:2')
-                and ws_options['subscription_ws_hide_regular'].get(target) is True
+                and not variant_enabled(ws_options,target,'regular')
                 and transport.get('type') == 'ws'
                 and transport.get('security') == 'tls'
             )
-            if not hide_regular and variant_enabled(ws_options,target,'regular'):
+            if not hide_regular:
                 active_count += 1
                 links.append(link)
             fallback = None

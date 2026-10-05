@@ -122,6 +122,9 @@ class RenderTuningTests(unittest.IsolatedAsyncioTestCase):
         # Keep the Mobin backup independently when just its primary is hidden.
         expected=[l for l in original if not ('Plus%20Backup' in urlsplit(l).fragment or urlsplit(l).fragment.endswith('%7C%20Mobin%20WS') or 'Backup%201' in urlsplit(l).fragment)]
         self.assertEqual(masked,expected)
+        nodes[0]['link']=nl.replace('type=ws','type=tcp').replace('security=tls','security=reality')
+        non_ws=await render({})
+        self.assertEqual(await render({'2:3':True}),non_ws)
 
     async def test_variant_panel_toggle_changes_only_selected_published_sibling(self):
         from core import subscription_variants as variants
