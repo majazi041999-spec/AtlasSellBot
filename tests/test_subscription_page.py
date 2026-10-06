@@ -29,6 +29,9 @@ class SubscriptionPageTests(unittest.IsolatedAsyncioTestCase):
         settings = patch.object(web, 'get_setting', AsyncMock(return_value=''))
         settings.start()
         self.addCleanup(settings.stop)
+        backup = patch.object(web, 'subscription_backup_url', AsyncMock(return_value=''))
+        backup.start()
+        self.addCleanup(backup.stop)
 
     async def test_browser_copies_canonical_variants_instead_of_cached_raw_nodes(self):
         profile = dict(id=1, is_active=1, traffic_gb=1, used_bytes=0, expire_timestamp=0)

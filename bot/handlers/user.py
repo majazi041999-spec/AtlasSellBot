@@ -71,6 +71,7 @@ from core.texts import get_text
 from core.qr import build_qr_image
 from core.multi_subscription import (
     subscription_url,
+    subscription_backup_url,
     sync_profile_usage,
     delete_subscription_profile_remote,
     rotate_subscription_link,
@@ -285,6 +286,9 @@ async def _send_subscription_status(target, profile: dict, send_qr: bool = True)
         # Owner-written and authored as Markdown, so translated rather than
         # escaped — otherwise their formatting would show as raw asterisks.
         text += "\n\n" + _md_to_html(guide)
+    backup_url = await subscription_backup_url(profile["token"])
+    if backup_url:
+        text += "\n\n🔄 اگر لینک ساب به‌روز نشد، لینک پشتیبان را از دکمهٔ پایین کپی و در برنامه اضافه کن."
     text = premiumize(text)
     if len(text) > 3900:
         # Truncating HTML can cut a tag in half and Telegram rejects the whole
@@ -292,7 +296,7 @@ async def _send_subscription_status(target, profile: dict, send_qr: bool = True)
         cut = text.rfind(">", 0, 3900)
         text = text[: cut + 1 if cut > 3000 else 3900] + "\n…"
 
-    kb = subscription_detail_kb(int(profile["id"]), sub_url, active_nodes)
+    kb = subscription_detail_kb(int(profile["id"]), sub_url, active_nodes, backup_url=backup_url)
     # The app offer rides on the QR send, which only happens right after a
     # service is created — the moment someone is actually about to set it up.
     # Putting it on the card itself would repeat it every time they check their

@@ -72,7 +72,7 @@ def _bytes(value: int) -> str:
         amount /= 1024
 
 
-def render_page(profile: dict, rendered: tuple | None, sub_url: str, brand: str, logo: str, contacts: list[dict] | None = None) -> str:
+def render_page(profile: dict, rendered: tuple | None, sub_url: str, brand: str, logo: str, contacts: list[dict] | None = None, backup_url: str = '') -> str:
     body, info = rendered or ('', {})
     used = int(info.get('download', profile.get('used_bytes') or 0)) + int(info.get('upload', 0))
     total = int(info.get('total', float(profile.get('traffic_gb') or 0) * 1024**3))
@@ -114,5 +114,7 @@ def render_page(profile: dict, rendered: tuple | None, sub_url: str, brand: str,
         date=safe(datetime.fromtimestamp(expire).strftime('%Y-%m-%d') if expire > 0 else 'نامحدود'),
         pct=min(100, max(0, round(used * 100 / total))) if total > 0 else 0,
         node_count=len(nodes), sub_url=safe(machine_url), apps=app_rows, nodes=node_rows,
+        backup=(f'<div class="subscription"><p class="hint">اگر به‌روزرسانی اشتراک خطا داد، لینک پشتیبان را داخل برنامه اضافه کن؛ همان سرویس و سرورها را دریافت می‌کنی.</p>'
+                f'<button class="copy-btn secondary" type="button" data-link="{safe(config_url(backup_url))}">کپی لینک پشتیبان ساب</button></div>') if backup_url and not unavailable else '',
         contacts=f'<nav class="contact-links" aria-label="ارتباط در تلگرام">{contact_rows}</nav>' if contact_rows else '',
     )

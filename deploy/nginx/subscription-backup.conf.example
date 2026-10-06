@@ -1,0 +1,48 @@
+# Replace BACKUP_HOST, ORIGIN_IP, ORIGIN_HOST and TRIAL_WS_PATH before nginx -t.
+# Use an unused port and permit it through the entry server's firewall.
+# The origin must already forward TRIAL_WS_PATH to the isolated trial inbound.
+server {
+    listen 8444 ssl;
+    listen [::]:8444 ssl;
+    server_name BACKUP_HOST;
+    ssl_certificate /root/cert/BACKUP_HOST/fullchain.pem;
+    ssl_certificate_key /root/cert/BACKUP_HOST/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    access_log off;
+    error_log /var/log/nginx/atlas-sub-backup-error.log crit;
+
+    location ~ ^/(sub/[^/]+|subscription-assets/atlas-logo\.webp)$ {
+        proxy_pass https://ORIGIN_IP;
+        proxy_ssl_server_name on;
+        proxy_ssl_name ORIGIN_HOST;
+        proxy_ssl_verify on;
+        proxy_ssl_verify_depth 4;
+        proxy_ssl_trusted_certificate /etc/ssl/certs/ca-certificates.crt;
+        proxy_set_header Host ORIGIN_HOST;
+        proxy_set_header X-Forwarded-Host BACKUP_HOST:8444;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_connect_timeout 8s;
+        proxy_read_timeout 30s;
+        proxy_hide_header Set-Cookie;
+    }
+
+    location = TRIAL_WS_PATH {
+        proxy_pass https://ORIGIN_IP;
+        proxy_ssl_server_name on;
+        proxy_ssl_name ORIGIN_HOST;
+        proxy_ssl_verify on;
+        proxy_ssl_verify_depth 4;
+        proxy_ssl_trusted_certificate /etc/ssl/certs/ca-certificates.crt;
+        proxy_set_header Host ORIGIN_HOST;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_connect_timeout 8s;
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+        proxy_buffering off;
+    }
+
+    location / { return 404; }
+}

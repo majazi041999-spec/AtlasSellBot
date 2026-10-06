@@ -782,12 +782,17 @@ def _node_remark(node: Dict, index: int) -> str:
 SHOW_PER_NODE_LINKS = False
 
 
-def subscription_detail_kb(profile_id: int, sub_url: str = "", nodes: List[Dict] | None = None) -> InlineKeyboardMarkup:
+def subscription_detail_kb(profile_id: int, sub_url: str = "", nodes: List[Dict] | None = None, backup_url: str = "") -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
     rows = []
     copy_btn = _copy_text_button("📋 کپی لینک ساب", sub_url, style="primary")
     if copy_btn:
         b.row(copy_btn)
+        rows.append(1)
+
+    backup_btn = _copy_text_button("🔄 کپی لینک پشتیبان ساب", backup_url)
+    if backup_btn:
+        b.row(backup_btn)
         rows.append(1)
 
     # PER-NODE LINK BUTTONS ARE OFF. They gave every active server its own row,

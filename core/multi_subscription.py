@@ -204,6 +204,20 @@ async def subscription_url(token: str) -> str:
     return f"{await public_base_url_async()}/sub/{token}"
 
 
+async def subscription_backup_url(token: str) -> str:
+    """Optional independent HTTPS entry point; the original token stays valid."""
+    base = str(await get_setting("subscription_backup_base_url", "") or "").strip().rstrip("/")
+    try:
+        parts = urlsplit(base)
+        if (parts.scheme != "https" or not parts.hostname or parts.username or parts.password
+                or parts.query or parts.fragment or parts.path):
+            return ""
+        _ = parts.port  # Validate a configured port before generating public links.
+    except ValueError:
+        return ""
+    return f"{base}/sub/{quote(token, safe='')}"
+
+
 async def multi_sub_enabled_for_single_purchase(bulk_count: int = 1, is_renewal: bool = False) -> bool:
     if await get_setting("multi_sub_enabled", "0") != "1":
         return False

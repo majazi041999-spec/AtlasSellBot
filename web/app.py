@@ -164,6 +164,7 @@ from core.multi_subscription import (
     subscription_error_message,
     renew_subscription_profile,
     subscription_url,
+    subscription_backup_url,
     delete_subscription_profile_remote,
     edit_subscription_profile,
     reset_subscription_usage,
@@ -321,7 +322,7 @@ async def _resolve_sub_brand(profile: dict) -> tuple[str, bool]:
     return await get_setting("ui.brand_name", "Atlas Account"), False
 
 
-async def _render_sub_status_html(token: str, profile: dict) -> str:
+async def _render_sub_status_html(token: str, profile: dict, page_url: str = "", backup_url: str = "") -> str:
     from web.subscription_page import render_page, telegram_contacts
 
     # Await the same fast publication path used by VPN clients. Reading raw DB
@@ -337,8 +338,8 @@ async def _render_sub_status_html(token: str, profile: dict) -> str:
             await get_setting("subscription_page.tutorial_username", ""),
             await get_setting("support_username", ""),
         )
-    return render_page(profile, rendered, await subscription_url(token), brand,
-                       await _resolve_sub_logo(profile), contacts)
+    return render_page(profile, rendered, page_url or await subscription_url(token), brand,
+                       await _resolve_sub_logo(profile), contacts, backup_url=backup_url)
 
 
 @app.get("/subscription-assets/atlas-logo.webp", include_in_schema=False)
@@ -630,7 +631,16 @@ async def public_subscription(token: str, request: Request):
                 "<h2>لینک اشتراک یافت نشد</h2><p style='color:#9aa6bd'>این لینک معتبر نیست یا حذف شده است.</p></body></html>",
                 status_code=404,
             )
-        html = await _render_sub_status_html(token, profile)
+        primary_url = await subscription_url(token)
+        backup_url = await subscription_backup_url(token)
+        # Only our configured recovery host may select the recovery import URL.
+        # Untrusted proxy headers must never become an app's subscription URL.
+        from urllib.parse import urlsplit
+        backup_host = urlsplit(backup_url).netloc.lower() if backup_url else ""
+        request_hosts = {request.headers.get("host", "").lower(),
+                         request.headers.get("x-forwarded-host", "").lower()}
+        page_url = backup_url if backup_host and backup_host in request_hosts else primary_url
+        html = await _render_sub_status_html(token, profile, page_url=page_url, backup_url=backup_url)
         return HTMLResponse(html, headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer", "X-Robots-Tag": "noindex, nofollow, noarchive"})
 
     # VPN client → base64 config list (fast, read-only).
