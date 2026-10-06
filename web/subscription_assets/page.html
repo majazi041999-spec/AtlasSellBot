@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="fa" dir="rtl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="robots" content="noindex,nofollow,noarchive">
+  <meta name="referrer" content="no-referrer">
+  <meta name="theme-color" content="#081222">
+  <title>$brand — اشتراک شما</title>
+  <style>$css</style>
+</head>
+<body>
+<main class="wrap">
+  <header class="topbar"><div class="identity"><div class="logo">$logo</div><b>$brand</b></div><span class="eyebrow">مدیریت اشتراک</span></header>
+  <section class="panel overview" aria-labelledby="service-title">
+    <div class="overview-head"><div><p class="eyebrow">اشتراک شما</p><h1 id="service-title">$service_name</h1></div><span class="status $status_class"><i></i>$status</span></div>
+    $banner
+    <div class="usage-title"><span>حجم باقی‌مانده</span><strong dir="auto">$remaining</strong></div>
+    <div class="bar" role="progressbar" aria-label="حجم مصرف‌شده" aria-valuemin="0" aria-valuemax="100" aria-valuenow="$pct"><i style="width:$pct%"></i></div>
+    <div class="usage-caption"><span><b dir="ltr">$used</b> مصرف‌شده</span><span>از <b dir="auto">$total</b></span></div>
+    <div class="stats"><div><span>زمان باقی‌مانده</span><b>$days</b></div><div><span>تاریخ انقضا</span><b dir="auto">$date</b></div><div><span>سرورهای فعال</span><b>$node_count</b></div></div>
+  </section>
+  <div class="content-grid">
+    <section class="panel connect" aria-labelledby="connect-title">
+      <div class="section-head"><span class="step">۱</span><div><h2 id="connect-title">افزودن به برنامه</h2><p>برنامه‌ات را انتخاب کن؛ اشتراک داخل آن اضافه می‌شود.</p></div></div>
+      <div class="platforms" role="tablist" aria-label="سیستم‌عامل"><button type="button" id="tab-android" data-platform="android" role="tab" aria-controls="app-list" aria-selected="true">اندروید <span dir="ltr">Android</span></button><button type="button" id="tab-ios" data-platform="ios" role="tab" aria-controls="app-list" aria-selected="false">آیفون <span dir="ltr">iOS</span></button></div>
+      <div id="app-list" class="app-list" role="tabpanel" aria-labelledby="tab-android">$apps</div>
+      <p class="hint" id="import-hint">برنامه باید نصب باشد. پس از افزودن، اگر سرورها نمایش داده نشدند، «به‌روزرسانی اشتراک» را داخل برنامه بزن.</p>
+      <details class="help"><summary>برنامه باز نشد یا از برنامهٔ دیگری استفاده می‌کنی؟</summary><p>این صفحه را در Chrome یا Safari باز کن. یا لینک اشتراک پایین را کپی کن و در برنامه از قسمت «اشتراک‌ها / Subscriptions» اضافه کن، سپس به‌روزرسانی را بزن.</p></details>
+      <div class="subscription"><label for="suburl">لینک اشتراک</label><div class="sub-box"><input id="suburl" dir="ltr" value="$sub_url" readonly spellcheck="false" aria-label="لینک اشتراک"><button class="copy-btn" type="button" id="copy-sub">کپی اشتراک</button></div></div>
+    </section>
+    <section class="panel servers" aria-labelledby="servers-title">
+      <div class="section-head"><span class="step">۲</span><div><h2 id="servers-title">سرورهای شما <span class="count">$node_count</span></h2><p>این فهرست همان سرورهای فعلیِ لینک اشتراک است.</p></div></div>
+      <div class="node-list">$nodes</div>
+      <p class="hint">با افزودن لینک اشتراک، همهٔ سرورها را یک‌جا داری. لینک تکی را باید بعد از تغییرات دوباره کپی کنی.</p>
+    </section>
+  </div>
+  <section class="refresh-note"><span aria-hidden="true">↻</span><p>برای دریافت تغییرات جدید، <b>اشتراک را داخل برنامه به‌روزرسانی کن.</b> پیام موفقیت یعنی آپدیت انجام شده؛ اگر خطا دیدی، با اینترنت دیگری یا بعد از حالت پرواز دوباره امتحان کن.</p></section>
+  <footer>$brand <span>·</span> مدیریت اشتراک</footer>
+</main>
+<div id="toast" role="status" aria-live="polite" hidden></div>
+<dialog id="manual-copy"><form method="dialog"><h2>کپی دستی لینک</h2><p>مرورگر اجازهٔ کپی خودکار نداد. متن را انتخاب و کپی کن.</p><textarea dir="ltr" readonly aria-label="لینک برای کپی دستی"></textarea><button class="copy-btn" type="submit">بستن</button></form></dialog>
+<script>$js</script>
+</body>
+</html>

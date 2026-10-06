@@ -321,156 +321,15 @@ async def _resolve_sub_brand(profile: dict) -> tuple[str, bool]:
 
 
 async def _render_sub_status_html(token: str, profile: dict) -> str:
-    import html as _html
+    from web.subscription_page import render_page
 
-    disp_brand, is_rep = await _resolve_sub_brand(profile)
+    # Await the same fast publication path used by VPN clients. Reading raw DB
+    # links here misses address overrides, variants and disabled-server filters.
+    rendered = await render_subscription(token)
+    disp_brand, _ = await _resolve_sub_brand(profile)
     brand = disp_brand or (str(profile.get("name") or "").strip() or "سرویس اشتراک")
-    logo_uri = await _resolve_sub_logo(profile)
-    logo_html = (
-        f'<img src="{_html.escape(logo_uri, quote=True)}" alt="logo" '
-        'style="width:54px;height:54px;border-radius:16px;object-fit:cover">'
-        if logo_uri else "🌐"
-    )
-    sub_url = await subscription_url(token)
-    nodes = await _get_sub_nodes(int(profile["id"]))
-    active_nodes = [n for n in nodes if int(n.get("is_active") or 0) and (n.get("link") or "").strip()]
-
-    now_ms = int(time.time() * 1000)
-    expire_ms = int(profile.get("expire_timestamp") or 0)
-    total = int(float(profile.get("traffic_gb") or 0) * 1024 ** 3)
-    used = int(profile.get("used_bytes") or 0)
-    remaining = max(0, total - used) if total > 0 else 0
-    pct = min(100, int(used / total * 100)) if total > 0 else 0
-    if expire_ms > 0:
-        days_left = max(0, int((expire_ms - now_ms) / 86400000))
-        expire_date = datetime.fromtimestamp(expire_ms / 1000).strftime("%Y-%m-%d")
-    else:
-        days_left = -1
-        expire_date = "نامحدود"
-    expired = (expire_ms > 0 and expire_ms <= now_ms) or (total > 0 and used >= total) or not int(profile.get("is_active") or 0)
-    status_label = "منقضی / غیرفعال" if expired else "فعال"
-    status_color = "#ff4c6a" if expired else "#00e5a0"
-    days_text = "نامحدود" if days_left < 0 else (f"{days_left} روز" if days_left > 0 else "کمتر از یک روز / منقضی")
-
-    node_rows = ""
-    for i, n in enumerate(active_nodes, 1):
-        remark = _html.escape(str(n.get("node_label") or n.get("server_name") or f"سرور {i}"))
-        # The link lives in a data-attribute (no off-screen inputs) so it can be
-        # copied without creating horizontal overflow / a phantom scroll area.
-        link = _html.escape(n.get("link") or "", quote=True)
-        node_rows += f"""
-        <div class="node">
-          <div class="node-name">📍 {remark}</div>
-          <button class="copy-btn" type="button" data-link="{link}" onclick="copyText(this,this.dataset.link)">کپی لینک</button>
-        </div>"""
-    if not node_rows:
-        node_rows = '<div class="muted">سروری برای نمایش موجود نیست.</div>'
-
-    safe_brand = _html.escape(str(brand or "Atlas Account"))
-    safe_sub = _html.escape(sub_url, quote=True)
-    renew_banner = (
-        '<div class="banner">⛔️ سرویس شما به پایان رسیده است. برای ادامه، از داخل ربات «تمدید» کنید.</div>'
-        if expired else ""
-    )
-    return f"""<!doctype html>
-<html lang="fa" dir="rtl"><head>
-<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<meta name="robots" content="noindex,nofollow">
-<meta name="theme-color" content="#0b0f1a">
-<title>{safe_brand} — وضعیت اشتراک</title>
-<style>
-*{{box-sizing:border-box}}
-html,body{{max-width:100%;overflow-x:hidden}}
-body{{margin:0;font-family:Vazirmatn,Tahoma,system-ui,-apple-system,sans-serif;
-  background:radial-gradient(120% 80% at 80% -10%,rgba(124,111,255,.20),transparent 55%),
-             radial-gradient(120% 80% at 0% 110%,rgba(0,229,160,.14),transparent 55%),#0b0f1a;
-  color:#e8edf6;min-height:100vh;min-height:100dvh;display:flex;align-items:flex-start;justify-content:center;
-  padding:max(16px,env(safe-area-inset-top)) 16px calc(28px + env(safe-area-inset-bottom))}}
-.wrap{{width:100%;max-width:460px;margin:auto}}
-.card{{width:100%;background:rgba(255,255,255,.045);border:1px solid rgba(255,255,255,.09);
-  border-radius:22px;padding:22px;box-shadow:0 30px 70px rgba(0,0,0,.5);backdrop-filter:blur(8px)}}
-.head{{text-align:center;margin-bottom:16px}}
-.logo{{width:54px;height:54px;border-radius:16px;display:inline-flex;align-items:center;justify-content:center;
-  font-size:1.7rem;background:linear-gradient(135deg,#7c6fff,#00e5a0);box-shadow:0 10px 28px rgba(124,111,255,.4)}}
-.brand{{font-size:1.2rem;font-weight:800;margin-top:10px}}
-.sub-title{{color:#9aa6bd;font-size:.82rem;margin-top:2px}}
-.status{{display:inline-block;margin-top:12px;padding:5px 14px;border-radius:999px;font-size:.8rem;font-weight:800;
-  color:{status_color};border:1px solid {status_color};background:rgba(255,255,255,.04)}}
-.banner{{margin:14px 0 2px;padding:12px 14px;border-radius:14px;font-size:.83rem;font-weight:700;line-height:1.7;
-  background:rgba(255,76,106,.12);border:1px solid rgba(255,76,106,.4);color:#ffb3c0}}
-.usage{{margin:18px 0 8px}}
-.usage-top{{display:flex;justify-content:space-between;align-items:baseline;font-size:.84rem;margin-bottom:8px}}
-.usage-top b{{font-size:1.05rem}}
-.bar{{height:12px;border-radius:999px;background:rgba(255,255,255,.09);overflow:hidden}}
-.bar>i{{display:block;height:100%;width:{pct}%;border-radius:999px;background:linear-gradient(90deg,#7c6fff,#00e5a0)}}
-.grid{{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:16px}}
-.cell{{background:rgba(255,255,255,.035);border:1px solid rgba(255,255,255,.06);border-radius:14px;padding:12px}}
-.cell .k{{color:#9aa6bd;font-size:.74rem}}
-.cell .v{{font-weight:800;font-size:.96rem;margin-top:3px;word-break:break-word}}
-.section-title{{margin:20px 0 9px;font-weight:800;font-size:.92rem;display:flex;align-items:center;gap:6px}}
-.sub-box{{display:flex;gap:8px;align-items:center;background:#0a0e18;border:1px solid rgba(255,255,255,.09);
-  border-radius:14px;padding:8px 8px 8px 10px;overflow:hidden}}
-.sub-box input{{flex:1;background:transparent;border:none;color:#cfe;font-family:ui-monospace,Consolas,monospace;
-  font-size:.72rem;direction:ltr;text-align:left;outline:none;min-width:0}}
-.copy-btn{{background:#7c6fff;border:none;color:#fff;border-radius:11px;padding:9px 14px;font-size:.78rem;
-  font-weight:800;cursor:pointer;white-space:nowrap;flex-shrink:0;transition:transform .1s,background .15s}}
-.copy-btn:hover{{background:#6b5dff}}
-.copy-btn:active{{transform:scale(.95)}}
-.node{{display:flex;justify-content:space-between;align-items:center;gap:10px;background:#0a0e18;
-  border:1px solid rgba(255,255,255,.06);border-radius:14px;padding:11px 12px;margin-bottom:8px}}
-.node-name{{font-size:.88rem;font-weight:700;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}
-.muted{{color:#9aa6bd;font-size:.85rem}}
-.guide{{margin-top:18px;font-size:.78rem;color:#9aa6bd;line-height:2;background:rgba(255,255,255,.03);
-  border:1px solid rgba(255,255,255,.05);border-radius:14px;padding:13px 15px}}
-.foot{{text-align:center;color:#5d6680;font-size:.72rem;margin-top:18px}}
-@media(max-width:480px){{.card{{padding:18px;border-radius:18px}}.grid{{gap:8px}}}}
-</style></head>
-<body><div class="wrap"><div class="card">
-  <div class="head">
-    <div class="logo">{logo_html}</div>
-    <div class="brand">{safe_brand}</div>
-    <div class="sub-title">صفحهٔ وضعیت اشتراک</div>
-    <div><span class="status">{status_label}</span></div>
-  </div>
-
-  {renew_banner}
-
-  <div class="usage">
-    <div class="usage-top"><span class="muted">مصرف</span>
-      <span><b>{_fmt_bytes_web(used)}</b> از {(_fmt_bytes_web(total) if total>0 else 'نامحدود')}</span></div>
-    <div class="bar"><i></i></div>
-  </div>
-
-  <div class="grid">
-    <div class="cell"><div class="k">باقی‌مانده</div><div class="v">{(_fmt_bytes_web(remaining) if total>0 else 'نامحدود')}</div></div>
-    <div class="cell"><div class="k">زمان باقی‌مانده</div><div class="v">{days_text}</div></div>
-    <div class="cell"><div class="k">تاریخ انقضا</div><div class="v">{expire_date}</div></div>
-    <div class="cell"><div class="k">تعداد سرور</div><div class="v">{len(active_nodes)}</div></div>
-  </div>
-
-  <div class="section-title">🔗 لینک اشتراک</div>
-  <div class="sub-box">
-    <input id="suburl" value="{safe_sub}" readonly onclick="this.select()">
-    <button class="copy-btn" type="button" onclick="copyText(this,document.getElementById('suburl').value)">کپی</button>
-  </div>
-
-  <div class="section-title">🖥 سرورها</div>
-  {node_rows}
-
-  <div class="guide">
-    📚 راهنما: لینک اشتراک بالا را کپی کنید و در برنامه‌هایی مثل v2rayNG، NekoBox، Streisand یا V2Box از بخش «افزودن از کلیپ‌بورد» اضافه و آپدیت کنید. اگر لینک اشتراک باز نشد، لینک هر سرور را جداگانه کپی کنید.
-  </div>
-  <div class="foot">{safe_brand}</div>
-</div></div>
-<script>
-function copyText(btn, text){{
-  const done=()=>{{const o=btn.textContent;btn.textContent='✅ کپی شد';setTimeout(()=>btn.textContent=o,1500);}};
-  if(navigator.clipboard&&window.isSecureContext){{navigator.clipboard.writeText(text).then(done).catch(()=>fallback(text,done));}}
-  else fallback(text,done);
-}}
-function fallback(text,done){{const t=document.createElement('textarea');t.value=text;t.style.position='fixed';t.style.opacity='0';document.body.appendChild(t);t.select();try{{document.execCommand('copy');done();}}catch(e){{}}document.body.removeChild(t);}}
-</script>
-</body></html>"""
+    return render_page(profile, rendered, await subscription_url(token), brand,
+                       await _resolve_sub_logo(profile))
 
 
 # ═════════════════ Android client public API (/client/v1) ═════════════════
@@ -756,13 +615,8 @@ async def public_subscription(token: str, request: Request):
                 "<h2>لینک اشتراک یافت نشد</h2><p style='color:#9aa6bd'>این لینک معتبر نیست یا حذف شده است.</p></body></html>",
                 status_code=404,
             )
-        # keep usage/links fresh in the background without blocking the page
-        try:
-            _asyncio.create_task(render_subscription(token))
-        except Exception:
-            pass
         html = await _render_sub_status_html(token, profile)
-        return HTMLResponse(html, headers={"Cache-Control": "no-store"})
+        return HTMLResponse(html, headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer", "X-Robots-Tag": "noindex, nofollow, noarchive"})
 
     # VPN client → base64 config list (fast, read-only).
     rendered = await render_subscription(token)
