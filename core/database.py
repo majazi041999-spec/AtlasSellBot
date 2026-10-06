@@ -580,6 +580,8 @@ async def _ensure_columns(db):
             ("max_active_profiles", "INTEGER DEFAULT 0"),
             ("is_active", "INTEGER DEFAULT 1"),
             ("connect_host", "TEXT DEFAULT ''"),
+            # Explicit TLS termination in front of a loopback WS inbound.
+            ("tls_frontend", "TEXT DEFAULT ''"),
             # Auto node ("نود خودکار"): one entry in the user's subscription that
             # always points at whichever server currently has the fewest online
             # users. Its own server_id/inbound_id are placeholders (see
@@ -604,6 +606,9 @@ async def _ensure_columns(db):
             # figure forward, every move would hand the customer back the quota
             # they had already spent.
             ("carried_bytes", "INTEGER DEFAULT 0"),
+            # Renewal clears local usage while a server/node is off; reset its
+            # retained remote counter before publishing it again.
+            ("renewal_reset_pending", "INTEGER DEFAULT 0"),
             # Epoch ms when the panel CONFIRMED this client was switched off.
             # `is_active` alone can't say: it is dropped to 0 even when the
             # remote write fails, so that rendering stops serving the node
@@ -4022,6 +4027,7 @@ async def get_subscription_nodes(profile_id: int) -> List[Dict]:
                       COALESCE(own.label, phys.label) AS node_label,
                       COALESCE(own.priority, phys.priority, 100) AS node_priority,
                       COALESCE(NULLIF(own.connect_host,''), phys.connect_host, '') AS connect_host,
+                      COALESCE(NULLIF(own.tls_frontend,''), phys.tls_frontend, '') AS tls_frontend,
                       COALESCE(own.is_auto, 0) AS node_is_auto,
                       COALESCE(own.is_active, phys.is_active, 1) AS node_config_active,
                       COALESCE(s.is_active, 0) AS server_active,

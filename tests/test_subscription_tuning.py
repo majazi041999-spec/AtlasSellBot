@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, patch
 from urllib.parse import parse_qs, urlsplit
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from core.subscription_tuning import apply_ws_early_data, apply_ws_ech, apply_ws_backup, without_ws_early_data
+from core.subscription_tuning import apply_ws_early_data, apply_ws_ech, apply_ws_backup, without_ws_early_data, apply_ws_tls_frontend
 from core import multi_subscription as multi
 from core.subscription_variants import describe_variants, variant_enabled, toggle_variant
 
@@ -16,6 +16,22 @@ WS = f'vless://{UUID}@edge.example:8443?type=ws&security=tls&sni=origin.example&
 ECH = 'trws.anacotig.com+https://8.8.8.8/dns-query'
 
 class TuningTests(unittest.TestCase):
+    def test_tls_frontend_exports_public_endpoint_with_same_identity_and_path(self):
+        raw=WS.replace('security=tls','security=none').replace(':8443',':16443')
+        result=apply_ws_tls_frontend(raw,{'port':443,'server_name':'public.example'})
+        before,after=urlsplit(raw),urlsplit(result)
+        self.assertEqual(after.username,before.username)
+        self.assertEqual(after.hostname,before.hostname)
+        self.assertEqual(after.port,443)
+        query=parse_qs(after.query)
+        self.assertEqual(query['path'],parse_qs(before.query)['path'])
+        self.assertEqual(query['security'],['tls'])
+        self.assertEqual(query['sni'],['public.example'])
+        self.assertEqual(query['host'],['public.example'])
+        for bad in [{},{'port':True,'server_name':'public.example'},
+                    {'port':443,'server_name':'bad\nhost'}, {'port':70000,'server_name':'public.example'}]:
+            self.assertEqual(apply_ws_tls_frontend(raw,bad),'')
+        self.assertEqual(apply_ws_tls_frontend(WS,{'port':443,'server_name':'public.example'}),'')
     def test_backup_rejects_unverified_hosts_resolvers_and_malformed_settings(self):
         for options in [None, [], {}, {'address':[]}, {'address':'unverified.example'},
                         {'address':'virgool.io','no_ed':'true'},
@@ -86,6 +102,34 @@ class TuningTests(unittest.TestCase):
         self.assertEqual(apply_ws_early_data(tcp, 2560), tcp)
 
 class RenderTuningTests(unittest.IsolatedAsyncioTestCase):
+    async def test_frontend_render_preserves_protected_nodes_and_omits_pending_resets(self):
+        raw=WS.replace('security=tls','security=none').replace(':8443',':16443')
+        germany=WS+'#Germany%20WS'
+        frontend=json.dumps({'port':443,'server_name':'public.example'})
+        nodes=[dict(id=1,server_id=2,inbound_id=6,is_active=1,link=raw,node_label='Instagram Test',
+                    tls_frontend=frontend,connect_host='public.example'),
+               dict(id=2,server_id=4,inbound_id=3,is_active=1,link=germany,node_label='Germany WS',
+                    tls_frontend=frontend)]
+        profile=dict(id=1,is_active=1,traffic_gb=30,used_bytes=0,expire_timestamp=0,name='QA')
+        async def setting(key,default=''):
+            return '0' if key=='sub_info_sync_on_render' else default
+        with patch.object(multi,'get_subscription_profile_by_token',AsyncMock(return_value=profile)), \
+             patch.object(multi,'get_subscription_nodes',AsyncMock(return_value=nodes)), \
+             patch.object(multi,'get_setting',setting), \
+             patch.object(multi,'_subscription_info_links',AsyncMock(return_value=[])):
+            rendered=await multi.render_subscription('test-token')
+            links=base64.b64decode(rendered[0]).decode().splitlines()
+            self.assertEqual(len(links),2)
+            trial=urlsplit(links[0]);self.assertEqual((trial.hostname,trial.port),('public.example',443))
+            self.assertEqual(parse_qs(trial.query)['security'],['tls'])
+            self.assertEqual(links[1],germany)
+            nodes[0]['renewal_reset_pending']=1
+            hidden=await multi.render_subscription('test-token')
+            self.assertEqual(base64.b64decode(hidden[0]).decode().splitlines(),[germany])
+            nodes[0]['renewal_reset_pending']=0;nodes[0]['tls_frontend']='bad json'
+            invalid=await multi.render_subscription('test-token')
+            self.assertEqual(base64.b64decode(invalid[0]).decode().splitlines(),[germany])
+
     async def test_hide_regular_keeps_working_sibling_variants_and_protected_nodes(self):
         nl = apply_ws_early_data(WS, 2560) + '#Netherlands%20WS'
         usa = f'vless://{UUID}@usa.example:2083?type=tcp&security=reality&sni=example.com#USA%20New'

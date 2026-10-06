@@ -19,6 +19,18 @@ nodes must complete renewal before the profile is marked renewed. Panel writes
 are not a distributed transaction: a partial remote failure still needs retry;
 the existing caller's failure/refund handling applies.
 
+Disabled servers and node configurations are not contacted during renewal, but
+their banked/local consumption must also be cleared when the renewal succeeds.
+Otherwise the next usage sync adds the previous plan's consumption back to the
+new plan. A `renewal_reset_pending` marker keeps those retained clients hidden
+and excludes their old counters from accounting. Reconciliation applies the
+current entitlement and confirms a remote traffic reset before publishing the
+node again. Failed resets leave it hidden and pending; failed renewals do not
+clear disabled-node history. Existing active nodes keep their normal accounting.
+
+The regression tests cover renewal followed by a usage sync with an offline
+server or disabled node, and later reactivation with successful/failed resets.
+
 ## Private representative accounting
 
 In the mini-app representative report, each purchase unit and each renewal has

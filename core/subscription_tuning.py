@@ -1,8 +1,38 @@
 """Client transport tuning applied at render time, independent of panel sync."""
+import re
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 VERIFIED_ECH_LOOKUPS = {'trws.anacotig.com', 'blogfa.com', 'www.tgju.org', 'mihanblockchain.com'}
 VERIFIED_EDGE_DOMAINS = {'www.technolife.com', 'virgool.io', 'ok-ex.io', 'mihanblockchain.com'}
+
+
+def apply_ws_tls_frontend(link: str, options) -> str:
+    """Export the public TLS endpoint of a WS inbound behind a reverse proxy.
+
+    An explicitly configured but invalid frontend is omitted, never published
+    as a plaintext/internal endpoint. Identity, WS path and label are retained.
+    """
+    if not isinstance(options, dict):
+        return ''
+    port, host = options.get('port'), options.get('server_name')
+    if (type(port) is not int or not 1 <= port <= 65535 or not isinstance(host,str)
+            or len(host)>253 or not all(re.fullmatch(r'[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?',label)
+                                       for label in host.split('.'))):
+        return ''
+    try:
+        parts=urlsplit(link)
+        query=parse_qsl(parts.query,keep_blank_values=True)
+        values=dict(query)
+        if (parts.scheme!='vless' or values.get('type')!='ws' or values.get('security')!='none'
+                or not parts.username or not parts.hostname or not values.get('path')):
+            return ''
+        address=parts.hostname
+        if ':' in address:address='['+address+']'
+        changed={'security':'tls','sni':host,'host':host,'fp':'chrome','alpn':'http/1.1'}
+        query=[(k,v) for k,v in query if k not in changed]+list(changed.items())
+        return urlunsplit(parts._replace(netloc=f'{parts.username}@{address}:{port}',query=urlencode(query)))
+    except (TypeError,ValueError):
+        return ''
 
 
 def apply_ws_backup(link: str, options) -> str:

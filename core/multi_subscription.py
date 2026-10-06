@@ -36,7 +36,7 @@ from core.database import (
     update_subscription_profile,
 )
 from core.xui_api import XUIClient, expiry_ms_from_days
-from core.subscription_tuning import apply_ws_early_data, apply_ws_ech, apply_ws_backup, without_ws_early_data
+from core.subscription_tuning import apply_ws_early_data, apply_ws_ech, apply_ws_backup, without_ws_early_data, apply_ws_tls_frontend
 from core.subscription_variants import variant_enabled
 
 logger = logging.getLogger(__name__)
@@ -1044,7 +1044,8 @@ async def render_subscription(token: str) -> tuple[str, Dict[str, int]] | None:
     extra_links = []
     backup_links = []
     for n in nodes:
-        if not int(n.get("is_active") or 0) or not int(n.get("node_config_active", 1)) or not int(n.get('server_active', 1)):
+        if (not int(n.get("is_active") or 0) or int(n.get('renewal_reset_pending') or 0)
+                or not int(n.get("node_config_active", 1)) or not int(n.get('server_active', 1))):
             continue
         target = f"{n.get('server_id')}:{n.get('inbound_id')}"
         required = dependencies.get(target, []) if target not in ('4:3', '6:2') else []
@@ -1070,6 +1071,14 @@ async def render_subscription(token: str) -> tuple[str, Dict[str, int]] | None:
                 raw_link = ""
         if not raw_link:
             continue
+        if n.get('tls_frontend') and target not in ('4:3','6:2'):
+            try:
+                frontend=json.loads(n['tls_frontend'])
+            except (TypeError,ValueError):
+                continue
+            raw_link=apply_ws_tls_frontend(raw_link,frontend)
+            if not raw_link:
+                continue
         # Per-node custom domain: rewrite ONLY the address on the cached link at
         # render time. This is HTTP-free, so changing a node's domain in the panel
         # reflects in every user's link on the very next fetch — no re-sync needed.
@@ -1285,7 +1294,8 @@ async def ensure_subscription_profile_nodes(profile: Dict, force_refresh: bool =
             missing_nodes.append(node)
         elif int(existing.get("server_id") or 0) != int(node.get("server_id") or 0) or int(existing.get("inbound_id") or 0) != int(node.get("inbound_id") or 0):
             move_nodes.append((node, existing))
-        elif force_refresh or not existing.get("link") or not int(existing.get("is_active") or 0):
+        elif (force_refresh or not existing.get("link") or not int(existing.get("is_active") or 0)
+              or int(existing.get('renewal_reset_pending') or 0)):
             refresh_nodes.append((node, existing))
     if not missing_nodes and not refresh_nodes and not move_nodes:
         return {"created": 0, "refreshed": 0, "verified": 0, "moved": 0, "removed": removed, "skipped": 0, "failed": 0}
@@ -1341,6 +1351,11 @@ async def ensure_subscription_profile_nodes(profile: Dict, force_refresh: bool =
                 failed += 1
                 detail = getattr(cli, "last_error", "") or "link_not_found"
                 errors.append(f"move_link_empty:p{profile.get('id')}:node{node.get('server_id')}/{inbound_id}:{detail}")
+                continue
+            if not await _complete_deferred_renewal(cli, existing, inbound_id, client_uuid,
+                                                  node_email, traffic_gb, expire_ms):
+                failed += 1
+                errors.append(f"move_renewal_reset_failed:node{existing['id']}")
                 continue
             await update_subscription_node(
                 existing["id"],
@@ -1406,6 +1421,11 @@ async def ensure_subscription_profile_nodes(profile: Dict, force_refresh: bool =
                 inbound_id, client_uuid, fresh_link = await _remote_identity_and_link(cli, inbound_id, node_email, client_uuid)
                 if _subscription_link_is_complete(fresh_link):
                     link = fresh_link
+                if not await _complete_deferred_renewal(cli, existing, inbound_id, client_uuid,
+                                                      node_email, traffic_gb, expire_ms):
+                    failed += 1
+                    errors.append(f"refresh_renewal_reset_failed:node{existing['id']}")
+                    continue
                 changed = (
                     link != (existing.get("link") or "")
                     or not int(existing.get("is_active") or 0)
@@ -1521,6 +1541,25 @@ async def repair_subscription_profile_expiry(profile: Dict) -> Dict:
     return fixed
 
 
+async def _complete_deferred_renewal(cli: XUIClient, node: Dict, inbound_id: int,
+                                     client_uuid: str, email: str, traffic_gb: float,
+                                     expire_ms: int) -> bool:
+    """Retained disabled clients must start the new plan before returning."""
+    if not int(node.get('renewal_reset_pending') or 0):
+        return True
+    ok = await cli.update_client(inbound_id, client_uuid, email, traffic_gb, expire_ms, True)
+    if ok:
+        ok = await cli.reset_client_traffic(inbound_id, email)
+    if not ok:
+        # Keep the old quota/counters out of both the subscription and accounting.
+        await cli.update_client(inbound_id, client_uuid, email, traffic_gb, expire_ms, False)
+        logger.warning('deferred renewal reset failed node=%s', node.get('id'))
+        return False
+    await update_subscription_node(node['id'], renewal_reset_pending=0,
+                                   last_used_bytes=0, carried_bytes=0)
+    return True
+
+
 class PanelSessions:
     """Per-server panel state shared across one sweep: a logged-in client, and
     a single bulk traffic snapshot (see `client_traffic`).
@@ -1615,6 +1654,10 @@ async def sync_profile_usage(profile: Dict, sessions: Optional[PanelSessions] = 
         return {"used": int(profile.get("used_bytes") or 0), "disabled": True, "expired": True}
 
     for node in nodes:
+        if int(node.get('renewal_reset_pending') or 0):
+            # This retained counter belongs to the previous plan. Reconciliation
+            # resets it before the node can return to the subscription.
+            continue
         if not int(node.get('server_active', 1)) or not int(node.get('node_config_active',1)):
             used_total += int(node.get('last_used_bytes') or 0) + int(node.get('carried_bytes') or 0)
             continue
@@ -1707,6 +1750,10 @@ async def set_nodes_enabled(profile_id: int, enabled: bool):
                         ok = True
                 if ok:
                     r_in, r_uuid, link = await _remote_identity_and_link(cli, inbound_id, node_email, node_uuid)
+                    if not await _complete_deferred_renewal(cli, node, r_in or inbound_id,
+                                                          r_uuid or node_uuid, node_email,
+                                                          traffic_gb, expire_ms):
+                        continue
                     upd = {"is_active": 1, "inbound_id": r_in or inbound_id, "uuid": r_uuid or node_uuid,
                            "remote_disabled_at": 0}
                     if _subscription_link_is_complete(link):
@@ -1783,6 +1830,7 @@ async def renew_subscription_profile(profile: Dict, traffic_gb: float, duration_
                 # Renewal wipes the client's traffic on the panel, so the banked
                 # pre-move usage has to go with it.
                 update_kw = {"is_active": 1, "last_used_bytes": 0, "carried_bytes": 0,
+                             "renewal_reset_pending": 0,
                              "inbound_id": fresh_inbound or inbound_id, "uuid": fresh_uuid or node_uuid}
                 if _subscription_link_is_complete(fresh_link):
                     update_kw["link"] = fresh_link
@@ -1796,6 +1844,12 @@ async def renew_subscription_profile(profile: Dict, traffic_gb: float, duration_
             await cli.close()
     if ok_count <= 0 or failures:
         return {"ok": False, "error": "renewal_incomplete:" + ",".join(failures[:6])}
+    for node in nodes:
+        if not int(node.get('server_active',1)) or not int(node.get('node_config_active',1)):
+            await update_subscription_node(
+                node['id'], last_used_bytes=0, carried_bytes=0,
+                is_active=0, renewal_reset_pending=1,
+            )
     update_kwargs = dict(
         traffic_gb=float(final_traffic_gb),
         used_bytes=0,
