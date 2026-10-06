@@ -1,8 +1,10 @@
 """A browser view of the *published* subscription, never the raw node cache."""
 import base64
 import html
+import hashlib
 import json
 import math
+import re
 import time
 from datetime import datetime
 from pathlib import Path
@@ -13,6 +15,17 @@ _ASSETS = Path(__file__).with_name('subscription_assets')
 _PAGE = Template((_ASSETS / 'page.html').read_text(encoding='utf-8'))
 _CSS = (_ASSETS / 'page.css').read_text(encoding='utf-8')
 _JS = (_ASSETS / 'page.js').read_text(encoding='utf-8')
+DEFAULT_LOGO_URL = '/subscription-assets/atlas-logo.webp?v=' + hashlib.sha256((_ASSETS / 'atlas-logo.webp').read_bytes()).hexdigest()[:12]
+
+
+def telegram_contacts(bot: str, channel: str, tutorial: str, support: str) -> list[dict]:
+    """Accept public Telegram usernames, never arbitrary URLs from settings."""
+    contacts = []
+    for label, username in [('ربات و تمدید', bot), ('کانال اطلاع‌رسانی', channel), ('آموزش اتصال', tutorial), ('پشتیبانی', support)]:
+        username = str(username or '').strip().lstrip('@')
+        if re.fullmatch(r'[A-Za-z][A-Za-z0-9_]{3,31}', username):
+            contacts.append(dict(label=label, username=username, href='https://t.me/' + username))
+    return contacts
 
 
 def published_nodes(body: str) -> list[tuple[str, str]]:
@@ -59,7 +72,7 @@ def _bytes(value: int) -> str:
         amount /= 1024
 
 
-def render_page(profile: dict, rendered: tuple | None, sub_url: str, brand: str, logo: str) -> str:
+def render_page(profile: dict, rendered: tuple | None, sub_url: str, brand: str, logo: str, contacts: list[dict] | None = None) -> str:
     body, info = rendered or ('', {})
     used = int(info.get('download', profile.get('used_bytes') or 0)) + int(info.get('upload', 0))
     total = int(info.get('total', float(profile.get('traffic_gb') or 0) * 1024**3))
@@ -87,6 +100,11 @@ def render_page(profile: dict, rendered: tuple | None, sub_url: str, brand: str,
         for i, (label, link) in enumerate(nodes, 1)
     ) or '<p class="empty">در حال حاضر سروری برای نمایش موجود نیست. وضعیت سرویس را از ربات بررسی کنید.</p>'
     logo_html = f'<img src="{safe(logo)}" alt="" referrerpolicy="no-referrer">' if logo else '<span aria-hidden="true">◈</span>'
+    contact_rows = ''.join(
+        f'<a href="{safe(contact["href"])}" target="_blank" rel="noopener noreferrer">'
+        f'<span>{safe(contact["label"])}</span><b dir="ltr">@{safe(contact["username"])}</b><i aria-hidden="true">↗</i></a>'
+        for contact in contacts or []
+    )
     return _PAGE.substitute(
         css=_CSS, js=_JS, brand=safe(brand), service_name=safe(profile.get('name') or 'اشتراک شما'),
         logo=logo_html, status=safe(status), status_class='ended' if unavailable else 'active',
@@ -96,4 +114,5 @@ def render_page(profile: dict, rendered: tuple | None, sub_url: str, brand: str,
         date=safe(datetime.fromtimestamp(expire).strftime('%Y-%m-%d') if expire > 0 else 'نامحدود'),
         pct=min(100, max(0, round(used * 100 / total))) if total > 0 else 0,
         node_count=len(nodes), sub_url=safe(machine_url), apps=app_rows, nodes=node_rows,
+        contacts=f'<nav class="contact-links" aria-label="ارتباط در تلگرام">{contact_rows}</nav>' if contact_rows else '',
     )

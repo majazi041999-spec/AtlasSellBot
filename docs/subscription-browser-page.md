@@ -53,3 +53,16 @@ escaping, single publication call and app URL encoding.
 uses Playwright Chromium to verify 320/390/940/1280px layouts, Android/iOS tabs,
 exact clipboard content and both failed and successful clipboard fallbacks.
 All fixtures are synthetic. Playwright is not a production dependency.
+
+## Atlas branding and contacts
+
+The owner's supplied logo is served as a 25 KB WebP asset, with a content version
+in its URL and a long cache lifetime. The source artwork is preserved visually;
+it was only resized/compressed for website delivery. A configured `ui.logo_data`
+still takes precedence. Representatives with no logo retain a neutral symbol.
+
+Owner pages show Telegram contacts from `subscription_page.bot_username`,
+`channel_username`, `subscription_page.tutorial_username` and `support_username`.
+Only public Telegram usernames are accepted. Platform contacts are omitted
+entirely from representative pages. Telegram links open with `noopener
+noreferrer`, so they do not disclose the private subscription URL.

@@ -12,7 +12,7 @@ from starlette.requests import Request
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from web import app as web
-from web.subscription_page import config_url, import_apps, published_nodes, render_page
+from web.subscription_page import config_url, import_apps, published_nodes, render_page, telegram_contacts
 from core import database as db, multi_subscription as multi
 
 class PageLinks(HTMLParser):
@@ -25,6 +25,11 @@ class PageLinks(HTMLParser):
             self.links.append(attrs['data-link'])
 
 class SubscriptionPageTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        settings = patch.object(web, 'get_setting', AsyncMock(return_value=''))
+        settings.start()
+        self.addCleanup(settings.stop)
+
     async def test_browser_copies_canonical_variants_instead_of_cached_raw_nodes(self):
         profile = dict(id=1, is_active=1, traffic_gb=1, used_bytes=0, expire_timestamp=0)
         raw = 'vless://test@old.example:443?type=ws&security=tls#Old'
@@ -101,6 +106,20 @@ class SubscriptionPageTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(page.links, [link])
         self.assertNotIn(label, html)
         self.assertIn('&lt;script&gt;', html)
+
+    async def test_representative_page_does_not_leak_platform_contacts(self):
+        profile = dict(id=1, is_active=1)
+        with patch.object(web, '_resolve_sub_brand', AsyncMock(return_value=('Representative Brand', True))), patch.object(web, '_resolve_sub_logo', AsyncMock(return_value='')), patch.object(web, 'get_setting', AsyncMock()) as settings, patch.object(web, 'subscription_url', AsyncMock(return_value='https://sub.example/sub/test')), patch.object(web, 'render_subscription', AsyncMock(return_value=('', dict(download=0, total=0, expire=0)))):
+            html = await web._render_sub_status_html('test', profile)
+        self.assertIn('Representative Brand', html)
+        self.assertNotIn('t.me/', html)
+        self.assertNotIn('atlas-logo.webp', html)
+        settings.assert_not_awaited()
+
+    def test_contact_settings_cannot_inject_arbitrary_links(self):
+        contacts = telegram_contacts('@atlas_account_bot', 'atlas_account', 'atlastutorial', 'javascript:alert(1)')
+        self.assertEqual(len(contacts), 3)
+        self.assertEqual(contacts[0]['href'], 'https://t.me/atlas_account_bot')
 
 if __name__ == '__main__':
     unittest.main()

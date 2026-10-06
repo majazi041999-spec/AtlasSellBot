@@ -274,7 +274,8 @@ from core.images import process_logo_bytes
 
 
 async def _admin_logo() -> str:
-    return (await get_setting("ui.logo_data", "")).strip()
+    from web.subscription_page import DEFAULT_LOGO_URL
+    return (await get_setting("ui.logo_data", "")).strip() or DEFAULT_LOGO_URL
 
 
 def _is_whitelabel_owner(u: dict) -> bool:
@@ -321,15 +322,29 @@ async def _resolve_sub_brand(profile: dict) -> tuple[str, bool]:
 
 
 async def _render_sub_status_html(token: str, profile: dict) -> str:
-    from web.subscription_page import render_page
+    from web.subscription_page import render_page, telegram_contacts
 
     # Await the same fast publication path used by VPN clients. Reading raw DB
     # links here misses address overrides, variants and disabled-server filters.
     rendered = await render_subscription(token)
-    disp_brand, _ = await _resolve_sub_brand(profile)
+    disp_brand, is_rep = await _resolve_sub_brand(profile)
     brand = disp_brand or (str(profile.get("name") or "").strip() or "سرویس اشتراک")
+    contacts = []
+    if not is_rep:
+        contacts = telegram_contacts(
+            await get_setting("subscription_page.bot_username", ""),
+            await get_setting("channel_username", ""),
+            await get_setting("subscription_page.tutorial_username", ""),
+            await get_setting("support_username", ""),
+        )
     return render_page(profile, rendered, await subscription_url(token), brand,
-                       await _resolve_sub_logo(profile))
+                       await _resolve_sub_logo(profile), contacts)
+
+
+@app.get("/subscription-assets/atlas-logo.webp", include_in_schema=False)
+async def subscription_brand_logo():
+    return FileResponse(os.path.join(os.path.dirname(__file__), "subscription_assets", "atlas-logo.webp"),
+                        media_type="image/webp", headers={"Cache-Control": "public, max-age=31536000, immutable"})
 
 
 # ═════════════════ Android client public API (/client/v1) ═════════════════
