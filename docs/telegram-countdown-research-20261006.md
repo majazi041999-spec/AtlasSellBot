@@ -46,3 +46,15 @@ Source and the guarded one-time publisher are in
 `tools/announcements/publish-price-countdown-20261007.py`. Private receipts stay
 under `/root/atlas-announcements` on the bot host. No recurring edit worker or
 restart is required. Publishing the countdown does not change plan prices.
+
+The owner also authorized a bot-wide announcement. Its owner delivery verified
+three custom-emoji entities, two premium button icons, and the same native date
+entity before dispatch. Delivery IDs are recorded by the existing resumable
+`tools/broadcast.py` under campaign `atlas-price-countdown-20261007`.
+
+The owner later added custom emojis directly to channel post 268. A read of that
+post confirmed both custom emojis and its formatted-date entity were intact.
+The native format has no per-message language override; the owner chose to keep
+native rendering with each user's Telegram language. The manually edited channel
+post was preserved, avoiding the channel restrictions on custom emojis sent by
+bots without the required additional username eligibility.
