@@ -1,0 +1,61 @@
+# Public entry only. The bootstrap certificate is replaced by a locally managed
+# ACME certificate after the existing hostname has moved to this entry.
+map $http_upgrade $atlas_sub_entry_connection {
+    default upgrade;
+    '' '';
+}
+server {
+    listen 80;
+    server_name atbot.anacotig.com;
+    access_log off;
+    error_log /var/log/nginx/atlas-sub-entry-error.log crit;
+    location ^~ /.well-known/acme-challenge/ {
+        root /var/www/atlas-sub-acme;
+        try_files $uri @atlas_origin_challenge;
+    }
+    location @atlas_origin_challenge {
+        proxy_pass https://RELAY_IP:8444;
+        proxy_ssl_server_name on;
+        proxy_ssl_name RELAY_TLS_HOST;
+        proxy_ssl_verify on;
+        proxy_ssl_verify_depth 4;
+        proxy_ssl_trusted_certificate /etc/ssl/certs/ca-certificates.crt;
+        proxy_set_header Host atbot.anacotig.com;
+        proxy_set_header X-Atlas-Entry-Key ENTRY_SHARED_KEY;
+    }
+    location / { return 301 https://atbot.anacotig.com:2083$request_uri; }
+}
+server {
+    listen 443 ssl http2;
+    listen 2083 ssl http2;
+    server_name atbot.anacotig.com;
+    ssl_certificate CERTIFICATE_PATH;
+    ssl_certificate_key PRIVATE_KEY_PATH;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    client_max_body_size 32m;
+    access_log off;
+    error_log /var/log/nginx/atlas-sub-entry-error.log crit;
+
+    location / {
+        proxy_pass https://RELAY_IP:8444;
+        proxy_ssl_server_name on;
+        proxy_ssl_name RELAY_TLS_HOST;
+        proxy_ssl_verify on;
+        proxy_ssl_verify_depth 4;
+        proxy_ssl_trusted_certificate /etc/ssl/certs/ca-certificates.crt;
+        proxy_http_version 1.1;
+        proxy_set_header Host atbot.anacotig.com;
+        proxy_set_header X-Forwarded-Host atbot.anacotig.com;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Atlas-Client-IP $remote_addr;
+        proxy_set_header X-Atlas-Entry-Key ENTRY_SHARED_KEY;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header CF-Connecting-IP "";
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $atlas_sub_entry_connection;
+        proxy_connect_timeout 8s;
+        proxy_read_timeout 90s;
+        proxy_send_timeout 90s;
+    }
+}

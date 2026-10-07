@@ -1,0 +1,50 @@
+# Separate virtual host on the existing HTTPS recovery listener.
+# The entry verifies TLS as RELAY_TLS_HOST and supplies the atbot HTTP Host.
+# Existing recovery requests with Host RELAY_TLS_HOST keep their original vhost.
+map $http_upgrade $atlas_sub_relay_connection {
+    default upgrade;
+    '' '';
+}
+server {
+    listen 8444 ssl;
+    listen [::]:8444 ssl;
+    server_name atbot.anacotig.com;
+    ssl_certificate /root/cert/RELAY_TLS_HOST/fullchain.pem;
+    ssl_certificate_key /root/cert/RELAY_TLS_HOST/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    client_max_body_size 32m;
+    allow ENTRY_IP;
+    deny all;
+    if ($http_x_atlas_entry_key != "ENTRY_SHARED_KEY") { return 404; }
+    access_log off;
+    error_log /var/log/nginx/atlas-sub-relay-error.log crit;
+
+    # Existing origin HTTP-01 renewal challenges are public, non-secret files.
+    location ^~ /.well-known/acme-challenge/ {
+        proxy_pass http://ORIGIN_IP:80;
+        proxy_pass_request_headers off;
+        proxy_set_header Host atbot.anacotig.com;
+    }
+    location / {
+        proxy_pass https://ORIGIN_IP:19444;
+        proxy_ssl_server_name on;
+        proxy_ssl_name atbot.anacotig.com;
+        proxy_ssl_verify on;
+        proxy_ssl_verify_depth 4;
+        proxy_ssl_trusted_certificate /etc/ssl/certs/ca-certificates.crt;
+        proxy_http_version 1.1;
+        proxy_set_header Host atbot.anacotig.com;
+        proxy_set_header X-Forwarded-Host atbot.anacotig.com;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Forwarded-For $http_x_atlas_client_ip;
+        proxy_set_header X-Real-IP $http_x_atlas_client_ip;
+        proxy_set_header X-Atlas-Origin-Key ORIGIN_SHARED_KEY;
+        proxy_set_header X-Atlas-Entry-Key "";
+        proxy_set_header CF-Connecting-IP "";
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $atlas_sub_relay_connection;
+        proxy_connect_timeout 8s;
+        proxy_read_timeout 90s;
+        proxy_send_timeout 90s;
+    }
+}

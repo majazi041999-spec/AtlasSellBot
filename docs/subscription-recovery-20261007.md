@@ -8,7 +8,16 @@ complete authenticated download/upload requests. The original DNS address also
 worked during these tests; the reported intermittent failure was not reproduced
 consistently. ECH-dependent variants additionally require compatible clients.
 
-## Current primary entry: same hostname, Cloudflare restored
+## Current primary entry: same hostname, Iran HTTPS entry
+
+On October 8, after explicit owner approval, the same `atbot` A record moved to
+the Iran entry with DNS-only routing and TTL 120. Customer URLs and protected VPN
+nodes are unchanged. The owner accepted the foreign-ingress limitation and will
+instruct customers to disable VPN before updating. See the deployed
+[entry design, validation and rollback](subscription-independent-entry.md).
+The original Cloudflare route remains the rollback option, not the current path.
+
+## Earlier October 8 rollback: Cloudflare restored
 
 On October 8, the owner reported that the Netherlands origin IP is blocked on
 most operators. The October 7 DNS-only change was therefore rolled back: the
@@ -22,10 +31,9 @@ Cloudflare response headers and cache status DYNAMIC. The two protected VPN
 URIs remained unchanged. These checks confirm restoration, not resolution of
 the original intermittent reachability problem.
 
-The owner also confirmed the subscription updates with VPN enabled but fails
-without it. A separate reachable entry is being investigated; see
-[the prepared entry design](subscription-independent-entry.md). Do not disable
-the proxy to the blocked origin again or change customers' subscription URLs.
+The owner also confirmed the subscription updated with VPN enabled but failed
+without it. This led to the independent Iran entry above. Do not disable the
+proxy to the blocked Netherlands origin again or change customers' URLs.
 
 ## Historical October 7 direct-DNS attempt (reverted)
 

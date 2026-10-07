@@ -1,0 +1,31 @@
+# Dedicated authenticated relay listener. Existing public listeners are unchanged.
+# A secret is required in addition to source-IP restriction because the relay
+# server also carries customer VPN egress traffic.
+server {
+    listen 19444 ssl http2;
+    server_name atbot.anacotig.com;
+    ssl_certificate /etc/ssl/atlas/atbot.anacotig.com/fullchain.cer;
+    ssl_certificate_key /etc/ssl/atlas/atbot.anacotig.com/atbot.anacotig.com.key;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    set_real_ip_from RELAY_IP;
+    real_ip_header X-Forwarded-For;
+    real_ip_recursive on;
+    if ($realip_remote_addr != "RELAY_IP") { return 404; }
+    if ($http_x_atlas_origin_key != "ORIGIN_SHARED_KEY") { return 404; }
+    client_max_body_size 32m;
+    access_log off;
+    error_log /var/log/nginx/atlas-sub-origin-error.log crit;
+    # Copy atlas-tgweb.conf to this private-listener variant and clear both
+    # X-Atlas-Origin-Key and X-Atlas-Entry-Key inside every proxy location.
+    include /etc/nginx/snippets/atlas-sub-entry-tgweb.conf;
+    location / {
+        proxy_pass http://127.0.0.1:8000;
+        proxy_http_version 1.1;
+        proxy_set_header Host atbot.anacotig.com;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header CF-Connecting-IP "";
+        proxy_set_header X-Atlas-Origin-Key "";
+        proxy_set_header X-Forwarded-Proto https;
+    }
+}
