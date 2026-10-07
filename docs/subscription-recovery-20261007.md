@@ -1,4 +1,4 @@
-# Independent subscription recovery and Instagram trial entry
+# Subscription delivery with unchanged customer URLs
 
 Proxied DNS answers are Cloudflare edge addresses. A successful test on one
 network, or one address family, does not prove another subscriber's path works.
@@ -8,20 +8,59 @@ complete authenticated download/upload requests. The original DNS address also
 worked during these tests; the reported intermittent failure was not reproduced
 consistently. ECH-dependent variants additionally require compatible clients.
 
-The independent entry uses the existing German hostname and its valid public
-certificate on a separate HTTPS port, 8444. The original Germany WS and USA New
-listeners, identities, transport settings and subscription URIs remain unchanged.
-An exact WebSocket location forwards only the Netherlands Instagram trial path
-to the Netherlands origin over verified TLS. The trial's Netherlands inbound
-still uses its dedicated WARP proxy; other Netherlands inbounds do not use it.
-This route depends on both Germany and Netherlands being available. It is not a
-Cloudflare CDN route and does not hide the entry server's address.
+## Primary entry: same hostname, direct HTTPS
 
-Only `/sub/<token>`, the subscription logo, and the exact trial WebSocket path are
-exposed by the additional listener. Admin and panel paths return 404. Access
-logging is disabled to avoid storing subscription tokens. Upstream TLS is
-verified against the system trust store with sufficient certificate chain depth.
-Certificate renewals must reload the additional nginx listener as well.
+On October 7, the owner explicitly required retaining existing subscription URLs
+and the URLs issued for new purchases. `public_base_url` remains
+`https://atbot.anacotig.com`; tokens and `/sub/<token>` paths are unchanged.
+Existing URLs with port 2083 and URLs using the default HTTPS port both work.
+
+The existing `atbot` A record still points to the Netherlands origin. Its proxy
+status was changed to **DNS only**, with TTL 120 seconds, after testing direct
+HTTPS with the original hostname, SNI and certificate validation. This changes
+the network path for the whole `atbot` hostname, including its browser/admin
+pages, rather than just `/sub/`. Other DNS records and working VPN nodes were
+not changed. Before the change, no active node configuration or published node
+link used `atbot` as its endpoint or TLS frontend.
+
+This removes Cloudflare edge IP selection, challenges and caching from requests
+that resolve the new DNS answer. It does not protect against blocking of the
+origin IP or hostname, and it exposes the origin address without Cloudflare's
+HTTP protection. No origin rotation or automatic failover was added. A single
+healthy ISP test cannot establish that every affected ISP can reach the origin.
+
+Previously cached proxied answers can remain for five minutes or longer in
+client/resolver caches. Both Google and Cloudflare public DNS returned the origin
+A record and no AAAA record after the change; the operator laptop initially
+continued returning the older edge addresses. Do not describe propagation as
+instantaneous. Reopening the client or refreshing its DNS may be needed.
+
+Validation covered certificate-verified subscription downloads and browser HTML
+on ports 443 and 2083 before switching DNS. Downloads were base64-decoded and
+checked for configuration entries; synthetic information entries must not be
+counted as usable nodes. The application URL setting and published USA New and
+Germany WS URIs were compared before and after and remained identical. No
+affected subscriber's failing path was available for an end-to-end retest.
+
+For rollback, restore proxying on the same A record and return its TTL to Auto;
+retain the hostname, origin, HTTPS listeners and application URL settings. DNS
+rollback is also subject to caching. The private operator record contains the
+original record ID and exact pre-change state; it is not committed to Git.
+
+## Existing independent recovery entry
+
+The separate recovery entry uses the existing German hostname and its valid
+public certificate on HTTPS port 8444. It remains available for previously
+issued recovery URLs; it does not replace the primary purchase URL. The original
+Germany WS and USA New listeners, identities, transport settings and subscription
+URIs remain unchanged. Recovery depends on both Germany and Netherlands being
+available and does not hide the entry server's address.
+
+Only `/sub/<token>` and the subscription logo are exposed by this additional
+listener. Admin and panel paths return 404. Access logging is disabled to avoid
+storing subscription tokens. Upstream TLS is verified against the system trust
+store with sufficient certificate chain depth. Certificate renewals must reload
+the additional nginx listener as well.
 
 Set `subscription_backup_base_url` to the independent HTTPS origin, with no path,
 credentials, query or fragment. Existing subscription URLs and tokens remain
@@ -30,13 +69,20 @@ keeps its recovery URL in application import buttons instead of sending the
 user back to the primary entry. Only the explicitly configured recovery host
 can select that URL; arbitrary forwarded hosts cannot redirect imports.
 
-Validation uses the production Atlas Android parser/config/core on the attached
-MCI phone, with a Google HTTPS probe and authenticated bounded transfer tests.
-Subscription tests use direct, certificate-verified HTTPS and parse the received
-node list. The temporary transfer listener and its firewall rule are removed
-after verification. Connection measurements do not establish that the affected
-Instagram account's licensed music catalog is available; that still needs the
-user's account test.
+## Canceled Instagram experiment
+
+The owner canceled the experiment because music still did not load. Config 28,
+the 274 associated subscription rows, the 275 isolated panel clients (including
+the operator canary) and Netherlands inbound 6 on loopback port 16443 were
+removed. The trial's routing rule, SOCKS outbound and nginx WebSocket locations
+were removed on both entry servers. The unused experimental AAAA record was
+deleted, and the dedicated WARP proxy service was stopped and disabled. Private
+database/configuration backups were retained. Other Netherlands inbound
+transport settings were compared before and after and remained unchanged.
+
+Do not restore the retired trial's WebSocket location or WARP route when
+reinstalling the subscription recovery listener. The example nginx configuration
+intentionally contains only subscription delivery routes.
 
 References: [Cloudflare proxy DNS](https://developers.cloudflare.com/dns/proxy-status/),
 [Cloudflare ECH](https://developers.cloudflare.com/ssl/edge-certificates/ech/).
