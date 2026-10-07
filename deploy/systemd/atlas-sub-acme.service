@@ -1,0 +1,13 @@
+[Unit]
+Description=Pass HTTP and certificate renewal traffic to the origin reverse tunnel
+Requires=atlas-sub-acme.socket
+After=atlas-sub-acme.socket
+
+[Service]
+ExecStart=/usr/lib/systemd/systemd-socket-proxyd 127.0.0.1:18080
+DynamicUser=yes
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6

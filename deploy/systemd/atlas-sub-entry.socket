@@ -1,0 +1,10 @@
+[Unit]
+Description=Atlas existing HTTPS subscription URLs on an independent entry
+
+[Socket]
+ListenStream=443
+ListenStream=2083
+NoDelay=true
+
+[Install]
+WantedBy=sockets.target
