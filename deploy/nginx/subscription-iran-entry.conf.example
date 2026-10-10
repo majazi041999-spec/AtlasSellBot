@@ -1,5 +1,5 @@
-# Public entry only. The bootstrap certificate is replaced by a locally managed
-# ACME certificate after the existing hostname has moved to this entry.
+# Public entry with independently renewed TLS. The primary upstream is a
+# local SSH forward via Finland; Germany is a read-only fallback.
 map $http_upgrade $atlas_sub_entry_connection {
     default upgrade;
     '' '';
@@ -14,6 +14,24 @@ server {
         try_files $uri @atlas_origin_challenge;
     }
     location @atlas_origin_challenge {
+        proxy_intercept_errors on;
+        error_page 502 503 504 = @atlas_origin_challenge_germany;
+        proxy_connect_timeout 3s;
+        proxy_read_timeout 15s;
+        proxy_pass https://127.0.0.1:18443;
+        proxy_ssl_server_name on;
+        proxy_ssl_name atbot.anacotig.com;
+        proxy_ssl_verify on;
+        proxy_ssl_verify_depth 4;
+        proxy_ssl_trusted_certificate /etc/ssl/certs/ca-certificates.crt;
+        proxy_set_header Host atbot.anacotig.com;
+        proxy_set_header X-Atlas-Origin-Key ORIGIN_SHARED_KEY;
+    }
+    location / { return 301 https://atbot.anacotig.com:2083$request_uri; }
+    location @atlas_origin_challenge_germany {
+        if ($request_method !~ ^(GET|HEAD)$) { return 504; }
+        proxy_connect_timeout 3s;
+        proxy_read_timeout 15s;
         proxy_pass https://RELAY_IP:8444;
         proxy_ssl_server_name on;
         proxy_ssl_name RELAY_TLS_HOST;
@@ -23,7 +41,6 @@ server {
         proxy_set_header Host atbot.anacotig.com;
         proxy_set_header X-Atlas-Entry-Key ENTRY_SHARED_KEY;
     }
-    location / { return 301 https://atbot.anacotig.com:2083$request_uri; }
 }
 server {
     listen 443 ssl http2;
@@ -37,6 +54,32 @@ server {
     error_log /var/log/nginx/atlas-sub-entry-error.log crit;
 
     location / {
+        proxy_intercept_errors on;
+        error_page 502 503 504 = @atlas_sub_germany;
+        proxy_pass https://127.0.0.1:18443;
+        proxy_ssl_server_name on;
+        proxy_ssl_name atbot.anacotig.com;
+        proxy_ssl_verify on;
+        proxy_ssl_verify_depth 4;
+        proxy_ssl_trusted_certificate /etc/ssl/certs/ca-certificates.crt;
+        proxy_http_version 1.1;
+        proxy_set_header Host atbot.anacotig.com;
+        proxy_set_header X-Forwarded-Host atbot.anacotig.com;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Atlas-Client-IP $remote_addr;
+        proxy_set_header X-Atlas-Origin-Key ORIGIN_SHARED_KEY;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header CF-Connecting-IP "";
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $atlas_sub_entry_connection;
+        proxy_connect_timeout 3s;
+        proxy_read_timeout 90s;
+        proxy_send_timeout 90s;
+    }
+    location @atlas_sub_germany {
+        # Never replay an uncertain write request on another upstream.
+        if ($request_method !~ ^(GET|HEAD)$) { return 504; }
         proxy_pass https://RELAY_IP:8444;
         proxy_ssl_server_name on;
         proxy_ssl_name RELAY_TLS_HOST;
@@ -54,7 +97,7 @@ server {
         proxy_set_header CF-Connecting-IP "";
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection $atlas_sub_entry_connection;
-        proxy_connect_timeout 8s;
+        proxy_connect_timeout 3s;
         proxy_read_timeout 90s;
         proxy_send_timeout 90s;
     }

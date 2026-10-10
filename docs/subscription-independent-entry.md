@@ -9,12 +9,24 @@ at cutover. USA New and Germany WS URIs matched the saved baseline.
 
 ## Request path
 
-Client -> Iran nginx -> Germany nginx:8444 -> Netherlands nginx:19444 -> bot:8000.
+Current primary (October 10): client -> Iran nginx -> localhost:18443 ->
+restricted SSH forward through Finland -> Netherlands nginx:19444 -> bot:8000.
 
-Iran cannot reliably reach the Netherlands origin directly. The HTTPS path
-through Germany returned complete subscription content and browser HTML. This
-adds Germany as a dependency; there is no automatic failover. The previous
-German recovery vhost on port 8444 remains separate and unchanged.
+Germany nginx:8444 is retained as an automatic fallback for GET/HEAD requests
+when the primary returns 502, 503 or 504. Writes are never replayed against the
+fallback after an uncertain upstream result. Germany remains suspended at this
+deployment, so the backup becomes usable only after that server returns.
+The previous German recovery vhost remains separate and unchanged.
+
+The October 8 route depended solely on Germany. On October 10, the owner
+confirmed that server had expired and been suspended. The reported subscription
+returned 504 after eight seconds at the Iran entry, while the bot returned a
+complete response in 75 ms locally. Germany's SSH and web ports also timed out
+from the Netherlands. Moving the primary to Finland removed this dependency.
+
+Direct Iran-to-Netherlands HTTPS/SSH and Iran-to-USA SSH probes were unsuccessful;
+Finland completed SSH key exchange and carried the authenticated origin request.
+The new transport opens no public port and does not change any VPN inbound.
 
 The three nginx examples under `deploy/nginx/subscription-iran-*` describe the
 deployed route. Render their IP, hostname, certificate and secret placeholders
@@ -22,12 +34,25 @@ before use. Keep rendered files root-owned, mode 0600; never commit credentials.
 Use independent 256-bit keys for the entry/relay and relay/origin hops.
 HTTPS certificates are verified on both upstream hops.
 
-The relay accepts only the Iran entry and its secret header. The private origin
-requires both the German peer address and its separate secret. Source address
-alone is insufficient because Germany also carries VPN customers' traffic.
-Iran overwrites forwarded client headers; the private origin trusts only the
-relay. Forged X-Forwarded-For, X-Real-IP, CF-Connecting-IP and private client-IP
-headers were tested and did not replace the actual client address.
+The German relay accepts only the Iran entry and its secret header. The private
+origin requires its separate secret and an allowed peer (Germany or Finland).
+Source address alone is insufficient because these hosts also carry customer
+VPN traffic. Iran overwrites forwarded client headers; the private origin trusts
+only those peers. The original October 8 forged-header tests passed; the primary
+path retains the same fixed Host and overwritten X-Forwarded-For/X-Real-IP.
+
+Install `deploy/systemd/atlas-sub-fallback.service.example` on Iran, substituting
+`BRIDGE_IP` (Finland) and `ORIGIN_IP`. Despite the historical fallback service name,
+this is now the primary transport. Use a dedicated unprivileged local account,
+mode-0600 key, and a host key obtained through an existing trusted administrator
+connection. StrictHostKeyChecking is mandatory. The service restarts after three
+seconds and uses SSH keepalives to detect lost connections.
+
+On Finland, install `deploy/ssh/atlas-sub-fallback.conf.example` for the dedicated
+non-login account. Its authorized key must use `restrict,port-forwarding` and
+`permitopen="ORIGIN_IP:19444"`. Permit only that forwarding destination: no shell,
+TTY, agent, remote/streamlocal forwarding or other network destinations. Root
+SSH settings and existing VPN services remain unchanged.
 
 For the private origin only, copy `/etc/nginx/snippets/atlas-tgweb.conf` to
 `atlas-sub-entry-tgweb.conf`. In **every** proxy location, add empty
@@ -50,19 +75,27 @@ origin key was removed. Enable `certbot.timer` and install the nginx
 validation/reload hook from `deploy/certbot`.
 
 Port 80 serves local HTTP-01 challenges first. Missing challenges pass through
-the authenticated HTTPS relay to the origin's existing HTTP webroot
-`/var/www/atlas-acme`. The relay strips **all** request headers on that final
-plain-HTTP hop. Other HTTP requests redirect to the existing HTTPS hostname and
-port 2083. The origin also uses independent Certbot renewal; its deploy hook
-copies renewed files to the existing nginx certificate paths.
+the Finland tunnel to the authenticated origin listener, which serves the
+existing `/var/www/atlas-acme` webroot. The German fallback retains its old relay
+to origin HTTP:80 and strips **all** headers on that final plain-HTTP hop. Other
+HTTP requests redirect to the existing HTTPS hostname and port 2083. The origin
+also uses independent Certbot renewal; its hook copies renewed files to the
+existing nginx certificate paths.
 
 ## Validation and known limitation
 
-From the operator's Iranian connection with explicit proxy bypass, both ports
-returned HTTP 200, a decoded subscription, and complete browser HTML. Observed
-subscription times were approximately 0.5-0.7 seconds. Certificate verification
-was enabled. This does not establish coverage of every Iranian ISP. Information
-entries in a subscription are not usable VPN nodes.
+After the October 10 repair, the exact reported subscription returned HTTP 200
+and fully decoded content on both public ports from the operator's connection,
+with explicit proxy bypass and TLS verification. Downloads took about 0.6-0.7
+seconds. This does not establish coverage of every ISP. Information entries are
+not usable VPN nodes.
+
+A temporary loopback-only copy of the nginx server forced the primary to fail
+and used the healthy tunnel as a fallback stand-in: GET returned the complete
+subscription, HEAD preserved the origin's 405, and POST returned 504 without
+replay. The canary and its logs were removed. A temporary public ACME token also
+passed through Finland and was removed. Origin access without the secret still
+returned 404. Germany's live fallback could not be accepted while it was down.
 
 From three foreign servers, the entry completed TLS but subsequent responses
 timed out. The existing unrelated HTTPS console showed the same behavior. Small
@@ -77,9 +110,10 @@ and users updating through a VPN may fail to reach this hostname. DNS affects
 the entire hostname, including browser/admin access. Existing VPN nodes are not
 moved. This route does not prevent future IP/domain filtering.
 
-The reverse SSH attempt failed during key exchange and was abandoned. Its
-service, restricted account/key, temporary listeners and diagnostic endpoints
-were removed; HAProxy is disabled. No bot or Xray restart was required.
+The original October 8 reverse SSH attempt from the Netherlands to Iran failed
+and was removed; HAProxy remains disabled. The October 10 forward connection is
+initiated from Iran to Finland and was tested successfully. No bot or Xray
+restart was required for either deployment.
 
 ## Rollback and deployment
 

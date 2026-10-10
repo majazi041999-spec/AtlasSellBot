@@ -1,0 +1,20 @@
+[Unit]
+Description=Atlas subscription fallback through Finland
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+User=atlas-sub-fallback
+ExecStart=/usr/bin/ssh -NT -i /etc/atlas-sub-fallback/id_ed25519 -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/etc/atlas-sub-fallback/known_hosts -o ExitOnForwardFailure=yes -o ConnectTimeout=8 -o ServerAliveInterval=10 -o ServerAliveCountMax=3 -L 127.0.0.1:18443:ORIGIN_IP:19444 atlas-sub-fallback@BRIDGE_IP
+Restart=always
+RestartSec=3
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+[Install]
+WantedBy=multi-user.target
