@@ -1,0 +1,22 @@
+# Loopback-only receiver for the restricted forwarding account.
+# The dedicated source lets 3x-ui report Frost separately from other paths.
+global
+    maxconn 2048
+
+defaults
+    mode tcp
+    timeout connect 5s
+    timeout client 1h
+    timeout server 1h
+    timeout client-fin 10s
+    timeout server-fin 10s
+    option clitcpka
+    option srvtcpka
+
+frontend frost_loopback
+    bind 127.0.0.1:21440
+    default_backend existing_finland_ws
+
+backend existing_finland_ws
+    source 127.0.0.3
+    server xray 127.0.0.1:443 check inter 10s fall 3 rise 2

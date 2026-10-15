@@ -6,7 +6,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from core import autonode, database
+from core import autonode, database, subscription_variants
 from web import app as web
 
 
@@ -40,6 +40,7 @@ class DashboardOnlineTests(unittest.IsolatedAsyncioTestCase):
              patch.object(web, 'get_stats', AsyncMock(return_value={})), \
              patch.object(web, 'get_pending_orders', AsyncMock(return_value=[])), \
              patch.object(database, 'build_daily_report', AsyncMock(return_value={})), \
+             patch.object(subscription_variants, 'load_variant_options', AsyncMock(return_value={})), \
              patch.object(autonode, 'server_load_snapshot', AsyncMock(return_value=servers)), \
              patch.object(web, 'get_subscription_node_configs', AsyncMock(return_value=configs)):
             online = json.loads((await web.api_dashboard(object())).body)['online']
@@ -51,6 +52,26 @@ class DashboardOnlineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(nl['nodes'][0], dict(id=9, label='Ultra', online=2, is_active=False))
         self.assertIsNone(de['online'])
         self.assertIsNone(de['nodes'])
+
+    async def test_relay_counts_reach_dashboard_with_zero_nodes_visible(self):
+        from test_node_online import CONFIGS, OPTIONS
+        servers = [dict(id=1, name='TR', is_active=1, online=2, checked_at=123,
+                        online_nodes={'24': 2}, online_routes={'24':
+                        dict(relay=1, other=1, unknown=0, overlap=0)})]
+        configs = CONFIGS + [dict(id=29, server_id=1, inbound_id=9, label='Idle', is_active=1)]
+        with patch.object(web, '_api_guard', return_value=True), \
+             patch.object(web, 'get_stats', AsyncMock(return_value={})), \
+             patch.object(web, 'get_pending_orders', AsyncMock(return_value=[])), \
+             patch.object(database, 'build_daily_report', AsyncMock(return_value={})), \
+             patch.object(subscription_variants, 'load_variant_options', AsyncMock(return_value=OPTIONS)), \
+             patch.object(autonode, 'server_load_snapshot', AsyncMock(return_value=servers)), \
+             patch.object(web, 'get_subscription_node_configs', AsyncMock(return_value=configs)):
+            online = json.loads((await web.api_dashboard(object())).body)['online']
+        rows = online['servers'][0]['nodes']
+        self.assertEqual(online['total'], 2)
+        self.assertEqual(rows[0]['routes'][0]['label'], 'Turkey Nitro')
+        self.assertEqual(rows[0]['routes'][0]['online'], 1)
+        self.assertEqual(rows[1]['online'], 0)
 
 
 if __name__ == '__main__':

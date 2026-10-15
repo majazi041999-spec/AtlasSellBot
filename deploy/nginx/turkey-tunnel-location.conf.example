@@ -4,6 +4,8 @@ location = WS_PATH {
     if ($request_method != GET) { return 404; }
     if ($http_upgrade !~* ^websocket$) { return 404; }
     access_log off;
+    # Dedicated source distinguishes relay clients in online statistics.
+    proxy_bind 127.0.0.2;
     proxy_http_version 1.1;
     proxy_set_header Upgrade $http_upgrade;
     proxy_set_header Connection upgrade;

@@ -86,6 +86,9 @@ Turkey account blocks both its direct and relay access.
 - An authenticated connection survived 70 seconds idle and then carried another
   successful request on the same connection.
 
+The dedicated nginx upstream now binds `127.0.0.2`, allowing online-user
+attribution to Nitro without cloning quota-bearing accounts. See
+[connection attribution](finland-iran-frost-20261015.md#dashboard-attribution).
 All customer source addresses appear as relay/loopback addresses at the origin.
 UUID volume accounting remains intact, but source-IP based user limits and
 online-IP displays are less informative on this route. No PROXY headers are

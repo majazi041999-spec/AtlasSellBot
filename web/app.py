@@ -1534,23 +1534,9 @@ async def api_dashboard(request: Request):
         logger.warning("dashboard node labels failed: %s", e)
         node_configs = {}
 
-    def _online_nodes(split):
-        if not split:
-            return None
-        rows, other = [], 0
-        for key, n in split.items():
-            if not str(key).isdigit():          # "other", or anything unexpected
-                other += int(n)
-                continue
-            cid = int(key)
-            node = node_configs.get(cid)
-            label = (node.get('label') or '').strip() if node else f"نود #{cid} (حذف‌شده)"
-            rows.append({"id": cid, "label": label or f"نود #{cid}", "online": int(n),
-                         "is_active": bool(int(node.get('is_active') or 0)) if node else False})
-        if other:
-            rows.append({"id": None, "label": "سایر (کانفیگ تکی)", "online": other})
-        rows.sort(key=lambda r: (-r["online"], r["label"]))
-        return rows
+    from core.node_online import dashboard_nodes
+    from core.subscription_variants import load_variant_options
+    variant_options = await load_variant_options()
 
     return JSONResponse({
         "stats": stats,
@@ -1565,7 +1551,8 @@ async def api_dashboard(request: Request):
                 "avg": s.get("online_avg"),
                 "stale": bool(s.get("stale")),
                 "checked_at": int(s.get("checked_at") or 0),
-                "nodes": _online_nodes(s.get("online_nodes")),   # null = no split to show
+                "nodes": dashboard_nodes(s.get("online_nodes"), list(node_configs.values()),
+                                         s["id"], variant_options, s.get("online_routes")),
             } for s in servers_online],
         },
         "pending": [_slim(o) for o in pending[:8]],

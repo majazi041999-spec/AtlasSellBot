@@ -58,13 +58,13 @@ function OnlineNow({ data, onRefresh }) {
               <span className="badge b-gray">آخرین بررسی: {ageMin} دقیقه پیش</span>
             )}
           </div>
-          <p className="muted tiny">آمار از آخرین نمونهٔ پنل‌هاست و معمولاً هر دو دقیقه به‌روز می‌شود. یک کاربر ممکن است روی چند نود شمرده شود؛ تست اتصال برنامه هم ممکن است در آمار بیاید.</p>
+          <p className="muted tiny">آمار معمولاً هر دو دقیقه به‌روز می‌شود. یک کاربر می‌تواند هم‌زمان روی چند نود باشد؛ تست اتصال برنامه هم ممکن است در آمار بیاید. مسیرهای دارای شناسهٔ مشترک، جز در مواردی که ورودی‌شان قابل تشخیص است، گروهی شمرده می‌شوند.</p>
 
           <div className="grid" style={{ gap: 12 }}>
             {servers.map((s) => {
               const unknown = s.online === null || s.online === undefined;
-              // Which node this server's users are on — the same reading as the
-              // total, so the chips always add up to the number beside the bar.
+              // Node totals share one sample; route children can overlap when
+              // one account is connected through more than one path.
               const nodes = !unknown && Array.isArray(s.nodes) ? s.nodes : [];
               return (
                 <div key={s.id} className="grid" style={{ gap: 6 }}>
@@ -93,12 +93,24 @@ function OnlineNow({ data, onRefresh }) {
                   {nodes.length > 0 && (
                     <div className="online-nodes">
                       {nodes.map((n) => (
-                        <span key={n.id ?? "other"} className={`badge ${n.is_active === false ? "b-yellow" : "b-gray"}`}
+                        <div key={n.id ?? "other"} style={{ display: "grid", gap: 6 }}>
+                        <span className={`badge ${n.is_active === false ? "b-yellow" : "b-gray"}`}
                               title={s.online ? `${Math.round((n.online / s.online) * 100)}٪ از کاربران آنلاین این سرور` : undefined}>
                           {n.label}
+                          {n.shared && <span className="muted tiny">مجموع مسیرها</span>}
                           {n.is_active === false && <span>غیرفعال در پنل</span>}
                           <b className="mono" style={{ color: "var(--txt1)" }}>{fmt(n.online)}</b>
                         </span>
+                        {n.routes?.map((r) => (
+                          <span key={r.id} className="badge b-gray" style={{ marginInlineStart: 12 }}>
+                            {r.label}
+                            {r.is_active === false && <span>غیرفعال در پنل</span>}
+                            <b className="mono">{r.online == null ? (r.observed ? `حداقل ${fmt(r.observed)}` : "نامشخص") : fmt(r.online)}</b>
+                          </span>
+                        ))}
+                        {n.unattributed > 0 && <small className="muted tiny">مسیر {fmt(n.unattributed)} کاربر هنوز مشخص نیست</small>}
+                        {n.overlap > 0 && <small className="muted tiny">{fmt(n.overlap)} کاربر هم‌زمان روی هر دو مسیر</small>}
+                        </div>
                       ))}
                     </div>
                   )}

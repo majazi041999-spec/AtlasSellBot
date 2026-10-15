@@ -128,6 +128,17 @@ def _fresh_online_nodes(server: Dict, live: Optional[int]) -> Optional[Dict[str,
     return {str(k): int(v) for k, v in nodes.items() if isinstance(v, (int, float)) and int(v) > 0}
 
 
+def _fresh_online_routes(server: Dict, live: Optional[int]) -> Optional[Dict]:
+    if live is None:
+        return None
+    try:
+        sample = json.loads(server.get('online_nodes') or '{}')
+        routes = sample.get('_routes')
+        return routes if isinstance(routes, dict) else None
+    except (TypeError, ValueError, AttributeError):
+        return None
+
+
 async def refresh_server_online_counts(servers: Optional[List[Dict]] = None) -> Dict[int, Optional[int]]:
     """Ask every active panel how many clients are online and store the answer.
 
@@ -138,6 +149,12 @@ async def refresh_server_online_counts(servers: Optional[List[Dict]] = None) -> 
     if not servers:
         return {}
 
+    from core.database import get_subscription_node_configs
+    from core.subscription_variants import load_variant_options
+    from core.node_online import relay_observers, sample_routes
+    configs = await get_subscription_node_configs(active_only=False)
+    options = await load_variant_options()
+
     limit = asyncio.Semaphore(max(1, await _setting_int("autonode_poll_concurrency", 1)))
     now_ms = int(time.time() * 1000)
     results: Dict[int, Optional[int]] = {}
@@ -145,7 +162,7 @@ async def refresh_server_online_counts(servers: Optional[List[Dict]] = None) -> 
     async def probe(server: Dict) -> None:
         sid = int(server["id"])
         count: Optional[int] = None
-        by_node: Optional[Dict[str, int]] = None
+        by_node: Optional[Dict] = None  # integer counts plus reserved _routes metadata
         async with limit:
             cli = XUIClient(
                 server["url"], server["username"], server["password"],
@@ -156,8 +173,16 @@ async def refresh_server_online_counts(servers: Optional[List[Dict]] = None) -> 
                 # lets one reading give both the total and its per-node split.
                 emails, ok = await asyncio.wait_for(cli.get_onlines_checked(), timeout=15)
                 if ok:
+                    emails = list(set(emails))
                     count = len(emails)
                     by_node = online_by_node(emails)
+                    observers = relay_observers(configs, options, sid)
+                    if observers:
+                        try:
+                            ip_map = await asyncio.wait_for(cli.get_client_ips_bulk(), timeout=8)
+                        except Exception:
+                            ip_map = None
+                        by_node['_routes'] = sample_routes(emails, ip_map, observers, time.time())
             except asyncio.TimeoutError:
                 logger.warning("autonode: onlines timed out for server %s", server.get("name") or sid)
             except Exception as e:
@@ -560,6 +585,7 @@ async def server_load_snapshot() -> List[Dict]:
             "is_active": int(server.get("is_active") or 0),
             "online": live,
             "online_nodes": _fresh_online_nodes(server, live),
+            "online_routes": _fresh_online_routes(server, live),
             "online_known": live is not None,
             "online_avg": round(float(server.get("online_avg") or 0), 1),
             "raw_online": int(server.get("online_count") or 0),

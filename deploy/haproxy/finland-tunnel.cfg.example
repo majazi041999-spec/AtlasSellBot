@@ -1,0 +1,25 @@
+# Dedicated process; TLS stays encrypted until the owned Finland HTTPS endpoint.
+global
+    maxconn 2048
+
+defaults
+    mode tcp
+    timeout connect 5s
+    timeout client 1h
+    timeout server 1h
+    timeout client-fin 10s
+    timeout server-fin 10s
+    option clitcpka
+    option srvtcpka
+
+frontend finland_entry
+    bind 0.0.0.0:2054
+    default_backend finland_origin
+
+backend finland_origin
+    balance leastconn
+    # Independent encrypted links limit shared-TCP coupling to one pool member.
+    server link1 127.0.0.1:21441 check inter 5s fall 2 rise 2
+    server link2 127.0.0.1:21442 check inter 5s fall 2 rise 2
+    server link3 127.0.0.1:21443 check inter 5s fall 2 rise 2
+    server link4 127.0.0.1:21444 check inter 5s fall 2 rise 2

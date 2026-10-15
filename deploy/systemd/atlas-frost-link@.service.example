@@ -1,0 +1,21 @@
+[Unit]
+Description=Atlas Frost restricted link on local port %i
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=atlas-frost
+Group=atlas-frost
+ExecStart=/usr/bin/ssh -NT -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/var/lib/atlas-frost/known_hosts -o ExitOnForwardFailure=yes -o ServerAliveInterval=10 -o ServerAliveCountMax=3 -o ConnectTimeout=8 -o Compression=no -o ControlMaster=no -i /var/lib/atlas-frost/id_ed25519 -L 127.0.0.1:%i:127.0.0.1:21440 atlas-frost@FINLAND_IP
+Restart=always
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+LimitNOFILE=8192
+
+[Install]
+WantedBy=multi-user.target
