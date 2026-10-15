@@ -64,6 +64,14 @@ class RelayRenderTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(info['download'], 12345)
             self.assertEqual(info['total'], 1024 ** 3)
             protected = published[1:3]
+            newer_uuid = '22222222-2222-4222-8222-222222222222'
+            nodes.append(dict(nodes[0], id=4, link=LINK.replace(UUID, newer_uuid)))
+            duplicated, _ = await render()
+            self.assertEqual(len(duplicated), 5)
+            relay_rows = [urlsplit(l) for l in duplicated if urlsplit(l).hostname == 'entry.example']
+            self.assertEqual(len(relay_rows), 1)
+            self.assertEqual(relay_rows[0].username, newer_uuid)
+            nodes.pop()
             for flag in ('server_active', 'node_config_active', 'is_active'):
                 nodes[0][flag] = 0
                 hidden, _ = await render()

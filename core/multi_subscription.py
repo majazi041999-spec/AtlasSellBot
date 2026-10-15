@@ -1057,6 +1057,7 @@ async def render_subscription(token: str) -> tuple[str, Dict[str, int]] | None:
     active_count = 0
     extra_links = []
     backup_links = []
+    relay_links = {}
     for n in nodes:
         if (not int(n.get("is_active") or 0) or int(n.get('renewal_reset_pending') or 0)
                 or not int(n.get("node_config_active", 1)) or not int(n.get('server_active', 1))):
@@ -1119,7 +1120,12 @@ async def render_subscription(token: str) -> tuple[str, Dict[str, int]] | None:
             if target not in ('4:3', '6:2') and variant_enabled(ws_options, target, 'relay'):
                 relay = apply_ws_relay(link, ws_options['subscription_ws_relays'].get(target))
                 if relay and relay != link and _subscription_link_is_complete(relay):
-                    extra_links.append(_label_subscription_link(relay, f'{label} | Tunnel'))
+                    # Legacy imports can retain several client rows for one
+                    # target. Publish just one relay, using its newest valid row;
+                    # keep all existing identities/counters and routes intact.
+                    rank = int(n.get('id') or 0)
+                    if target not in relay_links or rank > relay_links[target][0]:
+                        relay_links[target] = (rank, _label_subscription_link(relay, f'{label} | Tunnel'))
             fallback = None
             fallback_host = ws_options["subscription_ws_fallbacks"].get(target)
             if isinstance(fallback_host, str) and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9.-]{0,252}", fallback_host):
@@ -1157,8 +1163,8 @@ async def render_subscription(token: str) -> tuple[str, Dict[str, int]] | None:
                         suffix = 'Backup M' if options.get('no_ed') and not options.get('ech') else f'Backup {index+1}'
                         backup_links.append(_label_subscription_link(tuned, f'{label} | {suffix}'))
 
-    links.extend(extra_links + backup_links)
-    active_count += len(extra_links) + len(backup_links)
+    links.extend(extra_links + backup_links + [row[1] for row in relay_links.values()])
+    active_count += len(extra_links) + len(backup_links) + len(relay_links)
 
     expire = int(expire_ms / 1000) if expire_ms > 0 else 0
     info_links = await _subscription_info_links(profile, used, total, active_count)

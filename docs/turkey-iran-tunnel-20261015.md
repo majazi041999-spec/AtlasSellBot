@@ -4,6 +4,9 @@ The additional `Tunnel` variant uses the existing Turkey WS customer's UUID,
 email, quota and expiry. It does not add a client, subscription node row, or
 second entitlement. Existing and future subscriptions get it when rendered;
 browser copy/import and raw subscription responses share that renderer.
+If legacy imports left several active parent rows for one target, only the
+newest valid row supplies the Tunnel variant. Existing identities and counters
+are retained; the variant is not repeated for every historical row.
 
 ## Route
 
