@@ -1,0 +1,20 @@
+# Dedicated process; TLS stays encrypted until the owned Turkey HTTPS endpoint.
+global
+    maxconn 2048
+
+defaults
+    mode tcp
+    timeout connect 5s
+    timeout client 1h
+    timeout server 1h
+    timeout client-fin 10s
+    timeout server-fin 10s
+    option clitcpka
+    option srvtcpka
+
+frontend turkey_entry
+    bind 0.0.0.0:2053
+    default_backend turkey_origin
+
+backend turkey_origin
+    server turkey TURKEY_IP:443 check inter 10s fall 3 rise 2

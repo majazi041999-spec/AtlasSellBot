@@ -1,0 +1,24 @@
+[Unit]
+Description=Atlas Turkey TLS passthrough entry
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=notify
+User=haproxy
+Group=haproxy
+ExecStart=/usr/sbin/haproxy -Ws -f /etc/atlas-turkey-tunnel/haproxy.cfg
+ExecReload=/usr/sbin/haproxy -c -f /etc/atlas-turkey-tunnel/haproxy.cfg
+ExecReload=/bin/kill -USR2 $MAINPID
+Restart=on-failure
+RestartSec=3
+LimitNOFILE=8192
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+[Install]
+WantedBy=multi-user.target

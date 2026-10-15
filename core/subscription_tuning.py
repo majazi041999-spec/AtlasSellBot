@@ -6,6 +6,49 @@ VERIFIED_ECH_LOOKUPS = {'trws.anacotig.com', 'blogfa.com', 'www.tgju.org', 'miha
 VERIFIED_EDGE_DOMAINS = {'www.technolife.com', 'virgool.io', 'ok-ex.io', 'mihanblockchain.com'}
 
 
+def valid_ws_relay(options) -> bool:
+    """Validate an operator-managed, TLS-only relay endpoint."""
+    if not isinstance(options, dict):
+        return False
+    for field in ('address', 'server_name'):
+        host = options.get(field)
+        if (not isinstance(host, str) or len(host) > 253 or not host
+                or not all(re.fullmatch(r'[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?', part)
+                           for part in host.split('.'))):
+            return False
+    port, path = options.get('port'), options.get('path')
+    return (type(port) is int and 1 <= port <= 65535
+            and isinstance(path, str) and len(path) <= 512
+            and bool(re.fullmatch(r'/[A-Za-z0-9/_-]+', path)))
+
+
+def apply_ws_relay(link: str, options) -> str:
+    """A second route to the SAME authenticated client, never a new quota.
+
+    The relay has its own verified TLS name and WS route. CDN ECH and early-data
+    settings from the original route must not leak into this endpoint.
+    """
+    if not valid_ws_relay(options):
+        return ''
+    try:
+        parts = urlsplit(link)
+        query = parse_qsl(parts.query, keep_blank_values=True)
+        values = dict(query)
+        if (parts.scheme != 'vless' or not parts.username or not parts.hostname
+                or not parts.port or values.get('type') != 'ws'
+                or values.get('security') != 'tls'):
+            return ''
+        changed = {'sni': options['server_name'], 'host': options['server_name'],
+                   'path': options['path'], 'alpn': 'http/1.1', 'fp': 'chrome'}
+        remove = set(changed) | {'ech', 'ed', 'eh', 'allowInsecure', 'insecure'}
+        query = [(k, v) for k, v in query if k not in remove] + list(changed.items())
+        return urlunsplit(parts._replace(
+            netloc=f"{parts.username}@{options['address']}:{options['port']}",
+            query=urlencode(query)))
+    except (TypeError, ValueError):
+        return ''
+
+
 def apply_ws_tls_frontend(link: str, options) -> str:
     """Export the public TLS endpoint of a WS inbound behind a reverse proxy.
 

@@ -1,0 +1,25 @@
+# Include inside the existing Turkey HTTPS server whose certificate is verified
+# by VPN clients. WS_PATH is an exact URI with no query/early-data parameters.
+location = WS_PATH {
+    if ($request_method != GET) { return 404; }
+    if ($http_upgrade !~* ^websocket$) { return 404; }
+    access_log off;
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection upgrade;
+    proxy_set_header Host ORIGIN_TLS_HOST;
+    proxy_set_header X-Forwarded-For "";
+    proxy_set_header X-Real-IP "";
+    proxy_set_header CF-Connecting-IP "";
+    proxy_ssl_server_name on;
+    proxy_ssl_name ORIGIN_CERT_HOST;
+    proxy_ssl_verify on;
+    proxy_ssl_verify_depth 4;
+    proxy_ssl_trusted_certificate /etc/ssl/certs/ca-certificates.crt;
+    proxy_buffering off;
+    proxy_request_buffering off;
+    proxy_connect_timeout 5s;
+    proxy_read_timeout 1h;
+    proxy_send_timeout 1h;
+    proxy_pass https://127.0.0.1:2096/perfix/;
+}

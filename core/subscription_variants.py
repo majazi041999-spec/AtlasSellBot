@@ -1,10 +1,11 @@
 """Admin-visible switches for variants sharing one quota-bearing client."""
 import asyncio,json,re
 from core.database import get_setting,set_setting
+from core.subscription_tuning import valid_ws_relay
 
 OPTION_KEYS=('subscription_ws_early_data','subscription_ws_fallbacks','subscription_ws_ech',
              'subscription_ws_no_ed','subscription_ws_backups','subscription_ws_hide_regular',
-             'subscription_ws_disabled_variants')
+             'subscription_ws_disabled_variants','subscription_ws_relays')
 PROTECTED_TARGETS=('4:3','6:2')
 _switch_lock=asyncio.Lock()
 
@@ -27,6 +28,9 @@ def describe_variants(options,target,address=''):
     if target in PROTECTED_TARGETS:return []
     if not any(target in options.get(k,{}) for k in OPTION_KEYS if k!='subscription_ws_disabled_variants'):return []
     rows=[dict(id='regular',label='معمولی',address=address)]
+    relay=options.get('subscription_ws_relays',{}).get(target)
+    if valid_ws_relay(relay):
+        rows.append(dict(id='relay',label='Tunnel',address=f"{relay['address']}:{relay['port']}"))
     fallback=options.get('subscription_ws_fallbacks',{}).get(target)
     if not isinstance(fallback,str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9.-]{0,252}',fallback):fallback=None
     if fallback:rows.append(dict(id='fallback',label='Backup',address=fallback))

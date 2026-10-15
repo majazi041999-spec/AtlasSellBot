@@ -36,8 +36,8 @@ from core.database import (
     update_subscription_profile,
 )
 from core.xui_api import XUIClient, expiry_ms_from_days
-from core.subscription_tuning import apply_ws_early_data, apply_ws_ech, apply_ws_backup, without_ws_early_data, apply_ws_tls_frontend
-from core.subscription_variants import variant_enabled
+from core.subscription_tuning import apply_ws_early_data, apply_ws_ech, apply_ws_backup, without_ws_early_data, apply_ws_tls_frontend, apply_ws_relay
+from core.subscription_variants import variant_enabled, OPTION_KEYS
 
 logger = logging.getLogger(__name__)
 
@@ -1037,7 +1037,7 @@ async def render_subscription(token: str) -> tuple[str, Dict[str, int]] | None:
 
     nodes = await get_subscription_nodes(profile["id"])
     ws_options = {}
-    for key in ("subscription_ws_early_data", "subscription_ws_fallbacks", "subscription_ws_ech", "subscription_ws_no_ed", "subscription_ws_backups", "subscription_ws_hide_regular", "subscription_ws_disabled_variants"):
+    for key in OPTION_KEYS:
         try:
             value = json.loads(await get_setting(key, "{}"))
             ws_options[key] = value if isinstance(value, dict) else {}
@@ -1116,6 +1116,10 @@ async def render_subscription(token: str) -> tuple[str, Dict[str, int]] | None:
             if not hide_regular:
                 active_count += 1
                 links.append(link)
+            if target not in ('4:3', '6:2') and variant_enabled(ws_options, target, 'relay'):
+                relay = apply_ws_relay(link, ws_options['subscription_ws_relays'].get(target))
+                if relay and relay != link and _subscription_link_is_complete(relay):
+                    extra_links.append(_label_subscription_link(relay, f'{label} | Tunnel'))
             fallback = None
             fallback_host = ws_options["subscription_ws_fallbacks"].get(target)
             if isinstance(fallback_host, str) and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9.-]{0,252}", fallback_host):
