@@ -1118,14 +1118,16 @@ async def render_subscription(token: str) -> tuple[str, Dict[str, int]] | None:
                 active_count += 1
                 links.append(link)
             if target not in ('4:3', '6:2') and variant_enabled(ws_options, target, 'relay'):
-                relay = apply_ws_relay(link, ws_options['subscription_ws_relays'].get(target))
+                relay_options = ws_options['subscription_ws_relays'].get(target)
+                relay = apply_ws_relay(link, relay_options)
                 if relay and relay != link and _subscription_link_is_complete(relay):
                     # Legacy imports can retain several client rows for one
                     # target. Publish just one relay, using its newest valid row;
                     # keep all existing identities/counters and routes intact.
                     rank = int(n.get('id') or 0)
                     if target not in relay_links or rank > relay_links[target][0]:
-                        relay_links[target] = (rank, _label_subscription_link(relay, f'{label} | Tunnel'))
+                        relay_label = relay_options.get('label') or f'{label} | Plus'
+                        relay_links[target] = (rank, _label_subscription_link(relay, relay_label))
             fallback = None
             fallback_host = ws_options["subscription_ws_fallbacks"].get(target)
             if isinstance(fallback_host, str) and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9.-]{0,252}", fallback_host):

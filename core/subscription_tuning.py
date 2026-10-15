@@ -10,6 +10,10 @@ def valid_ws_relay(options) -> bool:
     """Validate an operator-managed, TLS-only relay endpoint."""
     if not isinstance(options, dict):
         return False
+    label = options.get('label')
+    if label is not None and (not isinstance(label, str) or not label.strip()
+                              or len(label) > 64 or any(ord(c) < 32 or ord(c) == 127 for c in label)):
+        return False
     for field in ('address', 'server_name'):
         host = options.get(field)
         if (not isinstance(host, str) or len(host) > 253 or not host

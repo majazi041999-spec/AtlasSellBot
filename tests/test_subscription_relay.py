@@ -5,7 +5,7 @@ from pathlib import Path
 import sys
 import unittest
 from unittest.mock import AsyncMock, patch
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, urlsplit, unquote
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from core import multi_subscription as multi, subscription_variants as variants
@@ -34,7 +34,8 @@ class RelayTests(unittest.TestCase):
     def test_invalid_or_incompatible_routes_are_not_published(self):
         for bad in [None, {}, dict(RELAY, port=True), dict(RELAY, port=65536),
                     dict(RELAY, address='bad\nhost'),
-                    dict(RELAY, server_name=''), dict(RELAY, path='/test/?ed=2560')]:
+                    dict(RELAY, server_name=''), dict(RELAY, path='/test/?ed=2560'),
+                    dict(RELAY, label=''), dict(RELAY, label='bad\nname')]:
             self.assertEqual(apply_ws_relay(LINK, bad), '')
         self.assertEqual(apply_ws_relay(LINK.replace('security=tls', 'security=none'), RELAY), '')
         self.assertEqual(apply_ws_relay(LINK.replace('type=ws', 'type=tcp'), RELAY), '')
@@ -46,7 +47,7 @@ class RelayRenderTests(unittest.IsolatedAsyncioTestCase):
         nodes = [dict(id=1, server_id=1, inbound_id=3, is_active=1, link=LINK, node_label='Turkey'),
                  dict(id=2, server_id=4, inbound_id=3, is_active=1, link=LINK.replace('edge.example', 'germany.example'), node_label='Germany WS'),
                  dict(id=3, server_id=6, inbound_id=2, is_active=1, link=LINK.replace('edge.example', 'usa.example'), node_label='USA New')]
-        settings = {'subscription_ws_relays': json.dumps({'1:3': RELAY, '4:3': RELAY, '6:2': RELAY})}
+        settings = {'subscription_ws_relays': json.dumps({'1:3': dict(RELAY, label='🇹🇷 Turkey Nitro'), '4:3': RELAY, '6:2': RELAY})}
         async def get(key, default=''):
             if key == 'sub_info_sync_on_render': return '0'
             return settings.get(key, default)
@@ -61,6 +62,7 @@ class RelayRenderTests(unittest.IsolatedAsyncioTestCase):
             published, info = await render()
             self.assertEqual(len(published), 4)
             self.assertEqual(urlsplit(published[-1]).username, UUID)
+            self.assertEqual(unquote(urlsplit(published[-1]).fragment), '🇹🇷 Turkey Nitro')
             self.assertEqual(info['download'], 12345)
             self.assertEqual(info['total'], 1024 ** 3)
             protected = published[1:3]

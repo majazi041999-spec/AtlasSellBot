@@ -30,7 +30,7 @@ def describe_variants(options,target,address=''):
     rows=[dict(id='regular',label='معمولی',address=address)]
     relay=options.get('subscription_ws_relays',{}).get(target)
     if valid_ws_relay(relay):
-        rows.append(dict(id='relay',label='Tunnel',address=f"{relay['address']}:{relay['port']}"))
+        rows.append(dict(id='relay',label=relay.get('label') or 'Plus',address=f"{relay['address']}:{relay['port']}"))
     fallback=options.get('subscription_ws_fallbacks',{}).get(target)
     if not isinstance(fallback,str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9.-]{0,252}',fallback):fallback=None
     if fallback:rows.append(dict(id='fallback',label='Backup',address=fallback))

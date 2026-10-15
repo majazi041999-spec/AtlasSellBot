@@ -1,19 +1,21 @@
 # Turkey through the Iran entry
 
-The additional `Tunnel` variant uses the existing Turkey WS customer's UUID,
+The additional `🇹🇷 Turkey Nitro` variant uses the existing Turkey WS customer's UUID,
 email, quota and expiry. It does not add a client, subscription node row, or
 second entitlement. Existing and future subscriptions get it when rendered;
 browser copy/import and raw subscription responses share that renderer.
 If legacy imports left several active parent rows for one target, only the
-newest valid row supplies the Tunnel variant. Existing identities and counters
+newest valid row supplies this variant. Existing identities and counters
 are retained; the variant is not repeated for every historical row.
 
 ## Route
 
-Client → `atbot.anacotig.com:2053` in Iran → dedicated HAProxy TCP process →
+Client → `nitro.anacotig.com:2053` in Iran → dedicated HAProxy TCP process →
 Turkey HTTPS port 443 → exact nginx WebSocket route → existing Turkey WS
 inbound on loopback:2096 → destination. Each connection has its own TCP stream;
 there is no shared SSH/multiplexed transport or dependency on cross-border UDP.
+`nitro` has its own DNS-only A record pointing to the Iran entry, TTL 120;
+neither the bot hostname nor an existing Turkey DNS record is repointed.
 
 HAProxy passes encrypted bytes unchanged. Clients verify
 `atlasapp.anacotig.com`; TLS terminates in Turkey. Turkey's local upstream
@@ -43,13 +45,14 @@ to that exact path return 404. Both inactive connection timeouts are explicit.
 ## Subscription and panel controls
 
 `subscription_ws_relays` is a JSON map keyed by `server_id:inbound_id`. Each
-entry contains `address`, integer `port`, `server_name` and exact `path`.
+entry contains `address`, integer `port`, `server_name`, exact `path`, and an
+optional customer-facing `label` (production: `🇹🇷 Turkey Nitro`).
 Production uses the existing Turkey target `1:3` only. The renderer requires
 an existing VLESS WS/TLS parent and validated endpoint fields. It removes CDN
 ECH, early data and insecure flags from this additional route, while preserving
 identity and encryption. Other variants remain unchanged.
 
-The admin subscriptions page shows **Tunnel** under Turkey WS, with its own
+The admin subscriptions page shows **🇹🇷 Turkey Nitro** under Turkey WS, with its own
 switch. Its switch is stored as `relay` in
 `subscription_ws_disabled_variants`; turning it off hides this route on the
 next subscription fetch. The parent server/node switches and pending renewal
@@ -57,7 +60,7 @@ reset protections still take precedence. Protected USA New and Germany WS
 targets never acquire this variant, even if configured accidentally.
 
 The Iran entry is infrastructure, not another quota-bearing server in the bot.
-To disable only this route, use its Tunnel switch. Existing cached links remain
+To disable only this route, use its Nitro switch. Existing cached links remain
 usable while the relay and underlying account are enabled; for immediate route
 shutdown stop `atlas-turkey-tunnel` as well. Expiring/disabling the underlying
 Turkey account blocks both its direct and relay access.
