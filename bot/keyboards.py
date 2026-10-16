@@ -824,6 +824,7 @@ def subscription_detail_kb(profile_id: int, sub_url: str = "", nodes: List[Dict]
                 btn = _inline_button(f"{label} — نمایش لینک", callback_data=f"subnode:{int(node.get('id') or 0)}", style="success")
             b.row(btn)
 
+    _button(b, text="🧾 نمایش QR اشتراک", callback_data=f"sub_qr:{profile_id}", style="primary")
     _button(b, text="📶 دستگاه‌های متصل الان", callback_data=f"sub_conns:{profile_id}", style="primary")
     _button(b, text="✏️ تغییر نام سرویس", callback_data=f"sub_rename:{profile_id}", style="primary")
     _button(b, text="♻️ تمدید ساب", callback_data=f"sub_renew:{profile_id}", style="success")

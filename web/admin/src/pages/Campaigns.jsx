@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
-import { api, fmt } from "../api.js";
+import { api, fmt, BASE } from "../api.js";
 import { Card, Stat, Loading, toast } from "../components/ui.jsx";
 
 function Toggle({ on, onChange, label }) {
@@ -24,20 +24,47 @@ function copyText(t) {
   }
 }
 
+const campaignForm = (c) => ({ id: c.id || 0, title: c.title || "", emoji: c.emoji || "🎯", segment: c.segment || "all",
+  message: c.message || "", code: c.code || "", image_prompt: c.image_prompt || "", notes: c.notes || "",
+  include_reps: Number(c.include_reps) ? 1 : 0 });
+
+function AutomaticPhoto({ kind, settings, set, onPending }) {
+  const key = `campaign_${kind}_photo`;
+  const has = settings[`campaign_${kind}_has_photo`];
+  const value = settings[key];
+  const [loading, setLoading] = useState(false);
+  const pick = (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (file.size > 2 * 1024 * 1024) { toast("عکس باید کمتر از ۲ مگابایت باشد", "error"); return; }
+    setLoading(true);
+    onPending(kind, true);
+    const reader = new FileReader();
+    reader.onload = () => { set(key, String(reader.result || "")); setLoading(false); onPending(kind, false); };
+    reader.onerror = () => { toast("خواندن عکس انجام نشد", "error"); setLoading(false); onPending(kind, false); };
+    reader.readAsDataURL(file);
+  };
+  const src = value !== undefined ? value : (has ? `${BASE}/api/campaigns/automatic/${kind}/photo` : "");
+  return <div className="field"><label>عکس پیام خودکار</label>
+    <input type="file" accept="image/png,image/jpeg,image/webp" onChange={pick} disabled={loading} />
+    {loading && <span className="muted tiny">در حال خواندن عکس…</span>}
+    {src && <div className="row" style={{ gap: 10, marginTop: 8 }}><img src={src} alt="عکس پیام خودکار" style={{ width: 110, borderRadius: 10 }} /><button className="btn xs danger" onClick={() => set(key, "")}>حذف عکس</button></div>}
+    <span className="muted tiny">پس از انتخاب، «ذخیره تنظیمات کمپین‌ها» را بزن.</span>
+  </div>;
+}
+
 /* One targeted campaign: collapsed row → inline editor. */
 function CustomCampaign({ c, segments, counts, countsReps, codes, onChanged, startOpen }) {
   // A saved include_reps campaign reaches the rep-inclusive audience; show THAT
   // number (rows + send confirm) so the count never contradicts the "با نماینده" label.
   const effCounts = (Number(c.include_reps) && c.segment !== "reps") ? (countsReps || counts) : counts;
   const [open, setOpen] = useState(!!startOpen);
-  const [f, setF] = useState(null); // edit buffer (photo only present when re-picked)
+  const [f, setF] = useState(() => startOpen ? campaignForm(c) : null);
   const [busy, setBusy] = useState("");
   const fileRef = useRef(null);
 
   const edit = () => {
-    setF({ id: c.id || 0, title: c.title || "", emoji: c.emoji || "🎯", segment: c.segment || "all",
-           message: c.message || "", code: c.code || "", image_prompt: c.image_prompt || "", notes: c.notes || "",
-           include_reps: Number(c.include_reps) ? 1 : 0 });
+    setF(campaignForm(c));
     setOpen(true);
   };
   const set = (k, v) => setF((o) => ({ ...o, [k]: v }));
@@ -46,8 +73,10 @@ function CustomCampaign({ c, segments, counts, countsReps, codes, onChanged, sta
     const file = e.target.files?.[0];
     if (!file) return;
     if (file.size > 2 * 1024 * 1024) { toast("عکس باید کمتر از ۲ مگابایت باشد", "error"); return; }
+    setBusy("photo");
     const r = new FileReader();
-    r.onload = () => set("photo", String(r.result || ""));
+    r.onload = () => { set("photo", String(r.result || "")); setBusy(""); };
+    r.onerror = () => { toast("خواندن عکس انجام نشد", "error"); setBusy(""); };
     r.readAsDataURL(file);
   };
 
@@ -61,10 +90,17 @@ function CustomCampaign({ c, segments, counts, countsReps, codes, onChanged, sta
     try { await api.post(`/api/campaigns/custom/${c.id}/delete`); toast("حذف شد"); onChanged(); } catch { toast("خطا", "error"); }
   };
   const send = async () => {
-    const n = effCounts?.[c.segment] ?? "?";
-    if (!confirm(`ارسال به سگمنت «${segLabel}» (${n} نفر)؟\nهر کاربر فقط یک‌بار این کمپین را می‌گیرد.`)) return;
+    const editedCounts = Number(f.include_reps) ? (countsReps || counts) : counts;
+    const n = editedCounts?.[f.segment] ?? "?";
+    const label = segments.find((s) => s.key === f.segment)?.label || f.segment;
+    if (!confirm(`ذخیره آخرین متن و عکس و ارسال به «${label}» (${n} نفر)؟\nهر کاربر فقط یک‌بار این کمپین را می‌گیرد.`)) return;
     setBusy("send");
-    try { const r = await api.post(`/api/campaigns/custom/${c.id}/send`); toast(`ارسال شد: ${fmt(r.sent || 0)} پیام ✅`); onChanged(); }
+    try {
+      await api.post("/api/campaigns/custom", f);
+      const r = await api.post(`/api/campaigns/custom/${c.id}/send`);
+      toast(`ارسال: ${fmt(r.sent || 0)} · قبلاً دریافت کرده: ${fmt(r.skipped || 0)} · ناموفق: ${fmt(r.failed || 0)}`, r.failed ? "error" : undefined);
+      setOpen(false); setF(null); onChanged();
+    }
     catch (e) { toast(e.message || "خطا در ارسال", "error"); } finally { setBusy(""); }
   };
 
@@ -114,15 +150,19 @@ function CustomCampaign({ c, segments, counts, countsReps, codes, onChanged, sta
               </div>
             </div>
           )}
-          <div className="field"><label>متن پیام — جای‌گذاری‌ها: {"{name} {code} {brand}"}</label>
+          <div className="field"><label>متن پیام — جای‌گذاری‌ها: {"{name} {code} {brand} {referral_rewards} {referral_link}"}</label>
             <textarea style={{ ...TA, minHeight: 150 }} value={f.message} onChange={(e) => set("message", e.target.value)} /></div>
+          {f.message.includes("{referral_rewards}") && <div className="muted tiny" style={{ whiteSpace: "pre-wrap", lineHeight: 1.9 }}>
+            جوایز هنگام ارسال از تنظیمات فعلی دعوت دوستان خوانده می‌شوند. پیش‌نمایش ذخیره‌شده:<br />{c.preview_message}
+          </div>}
 
           <div className="field"><label>عکس کمپین (اختیاری — کپشن بالای ۱۰۲۴ کاراکتر جدا ارسال می‌شود)</label>
             <div className="row" style={{ gap: 8, alignItems: "center", flexWrap: "wrap" }}>
               <button className="btn xs" onClick={() => fileRef.current?.click()}>🖼 انتخاب عکس</button>
-              <input ref={fileRef} type="file" accept="image/*" style={{ display: "none" }} onChange={pickPhoto} />
-              {f.photo ? <img src={f.photo} alt="" style={{ height: 54, borderRadius: 8 }} /> : (c.has_photo ? <span className="muted tiny">عکس ذخیره‌شده دارد ✔</span> : <span className="muted tiny">عکسی ندارد</span>)}
-              {(f.photo || c.has_photo) && <button className="btn xs danger" onClick={() => set("photo", "")}>حذف عکس</button>}
+              <input ref={fileRef} type="file" accept="image/png,image/jpeg,image/webp" style={{ display: "none" }} onChange={pickPhoto} />
+              {(f.photo !== undefined ? f.photo : c.has_photo) ? <img src={f.photo !== undefined ? f.photo : `${BASE}/api/campaigns/custom/${c.id}/photo?v=${c.photo_version || ""}`} alt="عکس کمپین" style={{ height: 110, borderRadius: 8 }} /> : <span className="muted tiny">عکسی ندارد</span>}
+              {(f.photo !== undefined ? f.photo : c.has_photo) && <button className="btn xs danger" onClick={() => set("photo", "")}>حذف عکس</button>}
+              {busy === "photo" && <span className="muted tiny">در حال خواندن عکس…</span>}
             </div></div>
 
           {f.image_prompt ? (
@@ -142,8 +182,8 @@ function CustomCampaign({ c, segments, counts, countsReps, codes, onChanged, sta
           ) : null}
 
           <div className="row" style={{ gap: 6, flexWrap: "wrap" }}>
-            <button className="btn xs primary" disabled={busy === "save"} onClick={save}>💾 ذخیره</button>
-            {c.id ? <button className="btn xs success" disabled={busy === "send"} onClick={send}>{busy === "send" ? "در حال ارسال..." : "▶️ ارسال کمپین"}</button> : null}
+            <button className="btn xs primary" disabled={!!busy} onClick={save}>💾 ذخیره</button>
+            {c.id ? <button className="btn xs success" disabled={!!busy} onClick={send}>{busy === "send" ? "در حال ارسال..." : "▶️ ذخیره و ارسال کمپین"}</button> : null}
             {c.id ? <button className="btn xs danger" onClick={del}>🗑 حذف</button> : null}
             {sent ? <span className="muted tiny">آخرین ارسال: {c.sent_at}</span> : null}
           </div>
@@ -158,6 +198,9 @@ export default function Campaigns() {
   const [s, setS] = useState(null);
   const [busy, setBusy] = useState("");
   const [adding, setAdding] = useState(false);
+  const [photoPending, setPhotoPending] = useState({});
+  const imageBusy = Object.values(photoPending).some(Boolean);
+  const onPhotoPending = (kind, pending) => setPhotoPending((old) => ({ ...old, [kind]: pending }));
 
   const load = () => api.get("/api/campaigns").then((r) => { setD(r); setS(r.settings); setAdding(false); }).catch(() => setD({ error: true }));
   useEffect(() => { load(); }, []);
@@ -170,7 +213,7 @@ export default function Campaigns() {
   };
   const run = async (name) => {
     setBusy(name);
-    try { const r = await api.post(`/campaigns/${name}/run`); toast(`ارسال شد: ${fmt(r.sent || 0)} پیام ✅`); load(); }
+    try { await api.form("/campaigns/settings", s); const r = await api.post(`/campaigns/${name}/run`); toast(`ارسال شد: ${fmt(r.sent || 0)} پیام ✅`); load(); }
     catch (e) { toast(e.message || "خطا در اجرا", "error"); } finally { setBusy(""); }
   };
   const reset = async (name) => {
@@ -220,7 +263,7 @@ export default function Campaigns() {
               <div className="row" style={{ gap: 6 }}>
                 {(c.campaign === "trial2paid" || c.campaign === "winback") && (
                   <>
-                    <button className="btn xs primary" disabled={busy === c.campaign} onClick={() => run(c.campaign)}>▶️ اجرا</button>
+                    <button className="btn xs primary" disabled={!!busy || imageBusy} onClick={() => run(c.campaign)}>▶️ ذخیره و اجرا</button>
                     <button className="btn xs" onClick={() => reset(c.campaign)}>ریست</button>
                   </>
                 )}
@@ -237,6 +280,7 @@ export default function Campaigns() {
             <input className="inp mono" value={s.campaign_trial_code || ""} onChange={(e) => set("campaign_trial_code", e.target.value)} dir="ltr" list="codes" /></div>
           <div className="field"><label>متن پیام</label>
             <textarea value={s.campaign_trial_template || ""} onChange={(e) => set("campaign_trial_template", e.target.value)} style={TA} /></div>
+          <AutomaticPhoto kind="trial" settings={s} set={set} onPending={onPhotoPending} />
         </div>
       </Card>
 
@@ -251,12 +295,13 @@ export default function Campaigns() {
           </div>
           <div className="field"><label>متن پیام</label>
             <textarea value={s.campaign_winback_template || ""} onChange={(e) => set("campaign_winback_template", e.target.value)} style={TA} /></div>
+          <AutomaticPhoto kind="winback" settings={s} set={set} onPending={onPhotoPending} />
         </div>
       </Card>
 
       <datalist id="codes">{(d.codes || []).map((c) => <option key={c} value={c} />)}</datalist>
       <div style={{ position: "sticky", bottom: 12 }}>
-        <button className="btn primary" style={{ width: "100%" }} disabled={busy === "save"} onClick={save}>💾 ذخیره تنظیمات کمپین‌ها</button>
+        <button className="btn primary" style={{ width: "100%" }} disabled={!!busy || imageBusy} onClick={save}>💾 ذخیره تنظیمات کمپین‌ها</button>
       </div>
     </div>
   );

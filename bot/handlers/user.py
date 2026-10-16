@@ -1179,6 +1179,32 @@ async def sub_show(cb: CallbackQuery):
     await cb.answer()
 
 
+@router.callback_query(F.data.startswith("sub_qr:"))
+async def sub_qr(cb: CallbackQuery):
+    if not await _ensure_channel_membership(cb):
+        return
+    user = await get_or_create_user(cb.from_user.id, cb.from_user.username, cb.from_user.full_name)
+    try:
+        profile_id = int(cb.data.split(":", 1)[1])
+    except (ValueError, IndexError):
+        await cb.answer("سرویس نامعتبر است.", show_alert=True)
+        return
+    profile = await _owned_subscription_for_user(user["id"], profile_id)
+    if not profile or int(user.get("is_blocked") or 0):
+        await cb.answer("این سرویس برای شما پیدا نشد.", show_alert=True)
+        return
+    await cb.answer()
+    try:
+        link = await subscription_url(profile["token"])
+        footer = await get_setting("channel_username", "AtlasChannel")
+        image = await asyncio.to_thread(_qr_input_file, link, footer)
+        label = profile.get("name") or profile.get("email") or "اشتراک شما"
+        await cb.message.answer_photo(image, caption=f"🧾 QR اشتراک: {label}\nبرای افزودن سرویس در برنامهٔ اتصال اسکن کن.", parse_mode=None)
+    except Exception as exc:
+        logger.warning("Subscription QR delivery failed (%s)", type(exc).__name__)
+        await cb.message.answer("ارسال QR انجام نشد؛ دوباره دکمهٔ نمایش QR را بزن.", parse_mode=None)
+
+
 @router.callback_query(F.data.startswith("sub_conns:"))
 async def sub_connections(cb: CallbackQuery):
     """"How many devices are on my service right now" — the customer's own view.

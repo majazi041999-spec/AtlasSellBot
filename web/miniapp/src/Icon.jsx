@@ -2,6 +2,7 @@ import React from "react";
 
 // A single stroke language keeps navigation and actions consistent at small sizes.
 const paths = {
+  qr: <><rect x="3" y="3" width="6" height="6" rx="1" /><rect x="15" y="3" width="6" height="6" rx="1" /><rect x="3" y="15" width="6" height="6" rx="1" /><path d="M15 15h3v3h3m-6 0v3h3m3-6v-3M3 12h6m3-9v6m0 6v6m6-9h3" /></>,
   home: <><path d="m3 10 9-7 9 7v10a1 1 0 0 1-1 1h-5v-7H9v7H4a1 1 0 0 1-1-1Z" /></>,
   services: <><rect x="4" y="3" width="16" height="7" rx="2" /><rect x="4" y="14" width="16" height="7" rx="2" /><path d="M8 6.5h.01M8 17.5h.01M12 6.5h4M12 17.5h4" /></>,
   buy: <><path d="m13 2-9 12h7l-1 8 10-12h-7Z" /></>,

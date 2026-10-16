@@ -329,6 +329,19 @@ function Services({ go, balance, onBalance, isRep }) {
     }
   };
   const [list, setList] = useState(null);
+  const [qr, setQr] = useState(null);
+  const qrRequest = useRef(0);
+  const closeQr = () => { qrRequest.current += 1; setQr(null); };
+  const openQr = async (s) => {
+    const request = ++qrRequest.current;
+    setQr({ name: svcName(s) || "اشتراک شما", loading: true });
+    try {
+      const result = await api("services/qr", { profile_id: s.id });
+      if (qrRequest.current === request) setQr({ name: svcName(s) || "اشتراک شما", ...result });
+    } catch {
+      if (qrRequest.current === request) setQr({ name: svcName(s) || "اشتراک شما", error: true, service: s });
+    }
+  };
   const [renew, setRenew] = useState(null);   // {order_id, payment, name}
   const [planFor, setPlanFor] = useState(null); // service awaiting plan choice
   const [pkgs, setPkgs] = useState(null);       // packages for renewal
@@ -481,6 +494,7 @@ function Services({ go, balance, onBalance, isRep }) {
             ) : (
               <div className="svc-actions">
                 <button className="btn-soft sm" onClick={() => copy(s.sub_url, "لینک اشتراک کپی شد")}><Icon name="copy" />کپی لینک</button>
+                <button className="btn-soft sm" onClick={() => openQr(s)}><Icon name="qr" />نمایش QR</button>
                 <button className="btn-soft sm" onClick={() => setEditing(s.id)}><Icon name="edit" />نام</button>
                 <button className="btn-soft sm" onClick={() => { haptic("selection"); setExpanded(expanded === s.id ? null : s.id); }}><Icon name="services" />سرورها</button>
                 <button className="btn-soft sm" onClick={() => { haptic("selection"); loadConns(s.id); }}>
@@ -561,6 +575,21 @@ function Services({ go, balance, onBalance, isRep }) {
         );
       })}
 
+      {qr && (
+        <div className="sheet-back" onClick={closeQr}>
+          <div className="sheet" role="dialog" aria-modal="true" aria-label="QR اشتراک" onClick={(e) => e.stopPropagation()}>
+            <h3 className="sheet-title">QR اشتراک {qr.name}</h3>
+            {qr.loading && <p className="muted">در حال ساخت QR…</p>}
+            {qr.error && <><p className="muted">نمایش QR انجام نشد؛ دوباره امتحان کن.</p><button className="btn-primary" onClick={() => openQr(qr.service)}>تلاش دوباره</button></>}
+            {qr.image && <>
+              <img src={qr.image} alt={`QR اشتراک ${qr.name}`} style={{ display: "block", maxWidth: "100%", maxHeight: "55vh", margin: "12px auto", borderRadius: 16 }} />
+              <p className="muted tiny">در برنامهٔ اتصال روی دستگاه دیگر اسکن کن. این کد دسترسی سرویس تو را دارد؛ فقط با دستگاه‌های خودت به اشتراک بگذار.</p>
+              <button className="btn-soft" onClick={() => copy(qr.sub_url, "لینک اشتراک کپی شد")}>کپی لینک اشتراک</button>
+            </>}
+            <button className="btn-ghost" onClick={closeQr}>بستن</button>
+          </div>
+        </div>
+      )}
       {confirmAct && (
         <div className="sheet-back" onClick={() => setConfirmAct(null)}>
           <div className="sheet" onClick={(e) => e.stopPropagation()}>

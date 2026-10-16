@@ -14,6 +14,8 @@ from core.database import (
     get_lapsed_users_for_winback,
     get_segment_users,
     get_setting,
+    get_user_by_id,
+    get_referral_tiers,
     get_trial_followups,
     log_campaign_event,
     mark_cart_reminder,
@@ -23,6 +25,7 @@ from core.database import (
     user_has_campaign_event,
 )
 from core.panel_content import SETTINGS_DEFAULTS
+from core.campaign_media import campaign_photo_bytes, send_campaign_message
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +50,41 @@ _WINBACK_DEFAULT = (
 )
 
 
+async def referral_campaign_values() -> dict:
+    """Read current rewards at preview/send time, never freeze reward amounts."""
+    from core.rewards import referral_per_referral_amount, referral_per_referral_gb, referral_tier_reward_text
+    enabled = await get_setting("referral_enabled", "1") == "1"
+    if not enabled:
+        return {"referral_rewards": "دعوت دوستان در حال حاضر غیرفعال است."}
+    lines = []
+    amount, gb = await referral_per_referral_amount(), await referral_per_referral_gb()
+    if amount:
+        lines.append(f"💰 برای اولین خرید هر دوست: {amount:,} تومان اعتبار کیف پول")
+    if gb:
+        lines.append(f"🎁 برای اولین خرید هر دوست: {gb:g} گیگابایت حجم هدیه")
+    tiers = await get_referral_tiers(active_only=True)
+    if tiers:
+        if lines:
+            lines.append("\nبه‌علاوه، جایزه‌های پلکانی:")
+        for tier in tiers:
+            lines.append(f"🎯 {int(tier['referrals_needed'])} دوست با خرید موفق → {referral_tier_reward_text(tier)}")
+        lines.append("\nجوایز پلکانی از بخش دعوت دوستان قابل درخواست و پس از تأیید مدیریت قابل دریافت‌اند.")
+    return {"referral_rewards": "\n".join(lines) or "جزئیات دعوت دوستان را در منوی ربات ببین."}
+
+
+async def campaign_preview(camp: dict) -> str:
+    template = str(camp.get("message") or "")
+    values = {"brand": await get_setting("ui.brand_name", "Atlas Account"),
+              "code": str(camp.get("code") or ""), "name": "دوست عزیز",
+              "referral_link": "[لینک دعوت اختصاصی هر کاربر هنگام ارسال]"}
+    if "{referral_rewards}" in template:
+        values.update(await referral_campaign_values())
+    try:
+        return template.format(**values)
+    except (KeyError, ValueError):
+        return template
+
+
 async def run_trial_to_paid(bot, limit: int = 200) -> dict:
     """When a free trial ends without a purchase, send a first-buy discount."""
     if await get_setting("campaign_trial_enabled", "1") != "1":
@@ -61,6 +99,7 @@ async def run_trial_to_paid(bot, limit: int = 200) -> dict:
     cutoff = (datetime.now() - timedelta(days=dur)).strftime("%Y-%m-%d %H:%M:%S")
     template = await get_setting("campaign_trial_template", _TRIAL_DEFAULT)
     brand = await get_setting("ui.brand_name", "Atlas Account")
+    photo = campaign_photo_bytes(await get_setting("campaign_trial_photo", ""))
     sent = 0
     for u in await get_trial_followups(cutoff, limit):
         tid = int(u.get("telegram_id") or 0)
@@ -71,13 +110,13 @@ async def run_trial_to_paid(bot, limit: int = 200) -> dict:
             text = template
         if tid:
             try:
-                await bot.send_message(tid, text, parse_mode=None)
+                await send_campaign_message(bot, tid, text, photo)
                 sent += 1
+                await mark_trial_followup_sent(int(u["id"]))
+                await log_campaign_event("trial2paid", "sent", int(u["id"]))
                 await asyncio.sleep(0.1)
             except Exception:
                 pass
-        await mark_trial_followup_sent(int(u["id"]))
-        await log_campaign_event("trial2paid", "sent", int(u["id"]))
     if sent:
         logger.info("campaign trial2paid sent=%s", sent)
     return {"sent": sent}
@@ -97,6 +136,7 @@ async def run_winback(bot, limit: int = 200) -> dict:
     cutoff_ms = int(time.time() * 1000) - days * 86400000
     template = await get_setting("campaign_winback_template", _WINBACK_DEFAULT)
     brand = await get_setting("ui.brand_name", "Atlas Account")
+    photo = campaign_photo_bytes(await get_setting("campaign_winback_photo", ""))
     sent = 0
     for u in await get_lapsed_users_for_winback(cutoff_ms, limit):
         tid = int(u.get("telegram_id") or 0)
@@ -107,13 +147,13 @@ async def run_winback(bot, limit: int = 200) -> dict:
             text = template
         if tid:
             try:
-                await bot.send_message(tid, text, parse_mode=None)
+                await send_campaign_message(bot, tid, text, photo)
                 sent += 1
+                await mark_winback_sent(int(u["id"]))
+                await log_campaign_event("winback", "sent", int(u["id"]))
                 await asyncio.sleep(0.1)
             except Exception:
                 pass
-        await mark_winback_sent(int(u["id"]))
-        await log_campaign_event("winback", "sent", int(u["id"]))
     if sent:
         logger.info("campaign winback sent=%s", sent)
     return {"sent": sent}
@@ -126,10 +166,6 @@ async def run_custom_campaign(bot, camp: dict) -> dict:
     re-sends), so re-running after adding users to a segment is safe. A photo is
     sent as the DM image; Telegram caps captions at 1024 chars, so longer
     messages go as a follow-up text bubble."""
-    import base64
-
-    from aiogram.types import BufferedInputFile
-
     slug = str(camp.get("slug") or "").strip()
     template = str(camp.get("message") or "")
     if not slug or not template.strip():
@@ -137,15 +173,11 @@ async def run_custom_campaign(bot, camp: dict) -> dict:
     brand = await get_setting("ui.brand_name", "Atlas Account")
     code = str(camp.get("code") or "").strip()
 
-    photo_bytes = b""
-    photo = str(camp.get("photo") or "")
-    if photo.startswith("data:") and "," in photo:
-        try:
-            photo_bytes = base64.b64decode(photo.split(",", 1)[1])
-        except Exception:
-            photo_bytes = b""
-
-    sent = skipped = 0
+    photo_bytes = campaign_photo_bytes(str(camp.get("photo") or ""))
+    referral_values = await referral_campaign_values() if "{referral_rewards}" in template else {}
+    if referral_values and await get_setting("referral_enabled", "1") != "1":
+        raise ValueError("سیستم دعوت دوستان غیرفعال است؛ کمپین دعوت ارسال نشد.")
+    sent = skipped = failed = 0
     include_reps = bool(int(camp.get("include_reps") or 0))
     for u in await get_segment_users(str(camp.get("segment") or "all"), include_reps=include_reps):
         uid = int(u.get("id") or 0)
@@ -154,31 +186,30 @@ async def run_custom_campaign(bot, camp: dict) -> dict:
             skipped += 1
             continue
         values = {"brand": brand, "code": code,
-                  "name": (u.get("full_name") or "").strip()[:20] or "دوست عزیز"}
+                  "name": (u.get("full_name") or "").strip()[:20] or "دوست عزیز", **referral_values}
+        if "{referral_link}" in template:
+            from core.miniapp import get_bot_username
+            owner = await get_user_by_id(uid)
+            username = await get_bot_username()
+            referral_code = (owner or {}).get("referral_code") or ""
+            values["referral_link"] = (f"https://t.me/{username}?start={referral_code}"
+                                       if username and referral_code else "منوی ربات ← دعوت دوستان")
         try:
             text = template.format(**values)
         except Exception:
             text = template
         try:
-            if photo_bytes:
-                img = BufferedInputFile(photo_bytes, filename="campaign.jpg")
-                if len(text) <= 1024:
-                    await bot.send_photo(tid, img, caption=text, parse_mode=None)
-                else:
-                    await bot.send_photo(tid, img)
-                    await bot.send_message(tid, text, parse_mode=None)
-            else:
-                await bot.send_message(tid, text, parse_mode=None)
+            await send_campaign_message(bot, tid, text, photo_bytes)
             sent += 1
             await log_campaign_event(slug, "sent", uid)
             await asyncio.sleep(0.08)
-        except Exception:
-            # Blocked the bot / deleted account — skip silently, don't mark.
-            skipped += 1
-    if camp.get("id"):
+        except Exception as exc:
+            failed += 1
+            logger.warning("Campaign %s delivery failed (%s)", slug, type(exc).__name__)
+    if camp.get("id") and sent:
         await mark_custom_campaign_sent(int(camp["id"]), sent)
     logger.info("custom campaign %s sent=%s skipped=%s", slug, sent, skipped)
-    return {"sent": sent, "skipped": skipped}
+    return {"sent": sent, "skipped": skipped, "failed": failed}
 
 
 async def _cart_card_footer() -> str:

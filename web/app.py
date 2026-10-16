@@ -7,6 +7,7 @@ representative API. There is no server-rendered panel any more — see the
 """
 
 import logging
+import asyncio
 import base64
 import os
 import re
@@ -25,6 +26,7 @@ import zipfile
 from io import BytesIO
 from datetime import datetime, timedelta
 from typing import Optional
+from fastapi.responses import Response
 
 from aiogram import Bot
 from aiogram.client.default import DefaultBotProperties
@@ -3621,9 +3623,18 @@ async def campaigns_settings(
     campaign_winback_code: str = Form(""),
     campaign_winback_days: str = Form("14"),
     campaign_winback_template: str = Form(""),
+    campaign_trial_photo: Optional[str] = Form(None),
+    campaign_winback_photo: Optional[str] = Form(None),
 ):
     if not _auth(request):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
+    from core.campaign_media import campaign_photo_bytes
+    try:
+        for photo in (campaign_trial_photo, campaign_winback_photo):
+            if photo is not None:
+                await asyncio.to_thread(campaign_photo_bytes, photo)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
     await set_setting("campaign_trial_enabled", "1" if campaign_trial_enabled == "1" else "0")
     await set_setting("campaign_trial_code", (campaign_trial_code or "").strip())
     await set_setting("campaign_trial_template", campaign_trial_template or "")
@@ -3635,6 +3646,9 @@ async def campaigns_settings(
         wd = 14
     await set_setting("campaign_winback_days", str(wd))
     await set_setting("campaign_winback_template", campaign_winback_template or "")
+    for key, photo in (("campaign_trial_photo", campaign_trial_photo), ("campaign_winback_photo", campaign_winback_photo)):
+        if photo is not None:
+            await set_setting(key, photo)
     return JSONResponse({"success": True})
 
 
@@ -3695,11 +3709,14 @@ async def api_campaigns(request: Request):
         "sent": sum(c["sent"] for c in overview),
     }
     conv_by_slug = {c["campaign"]: c for c in overview}
+    from core.campaigns import campaign_preview
     for c in custom:
         perf = conv_by_slug.get(c["slug"]) or {}
         c["conversions"] = int(perf.get("conversions") or 0)
         c["revenue"] = int(perf.get("revenue") or 0)
         c["has_photo"] = bool(c.get("photo"))
+        c["photo_version"] = hashlib.sha256(str(c.get("photo") or "").encode()).hexdigest()[:12]
+        c["preview_message"] = await campaign_preview(c)
         c.pop("photo", None)  # keep the list payload small; photo is write-only here
     return JSONResponse({
         "overview": overview,
@@ -3713,10 +3730,12 @@ async def api_campaigns(request: Request):
             "campaign_trial_enabled": await get_setting("campaign_trial_enabled", "1"),
             "campaign_trial_code": await get_setting("campaign_trial_code", ""),
             "campaign_trial_template": await get_setting("campaign_trial_template", ""),
+            "campaign_trial_has_photo": bool(await get_setting("campaign_trial_photo", "")),
             "campaign_winback_enabled": await get_setting("campaign_winback_enabled", "1"),
             "campaign_winback_code": await get_setting("campaign_winback_code", ""),
             "campaign_winback_days": await get_setting("campaign_winback_days", "14"),
             "campaign_winback_template": await get_setting("campaign_winback_template", ""),
+            "campaign_winback_has_photo": bool(await get_setting("campaign_winback_photo", "")),
         },
     })
 
@@ -3731,8 +3750,12 @@ async def api_custom_campaign_save(request: Request):
     except Exception:
         return JSONResponse({"error": "bad json"}, status_code=400)
     photo = str(data.get("photo") or "")
-    if photo and (not photo.startswith("data:image/") or len(photo) > 3_000_000):
-        return JSONResponse({"error": "عکس نامعتبر یا بزرگ‌تر از ۲ مگابایت است."}, status_code=400)
+    if photo:
+        from core.campaign_media import campaign_photo_bytes
+        try:
+            await asyncio.to_thread(campaign_photo_bytes, photo)
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
     if not str(data.get("title") or "").strip():
         return JSONResponse({"error": "عنوان کمپین لازم است."}, status_code=400)
     cid = int(data.get("id") or 0)
@@ -3746,6 +3769,35 @@ async def api_custom_campaign_save(request: Request):
             data["include_reps"] = old.get("include_reps") or 0
     new_id = await save_custom_campaign(data)
     return JSONResponse({"success": True, "id": new_id})
+
+
+@app.get(f"/{S}/api/campaigns/custom/{{cid}}/photo")
+async def api_custom_campaign_photo(request: Request, cid: int):
+    if not _api_guard(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    camp = await get_custom_campaign(cid)
+    if not camp or not camp.get("photo"):
+        return Response(status_code=404)
+    from core.campaign_media import campaign_photo_bytes
+    try:
+        image = await asyncio.to_thread(campaign_photo_bytes, str(camp["photo"]))
+    except ValueError:
+        return JSONResponse({"error": "عکس ذخیره‌شده نامعتبر است؛ دوباره انتخاب و ذخیره کن."}, status_code=400)
+    return Response(image, media_type="image/jpeg", headers={"Cache-Control": "private, no-store"})
+
+
+@app.get(f"/{S}/api/campaigns/automatic/{{kind}}/photo")
+async def api_automatic_campaign_photo(request: Request, kind: str):
+    if not _api_guard(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    if kind not in {"trial", "winback"}:
+        return Response(status_code=404)
+    from core.campaign_media import campaign_photo_bytes
+    try:
+        image = await asyncio.to_thread(campaign_photo_bytes, await get_setting(f"campaign_{kind}_photo", ""))
+    except ValueError:
+        return JSONResponse({"error": "عکس ذخیره‌شده نامعتبر است."}, status_code=400)
+    return Response(image, media_type="image/jpeg", headers={"Cache-Control": "private, no-store"}) if image else Response(status_code=404)
 
 
 @app.post(f"/{S}/api/campaigns/custom/{{cid}}/delete")
@@ -3769,7 +3821,10 @@ async def api_custom_campaign_send(request: Request, cid: int):
     from core.campaigns import run_custom_campaign
     bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.MARKDOWN))
     try:
-        res = await run_custom_campaign(bot, camp)
+        try:
+            res = await run_custom_campaign(bot, camp)
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
     finally:
         await bot.session.close()
     return JSONResponse({"success": True, **res})
@@ -3890,6 +3945,30 @@ async def miniapp_services(request: Request):
             } for n in nodes],
         })
     return JSONResponse({"services": out})
+
+
+@app.post("/app/api/services/qr")
+async def miniapp_service_qr(request: Request):
+    if await get_setting("miniapp_enabled", "0") != "1":
+        return JSONResponse({"error": "disabled"}, status_code=403)
+    user = await _miniapp_user(request)
+    if not user:
+        return JSONResponse({"error": "invalid_init_data"}, status_code=401)
+    if int(user.get("is_blocked") or 0):
+        return JSONResponse({"error": "forbidden"}, status_code=403)
+    try:
+        body = await request.json()
+        profile_id = int(body.get("profile_id") or 0)
+    except (TypeError, ValueError, AttributeError):
+        return JSONResponse({"error": "invalid_profile"}, status_code=400)
+    profile = await get_subscription_profile(profile_id)
+    if not profile or int(profile.get("user_id") or 0) != int(user["id"]):
+        return JSONResponse({"error": "not_found"}, status_code=404)
+    link = await subscription_url(profile["token"])
+    footer = await get_setting("channel_username", "AtlasChannel")
+    image = await asyncio.to_thread(build_qr_image, link, footer_text=footer)
+    return JSONResponse({"image": "data:image/png;base64," + base64.b64encode(image.getvalue()).decode(),
+                         "sub_url": link}, headers={"Cache-Control": "private, no-store"})
 
 
 @app.post("/app/api/packages")

@@ -1,0 +1,65 @@
+[
+  {
+    "key": "referral",
+    "campaign_slug": "referral_push",
+    "file": "referral-20261016.jpg",
+    "sha256": "f9d5f885869366b04224e38a5fb91e9b5ddaaf28a6c1039f3a5e67122f71e51a",
+    "bytes": 512927
+  },
+  {
+    "key": "trial",
+    "campaign_slug": "trial_push",
+    "file": "trial-20261016.jpg",
+    "sha256": "60179f0ecb59ce2039a4a573a15c9a54712b7429defb7dc66dd5fe8fab8b4a5f",
+    "bytes": 554033
+  },
+  {
+    "key": "renewal",
+    "campaign_slug": "renewal_save",
+    "file": "renewal-20261016.jpg",
+    "sha256": "3f4ccda4570f0ad7f125dec8945c2c7389a8c7ad1732fe628c879c734be58d15",
+    "bytes": 575257
+  },
+  {
+    "key": "vip",
+    "campaign_slug": "vip_thanks",
+    "file": "vip-20261016.jpg",
+    "sha256": "163e37024f0fe14fcf79a29f9b146034048da74dca46f14b841d62710b3457ce",
+    "bytes": 453085
+  },
+  {
+    "key": "rep",
+    "campaign_slug": "rep_recruit",
+    "file": "rep-20261016.jpg",
+    "sha256": "4c7e0d6fa23318da4b8ae68e52cbad8512380b5e0cef5b36b516d3bcd1ef52e5",
+    "bytes": 539503
+  },
+  {
+    "key": "flash",
+    "campaign_slug": "flash_sale",
+    "file": "flash-20261016.jpg",
+    "sha256": "2117ab5a0f6f22749e3f286331971119f902e313fc460a8d0f675058b9e86196",
+    "bytes": 557632
+  },
+  {
+    "key": "study",
+    "campaign_slug": "school_mehr",
+    "file": "study-20261016.jpg",
+    "sha256": "1f51be7fd34157869c21464fd91d82a3ea6a43377eeae0f9b35778cf8c9fb598",
+    "bytes": 424953
+  },
+  {
+    "key": "guide",
+    "campaign_slug": "service_toolkit_20261016",
+    "file": "guide-20261016.jpg",
+    "sha256": "1c69b072e2110d86f0fa10e46e1bcfce4a4246cc7bf5e56a807fec3ce98b5c7d",
+    "bytes": 418699
+  },
+  {
+    "key": "routes",
+    "campaign_slug": "choose_route_20261016",
+    "file": "routes-20261016.jpg",
+    "sha256": "a848a87a16aaadc1502bd7cef3e41408a6f82ead79d10f7573c7609fead54d0c",
+    "bytes": 473892
+  }
+]
