@@ -1,5 +1,10 @@
 # Finland Frost and node connection attribution — 2026-10-15
 
+The Iran entry moved to `193.39.9.214` on 2026-10-17. On that shared host the
+current forwarding pool has one enabled link, while the original deployment
+below used four. See the [migration notes](iran-entry-migration-20261017.md) for
+the current configuration and measured network limitations.
+
 ## Published route
 
 `Finland Frost` uses `frost.anacotig.com:2054`, a DNS-only A record to the owned
