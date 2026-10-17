@@ -1,5 +1,8 @@
 # Arvan Iran relay staging test — 2026-10-17
 
+This records the staging phase. The owner subsequently authorized production
+cutover; see [the current route and compatibility notes](arvanir-cutover-20261017.md).
+
 The owner supplied `arvanir` (`94.101.187.57`) for testing as a potential
 replacement for the slow Iran entry. This operation prepared and tested the
 server; **production DNS and subscription variant settings were not changed**.

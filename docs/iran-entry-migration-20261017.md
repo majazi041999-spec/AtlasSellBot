@@ -1,5 +1,9 @@
 # Iran relay migration — 2026-10-17
 
+Historical migration: the current published entry is now `94.101.187.57`.
+Both prior Iran hosts retain compatibility forwarding; see
+[the Arvan cutover](arvanir-cutover-20261017.md) for current state.
+
 The owner authorized moving the existing Turkey Nitro and Finland Frost entries
 from `193.39.9.182` to the shared Iran host `193.39.9.214` (`zonevpn-new`). The new
 host also runs UseBot/Eitaa, another V2Ray deployment, MenuCraft and PostgreSQL.

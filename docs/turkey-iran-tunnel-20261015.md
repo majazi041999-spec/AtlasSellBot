@@ -1,8 +1,9 @@
 # Turkey through the Iran entry
 
-The Iran entry moved to `193.39.9.214` on 2026-10-17; the published hostname and
-port stayed the same. See the [migration notes](iran-entry-migration-20261017.md)
-for shared-host isolation and the network performance limitation observed then.
+The current Iran entry is `94.101.187.57` (`arvanir`); the published hostname and
+port stayed the same. See the [current cutover](arvanir-cutover-20261017.md) for
+compatibility forwarding and the DNS cache limitation, and the
+[earlier migration](iran-entry-migration-20261017.md) for historical measurements.
 
 The additional `🇹🇷 Turkey Nitro` variant uses the existing Turkey WS customer's UUID,
 email, quota and expiry. It does not add a client, subscription node row, or

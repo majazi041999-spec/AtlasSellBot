@@ -1,9 +1,10 @@
 # Finland Frost and node connection attribution — 2026-10-15
 
-The Iran entry moved to `193.39.9.214` on 2026-10-17. On that shared host the
-current forwarding pool has one enabled link, while the original deployment
-below used four. See the [migration notes](iran-entry-migration-20261017.md) for
-the current configuration and measured network limitations.
+The current Iran entry is `94.101.187.57` (`arvanir`), with one enabled origin
+forwarding link; the original deployment below used four. See the
+[current cutover](arvanir-cutover-20261017.md) for compatibility forwarding and
+the DNS cache limitation. The [earlier migration](iran-entry-migration-20261017.md)
+records the previous shared-host configuration.
 
 ## Published route
 
