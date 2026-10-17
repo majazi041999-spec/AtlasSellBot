@@ -18,6 +18,18 @@ No subscription URL, UUID, quota, expiry, parent inbound, variant setting, bot
 hostname, or other DNS record changed. Existing clients need to reconnect after
 their DNS cache expires; the two node addresses remain the same.
 
+Cloudflare's authoritative nameserver and Google's resolver returned the new IP
+with TTL 120, but the laptop's resolver still returned the old IP with remaining
+TTLs of approximately 6.7 and 10.3 hours. To preserve cached clients, the old
+entry's **dedicated** HAProxy services on 2053/2054 were changed to forward to
+`193.39.9.214` on the same respective ports. Their prior configurations are
+saved privately on the old host. Both complete candidates passed HAProxy
+validation before their services were gracefully reloaded; the host's general
+HAProxy and subscription/web ingress were not changed. Cached clients therefore
+use old Iran entry → new Iran entry → original foreign origin, while fresh DNS
+clients go directly to the new Iran entry. This is a temporary compatibility
+dependency: do not decommission the old host while relying on this bridge.
+
 The existing Iran subscription/web ingress was **not** moved by this operation.
 In particular, ports 2083 and 2096 on the new host belong to its other V2Ray
 deployment and must not be replaced with Atlas listeners.
